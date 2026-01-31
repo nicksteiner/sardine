@@ -1,0 +1,42 @@
+{
+  "name": "sar-viewer",
+  "version": "1.0.0",
+  "description": "SAR imagery viewer library built on deck.gl and geotiff.js",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "scripts": {
+    "dev": "vite examples/basic",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "sar",
+    "synthetic-aperture-radar",
+    "geotiff",
+    "cog",
+    "deck.gl",
+    "visualization",
+    "remote-sensing"
+  ],
+  "author": "Nick Steiner",
+  "license": "MIT",
+  "dependencies": {
+    "@deck.gl/core": "^8.9.0",
+    "@deck.gl/geo-layers": "^8.9.0",
+    "@deck.gl/layers": "^8.9.0",
+    "@deck.gl/react": "^8.9.0",
+    "@luma.gl/core": "^8.5.21",
+    "geotiff": "^2.1.0",
+    "maplibre-gl": "^4.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.0",
+    "vite": "^5.0.12"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  }
+}

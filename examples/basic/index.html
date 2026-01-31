@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SAR Viewer - Basic Example</title>
+    <link
+      href="https://unpkg.com/maplibre-gl@4.0.0/dist/maplibre-gl.css"
+      rel="stylesheet"
+    />
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background-color: #1a1a1a;
+        color: #fff;
+      }
+
+      #app {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .controls {
+        background: #2a2a2a;
+        padding: 15px;
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        flex-wrap: wrap;
+        border-bottom: 1px solid #444;
+      }
+
+      .control-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      label {
+        font-size: 14px;
+        color: #ccc;
+      }
+
+      select,
+      input[type='text'] {
+        padding: 6px 10px;
+        border-radius: 4px;
+        border: 1px solid #444;
+        background: #333;
+        color: #fff;
+        font-size: 14px;
+      }
+
+      input[type='range'] {
+        width: 100px;
+      }
+
+      button {
+        padding: 8px 16px;
+        border-radius: 4px;
+        border: none;
+        background: #0066cc;
+        color: #fff;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      button:hover {
+        background: #0055aa;
+      }
+
+      button:disabled {
+        background: #555;
+        cursor: not-allowed;
+      }
+
+      .viewer-container {
+        flex: 1;
+        position: relative;
+      }
+
+      .loading {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 18px;
+        color: #888;
+      }
+
+      .error {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 16px;
+        color: #ff6666;
+        text-align: center;
+        padding: 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./main.jsx"></script>
+  </body>
+</html>
