@@ -1,13 +1,14 @@
 {
-  "name": "sar-viewer",
+  "name": "sardine",
   "version": "1.0.0",
-  "description": "SAR imagery viewer library built on deck.gl and geotiff.js",
+  "description": "SARdine - Prompt-driven SAR imagery analysis tool built on deck.gl and geotiff.js",
   "main": "src/index.js",
   "module": "src/index.js",
   "scripts": {
-    "dev": "vite examples/basic",
+    "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "example": "vite --config vite.example.config.js"
   },
   "keywords": [
     "sar",

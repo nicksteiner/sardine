@@ -1,8 +1,8 @@
 /**
- * SAR Viewer Library
+ * SARdine - SAR Imagery Viewer Library
  * A SAR imagery viewer built on deck.gl and geotiff.js
  *
- * @module sar-viewer
+ * @module sardine
  */
 
 // Loaders
@@ -45,6 +45,13 @@ export {
   createColorbarCanvas,
   applyColormap,
 } from './utils/colormap.js';
+
+// Import for default export
+import { loadCOG } from './loaders/cog-loader.js';
+import { SARTileLayer } from './layers/SARTileLayer.js';
+import { SARViewer } from './viewers/SARViewer.jsx';
+import { ComparisonViewer, SwipeComparisonViewer } from './viewers/ComparisonViewer.jsx';
+import { MapViewer } from './viewers/MapViewer.jsx';
 
 // Default export
 export default {

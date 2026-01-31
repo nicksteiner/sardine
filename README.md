@@ -1,42 +1,74 @@
-# SAR Viewer (Sardine)
+# 🐟 SARdine
 
-A SAR (Synthetic Aperture Radar) imagery viewer library built on deck.gl and geotiff.js. Designed for visualizing Cloud Optimized GeoTIFFs (COGs) with support for decibel scaling, multiple colormaps, and geographic overlays.
+A prompt-driven SAR (Synthetic Aperture Radar) imagery analysis tool built on deck.gl and geotiff.js. Designed for visualizing Cloud Optimized GeoTIFFs (COGs) with support for decibel scaling, multiple colormaps, and interactive state management.
+
+## Development Phases
+
+SARdine is being developed in phases, each fully functional before moving to the next:
+
+| Phase | Feature | Status |
+|-------|---------|--------|
+| 1 | Basic Viewer | ✅ Complete |
+| 2 | State as Markdown | ✅ Complete |
+| 3 | Chat Input | 🔜 Planned |
+| 4 | Basemap + Annotations | 🔜 Planned |
+| 5 | Processing Backend | 🔜 Planned |
+| 6 | Comparison Mode | 🔜 Planned |
+| 7 | History + Rollback | 🔜 Planned |
 
 ## Features
 
+### Phase 1: Basic Viewer
 - **COG Support**: Load Cloud Optimized GeoTIFFs directly from URLs using geotiff.js
-- **Decibel Scaling**: Automatic dB conversion for SAR amplitude data
-- **Multiple Colormaps**: Grayscale, Viridis, Inferno, Plasma, and Phase (cyclic)
-- **Three Viewer Types**:
-  - `SARViewer`: Basic orthographic viewer
-  - `ComparisonViewer`: Side-by-side comparison with linked pan/zoom
-  - `MapViewer`: SAR overlay on MapLibre basemap
-- **Auto Contrast**: Percentile-based automatic contrast limit calculation
-- **React Components**: Ready-to-use React components with deck.gl
+- **Decibel Scaling**: Toggle dB conversion for SAR amplitude data
+- **Contrast Sliders**: Adjust min/max contrast limits in dB
+- **Colormaps**: Grayscale and Viridis (plus Inferno, Plasma, Phase)
+- **Auto-fit View**: Automatically fit view to image bounds
 
-## Installation
-
-```bash
-npm install sar-viewer
+### Phase 2: State as Markdown
+- **Live State Panel**: See current state as human-readable markdown
+- **Bidirectional Sync**: Edit markdown to update viewer, or interact to update markdown
+- **State Format**:
+```markdown
+## State
+- **File:** s3://bucket/flood.tif
+- **Contrast:** -22 to -3 dB
+- **Colormap:** grayscale
+- **dB Mode:** on
+- **View:** [lat, lon], zoom 12
 ```
 
 ## Quick Start
 
-```jsx
-import { SARViewer, loadCOG } from 'sar-viewer';
+```bash
+# Install dependencies
+npm install
 
-// Load a Cloud Optimized GeoTIFF
-const { getTile, bounds } = await loadCOG('https://bucket.s3.amazonaws.com/flood.tif');
-
-// Render the viewer
-<SARViewer
-  getTile={getTile}
-  bounds={bounds}
-  contrastLimits={[-25, 0]}
-  useDecibels={true}
-  colormap="viridis"
-/>
+# Start the SARdine app
+npm run dev
 ```
+
+Then open http://localhost:5173 in your browser.
+
+## Usage
+
+### Loading a COG
+
+1. Enter a Cloud Optimized GeoTIFF URL in the "COG URL" field
+2. Click "Load COG"
+3. The image will automatically fit to view with auto-calculated contrast limits
+
+### Adjusting Display
+
+- **Colormap**: Choose from Grayscale, Viridis, Inferno, Plasma, or Phase
+- **dB Scaling**: Toggle on/off for SAR amplitude data
+- **Contrast Min/Max**: Use sliders to adjust contrast limits
+
+### Editing State via Markdown
+
+1. View the current state in the right panel
+2. Edit any value in the markdown (e.g., change contrast values)
+3. Click "Apply Changes" to update the viewer
 
 ## API Reference
 
@@ -45,174 +77,68 @@ const { getTile, bounds } = await loadCOG('https://bucket.s3.amazonaws.com/flood
 Load a Cloud Optimized GeoTIFF and return a tile fetcher.
 
 ```javascript
+import { loadCOG } from 'sardine';
+
 const { getTile, bounds, crs, width, height } = await loadCOG(url);
 ```
-
-**Returns:**
-- `getTile({x, y, z})` - Function to fetch tile data
-- `bounds` - `[minX, minY, maxX, maxY]` bounding box
-- `crs` - Coordinate reference system (e.g., "EPSG:4326")
-- `width`, `height` - Image dimensions
 
 ### `SARViewer`
 
 Basic SAR image viewer component.
 
 ```jsx
+import { SARViewer } from 'sardine';
+
 <SARViewer
-  getTile={getTile}           // Required: Tile fetcher function
-  bounds={bounds}             // Required: [minX, minY, maxX, maxY]
-  contrastLimits={[-25, 0]}   // [min, max] for scaling
-  useDecibels={true}          // Apply dB conversion
-  colormap="grayscale"        // Colormap name
-  opacity={1}                 // Layer opacity (0-1)
-  width="100%"                // Container width
-  height="100%"               // Container height
-  onViewStateChange={fn}      // View state change callback
-/>
-```
-
-### `ComparisonViewer`
-
-Side-by-side comparison viewer with synchronized navigation.
-
-```jsx
-<ComparisonViewer
-  leftImage={{
-    getTile,
-    bounds,
-    contrastLimits: [-25, 0],
-    colormap: 'viridis'
-  }}
-  rightImage={{
-    getTile: getTile2,
-    bounds: bounds2,
-    contrastLimits: [-25, 0],
-    colormap: 'grayscale'
-  }}
-  syncViews={true}            // Link pan/zoom between views
-  showLabels={true}           // Show panel labels
-  leftLabel="Before"
-  rightLabel="After"
-/>
-```
-
-### `MapViewer`
-
-SAR overlay on MapLibre basemap for geographic context.
-
-```jsx
-<MapViewer
   getTile={getTile}
   bounds={bounds}
   contrastLimits={[-25, 0]}
   useDecibels={true}
-  colormap="viridis"
-  opacity={0.8}
-  mapStyle="https://demotiles.maplibre.org/style.json"
-  showControls={true}
+  colormap="grayscale"
+  onViewStateChange={handleViewChange}
 />
-```
-
-### `SARTileLayer`
-
-Low-level deck.gl layer for custom integrations.
-
-```javascript
-import { SARTileLayer } from 'sar-viewer';
-
-const layer = new SARTileLayer({
-  id: 'sar-layer',
-  getTile,
-  bounds,
-  contrastLimits: [-25, 0],
-  useDecibels: true,
-  colormap: 'viridis',
-  opacity: 1
-});
 ```
 
 ### Utility Functions
 
-#### Statistics
-
 ```javascript
-import { computeStats, autoContrastLimits, computeHistogram } from 'sar-viewer';
-
-// Compute statistics from raw data
-const stats = computeStats(data, useDecibels);
-// { min, max, mean, std, median, count }
+import { autoContrastLimits, computeStats, getColormap } from 'sardine';
 
 // Auto-calculate contrast limits (2nd-98th percentile)
 const [min, max] = autoContrastLimits(data, useDecibels);
 
-// Compute histogram
-const { bins, edges } = computeHistogram(data, useDecibels, 256);
-```
-
-#### Colormaps
-
-```javascript
-import { getColormap, generateColorbar, COLORMAP_NAMES } from 'sar-viewer';
-
 // Get colormap function
 const viridis = getColormap('viridis');
-const [r, g, b] = viridis(0.5); // Returns RGB 0-255
-
-// Generate colorbar array
-const colors = generateColorbar('viridis', 256);
-
-// Available colormaps
-console.log(COLORMAP_NAMES); // ['grayscale', 'viridis', 'inferno', 'plasma', 'phase']
+const [r, g, b] = viridis(0.5);
 ```
-
-## Available Colormaps
-
-| Name | Description |
-|------|-------------|
-| `grayscale` | Linear black-to-white gradient |
-| `viridis` | Perceptually uniform, colorblind-friendly |
-| `inferno` | High contrast, perceptually uniform |
-| `plasma` | Perceptually uniform warm tones |
-| `phase` | Cyclic colormap for interferometric phase |
 
 ## Project Structure
 
 ```
-sar-viewer/
+sardine/
 ├── package.json
 ├── README.md
-├── src/
-│   ├── index.js              # Main exports
+├── vite.config.js
+├── app/                      # Main SARdine application
+│   ├── index.html
+│   └── main.jsx
+├── src/                      # Core library
+│   ├── index.js
 │   ├── loaders/
-│   │   └── cog-loader.js     # Load COGs via geotiff.js
+│   │   └── cog-loader.js
 │   ├── layers/
-│   │   ├── SARTileLayer.js   # deck.gl TileLayer with dB shader
-│   │   └── shaders.js        # GLSL for dB scaling, colormaps
+│   │   ├── SARTileLayer.js
+│   │   └── shaders.js
 │   ├── viewers/
-│   │   ├── SARViewer.jsx     # Basic viewer (React + deck.gl)
-│   │   ├── ComparisonViewer.jsx  # Side-by-side comparison
-│   │   └── MapViewer.jsx     # SAR overlay on MapLibre
+│   │   ├── SARViewer.jsx
+│   │   ├── ComparisonViewer.jsx
+│   │   └── MapViewer.jsx
 │   └── utils/
-│       ├── stats.js          # Auto contrast limits, histogram
-│       └── colormap.js       # Colormap functions
+│       ├── stats.js
+│       └── colormap.js
 └── examples/
     └── basic/
-        ├── index.html
-        └── main.jsx
 ```
-
-## Running the Example
-
-```bash
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev
-```
-
-Then open http://localhost:5173 in your browser.
 
 ## Dependencies
 
