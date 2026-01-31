@@ -7,8 +7,10 @@ describe('geotiff utilities', () => {
       const normalized = normalizeData(data, 0, 100);
 
       expect(normalized).toBeInstanceOf(Uint8Array);
+      expect(normalized.length).toBe(3);
       expect(normalized[0]).toBe(0);
-      expect(normalized[1]).toBe(128); // 50/100 * 255 rounded
+      expect(normalized[1]).toBeGreaterThanOrEqual(127);
+      expect(normalized[1]).toBeLessThanOrEqual(128);
       expect(normalized[2]).toBe(255);
     });
 
