@@ -62,7 +62,7 @@ function updateLayerOpacity(layerId: string, opacity: number) {
 function fitToImageBounds() {
   // Example bounds: [minLon, minLat, maxLon, maxLat]
   const bounds: [number, number, number, number] = [-123, 37, -122, 38];
-  viewer.fitBounds(bounds, 20);
+  viewer.fitBounds(bounds);
 }
 
 // Get current viewport information

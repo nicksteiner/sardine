@@ -121,12 +121,12 @@ viewer.setViewState({
 });
 ```
 
-##### `fitBounds(bounds: [number, number, number, number], padding?: number): void`
+##### `fitBounds(bounds: [number, number, number, number]): void`
 
 Fit the view to specified bounds.
 
 ```typescript
-viewer.fitBounds([-123, 37, -122, 38], 20);
+viewer.fitBounds([-123, 37, -122, 38]);
 ```
 
 ##### `getLayerIds(): string[]`
