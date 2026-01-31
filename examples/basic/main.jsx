@@ -19,15 +19,16 @@ function App() {
   const [opacity, setOpacity] = useState(1);
   const [viewerType, setViewerType] = useState('basic');
 
-  // Sample COG URLs (replace with actual URLs)
+  // Sample COG URLs - these are example placeholders
+  // Replace with actual accessible Cloud Optimized GeoTIFF URLs
   const sampleUrls = [
     {
       name: 'Select a sample...',
       url: '',
     },
     {
-      name: 'Sentinel-1 Sample',
-      url: 'https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s1-l1c/GRD/2023/1/1/IW/S1A_IW_GRDH_1SDV_20230101T000000_20230101T000029_046691_059853_rtc.tif',
+      name: 'Custom URL (enter above)',
+      url: '',
     },
   ];
 
