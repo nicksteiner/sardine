@@ -1,3 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-example/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Coverage
+coverage/
+
+# Cache
+.cache/
+.parcel-cache/
+.vite/
+
+# Temp files
+*.tmp
+*.temp
 node_modules/
 dist/
 *.log
