@@ -1,12 +1,33 @@
 import GeoTIFF, { fromUrl } from 'geotiff';
 
 /**
+ * Convert S3 URI to HTTPS URL
+ * @param {string} url - S3 URI (s3://bucket/key) or HTTPS URL
+ * @returns {string} HTTPS URL
+ */
+function normalizeUrl(url) {
+  if (!url) return url;
+  
+  // If it's an S3 URI, convert to HTTPS
+  if (url.startsWith('s3://')) {
+    const parts = url.slice(5).split('/');
+    const bucket = parts[0];
+    const key = parts.slice(1).join('/');
+    return `https://${bucket}.s3.amazonaws.com/${key}`;
+  }
+  
+  // Already an HTTPS URL or other format
+  return url;
+}
+
+/**
  * Load a Cloud Optimized GeoTIFF (COG) and return a tile fetcher for deck.gl
- * @param {string} url - URL of the COG file
+ * @param {string} url - URL of the COG file (supports S3 URIs like s3://bucket/key or HTTPS URLs)
  * @returns {Promise<{getTile: Function, bounds: Array, crs: string, width: number, height: number}>}
  */
 export async function loadCOG(url) {
-  const tiff = await fromUrl(url);
+  const normalizedUrl = normalizeUrl(url);
+  const tiff = await fromUrl(normalizedUrl);
   const image = await tiff.getImage();
 
   // Extract metadata
@@ -120,4 +141,5 @@ export async function loadMultipleCOGs(urls) {
   return Promise.all(urls.map(loadCOG));
 }
 
+export { normalizeUrl };
 export default loadCOG;
