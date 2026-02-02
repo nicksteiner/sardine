@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SARViewer, loadCOG, autoContrastLimits } from '../src/index.js';
+import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits } from '../src/index.js';
+import { StatusWindow } from '../src/components/StatusWindow.jsx';
 
 /**
  * Parse markdown state into object
@@ -101,7 +102,29 @@ function App() {
   // Markdown state
   const [markdownState, setMarkdownState] = useState('');
   const [isMarkdownEdited, setIsMarkdownEdited] = useState(false);
+
+  // Memoize initialViewState to prevent infinite re-renders
+  const initialViewState = useMemo(
+    () => ({
+      target: viewCenter,
+      zoom: viewZoom,
+    }),
+    [viewCenter, viewZoom]
+  );
   const markdownUpdateRef = useRef(false);
+
+  // Status window state
+  const [statusLogs, setStatusLogs] = useState([]);
+  const [statusCollapsed, setStatusCollapsed] = useState(false);
+
+  // Helper to add status log
+  const addStatusLog = useCallback((type, message, details = null) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setStatusLogs(prev => [...prev, { type, message, details, timestamp }]);
+  }, []);
+
+  // Memoize arrays to prevent unnecessary re-renders
+  const contrastLimits = useMemo(() => [contrastMin, contrastMax], [contrastMin, contrastMax]);
 
   // Generate markdown from current state
   const currentState = useMemo(() => ({
@@ -130,79 +153,156 @@ function App() {
   const handleApplyMarkdown = useCallback(async () => {
     markdownUpdateRef.current = true;
     const parsed = parseMarkdownState(markdownState);
-    
+    addStatusLog('info', 'Applying state changes from markdown');
+
     // Update state from parsed markdown
     if (parsed.file !== cogUrl && parsed.file && parsed.file !== '(none)') {
       setCogUrl(parsed.file);
       // Load the COG if file changed
       setLoading(true);
       setError(null);
+      addStatusLog('info', `Loading new file from markdown: ${parsed.file}`);
       try {
         const data = await loadCOG(parsed.file);
         setImageData(data);
+        addStatusLog('success', 'COG loaded from markdown state');
       } catch (e) {
         setError(`Failed to load COG: ${e.message}`);
         setImageData(null);
+        addStatusLog('error', 'Failed to load COG from markdown', e.message);
       } finally {
         setLoading(false);
       }
     }
-    
+
     setContrastMin(parsed.contrastMin);
     setContrastMax(parsed.contrastMax);
     setColormap(parsed.colormap);
     setUseDecibels(parsed.useDecibels);
     setViewCenter(parsed.view.center);
     setViewZoom(parsed.view.zoom);
-    
+
+    addStatusLog('success', 'Markdown state applied successfully');
     setIsMarkdownEdited(false);
     markdownUpdateRef.current = false;
-  }, [markdownState, cogUrl]);
+  }, [markdownState, cogUrl, addStatusLog]);
 
   // Load COG
   const handleLoadCOG = useCallback(async () => {
     if (!cogUrl) {
       setError('Please enter a COG URL');
+      addStatusLog('error', 'No COG URL provided');
       return;
     }
 
     setLoading(true);
     setError(null);
+    addStatusLog('info', `Loading COG from: ${cogUrl}`);
 
     try {
-      const data = await loadCOG(cogUrl);
+      addStatusLog('info', 'Fetching GeoTIFF metadata...');
+
+      // First, load metadata to check coordinate system
+      const metadata = await loadCOG(cogUrl);
+      const bounds = metadata.bounds;
+
+      // Check if bounds are in projected coordinates (typically > 180 or < -180)
+      const isProjected = Math.abs(bounds[0]) > 180 || Math.abs(bounds[2]) > 180;
+
+      addStatusLog('info', `Detected ${isProjected ? 'projected' : 'geographic'} coordinates`);
+
+      // Check if it's a proper COG
+      if (metadata.isCOG) {
+        addStatusLog('success', 'Valid Cloud Optimized GeoTIFF detected',
+          `Tiles: ${metadata.tileWidth}x${metadata.tileHeight}, Overviews: ${metadata.imageCount}`);
+      } else {
+        addStatusLog('warning', 'This may not be a Cloud Optimized GeoTIFF',
+          'Performance may be degraded for large images');
+      }
+
+      let data;
+
+      if (isProjected) {
+        // For projected coordinates, use tiled COG layer for dynamic overview loading
+        addStatusLog('info', 'Using tiled COG layer for projected data with dynamic overview selection');
+        addStatusLog('success', 'COG metadata loaded successfully',
+          `Dimensions: ${metadata.width}x${metadata.height}, Bounds: ${metadata.bounds.map(b => b.toFixed(2)).join(', ')}`);
+        // Store metadata with cogUrl for tiled loading
+        data = {
+          ...metadata,
+          cogUrl, // Pass the URL for tiled loading
+        };
+      } else {
+        // For geographic coordinates, use tile-based approach
+        data = metadata;
+        addStatusLog('success', 'COG metadata loaded successfully',
+          `Dimensions: ${data.width}x${data.height}, Bounds: ${data.bounds.map(b => b.toFixed(2)).join(', ')}`);
+      }
+
       setImageData(data);
 
-      // Auto-calculate contrast limits
-      if (data.getTile) {
-        try {
-          const sampleTile = await data.getTile({ x: 0, y: 0, z: 0 });
-          if (sampleTile && sampleTile.data) {
-            const limits = autoContrastLimits(sampleTile.data, useDecibels);
-            setContrastMin(Math.round(limits[0]));
-            setContrastMax(Math.round(limits[1]));
-          }
-        } catch (e) {
-          console.warn('Could not auto-calculate contrast limits:', e);
+      // Auto-calculate contrast limits from a sample
+      try {
+        addStatusLog('info', 'Calculating auto-contrast from sample data...');
+
+        // Load a small sample from a middle overview for contrast calculation
+        const sampleOverview = Math.min(2, metadata.imageCount - 1);
+        const sampleData = await loadCOGFullImage(cogUrl, 512);
+
+        if (sampleData && sampleData.data) {
+          const limits = autoContrastLimits(sampleData.data, useDecibels);
+          setContrastMin(Math.round(limits[0]));
+          setContrastMax(Math.round(limits[1]));
+          addStatusLog('success', 'Auto-contrast calculated',
+            `Range: ${limits[0].toFixed(2)} to ${limits[1].toFixed(2)}${useDecibels ? ' dB' : ''}`);
+        } else {
+          addStatusLog('warning', 'No data available for contrast calculation');
         }
+      } catch (e) {
+        addStatusLog('warning', 'Could not auto-calculate contrast limits', e.message);
+        console.warn('Could not auto-calculate contrast limits:', e);
       }
 
       // Update view to fit bounds
       if (data.bounds) {
         const [minX, minY, maxX, maxY] = data.bounds;
-        setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        setViewCenter([centerX, centerY]);
+
+        // For projected coordinates, calculate zoom differently
+        // OrthographicView zoom: pixels per unit at zoom level 0
+        // We want the image to fit in a typical viewport (e.g., 1000 pixels)
         const spanX = maxX - minX;
         const spanY = maxY - minY;
-        const zoom = Math.log2(360 / Math.max(spanX, spanY)) - 1;
-        setViewZoom(Math.max(-2, Math.min(zoom, 10)));
+        const maxSpan = Math.max(spanX, spanY);
+
+        let zoom;
+        if (isProjected) {
+          // For projected data (meters typically), we want to fit ~1000 pixels
+          // zoom = log2(screen pixels / world units)
+          const viewportSize = 1000;
+          zoom = Math.log2(viewportSize / maxSpan);
+        } else {
+          // For geographic data (degrees)
+          zoom = Math.log2(360 / maxSpan) - 1;
+        }
+
+        setViewZoom(zoom);
+        addStatusLog('info', 'View state updated to fit image bounds',
+          `Center: [${centerX.toFixed(4)}, ${centerY.toFixed(4)}], Zoom: ${zoom.toFixed(2)}, Span: ${maxSpan.toFixed(2)}`);
       }
+
+      addStatusLog('success', 'COG loaded and ready to display');
     } catch (e) {
       setError(`Failed to load COG: ${e.message}`);
       setImageData(null);
+      addStatusLog('error', 'Failed to load COG', e.message);
+      console.error('COG loading error:', e);
     } finally {
       setLoading(false);
     }
-  }, [cogUrl, useDecibels]);
+  }, [cogUrl, useDecibels, addStatusLog]);
 
   // Handle view state changes from viewer
   const handleViewStateChange = useCallback(({ viewState }) => {
@@ -323,15 +423,18 @@ function App() {
 
           {imageData && (
             <SARViewer
+              cogUrl={imageData.cogUrl}
               getTile={imageData.getTile}
+              imageData={imageData.data ? imageData : null}
               bounds={imageData.bounds}
-              contrastLimits={[contrastMin, contrastMax]}
+              contrastLimits={contrastLimits}
               useDecibels={useDecibels}
               colormap={colormap}
               opacity={1}
               width="100%"
               height="100%"
               onViewStateChange={handleViewStateChange}
+              initialViewState={initialViewState}
             />
           )}
         </div>
@@ -358,6 +461,13 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* Status Window */}
+      <StatusWindow
+        logs={statusLogs}
+        isCollapsed={statusCollapsed}
+        onToggle={() => setStatusCollapsed(!statusCollapsed)}
+      />
     </div>
   );
 }

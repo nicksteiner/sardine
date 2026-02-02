@@ -6,10 +6,12 @@
  */
 
 // Loaders
-export { loadCOG, loadMultipleCOGs } from './loaders/cog-loader.js';
+export { loadCOG, loadMultipleCOGs, loadCOGFullImage } from './loaders/cog-loader.js';
 
 // Layers
 export { SARTileLayer } from './layers/SARTileLayer.js';
+export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
+export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 export {
   sarVertexShader,
   sarFragmentShader,
@@ -49,6 +51,7 @@ export {
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';
 import { SARTileLayer } from './layers/SARTileLayer.js';
+import { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 import { SARViewer } from './viewers/SARViewer.jsx';
 import { ComparisonViewer, SwipeComparisonViewer } from './viewers/ComparisonViewer.jsx';
 import { MapViewer } from './viewers/MapViewer.jsx';
@@ -57,6 +60,7 @@ import { MapViewer } from './viewers/MapViewer.jsx';
 export default {
   loadCOG,
   SARTileLayer,
+  SARTiledCOGLayer,
   SARViewer,
   ComparisonViewer,
   SwipeComparisonViewer,

@@ -2,7 +2,11 @@ import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import DeckGL from '@deck.gl/react';
 import { OrthographicView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
+import { SARBitmapLayer } from '../layers/SARBitmapLayer.js';
+import { SARTiledCOGLayer } from '../layers/SARTiledCOGLayer.js';
 import { getColormap } from '../utils/colormap.js';
+import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
+import { ScaleBar } from '../components/ScaleBar.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -10,6 +14,8 @@ import { getColormap } from '../utils/colormap.js';
  */
 export function SARViewer({
   getTile,
+  imageData, // Full image data for BitmapLayer approach
+  cogUrl, // COG URL for SARTiledCOGLayer approach
   bounds,
   contrastLimits = [-25, 0],
   useDecibels = true,
@@ -27,8 +33,8 @@ export function SARViewer({
       return {
         target: [0, 0],
         zoom: 0,
-        minZoom: -2,
-        maxZoom: 10,
+        minZoom: -10,
+        maxZoom: 20,
       };
     }
 
@@ -37,26 +43,58 @@ export function SARViewer({
     const centerY = (minY + maxY) / 2;
     const spanX = maxX - minX;
     const spanY = maxY - minY;
+    const maxSpan = Math.max(spanX, spanY);
 
-    // Calculate zoom to fit bounds
-    const zoom = Math.log2(360 / Math.max(spanX, spanY)) - 1;
+    // Check if projected coordinates (large values indicate meters, not degrees)
+    const isProjected = Math.abs(minX) > 180 || Math.abs(maxX) > 180;
+
+    let zoom;
+    if (isProjected) {
+      // For projected data, fit to ~1000 pixel viewport
+      zoom = Math.log2(1000 / maxSpan);
+    } else {
+      // For geographic data (degrees)
+      zoom = Math.log2(360 / maxSpan) - 1;
+    }
+
+    console.log('[SARViewer] Calculated view state:', {
+      isProjected,
+      bounds,
+      center: [centerX, centerY],
+      zoom,
+      maxSpan,
+    });
 
     return {
       target: [centerX, centerY],
-      zoom: Math.max(-2, Math.min(zoom, 10)),
-      minZoom: -2,
-      maxZoom: 20,
+      zoom,
+      minZoom: -15,
+      maxZoom: 25,
     };
   }, [bounds]);
 
   const [viewState, setViewState] = useState(initialViewState || defaultViewState);
+  const [loadingStatus, setLoadingStatus] = useState({
+    tilesLoading: 0,
+    tilesLoaded: 0,
+    totalTiles: 0,
+    currentOverview: undefined,
+    totalOverviews: 0,
+  });
 
-  // Update view state when initialViewState changes
+  // Update view state when initialViewState or defaultViewState changes
   useEffect(() => {
     if (initialViewState) {
       setViewState(initialViewState);
+    } else if (defaultViewState) {
+      setViewState(defaultViewState);
     }
-  }, [initialViewState]);
+  }, [initialViewState, defaultViewState]);
+
+  // Handle loading status updates from layer
+  const handleLoadingChange = useCallback((status) => {
+    setLoadingStatus(status);
+  }, []);
 
   const handleViewStateChange = useCallback(
     ({ viewState: newViewState }) => {
@@ -68,22 +106,61 @@ export function SARViewer({
     [onViewStateChange]
   );
 
-  // Create the SAR tile layer
+  // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
-    if (!getTile) return [];
+    // Use SARTiledCOGLayer if cogUrl is provided (best for projected COGs)
+    if (cogUrl) {
+      console.log('[SARViewer] Using SARTiledCOGLayer with COG URL');
+      return [
+        new SARTiledCOGLayer({
+          id: 'sar-tiled-cog-layer',
+          url: cogUrl,
+          bounds,
+          contrastLimits,
+          useDecibels,
+          colormap,
+          opacity,
+          onLoadingChange: handleLoadingChange,
+        }),
+      ];
+    }
 
-    return [
-      new SARTileLayer({
-        id: 'sar-layer',
-        getTile,
-        bounds,
-        contrastLimits,
-        useDecibels,
-        colormap,
-        opacity,
-      }),
-    ];
-  }, [getTile, bounds, contrastLimits, useDecibels, colormap, opacity]);
+    // Use BitmapLayer if full image data is provided
+    if (imageData && imageData.data) {
+      console.log('[SARViewer] Using BitmapLayer with full image data');
+      return [
+        new SARBitmapLayer({
+          id: 'sar-bitmap-layer',
+          data: imageData.data,
+          width: imageData.width,
+          height: imageData.height,
+          bounds,
+          contrastLimits,
+          useDecibels,
+          colormap,
+          opacity,
+        }),
+      ];
+    }
+
+    // Otherwise use TileLayer
+    if (getTile) {
+      console.log('[SARViewer] Using TileLayer with getTile function');
+      return [
+        new SARTileLayer({
+          id: 'sar-tile-layer',
+          getTile,
+          bounds,
+          contrastLimits,
+          useDecibels,
+          colormap,
+          opacity,
+        }),
+      ];
+    }
+
+    return [];
+  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, opacity, handleLoadingChange]);
 
   const views = useMemo(
     () =>
@@ -105,6 +182,7 @@ export function SARViewer({
     [width, height, style]
   );
 
+
   return (
     <div style={containerStyle}>
       <DeckGL
@@ -114,6 +192,14 @@ export function SARViewer({
         layers={layers}
         controller={true}
       />
+      <LoadingIndicator
+        tilesLoading={loadingStatus.tilesLoading}
+        tilesLoaded={loadingStatus.tilesLoaded}
+        totalTiles={loadingStatus.totalTiles}
+        currentOverview={loadingStatus.currentOverview}
+        totalOverviews={loadingStatus.totalOverviews}
+      />
+      <ScaleBar viewState={viewState} bounds={bounds} />
       <ColorbarOverlay
         colormap={colormap}
         contrastLimits={contrastLimits}
