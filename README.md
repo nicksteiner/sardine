@@ -21,7 +21,7 @@
 
 > **`01` OVERVIEW**
 
-SARdine loads NASA NISAR Level-2 GCOV products directly in the browser. It parses the cloud-optimized HDF5 metadata in a single read, fetches only the chunks needed for the current viewport, and renders them through WebGL shaders on deck.gl. Zero Python. Zero backend. Just a URL (or a local file drag-and-drop) and you're looking at quad-pol SAR data.
+SARdine loads NASA NISAR Level-2 GCOV products directly in the browser. It parses the cloud-optimized HDF5 metadata in a single read, fetches only the chunks needed for the current viewport, and renders them through WebGL shaders on deck.gl.
 
 ---
 
@@ -138,14 +138,14 @@ SARdine's `h5chunk` module exploits this — a **JavaScript-native Kerchunk**:
   → For current viewport, fetch intersecting chunks via Range requests
   → Decompress (deflate + shuffle) → Float32Array
   → Push to deck.gl as WebGL texture
-  → GPU does dB conversion + colormap at 60 fps
+  → GPU does dB conversion + colormap
 ```
 
 ---
 
 > **`07` RENDERING PIPELINE & MULTI-LOOK**
 
-SARdine processes radar backscatter in **linear power** (σ⁰) and only converts to decibels at the final GPU stage. This ordering matters — averaging in dB would compute a geometric mean, underestimating true mean backscatter and distorting radiometric calibration.
+SARdine processes radar backscatter in **linear power** (σ⁰) and only converts to decibels at the final GPU stage.
 
 ```
 raw σ⁰ (linear)  →  resample / average  →  10·log₁₀  →  colormap  →  RGBA texture
@@ -166,20 +166,6 @@ The **Multi-look** toggle switches between two downsampling strategies:
 | **Cache** | Separate key (`ml` suffix) | Separate key (`nn` suffix) |
 
 Box-filter area averaging in linear power is equivalent to **spatial multi-looking** — the standard SAR technique for speckle suppression. Both tile sets coexist in cache, so toggling is instant for already-fetched tiles.
-
-#### Why linear, not dB?
-
-Averaging *N* pixels in linear power gives the arithmetic mean:
-
-$$\bar{\sigma}^0 = \frac{1}{N}\sum_{i=1}^{N} \sigma^0_i$$
-
-Averaging in dB would give:
-
-$$\frac{1}{N}\sum_{i=1}^{N} 10\log_{10}(\sigma^0_i) = 10\log_{10}\!\left(\prod_{i=1}^{N} \sigma^0_i\right)^{1/N}$$
-
-— a geometric mean, which is always ≤ the arithmetic mean and systematically biases backscatter low. SARdine avoids this by keeping all resampling in linear power space.
-
----
 
 > **`08` ARCHITECTURE**
 
@@ -304,6 +290,6 @@ MIT
 **→** [deck.gl](https://deck.gl/) — WebGL rendering
 **→** NISAR cloud-optimization strategy — [NSIDC](https://nsidc.org/) + JPL
 
-`Earth Big Data LLC` × `CCNY Earth & Atmospheric Sciences`
+`CCNY Earth & Atmospheric Sciences`
 
 </sub>
