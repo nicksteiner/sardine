@@ -64,6 +64,8 @@ export { writeRGBGeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
 
 export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
+export { STRETCH_MODES, applyStretch } from './utils/stretch.js';
+
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';
 import { loadNISARGCOV, listNISARDatasets, loadNISARRGBComposite } from './loaders/nisar-loader.js';

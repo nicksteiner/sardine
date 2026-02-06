@@ -17,20 +17,96 @@
  * NISAR files use "paged aggregation" which consolidates metadata at the
  * front of the file, enabling efficient streaming access.
  *
- * Based on JPL D-102274 Rev E - NASA SDS Product Specification L2 GCOV
+ * Product path hierarchy (JPL D-102274 Rev E, §3.5, §5):
+ *
+ *   /science/{band}/identification/         — file-level metadata
+ *   /science/{band}/GCOV/grids/frequency{A|B}/  — imagery + grid metadata
+ *   /science/{band}/GCOV/metadata/          — calibration, processing, radar grid
+ *
+ * where {band} ∈ {LSAR, SSAR} (never both in one granule).
  */
 
 import h5wasm from 'h5wasm';
 import { openH5ChunkFile } from './h5chunk.js';
 
-// NISAR GCOV HDF5 path constants
+// ─── NISAR GCOV Product Specification (JPL D-102274 Rev E) ──────────────
+// All paths below are derived from Tables 5-1 through 5-8 of the spec.
+
+/** SAR bands — NISAR carries L-band (LSAR) and S-band (SSAR). */
+const SAR_BANDS = ['LSAR', 'SSAR'];
+
+/**
+ * Diagonal (real-valued) covariance terms — backscatter power.
+ * Type: Float32, Shape: (length, width), units: gamma0 (linear).
+ */
+const DIAGONAL_TERMS = ['HHHH', 'HVHV', 'VHVH', 'VVVV', 'RHRH', 'RVRV'];
+
+/**
+ * Off-diagonal (complex-valued) covariance terms.
+ * Type: CFloat32, Shape: (length, width).
+ * Present only when isFullCovariance = true.
+ */
+const OFFDIAG_TERMS = ['HHHV', 'HHVH', 'HHVV', 'HVVH', 'HVVV', 'VHVV', 'RHRV'];
+
+/** All possible covariance term names. */
+const ALL_COV_TERMS = [...DIAGONAL_TERMS, ...OFFDIAG_TERMS];
+
+/** Set for O(1) membership checks. */
+const COV_TERM_SET = new Set(ALL_COV_TERMS);
+
+/**
+ * Build spec-compliant HDF5 paths for a given band and product type.
+ *
+ * @param {string} band  — 'LSAR' or 'SSAR'
+ * @param {string} productType — 'GCOV' (future: 'GSLC', 'GUNW')
+ * @returns {Object} Path templates for product groups
+ */
+function nisarPaths(band = 'LSAR', productType = 'GCOV') {
+  const base = `/science/${band}/${productType}`;
+  return {
+    base,
+    identification:  `/science/${band}/identification`,
+    grids:           `${base}/grids`,
+    freqGrid: (f) => `${base}/grids/frequency${f}`,
+    dataset:  (f, term) => `${base}/grids/frequency${f}/${term}`,
+    metadata:        `${base}/metadata`,
+    processing:      `${base}/metadata/processingInformation/parameters`,
+    calibration: (f) => `${base}/metadata/calibrationInformation/frequency${f}`,
+    radarGrid:       `${base}/metadata/radarGrid`,
+    sourceData:      `${base}/metadata/sourceData`,
+    // Per-frequency grid metadata datasets
+    listOfPolarizations: (f) => `${base}/grids/frequency${f}/listOfPolarizations`,
+    listOfCovarianceTerms: (f) => `${base}/grids/frequency${f}/listOfCovarianceTerms`,
+    numberOfLooks:   (f) => `${base}/grids/frequency${f}/numberOfLooks`,
+    mask:            (f) => `${base}/grids/frequency${f}/mask`,
+    projection:      (f) => `${base}/grids/frequency${f}/projection`,
+    xCoordinates:    (f) => `${base}/grids/frequency${f}/xCoordinates`,
+    yCoordinates:    (f) => `${base}/grids/frequency${f}/yCoordinates`,
+    xCoordinateSpacing: (f) => `${base}/grids/frequency${f}/xCoordinateSpacing`,
+    yCoordinateSpacing: (f) => `${base}/grids/frequency${f}/yCoordinateSpacing`,
+    rtcFactor:       (f) => `${base}/grids/frequency${f}/rtcGammaToSigmaFactor`,
+    // Identification-level metadata
+    listOfFrequencies: `/science/${band}/identification/listOfFrequencies`,
+    productType:     `/science/${band}/identification/productType`,
+    absoluteOrbitNumber: `/science/${band}/identification/absoluteOrbitNumber`,
+    trackNumber:     `/science/${band}/identification/trackNumber`,
+    frameNumber:     `/science/${band}/identification/frameNumber`,
+    lookDirection:   `/science/${band}/identification/lookDirection`,
+    orbitPassDirection: `/science/${band}/identification/orbitPassDirection`,
+    zeroDopplerStartTime: `/science/${band}/identification/zeroDopplerStartTime`,
+    zeroDopplerEndTime: `/science/${band}/identification/zeroDopplerEndTime`,
+    // Processing flags
+    isFullCovariance: `${base}/metadata/processingInformation/parameters/isFullCovariance`,
+    polSymApplied: `${base}/metadata/processingInformation/parameters/polarimetricSymmetrizationApplied`,
+  };
+}
+
+// Legacy aliases — keep for backward compat during transition
 const GCOV_BASE = '/science/LSAR/GCOV';
 const GRID_PATH = `${GCOV_BASE}/grids`;
 const METADATA_PATH = `${GCOV_BASE}/metadata`;
 const PROCESSING_PARAMS = `${METADATA_PATH}/processingInformation/parameters`;
-
-// Standard polarization datasets in GCOV products
-const POLARIZATIONS = ['HHHH', 'HVHV', 'VHVH', 'VVVV', 'HHHV', 'HHVH', 'HHVV', 'HVVH', 'HVVV', 'VHVV'];
+const POLARIZATIONS = ALL_COV_TERMS;
 
 // h5wasm module singleton
 let h5wasmModule = null;
@@ -169,10 +245,151 @@ function getDatasetLayout(dataset) {
 }
 
 /**
+ * Detect which SAR band (LSAR or SSAR) is present in the HDF5 file.
+ *
+ * NISAR products never contain both bands in one granule (§3.3).
+ * This checks dataset paths discovered by h5chunk for '/science/LSAR/' or
+ * '/science/SSAR/' prefixes. Falls back to 'LSAR' (L-band, primary mission).
+ *
+ * @param {Array} h5Datasets — from streamReader.getDatasets()
+ * @returns {string} 'LSAR' or 'SSAR'
+ */
+function detectBand(h5Datasets) {
+  for (const ds of h5Datasets) {
+    if (!ds.path) continue;
+    if (ds.path.includes('/SSAR/')) return 'SSAR';
+    if (ds.path.includes('/LSAR/')) return 'LSAR';
+  }
+  return 'LSAR'; // default: L-band
+}
+
+/**
+ * Detect which frequencies (A, B, or both) are present.
+ *
+ * Per spec §5.2, `/science/{band}/identification/listOfFrequencies` is a
+ * string array of available frequency designators. We try to read that first;
+ * if unavailable, we infer from dataset paths.
+ *
+ * @param {Object} streamReader — h5chunk reader
+ * @param {Array} h5Datasets — from streamReader.getDatasets()
+ * @param {Object} paths — from nisarPaths()
+ * @returns {string[]} e.g. ['A'], ['A', 'B']
+ */
+function detectFrequencies(streamReader, h5Datasets, paths) {
+  // Strategy 1: read listOfFrequencies metadata dataset
+  const dsId = streamReader.findDatasetByPath(paths.listOfFrequencies);
+  if (dsId) {
+    const result = streamReader.readSmallDataset(dsId);
+    if (result && result.data && result.data.length > 0) {
+      const freqs = result.data.filter(f => f === 'A' || f === 'B');
+      if (freqs.length > 0) {
+        console.log(`[NISAR Loader] Frequencies from metadata: [${freqs.join(', ')}]`);
+        return freqs;
+      }
+    }
+  }
+
+  // Strategy 2: infer from dataset paths
+  const freqs = new Set();
+  for (const ds of h5Datasets) {
+    if (!ds.path) continue;
+    const m = ds.path.match(/frequency([AB])/);
+    if (m) freqs.add(m[1]);
+  }
+
+  if (freqs.size > 0) {
+    const result = Array.from(freqs).sort();
+    console.log(`[NISAR Loader] Frequencies from paths: [${result.join(', ')}]`);
+    return result;
+  }
+
+  return ['A']; // default
+}
+
+/**
+ * Detect which covariance terms are present for a given frequency.
+ *
+ * Per spec §5.3, `listOfCovarianceTerms` and `listOfPolarizations` at
+ * `/science/{band}/GCOV/grids/frequency{f}/` enumerate the available terms.
+ * We try those first; if unavailable, we scan dataset paths.
+ *
+ * @param {Object} streamReader
+ * @param {Array} h5Datasets
+ * @param {Object} paths — from nisarPaths()
+ * @param {string} freq — 'A' or 'B'
+ * @returns {string[]} e.g. ['HHHH', 'HVHV', 'VHVH', 'VVVV']
+ */
+function detectCovarianceTerms(streamReader, h5Datasets, paths, freq) {
+  // Strategy 1: listOfCovarianceTerms (covers both diagonal + off-diagonal)
+  let dsId = streamReader.findDatasetByPath(paths.listOfCovarianceTerms(freq));
+  if (dsId) {
+    const result = streamReader.readSmallDataset(dsId);
+    if (result && result.data && result.data.length > 0) {
+      const terms = result.data.filter(t => COV_TERM_SET.has(t));
+      if (terms.length > 0) {
+        console.log(`[NISAR Loader] Covariance terms (freq ${freq}) from metadata: [${terms.join(', ')}]`);
+        return terms;
+      }
+    }
+  }
+
+  // Strategy 2: listOfPolarizations (subset — only diagonal terms HH, HV, VH, VV)
+  dsId = streamReader.findDatasetByPath(paths.listOfPolarizations(freq));
+  if (dsId) {
+    const result = streamReader.readSmallDataset(dsId);
+    if (result && result.data && result.data.length > 0) {
+      // listOfPolarizations contains e.g. ['HH', 'HV', 'VH', 'VV']
+      // Map to diagonal covariance terms: HH → HHHH, HV → HVHV, etc.
+      const terms = result.data
+        .map(p => p.trim())
+        .filter(p => p.length === 2)
+        .map(p => `${p}${p}`); // HH → HHHH
+      if (terms.length > 0) {
+        console.log(`[NISAR Loader] Polarizations (freq ${freq}) from metadata: [${terms.join(', ')}]`);
+        return terms;
+      }
+    }
+  }
+
+  // Strategy 3: scan dataset paths for known term names
+  const freqPrefix = paths.freqGrid(freq);
+  const found = [];
+  for (const ds of h5Datasets) {
+    if (!ds.path) continue;
+    if (!ds.path.startsWith(freqPrefix)) continue;
+    const tail = ds.path.slice(freqPrefix.length + 1); // +1 for '/'
+    if (COV_TERM_SET.has(tail)) {
+      found.push(tail);
+    }
+  }
+  if (found.length > 0) {
+    console.log(`[NISAR Loader] Covariance terms (freq ${freq}) from paths: [${found.join(', ')}]`);
+    return found;
+  }
+
+  // Strategy 4: look at dataset shapes — 2D Float32 datasets under this frequency
+  // whose names match known patterns
+  const shapeCandidates = h5Datasets.filter(ds =>
+    ds.shape?.length === 2 && ds.dtype === 'float32'
+  );
+  if (shapeCandidates.length >= 4) {
+    console.log(`[NISAR Loader] Falling back to shape-based detection (${shapeCandidates.length} 2D float32 datasets)`);
+    return DIAGONAL_TERMS.slice(0, 4); // conservative default
+  }
+
+  return ['HHHH', 'HVHV', 'VHVH', 'VVVV']; // last-resort default
+}
+
+/**
  * List available datasets in a NISAR GCOV file
- * Uses streaming for large files, full load for small files
+ * Uses streaming for large files, full load for small files.
+ *
+ * Reads product structure from spec-defined metadata paths:
+ *   - listOfFrequencies → which frequencies exist
+ *   - listOfCovarianceTerms / listOfPolarizations → which terms per frequency
+ *
  * @param {File} file - HDF5 file
- * @returns {Promise<Array<{frequency: string, polarization: string}>>}
+ * @returns {Promise<Array<{frequency: string, polarization: string, band: string}>>}
  */
 export async function listNISARDatasets(file) {
   console.log('[NISAR Loader] Listing available datasets...');
@@ -181,7 +398,7 @@ export async function listNISARDatasets(file) {
   // For large files, we MUST use streaming - h5wasm will crash
   const MAX_FULL_LOAD_SIZE = 500 * 1024 * 1024; // 500MB
   if (file.size > MAX_FULL_LOAD_SIZE) {
-    console.log('[NISAR Loader] Large file - using streaming mode (h5wasm would crash)');
+    console.log('[NISAR Loader] Large file - using streaming mode');
 
     try {
       // Use 32MB metadata read for NISAR cloud-optimized files
@@ -190,21 +407,24 @@ export async function listNISARDatasets(file) {
 
       console.log(`[h5chunk] Found ${h5Datasets.length} datasets`);
       h5Datasets.forEach(d => {
-        console.log(`[h5chunk]   - ${d.id}: ${d.shape?.join('x')} ${d.dtype}, ${d.numChunks} chunks`);
+        console.log(`[h5chunk]   - ${d.path || d.id}: ${d.shape?.join('x')} ${d.dtype}, ${d.numChunks} chunks`);
       });
 
-      // For now, return a default NISAR dataset structure
-      // TODO: Parse actual NISAR paths from h5chunk metadata
-      // The user's file likely has frequencyA datasets
-      const defaultDatasets = [
-        { frequency: 'A', polarization: 'HHHH' },
-        { frequency: 'A', polarization: 'HVHV' },
-        { frequency: 'A', polarization: 'VHVH' },
-        { frequency: 'A', polarization: 'VVVV' },
-      ];
+      // Detect product structure from spec paths
+      const band = detectBand(h5Datasets);
+      const paths = nisarPaths(band, 'GCOV');
+      const frequencies = detectFrequencies(streamReader, h5Datasets, paths);
 
-      console.log('[NISAR Loader] Returning default dataset list (streaming mode)');
-      return defaultDatasets;
+      const datasets = [];
+      for (const freq of frequencies) {
+        const terms = detectCovarianceTerms(streamReader, h5Datasets, paths, freq);
+        for (const term of terms) {
+          datasets.push({ frequency: freq, polarization: term, band });
+        }
+      }
+
+      console.log(`[NISAR Loader] Detected ${datasets.length} datasets (${band}, freq ${frequencies.join('+')})`);
+      return datasets;
 
     } catch (e) {
       console.error('[NISAR Loader] Streaming mode failed:', e);
@@ -218,21 +438,55 @@ export async function listNISARDatasets(file) {
   const { h5file, loadedSize } = await openHDF5Chunked(file);
   console.log(`[NISAR Loader] File opened with ${(loadedSize / 1e6).toFixed(1)} MB loaded`);
 
+  // Detect band
+  let band = 'LSAR';
+  if (safeGet(h5file, '/science/SSAR')) band = 'SSAR';
+
+  const paths = nisarPaths(band, 'GCOV');
   const datasets = [];
 
   try {
-    for (const freq of ['A', 'B']) {
-      const freqPath = `${GRID_PATH}/frequency${freq}`;
+    // Read listOfFrequencies if available
+    let frequencies = ['A', 'B']; // check both
+    const freqDs = safeGet(h5file, paths.listOfFrequencies);
+    if (freqDs) {
+      try {
+        const val = freqDs.value;
+        if (val && val.length > 0) {
+          frequencies = Array.isArray(val) ? val : [val];
+        }
+      } catch (e) { /* use default */ }
+    }
+
+    for (const freq of frequencies) {
+      const freqPath = paths.freqGrid(freq);
       const freqGroup = safeGet(h5file, freqPath);
 
       if (freqGroup) {
-        for (const pol of POLARIZATIONS) {
-          const datasetPath = `${freqPath}/${pol}`;
+        // Try to read listOfCovarianceTerms first
+        let terms = null;
+        const termsDs = safeGet(h5file, paths.listOfCovarianceTerms(freq));
+        if (termsDs) {
+          try {
+            const val = termsDs.value;
+            if (val && val.length > 0) {
+              terms = Array.isArray(val) ? val : [val];
+            }
+          } catch (e) { /* fall through */ }
+        }
+
+        // Fall back to scanning for known polarization datasets
+        if (!terms) {
+          terms = ALL_COV_TERMS;
+        }
+
+        for (const term of terms) {
+          const datasetPath = `${freqPath}/${term}`;
           const dataset = safeGet(h5file, datasetPath);
 
           if (dataset && dataset.shape && dataset.shape.length === 2) {
-            datasets.push({ frequency: freq, polarization: pol });
-            console.log(`[NISAR Loader] Found dataset: frequency${freq}/${pol}`);
+            datasets.push({ frequency: freq, polarization: term, band });
+            console.log(`[NISAR Loader] Found dataset: frequency${freq}/${term}`);
           }
         }
       }
@@ -248,53 +502,82 @@ export async function listNISARDatasets(file) {
 /**
  * Extract geospatial metadata from NISAR GCOV file
  */
-async function extractMetadata(h5file, frequency) {
-  console.log('[NISAR Loader] Extracting metadata...');
+/**
+ * Extract geospatial metadata from NISAR GCOV file.
+ *
+ * Per spec §5.3, projection and coordinates live directly under the
+ * frequency grid group:
+ *   .../grids/frequency{f}/projection   (UInt32 scalar, EPSG + attrs)
+ *   .../grids/frequency{f}/xCoordinates (Float64 1D, meters in projection)
+ *   .../grids/frequency{f}/yCoordinates (Float64 1D, meters in projection)
+ *   .../grids/frequency{f}/xCoordinateSpacing (Float64 scalar, meters)
+ *   .../grids/frequency{f}/yCoordinateSpacing (Float64 scalar, meters)
+ *
+ * @param {h5wasm.File} h5file
+ * @param {string} frequency — 'A' or 'B'
+ * @param {string} [band='LSAR'] — 'LSAR' or 'SSAR'
+ */
+async function extractMetadata(h5file, frequency, band = 'LSAR') {
+  console.log(`[NISAR Loader] Extracting metadata (${band}, freq ${frequency})...`);
 
-  // Get projection info
-  const projPath = `${PROCESSING_PARAMS}/frequency${frequency}/projection`;
-  let projDataset = safeGet(h5file, projPath);
+  const paths = nisarPaths(band, 'GCOV');
 
-  // Fallback to general projection path
+  // ── 1. Projection (spec §5.3, Table 5-3) ──
+  // Primary location per spec: grids/frequency{f}/projection
+  let projDataset = safeGet(h5file, paths.projection(frequency));
+
+  // Fallback: try the other frequency
   if (!projDataset) {
-    projDataset = safeGet(h5file, `${PROCESSING_PARAMS}/projection`);
+    const otherFreq = frequency === 'A' ? 'B' : 'A';
+    projDataset = safeGet(h5file, paths.projection(otherFreq));
   }
 
-  // Also check radar grid projection
+  // Last resort fallbacks (legacy/non-standard files)
   if (!projDataset) {
-    projDataset = safeGet(h5file, `${METADATA_PATH}/radarGrid/projection`);
+    projDataset = safeGet(h5file, `${paths.processing}/projection`);
+  }
+  if (!projDataset) {
+    projDataset = safeGet(h5file, `${paths.radarGrid}/projection`);
   }
 
   let epsgCode = 4326; // Default to WGS84
   let utmZone = null;
 
   if (projDataset) {
+    // Try reading the projection dataset value (UInt32 scalar = EPSG code)
+    try {
+      const projVal = projDataset.value;
+      if (typeof projVal === 'number' && projVal > 0) {
+        epsgCode = projVal;
+      }
+    } catch (e) { /* attribute fallback below */ }
+
+    // Also check attributes (some files store EPSG as attribute)
     epsgCode = safeGetAttr(projDataset, 'epsg_code') || epsgCode;
     utmZone = safeGetAttr(projDataset, 'utm_zone_number');
     console.log(`[NISAR Loader] Projection: EPSG:${epsgCode}, UTM Zone: ${utmZone}`);
   }
 
-  // Get coordinate arrays - try frequency-specific first, then general
-  let xCoordsPath = `${PROCESSING_PARAMS}/frequency${frequency}/xCoordinates`;
-  let yCoordsPath = `${PROCESSING_PARAMS}/frequency${frequency}/yCoordinates`;
+  // ── 2. Coordinate arrays (spec §5.3, Table 5-3) ──
+  // Primary: grids/frequency{f}/xCoordinates, yCoordinates
+  let xCoordsDataset = safeGet(h5file, paths.xCoordinates(frequency));
+  let yCoordsDataset = safeGet(h5file, paths.yCoordinates(frequency));
 
-  let xCoordsDataset = safeGet(h5file, xCoordsPath);
-  let yCoordsDataset = safeGet(h5file, yCoordsPath);
-
-  // Fallback to general coordinate paths
+  // Fallback: other frequency
   if (!xCoordsDataset) {
-    xCoordsPath = `${PROCESSING_PARAMS}/xCoordinates`;
-    yCoordsPath = `${PROCESSING_PARAMS}/yCoordinates`;
-    xCoordsDataset = safeGet(h5file, xCoordsPath);
-    yCoordsDataset = safeGet(h5file, yCoordsPath);
+    const otherFreq = frequency === 'A' ? 'B' : 'A';
+    xCoordsDataset = safeGet(h5file, paths.xCoordinates(otherFreq));
+    yCoordsDataset = safeGet(h5file, paths.yCoordinates(otherFreq));
   }
 
-  // Try radar grid coordinates
+  // Legacy fallbacks
   if (!xCoordsDataset) {
-    xCoordsPath = `${METADATA_PATH}/radarGrid/xCoordinates`;
-    yCoordsPath = `${METADATA_PATH}/radarGrid/yCoordinates`;
-    xCoordsDataset = safeGet(h5file, xCoordsPath);
-    yCoordsDataset = safeGet(h5file, yCoordsPath);
+    xCoordsDataset = safeGet(h5file, `${paths.processing}/xCoordinates`);
+    yCoordsDataset = safeGet(h5file, `${paths.processing}/yCoordinates`);
+  }
+  if (!xCoordsDataset) {
+    xCoordsDataset = safeGet(h5file, `${paths.radarGrid}/xCoordinates`);
+    yCoordsDataset = safeGet(h5file, `${paths.radarGrid}/yCoordinates`);
   }
 
   let xCoords, yCoords;
@@ -317,9 +600,13 @@ async function extractMetadata(h5file, frequency) {
     bounds = [minX, minY, maxX, maxY];
     console.log(`[NISAR Loader] Bounds from coordinates: [${bounds.join(', ')}]`);
   } else {
-    // Get dimensions from a dataset
-    const sampleDataset = safeGet(h5file, `${GRID_PATH}/frequency${frequency}/HHHH`) ||
-                          safeGet(h5file, `${GRID_PATH}/frequency${frequency}/VVVV`);
+    // Get dimensions from a dataset — try spec-standard diagonal terms
+    const freqGridPath = paths.freqGrid(frequency);
+    const sampleDataset =
+      safeGet(h5file, `${freqGridPath}/HHHH`) ||
+      safeGet(h5file, `${freqGridPath}/VVVV`) ||
+      safeGet(h5file, `${freqGridPath}/RHRH`) ||
+      safeGet(h5file, `${freqGridPath}/RVRV`);
 
     if (sampleDataset && sampleDataset.shape) {
       height = sampleDataset.shape[0];
@@ -329,17 +616,19 @@ async function extractMetadata(h5file, frequency) {
       throw new Error('Could not determine image dimensions');
     }
 
-    // Try to get bounding box from metadata
-    const bboxPath = `${METADATA_PATH}/ceosAnalysisReadyData/boundingBox`;
-    const bboxDataset = safeGet(h5file, bboxPath);
+    // Try coordinate spacing to compute bounds (spec §5.3)
+    const xSpacingDs = safeGet(h5file, paths.xCoordinateSpacing(frequency));
+    const ySpacingDs = safeGet(h5file, paths.yCoordinateSpacing(frequency));
 
-    if (bboxDataset) {
-      const bboxWKT = bboxDataset.value;
-      console.log(`[NISAR Loader] Bounding box WKT: ${bboxWKT}`);
-      bounds = parseBoundingBoxWKT(bboxWKT);
+    if (xSpacingDs && ySpacingDs) {
+      const dx = xSpacingDs.value;
+      const dy = ySpacingDs.value; // negative for north-up
+      // Without origin coordinates, use pixel-coordinate bounds
+      bounds = [0, 0, width * Math.abs(dx), height * Math.abs(dy)];
+      console.log(`[NISAR Loader] Bounds from spacing: [${bounds.join(', ')}]`);
     } else {
       // Use dummy bounds - this shouldn't happen with valid GCOV files
-      console.warn('[NISAR Loader] Could not find coordinate or bounding box info');
+      console.warn('[NISAR Loader] Could not find coordinate or spacing info');
       bounds = [0, 0, width, height];
     }
   }
@@ -401,52 +690,95 @@ function getDatasetStats(dataset) {
 }
 
 /**
- * Bilinear resampling to target tile size
+ * Resample source data to a fixed tile size.
+ *
+ * Two modes controlled by `multiLook`:
+ *   false → nearest-neighbour (blazing fast preview, raw speckle)
+ *   true  → box-filter area average (spatial multi-looking, suppresses
+ *           speckle by ~1/√N where N = source pixels per output pixel)
+ *
+ * All averaging is done in LINEAR POWER space.  The dB transform is
+ * applied later in createSARTexture, which is the correct order —
+ * mean(log(x)) ≠ log(mean(x)).
+ *
+ * When upsampling (src smaller than dst) always uses bilinear
+ * interpolation since there's no averaging to do.
  */
-function resampleToTileSize(srcData, srcWidth, srcHeight, tileSize, fillValue) {
+function resampleToTileSize(srcData, srcWidth, srcHeight, tileSize, fillValue, multiLook = false) {
   const dstData = new Float32Array(tileSize * tileSize);
 
   const scaleX = srcWidth / tileSize;
   const scaleY = srcHeight / tileSize;
 
-  for (let dstY = 0; dstY < tileSize; dstY++) {
-    for (let dstX = 0; dstX < tileSize; dstX++) {
-      const srcX = dstX * scaleX;
-      const srcY = dstY * scaleY;
-
-      // Bilinear interpolation
-      const x0 = Math.floor(srcX);
-      const y0 = Math.floor(srcY);
-      const x1 = Math.min(x0 + 1, srcWidth - 1);
-      const y1 = Math.min(y0 + 1, srcHeight - 1);
-
-      const fx = srcX - x0;
-      const fy = srcY - y0;
-
-      const v00 = srcData[y0 * srcWidth + x0];
-      const v10 = srcData[y0 * srcWidth + x1];
-      const v01 = srcData[y1 * srcWidth + x0];
-      const v11 = srcData[y1 * srcWidth + x1];
-
-      // Handle fill values
-      const values = [v00, v10, v01, v11];
-      const isValid = v => v !== fillValue && !isNaN(v) && isFinite(v);
-      const validValues = values.filter(isValid);
-
-      if (validValues.length === 0) {
-        dstData[dstY * tileSize + dstX] = 0; // Use 0 for no-data
-      } else if (validValues.length < 4) {
-        // Use nearest valid value
-        dstData[dstY * tileSize + dstX] = validValues[0];
-      } else {
-        // Full bilinear interpolation
-        const value =
-          v00 * (1 - fx) * (1 - fy) +
-          v10 * fx * (1 - fy) +
-          v01 * (1 - fx) * fy +
-          v11 * fx * fy;
-        dstData[dstY * tileSize + dstX] = value;
+  // If upsampling or 1:1, use bilinear (same for both modes)
+  if (scaleX <= 1 && scaleY <= 1) {
+    for (let dstY = 0; dstY < tileSize; dstY++) {
+      for (let dstX = 0; dstX < tileSize; dstX++) {
+        const srcX = dstX * scaleX;
+        const srcY = dstY * scaleY;
+        const x0 = Math.floor(srcX);
+        const y0 = Math.floor(srcY);
+        const x1 = Math.min(x0 + 1, srcWidth - 1);
+        const y1 = Math.min(y0 + 1, srcHeight - 1);
+        const fx = srcX - x0;
+        const fy = srcY - y0;
+        const v00 = srcData[y0 * srcWidth + x0];
+        const v10 = srcData[y0 * srcWidth + x1];
+        const v01 = srcData[y1 * srcWidth + x0];
+        const v11 = srcData[y1 * srcWidth + x1];
+        const isValid = v => v !== fillValue && !isNaN(v) && isFinite(v);
+        if (isValid(v00) && isValid(v10) && isValid(v01) && isValid(v11)) {
+          dstData[dstY * tileSize + dstX] =
+            v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) +
+            v01 * (1 - fx) * fy + v11 * fx * fy;
+        } else {
+          const vals = [v00, v10, v01, v11].filter(isValid);
+          dstData[dstY * tileSize + dstX] = vals.length > 0 ? vals[0] : 0;
+        }
       }
+    }
+    return dstData;
+  }
+
+  // Fast preview: nearest-neighbour (one sample per output pixel)
+  if (!multiLook) {
+    for (let dstY = 0; dstY < tileSize; dstY++) {
+      const srcY = Math.min(Math.floor((dstY + 0.5) * scaleY), srcHeight - 1);
+      const rowOffset = srcY * srcWidth;
+      for (let dstX = 0; dstX < tileSize; dstX++) {
+        const srcX = Math.min(Math.floor((dstX + 0.5) * scaleX), srcWidth - 1);
+        const v = srcData[rowOffset + srcX];
+        dstData[dstY * tileSize + dstX] = (v > 0 && !isNaN(v) && isFinite(v)) ? v : 0;
+      }
+    }
+    return dstData;
+  }
+
+  // Multi-look: box-filter (area average)
+  // Average ALL source pixels whose centers fall inside the output pixel footprint.
+  for (let dstY = 0; dstY < tileSize; dstY++) {
+    const srcY0 = Math.floor(dstY * scaleY);
+    const srcY1 = Math.min(Math.floor((dstY + 1) * scaleY), srcHeight);
+
+    for (let dstX = 0; dstX < tileSize; dstX++) {
+      const srcX0 = Math.floor(dstX * scaleX);
+      const srcX1 = Math.min(Math.floor((dstX + 1) * scaleX), srcWidth);
+
+      let sum = 0;
+      let count = 0;
+
+      for (let sy = srcY0; sy < srcY1; sy++) {
+        const rowOffset = sy * srcWidth;
+        for (let sx = srcX0; sx < srcX1; sx++) {
+          const v = srcData[rowOffset + sx];
+          if (v !== fillValue && !isNaN(v) && isFinite(v) && v > 0) {
+            sum += v;
+            count++;
+          }
+        }
+      }
+
+      dstData[dstY * tileSize + dstX] = count > 0 ? sum / count : 0;
     }
   }
 
@@ -681,17 +1013,35 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   console.log(`[NISAR Loader] h5chunk discovered ${h5Datasets.length} datasets`);
 
   // Find a suitable 2D dataset for visualization
+  // Strategy 1: Match by HDF5 path (reliable — uses metadata names)
   let selectedDataset = null;
   let selectedDatasetId = null;
 
+  // Try to find the exact polarization by path name
   for (const ds of h5Datasets) {
-    if (ds.shape && ds.shape.length === 2) {
-      const [h, w] = ds.shape;
-      if (w >= 1000 && h >= 1000) {
-        console.log(`[NISAR Loader] Found candidate dataset: ${ds.id} (${w}x${h})`);
-        if (!selectedDataset || (w * h > selectedDataset.shape[0] * selectedDataset.shape[1])) {
-          selectedDataset = ds;
-          selectedDatasetId = ds.id;
+    if (ds.shape && ds.shape.length === 2 && ds.path) {
+      const pathParts = ds.path.split('/');
+      const lastPart = pathParts[pathParts.length - 1];
+      if (lastPart === polarization) {
+        selectedDataset = ds;
+        selectedDatasetId = ds.id;
+        console.log(`[NISAR Loader] Matched ${polarization} by path: ${ds.path}`);
+        break;
+      }
+    }
+  }
+
+  // Strategy 2: Fall back to largest 2D dataset
+  if (!selectedDataset) {
+    for (const ds of h5Datasets) {
+      if (ds.shape && ds.shape.length === 2) {
+        const [h, w] = ds.shape;
+        if (w >= 1000 && h >= 1000) {
+          console.log(`[NISAR Loader] Found candidate dataset: ${ds.id} (${w}x${h})`);
+          if (!selectedDataset || (w * h > selectedDataset.shape[0] * selectedDataset.shape[1])) {
+            selectedDataset = ds;
+            selectedDatasetId = ds.id;
+          }
         }
       }
     }
@@ -753,12 +1103,26 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     console.warn('[NISAR Loader] Could not compute initial stats:', e.message);
   }
 
-  const availableDatasets = [
-    { frequency: 'A', polarization: 'HHHH' },
-    { frequency: 'A', polarization: 'HVHV' },
-    { frequency: 'A', polarization: 'VHVH' },
-    { frequency: 'A', polarization: 'VVVV' },
-  ];
+  // Build availableDatasets from HDF5 paths (if available), else hardcode
+  const knownPolSet = new Set(POLARIZATIONS);
+  const detectedPols = [];
+  for (const ds of h5Datasets) {
+    if (ds.shape && ds.shape.length === 2 && ds.path) {
+      const lastPart = ds.path.split('/').pop();
+      if (knownPolSet.has(lastPart)) {
+        detectedPols.push(lastPart);
+      }
+    }
+  }
+
+  const availableDatasets = detectedPols.length > 0
+    ? detectedPols.map(pol => ({ frequency: frequency, polarization: pol }))
+    : [
+        { frequency: 'A', polarization: 'HHHH' },
+        { frequency: 'A', polarization: 'HVHV' },
+        { frequency: 'A', polarization: 'VHVH' },
+        { frequency: 'A', polarization: 'VVVV' },
+      ];
 
   // Chunk-level cache: shared across tiles so zoomed views reuse data
   const chunkCache = new Map();
@@ -795,9 +1159,9 @@ async function loadNISARGCOVStreaming(file, options = {}) {
    * For small regions (high zoom): reads full region via readRegion.
    * For large regions (low zoom): samples individual chunks for efficiency.
    */
-  async function getTile({ x, y, z, bbox, quality }) {
-    const q = quality || 'fast';
-    const tileKey = `${x},${y},${z},${q}`;
+  async function getTile({ x, y, z, bbox, multiLook = false }) {
+    const ml = multiLook ? 'ml' : 'nn';
+    const tileKey = `${x},${y},${z},${ml}`;
     if (tileCache.has(tileKey)) return tileCache.get(tileKey);
 
     try {
@@ -849,19 +1213,19 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         console.log(`[NISAR Loader] Tile ${tileKey}: direct read [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH})`);
         const regionResult = await streamReader.readRegion(selectedDatasetId, top, left, sliceH, sliceW);
         if (!regionResult?.data) return null;
-        tileData = resampleToTileSize(regionResult.data, sliceW, sliceH, tileSize, NaN);
+        tileData = resampleToTileSize(regionResult.data, sliceW, sliceH, tileSize, NaN, multiLook);
       } else {
         // For large regions, sample by reading chunks
         const stepX = sliceW / tileSize;
         const stepY = sliceH / tileSize;
         tileData = new Float32Array(tileSize * tileSize);
 
-        // High quality: block-average NxN sub-samples per output pixel
-        // Fast: single nearest-neighbor sample
-        const nSub = q === 'high'
-          ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 2), 8)
+        // multiLook=false → 1 sample (nearest-neighbour, instant preview)
+        // multiLook=true  → 4–8 sub-samples per axis (16–64 look area average)
+        const nSub = multiLook
+          ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
           : 1;
-        console.log(`[NISAR Loader] Tile ${tileKey}: chunk-sampled [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH}) quality=${q} samples=${nSub}x${nSub}`);
+        console.log(`[NISAR Loader] Tile ${tileKey}: chunk-sampled [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH}) ${multiLook ? 'multi-look' : 'preview'} samples=${nSub}x${nSub}`);
 
         for (let ty = 0; ty < tileSize; ty++) {
           for (let tx = 0; tx < tileSize; tx++) {
@@ -1472,11 +1836,14 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
   /**
    * Get RGB tile data — reads from multiple datasets in parallel.
-   * Returns {r, g, b, width, height} with Float32Arrays per channel.
+   * Returns {bands, width, height, compositeId} with Float32Arrays per channel.
+   *
+   * Performance: pre-fetches all needed chunks for all bands concurrently,
+   * then samples pixels synchronously from the pre-fetched data.
    */
-  async function getRGBTile({ x, y, z, bbox, quality }) {
-    const q = quality || 'fast';
-    const tileKey = `rgb_${x},${y},${z},${q}`;
+  async function getRGBTile({ x, y, z, bbox, multiLook = false }) {
+    const ml = multiLook ? 'ml' : 'nn';
+    const tileKey = `rgb_${x},${y},${z},${ml}`;
     if (tileCache.has(tileKey)) return tileCache.get(tileKey);
 
     try {
@@ -1517,20 +1884,49 @@ export async function loadNISARRGBComposite(file, options = {}) {
       const stepX = sliceW / tileSize;
       const stepY = sliceH / tileSize;
 
-      // Allocate output bands
+      // multiLook=false → 1 sample (nearest); true → 4–8 sub-samples (area avg)
+      const nSub = multiLook
+        ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
+        : 1;
+
+      // --- Phase 1: determine which chunks cover this tile region ---
+      const minChunkRow = Math.floor(top / chunkH);
+      const maxChunkRow = Math.floor(Math.min(bottom - 1, height - 1) / chunkH);
+      const minChunkCol = Math.floor(left / chunkW);
+      const maxChunkCol = Math.floor(Math.min(right - 1, width - 1) / chunkW);
+
+      // --- Phase 2: pre-fetch ALL chunks for ALL bands concurrently ---
+      const chunkFetches = [];
+      const chunkKeys = [];
+      for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
+        for (let cc = minChunkCol; cc <= maxChunkCol; cc++) {
+          for (const pol of requiredPols) {
+            chunkKeys.push({ pol, cr, cc });
+            chunkFetches.push(getCachedChunk(pol, cr, cc));
+          }
+        }
+      }
+
+      const fetchedChunks = await Promise.all(chunkFetches);
+
+      // Build lookup: prefetched[pol][`row,col`] = chunk
+      const prefetched = {};
+      for (const pol of requiredPols) {
+        prefetched[pol] = {};
+      }
+      for (let i = 0; i < chunkKeys.length; i++) {
+        const { pol, cr, cc } = chunkKeys[i];
+        prefetched[pol][`${cr},${cc}`] = fetchedChunks[i];
+      }
+
+      // --- Phase 3: sample pixels synchronously from pre-fetched chunks ---
       const bandArrays = {};
       for (const pol of requiredPols) {
         bandArrays[pol] = new Float32Array(tileSize * tileSize);
       }
 
-      const nSub = q === 'high'
-        ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 2), 8)
-        : 1;
-
-      // Sample each output pixel — read all bands for each chunk position
       for (let ty = 0; ty < tileSize; ty++) {
         for (let tx = 0; tx < tileSize; tx++) {
-          // For each sub-sample, we need chunks from all bands at the same position
           const sums = {};
           const counts = {};
           for (const pol of requiredPols) {
@@ -1548,15 +1944,13 @@ export async function loadNISARRGBComposite(file, options = {}) {
               if (srcX < 0 || srcX >= width) continue;
               const cc = Math.floor(srcX / chunkW);
 
-              // Read all bands for this chunk position in parallel
-              const chunkPromises = requiredPols.map(pol => getCachedChunk(pol, cr, cc));
-              const chunks = await Promise.all(chunkPromises);
-
-              for (let p = 0; p < requiredPols.length; p++) {
-                const v = samplePixel(chunks[p], srcY, srcX, cr, cc);
+              const chunkKey = `${cr},${cc}`;
+              for (const pol of requiredPols) {
+                const chunk = prefetched[pol][chunkKey];
+                const v = samplePixel(chunk, srcY, srcX, cr, cc);
                 if (v > 0) {
-                  sums[requiredPols[p]] += v;
-                  counts[requiredPols[p]]++;
+                  sums[pol] += v;
+                  counts[pol]++;
                 }
               }
             }
@@ -1618,20 +2012,72 @@ export async function loadNISARRGBComposite(file, options = {}) {
 }
 
 /**
- * Classify h5chunk datasets into polarization names by reading sample data.
- * Cross-pol (HV, VH) is typically 5-15 dB below co-pol (HH, VV).
- * Among co-pols, HH and VV may differ slightly but ordering is consistent.
+ * Classify h5chunk datasets into covariance term → dataset ID mapping.
+ *
+ * Uses a three-tier strategy:
+ *
+ * 1. **Spec paths** (§5.3): Match dataset path tails against the known
+ *    covariance term names (HHHH, HVHV, VHVH, VVVV, etc.).
+ *    This is authoritative when h5chunk resolves group paths.
+ *
+ * 2. **Metadata datasets**: Read `listOfCovarianceTerms` or
+ *    `listOfPolarizations` from h5chunk if available, then
+ *    match term names to datasets by path or by shape ordering.
+ *
+ * 3. **Power-level heuristic** (last resort): Sample center chunk from
+ *    each dataset and sort by backscatter power. Co-pol > cross-pol.
  *
  * @param {H5Chunk} streamReader
- * @param {Array} datasets - Matching 2D datasets from h5chunk
- * @returns {Object} Map of polarization name → dataset ID
+ * @param {Array} datasets — Matching 2D datasets from h5chunk
+ * @param {Object} [paths] — from nisarPaths() (optional, for metadata reads)
+ * @param {string} [freq='A'] — frequency to check for metadata datasets
+ * @returns {Object} Map of covariance term name → dataset ID
  */
-async function classifyDatasets(streamReader, datasets) {
+async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A') {
   const polMap = {};
 
   if (datasets.length === 0) return polMap;
 
-  // Read a center sample from each dataset to estimate mean power
+  // ── Strategy 1: Match from HDF5 path tail ──
+  // NISAR paths: /science/{band}/GCOV/grids/frequency{f}/{term}
+  let matchedFromPath = 0;
+
+  for (const ds of datasets) {
+    if (ds.path) {
+      const tail = ds.path.split('/').pop();
+      if (COV_TERM_SET.has(tail) && !polMap[tail]) {
+        polMap[tail] = ds.id;
+        matchedFromPath++;
+        console.log(`[NISAR Loader] Matched ${tail} → ${ds.id} (path: ${ds.path})`);
+      }
+    }
+  }
+
+  if (matchedFromPath > 0) {
+    console.log(`[NISAR Loader] Identified ${matchedFromPath} terms from HDF5 paths`);
+    return polMap;
+  }
+
+  // ── Strategy 2: Read metadata datasets ──
+  if (paths) {
+    const terms = detectCovarianceTerms(streamReader, streamReader.getDatasets(), paths, freq);
+    if (terms.length > 0 && terms.length <= datasets.length) {
+      // Match terms to datasets in order (spec says datasets appear
+      // in the same order as listOfCovarianceTerms)
+      for (let i = 0; i < terms.length && i < datasets.length; i++) {
+        polMap[terms[i]] = datasets[i].id;
+        console.log(`[NISAR Loader] Matched ${terms[i]} → ${datasets[i].id} (metadata ordering)`);
+      }
+      if (Object.keys(polMap).length > 0) {
+        console.log(`[NISAR Loader] Identified ${Object.keys(polMap).length} terms from metadata ordering`);
+        return polMap;
+      }
+    }
+  }
+
+  // ── Strategy 3: Power-level heuristic (last resort) ──
+  console.warn('[NISAR Loader] Falling back to power-level classification');
+
   const means = [];
   for (const ds of datasets) {
     const [h, w] = ds.shape;
@@ -1647,55 +2093,35 @@ async function classifyDatasets(streamReader, datasets) {
         let sum = 0, count = 0;
         for (let i = 0; i < chunk.length; i++) {
           const v = chunk[i];
-          if (!isNaN(v) && v > 0) {
-            sum += v;
-            count++;
-          }
+          if (!isNaN(v) && v > 0) { sum += v; count++; }
         }
         mean = count > 0 ? sum / count : 0;
       }
-    } catch (e) {
-      // Failed to read sample
-    }
+    } catch (e) { /* skip */ }
 
     means.push({ id: ds.id, mean, meanDb: mean > 0 ? 10 * Math.log10(mean) : -999 });
   }
 
-  // Sort by mean power (descending) — co-pols are strongest
   means.sort((a, b) => b.mean - a.mean);
 
-  console.log('[NISAR Loader] Dataset power levels:');
+  console.log('[NISAR Loader] Dataset power levels (heuristic):');
   means.forEach((m, i) => {
     console.log(`[NISAR Loader]   ${i}: ${m.id} mean=${m.mean.toExponential(3)} (${m.meanDb.toFixed(1)} dB)`);
   });
 
-  // Classification heuristic for NISAR GCOV:
-  // - NISAR files typically have 4 datasets: HHHH, HVHV, VHVH, VVVV
-  // - Co-pols (HH, VV) are 5-15 dB above cross-pols (HV, VH)
-  // - Among co-pols: HH is typically slightly > VV for L-band
-  // - Among cross-pols: HV ≈ VH (reciprocity)
   if (means.length >= 4) {
-    // 4 datasets: assume co-pol > cross-pol ordering
-    polMap['HHHH'] = means[0].id;  // Strongest co-pol
-    polMap['VVVV'] = means[1].id;  // Second co-pol
-    polMap['HVHV'] = means[2].id;  // Cross-pol
-    polMap['VHVH'] = means[3].id;  // Cross-pol (reciprocal)
+    polMap['HHHH'] = means[0].id;
+    polMap['VVVV'] = means[1].id;
+    polMap['HVHV'] = means[2].id;
+    polMap['VHVH'] = means[3].id;
   } else if (means.length === 3) {
     polMap['HHHH'] = means[0].id;
     polMap['VVVV'] = means[1].id;
     polMap['HVHV'] = means[2].id;
   } else if (means.length === 2) {
-    // Dual-pol: one co-pol, one cross-pol
     const dbDiff = means[0].meanDb - means[1].meanDb;
-    if (dbDiff > 3) {
-      // Significant power difference → co-pol + cross-pol
-      polMap['HHHH'] = means[0].id;
-      polMap['HVHV'] = means[1].id;
-    } else {
-      // Similar power → likely two co-pols (HH + VV)
-      polMap['HHHH'] = means[0].id;
-      polMap['VVVV'] = means[1].id;
-    }
+    polMap[dbDiff > 3 ? 'HHHH' : 'HHHH'] = means[0].id;
+    polMap[dbDiff > 3 ? 'HVHV' : 'VVVV'] = means[1].id;
   } else if (means.length === 1) {
     polMap['HHHH'] = means[0].id;
   }

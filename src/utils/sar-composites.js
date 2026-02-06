@@ -6,6 +6,8 @@
  *   HHHH = |HH|², HVHV = |HV|², VHVH = |VH|², VVVV = |VV|²
  */
 
+import { applyStretch } from './stretch.js';
+
 /**
  * SAR composite preset definitions
  * Each preset maps R/G/B channels to polarization datasets or formulas.
@@ -109,19 +111,15 @@ export const SAR_COMPOSITES = {
 export function autoSelectComposite(availableDatasets) {
   const pols = new Set(availableDatasets.map(d => d.polarization));
 
-  // Quad-pol: prefer HH/HV/VV
-  if (pols.has('HHHH') && pols.has('HVHV') && pols.has('VVVV')) {
-    return 'hh-hv-vv';
-  }
-
-  // Dual-pol V-transmit
-  if (pols.has('VVVV') && pols.has('VHVH')) {
-    return 'dual-pol-v';
-  }
-
-  // Dual-pol H-transmit
+  // Default pattern: R=co-pol, G=cross-pol, B=co-pol/cross-pol (ratio)
+  // H-transmit (NISAR primary, ALOS)
   if (pols.has('HHHH') && pols.has('HVHV')) {
     return 'dual-pol-h';
+  }
+
+  // V-transmit (Sentinel-1 style)
+  if (pols.has('VVVV') && pols.has('VHVH')) {
+    return 'dual-pol-v';
   }
 
   // Not enough bands for RGB
@@ -196,16 +194,18 @@ export function computeRGBBands(bandData, compositeId, tileSize) {
 
 /**
  * Create an RGBA ImageData from three RGB Float32Array bands.
- * Applies per-channel dB scaling and linear stretch.
+ * Applies per-channel dB scaling, contrast stretch, and optional gamma/stretch mode.
  *
  * @param {{R: Float32Array, G: Float32Array, B: Float32Array}} bands
  * @param {number} width
  * @param {number} height
  * @param {number[]} contrastLimits - [min, max] applied uniformly to all channels
  * @param {boolean} useDecibels - Whether to apply 10*log10 before stretching
+ * @param {number} gamma - Gamma exponent (default 1.0)
+ * @param {string} stretchMode - Stretch mode (default 'linear')
  * @returns {ImageData}
  */
-export function createRGBTexture(bands, width, height, contrastLimits, useDecibels) {
+export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear') {
   // Support per-channel contrast: {R: [min,max], G: [min,max], B: [min,max]}
   // or uniform: [min, max]
   const channelKeys = ['R', 'G', 'B'];
@@ -222,6 +222,7 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
   }
 
   const rgba = new Uint8ClampedArray(width * height * 4);
+  const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
 
   for (let i = 0; i < width * height; i++) {
     const idx = i * 4;
@@ -248,7 +249,9 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
         value = (raw - chMin) / range;
       }
 
-      rgba[idx + c] = Math.round(Math.max(0, Math.min(1, value)) * 255);
+      value = Math.max(0, Math.min(1, value));
+      if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+      rgba[idx + c] = Math.round(value * 255);
     }
 
     rgba[idx + 3] = anyValid ? 255 : 0;

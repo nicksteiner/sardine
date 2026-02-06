@@ -1,397 +1,309 @@
-# 🐟 SARdine
+<div align="center">
 
-A prompt-driven SAR (Synthetic Aperture Radar) imagery analysis tool built on deck.gl and geotiff.js. Designed for visualizing Cloud Optimized GeoTIFFs (COGs) with support for decibel scaling, multiple colormaps, and interactive state management.
-
-## Development Phases
-
-SARdine is being developed in phases, each fully functional before moving to the next:
-
-| Phase | Feature | Status |
-|-------|---------|--------|
-| 1 | Basic Viewer | ✅ Complete |
-| 2 | State as Markdown | ✅ Complete |
-| 3 | Chat Input | 🔜 Planned |
-| 4 | Basemap + Annotations | 🔜 Planned |
-| 5 | Processing Backend | 🔜 Planned |
-| 6 | Comparison Mode | 🔜 Planned |
-| 7 | History + Rollback | 🔜 Planned |
-
-## Features
-
-### Phase 1: Basic Viewer
-- **COG Support**: Load Cloud Optimized GeoTIFFs directly from URLs using geotiff.js
-- **Decibel Scaling**: Toggle dB conversion for SAR amplitude data
-- **Contrast Sliders**: Adjust min/max contrast limits in dB
-- **Colormaps**: Grayscale and Viridis (plus Inferno, Plasma, Phase)
-- **Auto-fit View**: Automatically fit view to image bounds
-
-### Phase 2: State as Markdown
-- **Live State Panel**: See current state as human-readable markdown
-- **Bidirectional Sync**: Edit markdown to update viewer, or interact to update markdown
-- **State Format**:
-```markdown
-## State
-- **File:** s3://bucket/flood.tif
-- **Contrast:** -22 to -3 dB
-- **Colormap:** grayscale
-- **dB Mode:** on
-- **View:** [lat, lon], zoom 12
+```
+ ███████╗ █████╗ ██████╗     ██╗██╗███╗   ██╗███████╗
+ ██╔════╝██╔══██╗██╔══██╗ ██████║██║████╗  ██║██╔════╝
+ ███████╗███████║██████╔╝██╔══██║██║██╔██╗ ██║█████╗
+ ╚════██║██╔══██║██╔══██╗██║  ██║██║██║╚██╗██║██╔══╝
+ ███████║██║  ██║██║  ██║╚█████╔╝██║██║ ╚████║███████╗
+ ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚════╝ ╚═╝╚═╝  ╚═══╝╚══════╝
 ```
 
-## Quick Start
+**Browser-native NISAR HDF5 viewer**
+
+*Stream cloud-optimized SAR data straight to GPU — javascript-native chunking*
+
+`v1.0` · `MIT` · `Feb 2026`
+
+</div>
+
+---
+
+> **`01` OVERVIEW**
+
+SARdine loads NASA NISAR Level-2 GCOV products directly in the browser. It parses the cloud-optimized HDF5 metadata in a single read, fetches only the chunks needed for the current viewport, and renders them through WebGL shaders on deck.gl. Zero Python. Zero backend. Just a URL (or a local file drag-and-drop) and you're looking at quad-pol SAR data.
+
+---
+
+> **`02` CAPABILITIES**
+
+| Capability | Detail |
+|:---|:---|
+| **NISAR GCOV HDF5** | L2 Geocoded Covariance — `HHHH` `HVHV` `VHVH` `VVVV` and cross-pol terms |
+| **Cloud-optimized streaming** | Paged-aggregation metadata read (~8 MB), chunk index, byte-range fetch on demand — same pattern as COG |
+| **RGB polarimetric composites** | `HH/HV/VV` · Pauli power · dual-pol VV/VH · custom presets → 3-channel GPU textures |
+| **Cloud Optimized GeoTIFF** | Loads COGs from any URL — ICEYE, Capella, Umbra, Sentinel-1, any SAR vendor |
+| **dB scaling on GPU** | GLSL: linear power → σ° dB · colormaps (grayscale, viridis, inferno, plasma, phase) · per-channel contrast · 60 fps |
+| **GeoTIFF export** | Current RGB composite → georeferenced 3-band GeoTIFF with CRS + tiepoints |
+| **Figure export** | deck.gl canvas → PNG with metadata overlay |
+
+---
+
+> **`03` QUICK START**
 
 ```bash
-# Install dependencies
 npm install
-
-# Start the SARdine app
 npm run dev
 ```
 
-Then open http://localhost:5173 in your browser.
+→ Open `http://localhost:5173`
+→ Drag a NISAR `.h5` file onto the file picker, or paste a COG URL
 
-## Usage
+---
 
-### Loading a COG
+> **`04` LOADING NISAR HDF5**
 
-1. Enter a Cloud Optimized GeoTIFF URL in the "COG URL" field
-2. Click "Load COG"
-3. The image will automatically fit to view with auto-calculated contrast limits
+#### In the app
 
-### Adjusting Display
+1. Set **File Type** → `NISAR GCOV HDF5`
+2. Select a `.h5` file
+3. SARdine reads metadata, discovers frequency bands (`L`/`S`) and polarizations
+4. Choose **Single Band** or **RGB Composite** display mode
+5. Click **Load** — data streams in chunk-by-chunk
 
-- **Colormap**: Choose from Grayscale, Viridis, Inferno, Plasma, or Phase
-- **dB Scaling**: Toggle on/off for SAR amplitude data
-- **Contrast Min/Max**: Use sliders to adjust contrast limits
-
-### Editing State via Markdown
-
-1. View the current state in the right panel
-2. Edit any value in the markdown (e.g., change contrast values)
-3. Click "Apply Changes" to update the viewer
-
-## API Reference
-
-### `loadCOG(url)`
-
-Load a Cloud Optimized GeoTIFF and return a tile fetcher.
+#### Programmatically
 
 ```javascript
-import { loadCOG } from 'sardine';
+import {
+  listNISARDatasets,
+  loadNISARGCOV,
+  loadNISARRGBComposite,
+} from 'sardine';
 
-const { getTile, bounds, crs, width, height } = await loadCOG(url);
+// → Discover what's in the file
+const datasets = await listNISARDatasets(file);
+// → [{frequency: 'A', polarization: 'HHHH'}, {frequency: 'A', polarization: 'HVHV'}, ...]
+
+// → Load a single polarization band
+const { getTile, bounds, width, height, crs, stats } = await loadNISARGCOV(file, {
+  frequency: 'A',
+  polarization: 'HHHH',
+});
+
+// → Load an RGB composite
+const rgb = await loadNISARRGBComposite(file, {
+  frequency: 'A',
+  compositeId: 'pauli-power',
+});
 ```
 
-### `SARViewer`
+#### RGB composite presets
 
-Basic SAR image viewer component.
+| Preset | R | G | B | Use case |
+|:---|:---|:---|:---|:---|
+| `hh-hv-vv` | `HHHH` | `HVHV` | `VVVV` | Standard quad-pol overview |
+| `pauli-power` | `\|HH−VV\|` | `HV` | `HH+VV` | Scattering mechanism decomposition |
+| `dual-pol-v` | `VV` | `VH` | `VV÷VH` | Sentinel-1 style dual-pol |
+| `dual-pol-h` | `HH` | `HV` | `HH÷HV` | H-transmit dual-pol |
 
-```jsx
-import { SARViewer } from 'sardine';
+---
+
+> **`05` LOADING CLOUD OPTIMIZED GeoTIFFs**
+
+```javascript
+import { loadCOG, SARViewer } from 'sardine';
+
+const cog = await loadCOG('https://bucket.s3.amazonaws.com/sar-image.tif');
 
 <SARViewer
-  getTile={getTile}
-  bounds={bounds}
+  cogUrl={cog.cogUrl}
+  bounds={cog.bounds}
   contrastLimits={[-25, 0]}
   useDecibels={true}
   colormap="grayscale"
-  onViewStateChange={handleViewChange}
 />
-# SARdine 🐟
+```
 
-**A lightweight SAR imagery viewer library built on deck.gl and geotiff.js**
+→ Auto-detects projected vs geographic coordinates
+→ Selects appropriate overview level for current zoom
 
-> SAR + sardine — small, lightweight, packed tight
+---
 
-SARdine is a specialized library for visualizing SAR (Synthetic Aperture Radar) imagery in web applications. It combines the power of deck.gl for high-performance rendering with geotiff.js for efficient GeoTIFF handling, without the overhead of larger dependencies like Viv.
+> **`06` HOW CLOUD-OPTIMIZED HDF5 STREAMING WORKS**
 
-## Features
+NISAR adopted the same cloud-optimization strategy developed by NSIDC for ICESat-2:
 
-- 🚀 **Lightweight**: Minimal dependencies, focused on SAR imagery
-- 🗺️ **deck.gl powered**: Leverage WebGL for smooth, high-performance rendering
-- 📊 **GeoTIFF native**: Direct support for GeoTIFF files via geotiff.js
-- 🎨 **Customizable**: Flexible color mapping and visualization options
-- 🔍 **Interactive**: Built-in viewport controls and layer management
-- 📦 **No Viv dependency**: Streamlined architecture for SAR-specific use cases
+| Step | Detail |
+|:---|:---|
+| **Paged aggregation** | All file-level metadata consolidated at the front of the file in a fixed-size page |
+| **Large chunk sizes** | 2–10 MiB data chunks for efficient range reads |
+| **Minimal variable-length types** | Enables clean HTTP range GET access |
 
-## Installation
+SARdine's `h5chunk` module exploits this — a **JavaScript-native Kerchunk**:
+
+```
+→ Fetch metadata page (~8 MB, one request)
+  → Parse HDF5 superblock, object headers, B-tree
+  → Build chunk index: {dataset → [{offset, size, chunk_coords}]}
+  → For current viewport, fetch intersecting chunks via Range requests
+  → Decompress (deflate + shuffle) → Float32Array
+  → Push to deck.gl as WebGL texture
+  → GPU does dB conversion + colormap at 60 fps
+```
+
+---
+
+> **`07` RENDERING PIPELINE & MULTI-LOOK**
+
+SARdine processes radar backscatter in **linear power** (σ⁰) and only converts to decibels at the final GPU stage. This ordering matters — averaging in dB would compute a geometric mean, underestimating true mean backscatter and distorting radiometric calibration.
+
+```
+raw σ⁰ (linear)  →  resample / average  →  10·log₁₀  →  colormap  →  RGBA texture
+     ↑                    ↑                    ↑            ↑
+  Float32Array     box-filter or NN        GPU shader    GLSL LUT
+```
+
+#### Multi-look mode
+
+The **Multi-look** toggle switches between two downsampling strategies:
+
+| | Multi-look ✓ | Multi-look ✗ |
+|:---|:---|:---|
+| **Resample** | Box-filter — sums every source pixel in each output footprint | Nearest-neighbour — one sample per output pixel |
+| **Chunk path** | `nSub = 4–8` (reads more samples per chunk) | `nSub = 1` (one sample per chunk) |
+| **Speckle** | Reduced ~1/√N | Full speckle |
+| **Speed** | Slower (10–50× more samples) | Blazing fast |
+| **Cache** | Separate key (`ml` suffix) | Separate key (`nn` suffix) |
+
+Box-filter area averaging in linear power is equivalent to **spatial multi-looking** — the standard SAR technique for speckle suppression. Both tile sets coexist in cache, so toggling is instant for already-fetched tiles.
+
+#### Why linear, not dB?
+
+Averaging *N* pixels in linear power gives the arithmetic mean:
+
+$$\bar{\sigma}^0 = \frac{1}{N}\sum_{i=1}^{N} \sigma^0_i$$
+
+Averaging in dB would give:
+
+$$\frac{1}{N}\sum_{i=1}^{N} 10\log_{10}(\sigma^0_i) = 10\log_{10}\!\left(\prod_{i=1}^{N} \sigma^0_i\right)^{1/N}$$
+
+— a geometric mean, which is always ≤ the arithmetic mean and systematically biases backscatter low. SARdine avoids this by keeping all resampling in linear power space.
+
+---
+
+> **`08` ARCHITECTURE**
+
+```
+src/
+├── loaders/
+│   ├── h5chunk.js           ← Cloud-optimized HDF5 chunk reader (JS Kerchunk)
+│   ├── nisar-loader.js      ← NISAR GCOV product loader (h5chunk + h5wasm)
+│   ├── hdf5-chunked.js      ← Fallback chunked HDF5 reader
+│   └── cog-loader.js        ← Cloud Optimized GeoTIFF loader
+├── layers/
+│   ├── SARTileLayer.js      ← deck.gl tile layer with SAR shaders
+│   ├── SARBitmapLayer.js    ← Full-image bitmap layer
+│   ├── SARTiledCOGLayer.js  ← Tiled COG with dynamic overviews
+│   └── shaders.js           ← GLSL: dB scaling, 5 colormaps, contrast
+├── viewers/
+│   ├── SARViewer.jsx        ← Primary orthographic viewer
+│   ├── ComparisonViewer.jsx ← Side-by-side + swipe comparison
+│   └── MapViewer.jsx        ← MapLibre basemap with SAR overlay
+├── components/
+│   ├── Histogram.jsx        ← Per-channel histogram with contrast sliders
+│   ├── StatusWindow.jsx     ← Collapsible log panel
+│   ├── LoadingIndicator.jsx
+│   └── ScaleBar.jsx
+├── utils/
+│   ├── sar-composites.js    ← RGB composite presets (Pauli, dual-pol, etc.)
+│   ├── colormap.js          ← Grayscale, viridis, inferno, plasma, phase
+│   ├── stats.js             ← Histogram, percentile, auto-contrast
+│   ├── geotiff-writer.js    ← Minimal GeoTIFF writer for export
+│   └── figure-export.js     ← Canvas → PNG export
+└── theme/
+    └── sardine-theme.css    ← Design system (dark-first, mission-critical)
+```
+
+---
+
+> **`09` TECH STACK**
+
+| Dependency | Role |
+|:---|:---|
+| `h5wasm` | Full HDF5 reading for files loaded into memory |
+| `h5chunk` (built-in) | Cloud-optimized HDF5 streaming via byte-range requests |
+| `geotiff.js` | COG loading and metadata parsing |
+| `deck.gl 8.9` | WebGL tile rendering with custom GLSL shaders |
+| `React 18` | UI components |
+| `MapLibre GL` | Basemap rendering |
+| `Vite` | Dev server and build |
+
+---
+
+> **`10` DEVELOPMENT**
 
 ```bash
-npm install sardine
+npm install          # → Install dependencies
+npm run dev          # → Dev server at http://localhost:5173
+npm run build        # → Production build
+npm run example      # → Minimal example app
 ```
 
-### Peer Dependencies
+#### Testing with NISAR data
 
-SARdine requires the following peer dependencies:
+Place a NISAR GCOV `.h5` file in `test_data/`, then:
 
 ```bash
-npm install @deck.gl/core @deck.gl/layers geotiff
+node test-h5-diagnostic.mjs   # → Parse HDF5 structure, report B-tree layout
+node test-h5-images.mjs       # → Read chunks, write PGM images to test_output/
 ```
 
-## Quick Start
-
-```typescript
-import { SARdine } from 'sardine';
-
-// Create a viewer
-const viewer = new SARdine({
-  container: 'map-container',
-  initialViewState: {
-    longitude: -122.4,
-    latitude: 37.8,
-    zoom: 10
-  }
-});
-
-// Add a SAR image layer
-await viewer.addLayer({
-  id: 'sar-layer-1',
-  data: 'path/to/sar-image.tif',
-  opacity: 0.8
-});
-```
-
-## API Reference
-
-### SARdine
-
-Main viewer class for rendering SAR imagery.
-
-#### Constructor
-
-```typescript
-new SARdine(options: SARdineOptions)
-```
-
-**Options:**
-- `container` (string | HTMLElement): Container element ID or HTMLElement
-- `initialViewState` (ViewState, optional): Initial viewport state
-- `controller` (boolean | object, optional): deck.gl controller options
-- `style` (object, optional): Custom styling for the container
-
-#### Methods
-
-##### `addLayer(options: SARImageLayerOptions): Promise<void>`
-
-Add a SAR image layer to the viewer.
-
-```typescript
-await viewer.addLayer({
-  id: 'my-layer',
-  data: 'image.tif', // URL or ArrayBuffer
-  opacity: 1.0,
-  colormap: {
-    type: 'linear',
-    min: 0,
-    max: 255
-  }
-});
-```
-
-##### `removeLayer(id: string): void`
-
-Remove a layer by ID.
-
-```typescript
-viewer.removeLayer('my-layer');
-```
-
-##### `updateLayer(id: string, props: Partial<SARImageLayerOptions>): void`
-
-Update layer properties.
-
-```typescript
-viewer.updateLayer('my-layer', { opacity: 0.5 });
-```
-
-##### `getViewState(): ViewState`
-
-Get current viewport state.
-
-##### `setViewState(viewState: Partial<ViewState>): void`
-
-Set viewport state.
-
-```typescript
-viewer.setViewState({
-  longitude: -122.4,
-  latitude: 37.8,
-  zoom: 12
-});
-```
-
-##### `fitBounds(bounds: [number, number, number, number]): void`
-
-Fit the view to specified bounds.
-
-```typescript
-viewer.fitBounds([-123, 37, -122, 38]);
-```
-
-##### `getLayerIds(): string[]`
-
-Get all layer IDs.
-
-##### `clearLayers(): void`
-
-Clear all layers from the viewer.
-
-##### `destroy(): void`
-
-Destroy the viewer and clean up resources.
-
-### SARImageLayer
-
-Custom deck.gl layer for rendering SAR imagery.
-
-```typescript
-import { SARImageLayer } from 'sardine';
-
-const layer = new SARImageLayer({
-  id: 'sar-layer',
-  data: arrayBufferOrUrl,
-  opacity: 0.8,
-  colormap: {
-    type: 'linear',
-    colors: ['#000000', '#ffffff']
-  }
-});
-```
-
-### Utility Functions
-
-#### `loadGeoTIFF(source: string | ArrayBuffer): Promise<GeoTIFF>`
-
-Load a GeoTIFF from URL or ArrayBuffer.
-
-#### `getGeoTIFFMetadata(tiff: GeoTIFF): Promise<GeoTIFFMetadata>`
-
-Extract metadata from a GeoTIFF.
-
-#### `readGeoTIFFData(tiff: GeoTIFF, options?): Promise<ImageData>`
-
-Read raster data from a GeoTIFF.
-
-#### `normalizeData(data: TypedArray, min?: number, max?: number): Uint8Array`
-
-Normalize raster data to 0-255 range.
-
-#### `applyColorMap(data: Uint8Array, colors?: string[]): Uint8ClampedArray`
-
-Apply a colormap to normalized data.
-
-## Examples
-
-### Basic Usage
-
-```typescript
-import { SARdine } from 'sardine';
-
-const viewer = new SARdine({
-  container: 'map',
-  initialViewState: {
-    longitude: 0,
-    latitude: 0,
-    zoom: 2
-  }
-});
-
-// Load a SAR image
-await viewer.addLayer({
-  id: 'sar-image',
-  data: '/path/to/sar-image.tif'
-});
-```
-
-### Custom Color Mapping
-
-```typescript
-await viewer.addLayer({
-  id: 'sar-image',
-  data: '/path/to/image.tif',
-  colormap: {
-    type: 'linear',
-    min: 0,
-    max: 100,
-    colors: ['#000000', '#ff0000', '#ffff00', '#ffffff']
-  }
-});
-```
-
-### Multiple Layers
-
-```typescript
-// Add multiple SAR images
-await viewer.addLayer({
-  id: 'layer-1',
-  data: 'image1.tif',
-  opacity: 0.7
-});
-
-await viewer.addLayer({
-  id: 'layer-2',
-  data: 'image2.tif',
-  opacity: 0.5
-});
-
-// Update layer opacity
-viewer.updateLayer('layer-1', { opacity: 1.0 });
-```
-
-### Using with ArrayBuffer
-
-```typescript
-// Fetch and load from ArrayBuffer
-const response = await fetch('/path/to/image.tif');
-const arrayBuffer = await response.arrayBuffer();
-
-await viewer.addLayer({
-  id: 'sar-layer',
-  data: arrayBuffer
-});
-```
-
-## Development
-
-```bash
-# Install dependencies
-npm install
-
-# Build the library
-npm run build
-
-# Run tests
-npm test
-
-# Development mode with watch
-npm run dev
-```
-
-## TypeScript Support
-
-SARdine is written in TypeScript and includes full type definitions.
-
-```typescript
-import type { SARdineOptions, ViewState, SARImageLayerOptions } from 'sardine';
-```
-
-## Browser Support
-
-SARdine requires a browser with WebGL support. It works with all modern browsers:
-- Chrome/Edge 90+
-- Firefox 88+
-- Safari 14+
-
-## License
+---
+
+> **`11` ROADMAP**
+
+| Feature | Status |
+|:---|:---|
+| NISAR GCOV HDF5 loading (`h5wasm`) | ✅ Complete |
+| Cloud-optimized HDF5 streaming (`h5chunk`) | ✅ Complete |
+| RGB polarimetric composites | ✅ Complete |
+| COG loading + tiled rendering | ✅ Complete |
+| GPU dB scaling + colormaps | ✅ Complete |
+| Per-channel histogram + contrast | ✅ Complete |
+| GeoTIFF RGB export | ✅ Complete |
+| State-as-markdown editing | ✅ Complete |
+| HTTP range-request streaming (S3/HTTPS) | 🔜 Next |
+| B-tree v2 parsing | 🔜 Next |
+| Worker thread decompression | 🔜 Next |
+| Chat-driven state control | 🔜 Next |
+| Basemap annotations + drawing | 🔜 Next |
+| GUNW / InSAR phase visualization | 🔜 Planned |
+| ASF catalog search integration | 🔜 Planned |
+
+---
+
+> **`12` DESIGN SYSTEM**
+
+SARdine uses a dark-first design system built for operational SAR monitoring.
+
+| Token | Value | Role |
+|:---|:---|:---|
+| `--sardine-bg` | `#0a1628` | Base background — deep navy |
+| `--sardine-cyan` | `#4ec9d4` | Primary accent — interactive elements, links, active states |
+| `--sardine-orange` | `#e8833a` | Alerts — warnings, urgent data, flood events |
+| `--sardine-green` | `#3ddc84` | VV polarization — success, complete |
+| `--sardine-magenta` | `#d45cff` | HH polarization — code syntax |
+| `--font-mono` | JetBrains Mono | Data, coordinates, timestamps, metrics, code |
+| `--font-display` | Space Grotesk | Section headers, card titles |
+| `--font-body` | IBM Plex Sans | Descriptions, paragraphs, body text |
+
+→ [Full style guide](docs/sardine-style-guide.html) — complete component reference with swatches, typography specimens, and UI patterns
+
+---
+
+> **`13` LICENSE**
 
 MIT
 
-## Contributing
+---
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+<sub>
 
-## Acknowledgments
+**→** [h5wasm](https://github.com/usnistgov/h5wasm) — HDF5 in WebAssembly
+**→** [geotiff.js](https://geotiffjs.github.io/) — GeoTIFF parsing
+**→** [deck.gl](https://deck.gl/) — WebGL rendering
+**→** NISAR cloud-optimization strategy — [NSIDC](https://nsidc.org/) + JPL
 
-- Built on [deck.gl](https://deck.gl/) for rendering
-- Uses [geotiff.js](https://geotiffjs.github.io/) for GeoTIFF parsing
-- Designed specifically for SAR imagery visualization
+`Earth Big Data LLC` × `CCNY Earth & Atmospheric Sciences`
+
+</sub>

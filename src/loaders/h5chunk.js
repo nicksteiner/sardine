@@ -20,9 +20,11 @@ const HDF5_SIGNATURE = new Uint8Array([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a,
 const MSG_DATASPACE = 0x0001;
 const MSG_DATATYPE = 0x0003;
 const MSG_FILL_VALUE = 0x0005;
+const MSG_LINK = 0x0006;
 const MSG_DATA_LAYOUT = 0x0008;
 const MSG_FILTER_PIPELINE = 0x000B;
 const MSG_ATTRIBUTE = 0x000C;
+const MSG_LINK_INFO = 0x002A;  // not used yet, but defined for completeness
 
 // Data layout classes
 const LAYOUT_COMPACT = 0;
@@ -159,6 +161,66 @@ function parseSuperblock(reader) {
   console.log(`[h5chunk] Root group address: 0x${superblock.rootGroupAddress.toString(16)}`);
 
   return superblock;
+}
+
+/**
+ * Parse an HDF5 Link message (type 0x0006) to extract child name and target address.
+ * Spec: https://docs.hdfgroup.org/hdf5/develop/_f_m_t3.html#LinkMessage
+ *
+ * @param {BufferReader} reader
+ * @param {number} offset - Start of the link message payload
+ * @param {Object} superblock
+ * @returns {{name: string, address: number, linkType: number}|null}
+ */
+function parseLinkMessage(reader, offset, superblock) {
+  try {
+    reader.seek(offset);
+    const version = reader.readUint8();
+    if (version !== 1) return null;
+
+    const flags = reader.readUint8();
+
+    // Link type (optional, bit 3)
+    let linkType = 0; // hard link
+    if (flags & 0x08) {
+      linkType = reader.readUint8();
+    }
+
+    // Creation order (optional, bit 2)
+    if (flags & 0x04) {
+      reader.skip(8);
+    }
+
+    // Link name character set (optional, bit 4)
+    if (flags & 0x10) {
+      reader.skip(1);
+    }
+
+    // Name length — size encoding in bits 0-1
+    const nameLenSize = 1 << (flags & 0x03); // 1, 2, 4, or 8 bytes
+    let nameLen;
+    if (nameLenSize === 1) nameLen = reader.readUint8();
+    else if (nameLenSize === 2) nameLen = reader.readUint16();
+    else if (nameLenSize === 4) nameLen = reader.readUint32();
+    else nameLen = Number(reader.readBigUint64?.() || reader.readUint32());
+
+    if (nameLen <= 0 || nameLen > 1024) return null;
+
+    // Read name bytes
+    const nameBytes = reader.readBytes(nameLen);
+    const name = String.fromCharCode(...nameBytes);
+
+    // Hard link: read object header address
+    if (linkType === 0) {
+      const address = reader.readOffset(superblock.offsetSize);
+      return { name, address, linkType };
+    }
+
+    // Soft/external links — skip for now
+    return { name, address: null, linkType };
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -817,6 +879,7 @@ export class H5Chunk {
     let datatype = null;
     let layout = null;
     let filters = null;
+    const childLinks = []; // Collect Link messages for group traversal
 
     for (const msg of messages) {
       try {
@@ -828,6 +891,11 @@ export class H5Chunk {
           layout = parseDataLayoutMessage(reader, msg.offset, this.superblock);
         } else if (msg.type === MSG_FILTER_PIPELINE && msg.offset < this.metadataBuffer.byteLength) {
           filters = parseFilterPipelineMessage(reader, msg.offset);
+        } else if (msg.type === MSG_LINK && msg.offset < this.metadataBuffer.byteLength) {
+          const link = parseLinkMessage(reader, msg.offset, this.superblock);
+          if (link && link.address != null) {
+            childLinks.push(link);
+          }
         }
       } catch (e) {
         // Continue with other messages
@@ -876,7 +944,17 @@ export class H5Chunk {
       this.datasets.set(datasetId, datasetInfo);
 
       if (dataspace.rank === 2) {
-        console.log(`[h5chunk] Found 2D dataset: ${dataspace.dims.join('x')} ${datatype.dtype} at 0x${address.toString(16)}`);
+        console.log(`[h5chunk] Found 2D dataset: ${dataspace.dims.join('x')} ${datatype.dtype} at 0x${address.toString(16)} path=${path}`);
+      }
+    }
+
+    // Recursively follow hard links to traverse group hierarchy
+    for (const link of childLinks) {
+      const childPath = path === '/' ? `/${link.name}` : `${path}/${link.name}`;
+      try {
+        await this._parseObjectAtAddress(reader, link.address, childPath);
+      } catch (e) {
+        // Skip children we can't parse
       }
     }
   }
@@ -1157,12 +1235,114 @@ export class H5Chunk {
   getDatasets() {
     return Array.from(this.datasets.entries()).map(([key, info]) => ({
       id: key,
+      path: info.path || null,
       shape: info.shape,
       dtype: info.dtype,
       chunked: info.layout?.type === 'chunked',
       chunkDims: info.layout?.chunkDims,
       numChunks: info.chunks?.size || 0,
     }));
+  }
+
+  /**
+   * Find a dataset by its HDF5 path (e.g. '/science/LSAR/GCOV/grids/frequencyA/HHHH').
+   * Returns the dataset ID or null if not found.
+   * @param {string} targetPath — full HDF5 path
+   * @returns {string|null}
+   */
+  findDatasetByPath(targetPath) {
+    for (const [id, info] of this.datasets.entries()) {
+      if (info.path === targetPath) return id;
+    }
+    // Also try matching just the tail component if the full path wasn't resolved
+    const targetTail = targetPath.split('/').pop();
+    for (const [id, info] of this.datasets.entries()) {
+      if (info.path) {
+        const tail = info.path.split('/').pop();
+        if (tail === targetTail) return id;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Read a small contiguous dataset from the metadata buffer.
+   *
+   * NISAR metadata datasets (listOfFrequencies, listOfPolarizations,
+   * projection scalars, coordinate spacing, etc.) are typically small
+   * enough to live entirely within the metadata page we already fetched.
+   *
+   * For chunked imagery datasets, use readChunk() or readRegion() instead.
+   *
+   * @param {string} datasetId — dataset identifier from getDatasets()/findDatasetByPath()
+   * @returns {{data: any, shape: number[], dtype: string}|null}
+   */
+  readSmallDataset(datasetId) {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) return null;
+
+    const { layout, dtype, shape, bytesPerElement } = dataset;
+    if (!layout) return null;
+
+    // Only works for contiguous datasets within metadata buffer
+    if (layout.type === 'contiguous') {
+      if (layout.address == null || layout.address >= this.metadataBuffer.byteLength) {
+        return null; // Data is beyond our buffer
+      }
+      const totalElements = shape.reduce((a, b) => a * b, 1);
+      const totalBytes = totalElements * bytesPerElement;
+      const endOffset = layout.address + totalBytes;
+      if (endOffset > this.metadataBuffer.byteLength) return null;
+
+      if (dtype === 'string') {
+        // HDF5 strings: stored as fixed-size byte arrays
+        return this._readStringDataset(layout.address, totalElements, bytesPerElement, shape);
+      }
+
+      const slice = this.metadataBuffer.slice(layout.address, endOffset);
+      const data = this._decodeData(slice, dtype);
+      return { data, shape, dtype };
+    }
+
+    // For small chunked datasets (rare for metadata, but handle it)
+    if (layout.type === 'chunked' && dataset.chunks && dataset.chunks.size === 1) {
+      // Single chunk — read it from metadata if possible
+      const entry = dataset.chunks.values().next().value;
+      if (entry && entry.offset < this.metadataBuffer.byteLength) {
+        const endOffset = entry.offset + entry.size;
+        if (endOffset <= this.metadataBuffer.byteLength) {
+          const slice = this.metadataBuffer.slice(entry.offset, endOffset);
+          // May need decompression — but for metadata in the header page
+          // it's often uncompressed or filter mask is set to skip filters
+          const data = this._decodeData(slice, dtype);
+          return { data, shape, dtype };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Read a fixed-length string dataset from the metadata buffer.
+   * @private
+   */
+  _readStringDataset(offset, numElements, elementSize, shape) {
+    const strings = [];
+    for (let i = 0; i < numElements; i++) {
+      const start = offset + i * elementSize;
+      const end = start + elementSize;
+      if (end > this.metadataBuffer.byteLength) break;
+      const bytes = new Uint8Array(this.metadataBuffer, start, elementSize);
+      // Decode bytes to string, trimming null padding
+      let str = '';
+      for (let j = 0; j < bytes.length; j++) {
+        if (bytes[j] === 0) break;
+        str += String.fromCharCode(bytes[j]);
+      }
+      strings.push(str.trim());
+    }
+    return { data: strings, shape, dtype: 'string' };
   }
 
   /**

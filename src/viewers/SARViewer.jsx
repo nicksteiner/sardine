@@ -8,6 +8,8 @@ import { getColormap } from '../utils/colormap.js';
 import { SAR_COMPOSITES } from '../utils/sar-composites.js';
 import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
 import { ScaleBar } from '../components/ScaleBar.jsx';
+import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
+import { CornerCoordinates } from '../components/CornerCoordinates.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -23,9 +25,11 @@ export const SARViewer = forwardRef(function SARViewer({
   contrastLimits = [-25, 0],
   useDecibels = true,
   colormap = 'grayscale',
+  gamma = 1.0,
+  stretchMode = 'linear',
   compositeId = null, // SAR RGB composite ID (null = single band)
+  showGrid = true,    // Show coordinate grid + corner coordinates
   opacity = 1,
-  quality = 'fast',
   width = '100%',
   height = '100%',
   onViewStateChange,
@@ -34,6 +38,8 @@ export const SARViewer = forwardRef(function SARViewer({
 }, ref) {
   const containerRef = useRef(null);
 
+  const [redrawTick, setRedrawTick] = useState(0);
+
   // Expose getCanvas() so the parent can capture the WebGL canvas for figure export
   useImperativeHandle(ref, () => ({
     getCanvas: () => {
@@ -41,6 +47,8 @@ export const SARViewer = forwardRef(function SARViewer({
       return containerRef.current.querySelector('canvas');
     },
     getViewState: () => viewState,
+    /** Force deck.gl to re-render (e.g. after canvas capture). */
+    redraw: () => setRedrawTick(t => t + 1),
   }));
 
   // Calculate initial view state from bounds
@@ -135,6 +143,8 @@ export const SARViewer = forwardRef(function SARViewer({
           contrastLimits,
           useDecibels,
           colormap,
+          gamma,
+          stretchMode,
           opacity,
           onLoadingChange: handleLoadingChange,
         }),
@@ -154,6 +164,8 @@ export const SARViewer = forwardRef(function SARViewer({
           contrastLimits,
           useDecibels,
           colormap,
+          gamma,
+          stretchMode,
           opacity,
         }),
       ];
@@ -170,14 +182,17 @@ export const SARViewer = forwardRef(function SARViewer({
           contrastLimits,
           useDecibels,
           colormap,
+          gamma,
+          stretchMode,
           opacity,
-          quality,
+          multiLook,
         }),
       ];
     }
 
     return [];
-  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, opacity, quality, handleLoadingChange]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
+  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, handleLoadingChange, redrawTick]);
 
   const views = useMemo(
     () =>
@@ -210,6 +225,8 @@ export const SARViewer = forwardRef(function SARViewer({
         controller={true}
         glOptions={{ preserveDrawingBuffer: true }}
       />
+      {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} />}
+      {showGrid && <CornerCoordinates viewState={viewState} bounds={bounds} />}
       <LoadingIndicator
         tilesLoading={loadingStatus.tilesLoading}
         tilesLoaded={loadingStatus.tilesLoaded}
@@ -224,6 +241,23 @@ export const SARViewer = forwardRef(function SARViewer({
         useDecibels={useDecibels}
         compositeId={compositeId}
       />
+      {/* SARdine branding badge */}
+      <div style={{
+        position: 'absolute',
+        top: 8,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        fontFamily: "'JetBrains Mono', monospace",
+        fontSize: '0.7rem',
+        fontWeight: 700,
+        letterSpacing: '1px',
+        pointerEvents: 'none',
+        zIndex: 10,
+        opacity: 0.6,
+      }}>
+        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>SAR</span>
+        <span style={{ color: 'var(--text-primary, #e8edf5)' }}>dine</span>
+      </div>
     </div>
   );
 });
@@ -252,9 +286,9 @@ function ColorbarOverlay({ colormap, contrastLimits, useDecibels, compositeId })
   if (compositeId) {
     const preset = SAR_COMPOSITES[compositeId];
     const channelDefs = [
-      { key: 'R', color: '#ff4444' },
-      { key: 'G', color: '#44ff44' },
-      { key: 'B', color: '#4444ff' },
+      { key: 'R', color: 'var(--sardine-magenta, #d45cff)' },
+      { key: 'G', color: 'var(--sardine-green, #3ddc84)' },
+      { key: 'B', color: 'var(--sardine-cyan, #4ec9d4)' },
     ];
 
     // Get per-channel labels from the preset

@@ -13,6 +13,7 @@ export function HistogramPanel({
   useDecibels,
   onContrastChange,
   onAutoStretch,
+  showHeader = true, // When false, skip wrapping control-section (for embedding)
 }) {
   if (!histograms) return null;
 
@@ -24,9 +25,8 @@ export function HistogramPanel({
     single: 'rgba(78, 201, 212, 0.6)',
   };
 
-  return (
-    <div className="control-section">
-      <h3>Histogram</h3>
+  const content = (
+    <>
       <button onClick={onAutoStretch} style={{ width: '100%', marginBottom: '8px' }}>
         Auto Stretch (2–98%)
       </button>
@@ -58,6 +58,15 @@ export function HistogramPanel({
           />
         );
       })}
+    </>
+  );
+
+  if (!showHeader) return content;
+
+  return (
+    <div className="control-section">
+      <h3>Histogram</h3>
+      {content}
     </div>
   );
 }
@@ -186,66 +195,79 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
           border: '1px solid var(--sardine-border, #1e3a5f)',
         }}
       />
-      <div style={{ marginTop: '3px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {editingMin ? (
-            <input
-              type="text"
-              autoFocus
-              value={editMinVal}
-              onChange={(e) => setEditMinVal(e.target.value)}
-              onBlur={() => {
-                const v = parseFloat(editMinVal);
-                if (!isNaN(v)) onChange([Math.max(stats.min, Math.min(v, hi)), hi]);
-                setEditingMin(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') e.target.blur();
-                if (e.key === 'Escape') setEditingMin(false);
-              }}
-              style={numInputStyle}
-            />
-          ) : (
-            <span
-              onClick={() => { setEditMinVal(fmtShort(lo)); setEditingMin(true); }}
-              style={numLabelStyle}
-              title="Click to edit"
-            >{fmtShort(lo)}</span>
-          )}
+      {/* Min slider */}
+      <div style={{ marginTop: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+        <span style={{ ...numLabelStyle, color: 'var(--text-muted, #5a7099)', fontSize: '0.55rem', minWidth: '20px' }}>Lo</span>
+        {editingMin ? (
           <input
-            type="range"
-            min={stats.min}
-            max={stats.max}
-            step={step}
-            value={lo}
-            onChange={(e) => onChange([Number(e.target.value), hi])}
-            style={{ flex: 1 }}
+            type="text"
+            autoFocus
+            value={editMinVal}
+            onChange={(e) => setEditMinVal(e.target.value)}
+            onBlur={() => {
+              const v = parseFloat(editMinVal);
+              if (!isNaN(v)) onChange([Math.max(stats.min, Math.min(v, hi)), hi]);
+              setEditingMin(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.target.blur();
+              if (e.key === 'Escape') setEditingMin(false);
+            }}
+            style={numInputStyle}
           />
-          {editingMax ? (
-            <input
-              type="text"
-              autoFocus
-              value={editMaxVal}
-              onChange={(e) => setEditMaxVal(e.target.value)}
-              onBlur={() => {
-                const v = parseFloat(editMaxVal);
-                if (!isNaN(v)) onChange([lo, Math.min(stats.max, Math.max(v, lo))]);
-                setEditingMax(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') e.target.blur();
-                if (e.key === 'Escape') setEditingMax(false);
-              }}
-              style={numInputStyle}
-            />
-          ) : (
-            <span
-              onClick={() => { setEditMaxVal(fmtShort(hi)); setEditingMax(true); }}
-              style={numLabelStyle}
-              title="Click to edit"
-            >{fmtShort(hi)}</span>
-          )}
-        </div>
+        ) : (
+          <span
+            onClick={() => { setEditMinVal(fmtShort(lo)); setEditingMin(true); }}
+            style={numLabelStyle}
+            title="Click to edit"
+          >{fmtShort(lo)}</span>
+        )}
+        <input
+          type="range"
+          min={stats.min}
+          max={stats.max}
+          step={step}
+          value={lo}
+          onChange={(e) => onChange([Math.min(Number(e.target.value), hi), hi])}
+          style={{ flex: 1 }}
+        />
+      </div>
+      {/* Max slider */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        <span style={{ ...numLabelStyle, color: 'var(--text-muted, #5a7099)', fontSize: '0.55rem', minWidth: '20px' }}>Hi</span>
+        {editingMax ? (
+          <input
+            type="text"
+            autoFocus
+            value={editMaxVal}
+            onChange={(e) => setEditMaxVal(e.target.value)}
+            onBlur={() => {
+              const v = parseFloat(editMaxVal);
+              if (!isNaN(v)) onChange([lo, Math.min(stats.max, Math.max(v, lo))]);
+              setEditingMax(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') e.target.blur();
+              if (e.key === 'Escape') setEditingMax(false);
+            }}
+            style={numInputStyle}
+          />
+        ) : (
+          <span
+            onClick={() => { setEditMaxVal(fmtShort(hi)); setEditingMax(true); }}
+            style={numLabelStyle}
+            title="Click to edit"
+          >{fmtShort(hi)}</span>
+        )}
+        <input
+          type="range"
+          min={stats.min}
+          max={stats.max}
+          step={step}
+          value={hi}
+          onChange={(e) => onChange([lo, Math.max(Number(e.target.value), lo)])}
+          style={{ flex: 1 }}
+        />
       </div>
     </div>
   );

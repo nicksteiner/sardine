@@ -10,6 +10,7 @@ import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js'
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { exportFigure, downloadBlob } from '../src/utils/figure-export.js';
+import { STRETCH_MODES } from '../src/utils/stretch.js';
 
 /**
  * Parse markdown state into object
@@ -125,12 +126,30 @@ function generateMarkdownState(state) {
 }
 
 /**
+ * CollapsibleSection - A control panel section with a clickable header to collapse/expand.
+ */
+function CollapsibleSection({ title, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="control-section">
+      <h3
+        className={`collapsible${open ? '' : ' collapsed'}`}
+        onClick={() => setOpen(o => !o)}
+      >{title}</h3>
+      <div className={`section-body${open ? '' : ' collapsed'}`}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/**
  * SARdine - SAR Imagery Viewer Application
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
   // Core state
-  const [fileType, setFileType] = useState('cog'); // 'cog' | 'nisar'
+  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -155,9 +174,13 @@ function App() {
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
-  const [quality, setQuality] = useState('fast');
+  const [showGrid, setShowGrid] = useState(true);
   const [contrastMin, setContrastMin] = useState(-25);
   const [contrastMax, setContrastMax] = useState(0);
+  const [gamma, setGamma] = useState(1.0);
+  const [stretchMode, setStretchMode] = useState('linear');
+  const [multiLook, setMultiLook] = useState(false);
+  const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
 
@@ -228,6 +251,104 @@ function App() {
       addStatusLog('warning', 'No histogram data for current mode');
     }
   }, [histogramData, displayMode, addStatusLog]);
+
+  // Recompute histogram (viewport-aware)
+  const handleRecomputeHistogram = useCallback(async () => {
+    if (!imageData || !imageData.getTile) {
+      addStatusLog('warning', 'No tile data available for histogram');
+      return;
+    }
+
+    addStatusLog('info', `Recomputing histogram (${histogramScope})...`);
+
+    try {
+      // Compute viewport region bounds (used for viewport scope)
+      const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
+      const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
+      const cx = viewCenter[0];
+      const cy = viewCenter[1];
+      const vpLeft = Math.max(0, cx - vpHalfW);
+      const vpRight = Math.min(imageData.width, cx + vpHalfW);
+      const vpTop = Math.max(0, cy - vpHalfH);
+      const vpBottom = Math.min(imageData.height, cy + vpHalfH);
+
+      const isViewport = histogramScope === 'viewport';
+      const regionX = isViewport ? vpLeft : 0;
+      const regionY = isViewport ? vpTop : 0;
+      const regionW = isViewport ? (vpRight - vpLeft) : imageData.width;
+      const regionH = isViewport ? (vpBottom - vpTop) : imageData.height;
+      const scopeLabel = isViewport ? 'Viewport' : 'Global';
+
+      if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
+        // RGB histogram — sample 3×3 tiles from the region
+        const tileSize = 256;
+        const rawValues = { R: [], G: [], B: [] };
+        const gridSize = 3;
+        const totalTiles = gridSize * gridSize;
+        const stepX = regionW / gridSize;
+        const stepY = regionH / gridSize;
+        let done = 0;
+
+        for (let ty = 0; ty < gridSize; ty++) {
+          for (let tx = 0; tx < gridSize; tx++) {
+            const left = regionX + tx * stepX;
+            const right = regionX + (tx + 1) * stepX;
+            const wBottom = imageData.height - (regionY + (ty + 1) * stepY);
+            const wTop = imageData.height - (regionY + ty * stepY);
+
+            const tileData = await imageData.getRGBTile({
+              x: tx, y: ty, z: 0,
+              bbox: { left, top: wBottom, right, bottom: wTop },
+            });
+
+            if (tileData && tileData.bands) {
+              const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
+              for (const ch of ['R', 'G', 'B']) {
+                const arr = rgbBands[ch];
+                // Subsample every 4th pixel for efficiency
+                for (let i = 0; i < arr.length; i += 4) {
+                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+                }
+              }
+            }
+
+            done++;
+            addStatusLog('info', `Histogram: sampling tile ${done}/${totalTiles}`);
+          }
+        }
+
+        addStatusLog('info', 'Histogram: computing statistics...');
+        const hists = {};
+        for (const ch of ['R', 'G', 'B']) {
+          hists[ch] = computeChannelStats(rawValues[ch], useDecibels);
+        }
+        setHistogramData(hists);
+        addStatusLog('success', `${scopeLabel} histogram updated (RGB)`);
+      } else {
+        // Single-band histogram — pass origin offset for correct viewport sampling
+        const stats = await sampleViewportStats(
+          imageData.getTile, regionW, regionH, useDecibels, 128,
+          regionX, regionY, imageData.height,
+          (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
+        );
+        if (stats) {
+          setHistogramData({ single: stats });
+          addStatusLog('success', `${scopeLabel} histogram: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)}`);
+        }
+      }
+    } catch (e) {
+      addStatusLog('warning', 'Histogram recompute failed', e.message);
+    }
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, addStatusLog]);
+
+  // Auto-recompute histogram when scope changes
+  const histogramScopeRef = useRef(histogramScope);
+  useEffect(() => {
+    if (histogramScope !== histogramScopeRef.current) {
+      histogramScopeRef.current = histogramScope;
+      if (imageData) handleRecomputeHistogram();
+    }
+  }, [histogramScope, imageData, handleRecomputeHistogram]);
 
   // Generate markdown from current state
   const currentState = useMemo(() => ({
@@ -561,14 +682,14 @@ function App() {
               const tileData = await data.getRGBTile({
                 x: tx, y: ty, z: 0,
                 bbox: { left, top: worldBottom, right, bottom: worldTop },
-                quality: 'fast',
               });
 
               if (tileData && tileData.bands) {
                 const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
                 for (const ch of ['R', 'G', 'B']) {
                   const arr = rgbBands[ch];
-                  for (let i = 0; i < arr.length; i++) {
+                  // Subsample every 4th pixel for efficiency
+                  for (let i = 0; i < arr.length; i += 4) {
                     if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
                   }
                 }
@@ -676,12 +797,11 @@ function App() {
             const tileData = await imageData.getRGBTile({
               x: tx, y: ty, z: 0,
               bbox: { left: tileLeft, top: worldTop, right: tileRight, bottom: worldBottom },
-              quality: 'high',
             });
 
             if (tileData && tileData.bands) {
               const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
-              const tileImage = createRGBTexture(rgbBands, tileSize, tileSize, exportLimits, useDecibels);
+              const tileImage = createRGBTexture(rgbBands, tileSize, tileSize, exportLimits, useDecibels, gamma, stretchMode);
 
               const outStartX = tx * tileSize;
               const outStartY = ty * tileSize;
@@ -756,6 +876,9 @@ function App() {
       const figName = `sardine_figure_${ts}.png`;
       downloadBlob(blob, figName);
       addStatusLog('success', `Figure saved: ${figName}`);
+
+      // Force deck.gl to re-render so the canvas doesn't stay blank
+      viewerRef.current.redraw();
     } catch (e) {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
@@ -767,7 +890,7 @@ function App() {
       {/* Header */}
       <div className="header">
         <h1><span className="sar">SAR</span>dine</h1>
-        <span className="subtitle">Operational SAR Imagery Analysis</span>
+        <span className="subtitle">SAR Imagery Viewer</span>
       </div>
 
       {/* Main Layout */}
@@ -775,8 +898,7 @@ function App() {
         {/* Controls Panel */}
         <div className="controls-panel">
           {/* Data Source Selection */}
-          <div className="control-section">
-            <h3>Data Source</h3>
+          <CollapsibleSection title="Data Source">
             <div className="control-group">
               <label>File Type</label>
               <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
@@ -784,12 +906,11 @@ function App() {
                 <option value="nisar">NISAR GCOV HDF5 (Local File)</option>
               </select>
             </div>
-          </div>
+          </CollapsibleSection>
 
           {/* COG URL Input */}
           {fileType === 'cog' && (
-            <div className="control-section">
-              <h3>Load COG</h3>
+            <CollapsibleSection title="Load COG">
               <div className="control-group">
                 <label>COG URL</label>
                 <input
@@ -802,13 +923,12 @@ function App() {
               <button onClick={handleLoadCOG} disabled={loading}>
                 {loading ? 'Loading...' : 'Load COG'}
               </button>
-            </div>
+            </CollapsibleSection>
           )}
 
           {/* NISAR HDF5 Input */}
           {fileType === 'nisar' && (
-            <div className="control-section">
-              <h3>Load NISAR GCOV</h3>
+            <CollapsibleSection title="Load NISAR GCOV">
               <div className="control-group">
                 <label>HDF5 File</label>
                 <input
@@ -914,12 +1034,11 @@ function App() {
                   </button>
                 </>
               )}
-            </div>
+            </CollapsibleSection>
           )}
 
           {/* Display Settings */}
-          <div className="control-section">
-            <h3>Display</h3>
+          <CollapsibleSection title="Display">
             
             {/* Colormap selector — hidden in RGB composite mode */}
             {displayMode !== 'rgb' && (
@@ -951,11 +1070,11 @@ function App() {
               <div className="control-row">
                 <input
                   type="checkbox"
-                  id="highQuality"
-                  checked={quality === 'high'}
-                  onChange={(e) => setQuality(e.target.checked ? 'high' : 'fast')}
+                  id="showGrid"
+                  checked={showGrid}
+                  onChange={(e) => setShowGrid(e.target.checked)}
                 />
-                <label htmlFor="highQuality">High Quality (slower)</label>
+                <label htmlFor="showGrid">Coordinate Grid</label>
               </div>
             </div>
 
@@ -979,75 +1098,132 @@ function App() {
                 </button>
               </div>
             )}
-          </div>
+          </CollapsibleSection>
 
           {/* Histogram & Contrast */}
-          {displayMode === 'rgb' && histogramData ? (
-            <HistogramPanel
-              histograms={histogramData}
-              mode="rgb"
-              contrastLimits={rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }}
-              useDecibels={useDecibels}
-              onContrastChange={setRgbContrastLimits}
-              onAutoStretch={handleAutoStretch}
-            />
-          ) : (
-            <div className="control-section">
-              <h3>Contrast</h3>
+          <CollapsibleSection title="Contrast">
+            {/* Histogram scope toggle */}
+            {histogramData && (
+              <div className="control-group" style={{ marginBottom: '6px' }}>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {['global', 'viewport'].map(scope => (
+                    <button
+                      key={scope}
+                      className={histogramScope === scope ? '' : 'btn-secondary'}
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      onClick={() => setHistogramScope(scope)}
+                    >
+                      {scope === 'global' ? 'Global' : 'Viewport'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-              {/* Histogram display + auto-stretch for single-band */}
-              {histogramData?.single && (
-                <HistogramPanel
-                  histograms={histogramData}
-                  mode="single"
-                  contrastLimits={contrastLimits}
-                  useDecibels={useDecibels}
-                  onContrastChange={([min, max]) => {
-                    setContrastMin(Math.round(min));
-                    setContrastMax(Math.round(max));
+            {/* RGB per-channel histograms */}
+            {displayMode === 'rgb' && histogramData && (
+              <HistogramPanel
+                histograms={histogramData}
+                mode="rgb"
+                contrastLimits={rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }}
+                useDecibels={useDecibels}
+                onContrastChange={setRgbContrastLimits}
+                onAutoStretch={handleAutoStretch}
+                showHeader={false}
+              />
+            )}
+
+            {/* Single-band histogram */}
+            {displayMode !== 'rgb' && histogramData?.single && (
+              <HistogramPanel
+                histograms={histogramData}
+                mode="single"
+                contrastLimits={contrastLimits}
+                useDecibels={useDecibels}
+                onContrastChange={([min, max]) => {
+                  setContrastMin(Math.round(min));
+                  setContrastMax(Math.round(max));
+                }}
+                onAutoStretch={handleAutoStretch}
+                showHeader={false}
+              />
+            )}
+
+            {/* Brightness (Window/Level) slider — shifts window center */}
+            {displayMode !== 'rgb' && (
+              <div className="control-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <label>Brightness</label>
+                  <span className="value-display">
+                    {Math.round((contrastMin + contrastMax) / 2)}{useDecibels ? ' dB' : ''}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={useDecibels ? -50 : 0}
+                  max={useDecibels ? 10 : 200}
+                  step={1}
+                  value={Math.round((contrastMin + contrastMax) / 2)}
+                  onChange={(e) => {
+                    const newCenter = Number(e.target.value);
+                    const halfWidth = (contrastMax - contrastMin) / 2;
+                    setContrastMin(Math.round(newCenter - halfWidth));
+                    setContrastMax(Math.round(newCenter + halfWidth));
                   }}
-                  onAutoStretch={handleAutoStretch}
                 />
-              )}
+              </div>
+            )}
 
-              {/* Manual dB sliders (single-band mode) */}
-              {!histogramData?.single && (
-                <>
-                  <div className="control-group">
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <label>Min</label>
-                      <span className="value-display">
-                        {contrastMin}{useDecibels ? ' dB' : ''}
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={useDecibels ? -50 : 0}
-                      max={useDecibels ? 0 : 100}
-                      value={contrastMin}
-                      onChange={(e) => setContrastMin(Number(e.target.value))}
-                    />
-                  </div>
-
-                  <div className="control-group">
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <label>Max</label>
-                      <span className="value-display">
-                        {contrastMax}{useDecibels ? ' dB' : ''}
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={useDecibels ? -50 : 0}
-                      max={useDecibels ? 10 : 200}
-                      value={contrastMax}
-                      onChange={(e) => setContrastMax(Number(e.target.value))}
-                    />
-                  </div>
-                </>
-              )}
+            {/* Stretch mode + Gamma */}
+            <div className="control-group">
+              <label>Stretch</label>
+              <select value={stretchMode} onChange={(e) => setStretchMode(e.target.value)}>
+                {Object.entries(STRETCH_MODES).map(([id, mode]) => (
+                  <option key={id} value={id}>{mode.name}</option>
+                ))}
+              </select>
             </div>
-          )}
+
+            {(stretchMode === 'gamma' || stretchMode === 'sigmoid') && (
+              <div className="control-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <label>Gamma</label>
+                  <span className="value-display">{gamma.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={5.0}
+                  step={0.05}
+                  value={gamma}
+                  onChange={(e) => setGamma(Number(e.target.value))}
+                />
+              </div>
+            )}
+
+            {/* Multi-look toggle */}
+            <div className="control-group">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <input
+                  type="checkbox"
+                  id="multiLook"
+                  checked={multiLook}
+                  onChange={(e) => {
+                    setMultiLook(e.target.checked);
+                    addStatusLog('info', e.target.checked
+                      ? 'Multi-look enabled — area-averaged resampling (slower, less speckle)'
+                      : 'Multi-look disabled — nearest-neighbour preview (fast)');
+                  }}
+                />
+                <label htmlFor="multiLook" style={{ margin: 0 }}>
+                  Multi-look
+                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    {multiLook ? '(area avg)' : '(fast preview)'}
+                  </span>
+                </label>
+              </div>
+            </div>
+          </CollapsibleSection>
         </div>
 
         {/* Viewer Container */}
@@ -1074,8 +1250,11 @@ function App() {
               contrastLimits={effectiveContrastLimits}
               useDecibels={useDecibels}
               colormap={colormap}
+              gamma={gamma}
+              stretchMode={stretchMode}
               compositeId={displayMode === 'rgb' ? compositeId : null}
-              quality={quality}
+              multiLook={multiLook}
+              showGrid={showGrid}
               opacity={1}
               width="100%"
               height="100%"
@@ -1094,6 +1273,32 @@ function App() {
         isCollapsed={statusCollapsed}
         onToggle={() => setStatusCollapsed(!statusCollapsed)}
       />
+
+      {/* Footer */}
+      <footer style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: '24px',
+        background: 'var(--sardine-bg, #0a1628)',
+        borderTop: '1px solid rgba(78, 201, 212, 0.15)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '0 12px',
+        fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+        fontSize: '0.6rem',
+        color: 'var(--text-muted, #5a7099)',
+        zIndex: 1000,
+        letterSpacing: '0.03em',
+      }}>
+        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>SARdine</a> v1.0 · MIT</span>
+        <span>steinerlab - ccny</span>
+        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6 }}>
+          deck.gl {multiLook ? '· multi-look' : '· nearest-neighbour'}
+        </span>
+      </footer>
     </div>
   );
 }

@@ -1,0 +1,232 @@
+# SARdine
+
+**Browser-native NISAR HDF5 viewer — stream cloud-optimized SAR data straight to GPU, no server required.**
+
+The SARdine viewer loads NASA NISAR HDF files directly in the browser. It parses the cloud-optimized HDF5 metadata in a single read, fetches only the chunks needed for the current viewport, and renders them through WebGL shaders on deck.gl. SARdine is optimized to run on either a cloud webVMs or locally, GPUs are not required but .
+
+---
+
+## What it does
+
+| Capability | Detail |
+|---|---|
+| **NISAR GCOV HDF5** | Full support for L2 Geocoded Covariance products — HHHH, HVHV, VHVH, VVVV and cross-pol terms |
+| **Cloud-optimized streaming** | Reads the paged-aggregation metadata block (~8 MB), builds a chunk index, then fetches data on demand via byte-range requests — the same pattern as COG |
+| **RGB polarimetric composites** | HH/HV/VV, Pauli power decomposition, dual-pol VV/VH, and custom presets rendered as three-channel GPU textures |
+| **Cloud Optimized GeoTIFF** | Also loads COGs from any URL (S3, HTTP) for ICEYE, Capella, Umbra, Sentinel-1, or any SAR vendor |
+| **dB scaling on GPU** | GLSL shader converts linear power to σ° decibels, applies colormaps (grayscale, viridis, inferno, plasma, phase), and does per-channel contrast stretch — all at 60 fps |
+| **GeoTIFF export** | Export the current RGB composite view as a georeferenced 3-band GeoTIFF with correct CRS and tiepoints |
+| **Figure export** | Capture the deck.gl canvas as a PNG with metadata overlay |
+
+---
+
+## Quick start
+
+```bash
+npm install
+npm run dev
+```
+
+Open http://localhost:5173. Drag a NISAR `.h5` file onto the file picker, or paste a COG URL.
+
+---
+
+## Loading NISAR HDF5 files
+
+### In the app
+
+1. Set **File Type** → NISAR GCOV HDF5
+2. Click the file picker and select a `.h5` file
+3. SARdine reads metadata, discovers available frequency bands (L/S) and polarizations
+4. Choose **Single Band** or **RGB Composite** display mode
+5. Click **Load** — data streams in chunk-by-chunk
+
+### Programmatically
+
+```javascript
+import {
+  listNISARDatasets,
+  loadNISARGCOV,
+  loadNISARRGBComposite,
+} from 'sardine';
+
+// Discover what's in the file
+const datasets = await listNISARDatasets(file);
+// → [{frequency: 'A', polarization: 'HHHH'}, {frequency: 'A', polarization: 'HVHV'}, ...]
+
+// Load a single polarization band
+const { getTile, bounds, width, height, crs, stats } = await loadNISARGCOV(file, {
+  frequency: 'A',
+  polarization: 'HHHH',
+});
+
+// Load an RGB composite
+const rgb = await loadNISARRGBComposite(file, {
+  frequency: 'A',
+  compositeId: 'pauli-power',
+});
+```
+
+### RGB composite presets
+
+| Preset | R | G | B | Use case |
+|---|---|---|---|---|
+| `hh-hv-vv` | HHHH | HVHV | VVVV | Standard quad-pol overview |
+| `pauli-power` | \|HH−VV\| | HV | HH+VV | Scattering mechanism decomposition |
+| `dual-pol-v` | VV | VH | VV÷VH | Sentinel-1 style dual-pol |
+| `dual-pol-h` | HH | HV | HH÷HV | H-transmit dual-pol |
+
+---
+
+## Loading Cloud Optimized GeoTIFFs
+
+```javascript
+import { loadCOG, SARViewer } from 'sardine';
+
+const cog = await loadCOG('https://bucket.s3.amazonaws.com/sar-image.tif');
+
+<SARViewer
+  cogUrl={cog.cogUrl}
+  bounds={cog.bounds}
+  contrastLimits={[-25, 0]}
+  useDecibels={true}
+  colormap="grayscale"
+/>
+```
+
+SARdine auto-detects projected vs geographic coordinates and selects the appropriate overview level for the current zoom.
+
+---
+
+## How cloud-optimized HDF5 streaming works
+
+NISAR adopted the same cloud-optimization strategy developed by NSIDC for ICESat-2:
+
+1. **Paged aggregation** — all file-level metadata is consolidated at the front of the file in a fixed-size page
+2. **Large chunk sizes** — 2–10 MiB data chunks for efficient range reads
+3. **Minimal variable-length types** — enables clean HTTP range GET access
+
+SARdine's `h5chunk` module exploits this:
+
+```
+Fetch metadata page (~8 MB, one request)
+  → Parse HDF5 superblock, object headers, B-tree
+  → Build chunk index: {dataset → [{offset, size, chunk_coords}]}
+  → For current viewport, fetch intersecting chunks via Range requests
+  → Decompress (deflate + shuffle) → Float32Array
+  → Push to deck.gl as WebGL texture
+  → GPU does dB conversion + colormap at 60 fps
+```
+
+This is essentially a **JavaScript-native Kerchunk** — the same byte-range streaming pattern that makes COG fast, applied to HDF5.
+
+---
+
+## Architecture
+
+```
+src/
+├── loaders/
+│   ├── h5chunk.js          # Cloud-optimized HDF5 chunk reader (JS Kerchunk)
+│   ├── nisar-loader.js     # NISAR GCOV product loader (h5chunk + h5wasm)
+│   ├── hdf5-chunked.js     # Fallback chunked HDF5 reader
+│   └── cog-loader.js       # Cloud Optimized GeoTIFF loader
+├── layers/
+│   ├── SARTileLayer.js     # deck.gl tile layer with SAR shaders
+│   ├── SARBitmapLayer.js   # Full-image bitmap layer
+│   ├── SARTiledCOGLayer.js # Tiled COG with dynamic overviews
+│   └── shaders.js          # GLSL: dB scaling, 5 colormaps, contrast
+├── viewers/
+│   ├── SARViewer.jsx       # Primary orthographic viewer
+│   ├── ComparisonViewer.jsx # Side-by-side + swipe comparison
+│   └── MapViewer.jsx       # MapLibre basemap with SAR overlay
+├── components/
+│   ├── Histogram.jsx       # Per-channel histogram with contrast sliders
+│   ├── StatusWindow.jsx    # Collapsible log panel
+│   ├── LoadingIndicator.jsx
+│   └── ScaleBar.jsx
+├── utils/
+│   ├── sar-composites.js   # RGB composite presets (Pauli, dual-pol, etc.)
+│   ├── colormap.js         # Grayscale, viridis, inferno, plasma, phase
+│   ├── stats.js            # Histogram, percentile, auto-contrast
+│   ├── geotiff-writer.js   # Minimal GeoTIFF writer for export
+│   └── figure-export.js    # Canvas → PNG export
+└── theme/
+    └── sardine-theme.css   # Design system (dark-first, mission-critical)
+```
+
+---
+
+## Tech stack
+
+| Dependency | Role |
+|---|---|
+| **h5wasm** | Full HDF5 reading for files loaded into memory |
+| **h5chunk** (built-in) | Cloud-optimized HDF5 streaming via byte-range requests |
+| **geotiff.js** | COG loading and metadata parsing |
+| **deck.gl 8.9** | WebGL tile rendering with custom GLSL shaders |
+| **React 18** | UI components |
+| **MapLibre GL** | Basemap rendering |
+| **Vite** | Dev server and build |
+
+---
+
+## Development
+
+```bash
+npm install          # Install dependencies
+npm run dev          # Start dev server → http://localhost:5173
+npm run build        # Production build
+npm run example      # Run minimal example app
+```
+
+### Testing with NISAR data
+
+Place a NISAR GCOV `.h5` file in `test_data/`, then:
+
+```bash
+node test-h5-diagnostic.mjs   # Parse HDF5 structure, report B-tree layout
+node test-h5-images.mjs       # Read chunks, write PGM images to test_output/
+```
+
+---
+
+## Roadmap
+
+| Feature | Status |
+|---|---|
+| NISAR GCOV HDF5 loading (h5wasm) | ✅ |
+| Cloud-optimized HDF5 streaming (h5chunk) | ✅ |
+| RGB polarimetric composites | ✅ |
+| COG loading + tiled rendering | ✅ |
+| GPU dB scaling + colormaps | ✅ |
+| Per-channel histogram + contrast | ✅ |
+| GeoTIFF RGB export | ✅ |
+| State-as-markdown editing | ✅ |
+| HTTP range-request streaming (S3/HTTPS) | 🔜 |
+| B-tree v2 parsing | 🔜 |
+| Worker thread decompression | 🔜 |
+| Chat-driven state control | 🔜 |
+| Basemap annotations + drawing | 🔜 |
+| GUNW / InSAR phase visualization | 🔜 |
+| ASF catalog search integration | 🔜 |
+
+---
+
+## Design
+
+SARdine uses a dark-first design system built for operational SAR monitoring. Deep navy backgrounds, monospace data typography (JetBrains Mono), and a signal-color palette: cyan for interactive elements, orange for alerts, green/magenta for VV/HH polarization channels. See [docs/sardine-style-guide.html](docs/sardine-style-guide.html) for the full component reference.
+
+---
+
+## License
+
+MIT
+
+## Acknowledgments
+
+- [h5wasm](https://github.com/usnistgov/h5wasm) — HDF5 in WebAssembly
+- [geotiff.js](https://geotiffjs.github.io/) — GeoTIFF parsing
+- [deck.gl](https://deck.gl/) — WebGL rendering
+- NISAR cloud-optimization strategy by [NSIDC](https://nsidc.org/) and JPL
+- Earth Big Data LLC × CCNY Earth & Atmospheric Sciences

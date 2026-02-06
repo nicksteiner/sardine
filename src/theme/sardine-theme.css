@@ -173,6 +173,7 @@ body::after {
   width: 280px;
   background: var(--sardine-bg-panel);
   padding: var(--space-md);
+  padding-bottom: 48px; /* Extra room so content clears the fixed status bar */
   overflow-y: auto;
   border-right: 1px solid var(--sardine-border);
   display: flex;
@@ -197,6 +198,51 @@ body::after {
   margin-bottom: var(--space-sm);
   padding-bottom: var(--space-xs);
   border-bottom: 1px solid var(--sardine-border-subtle);
+}
+
+/* ─── COLLAPSIBLE SECTIONS ─── */
+.control-section h3.collapsible {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+  transition: color var(--transition-fast);
+}
+
+.control-section h3.collapsible:hover {
+  color: var(--text-secondary);
+}
+
+.control-section h3.collapsible::after {
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  transition: transform var(--transition-fast);
+}
+
+.control-section h3.collapsible.collapsed {
+  margin-bottom: 0;
+  border-bottom-color: transparent;
+}
+
+.control-section h3.collapsible.collapsed::after {
+  transform: rotate(-90deg);
+}
+
+.section-body {
+  overflow: hidden;
+  transition: max-height var(--transition-med), opacity var(--transition-fast);
+  max-height: 800px;
+  opacity: 1;
+}
+
+.section-body.collapsed {
+  max-height: 0;
+  opacity: 0;
 }
 
 

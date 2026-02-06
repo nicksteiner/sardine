@@ -1,25 +1,52 @@
 /**
  * Figure export utility for SAR imagery.
- * Captures the deck.gl canvas and composites overlays (colorbar, scale bar,
- * metadata annotation) onto a 2D canvas for PNG export.
+ * Captures the deck.gl canvas and composites themed overlays onto a 2D canvas
+ * for PNG export.
+ *
+ * Overlays:
+ *   1. 2px figure border (--sardine-border)
+ *   2. Coordinate grid with tick labels
+ *   3. Corner coordinate pills
+ *   4. Scale bar (--sardine-cyan bar, panel pill background)
+ *   5. RGB legend with semantic polarization colors  OR  colormap bar
+ *   6. Metadata panel with label:value pairs and semantic colors
+ *   7. SARdine branding badge (top-left)
  */
 
 import { getColormap } from './colormap.js';
 import { SAR_COMPOSITES } from './sar-composites.js';
+import {
+  THEME,
+  CHANNEL_COLORS,
+  isProjectedBounds,
+  computeVisibleExtent,
+  niceInterval,
+  formatTickValue,
+  formatCoord,
+  formatExtent,
+  computeScaleBar,
+  roundRect,
+} from './geo-overlays.js';
+
+// ── Font helper ─────────────────────────────────────────────────────────────
+
+const FONT_MONO = "'JetBrains Mono', 'Fira Code', 'Consolas', monospace";
+
+// ── Public API ──────────────────────────────────────────────────────────────
 
 /**
  * Capture the current viewer and export as a PNG figure with overlays.
  *
  * @param {HTMLCanvasElement} glCanvas - The deck.gl WebGL canvas element
  * @param {Object} options
- * @param {string} [options.colormap] - Colormap name (single-band mode)
+ * @param {string}   [options.colormap]        - Colormap name (single-band)
  * @param {number[]|Object} [options.contrastLimits] - [min,max] or {R,G,B}
- * @param {boolean} [options.useDecibels]
- * @param {string} [options.compositeId] - RGB composite ID or null
- * @param {Object} [options.viewState] - Current deck.gl view state
- * @param {number[]} [options.bounds] - [minX, minY, maxX, maxY]
- * @param {string} [options.filename] - Source filename
- * @param {string} [options.crs] - CRS string (e.g. "EPSG:32610")
+ * @param {boolean}  [options.useDecibels]
+ * @param {string}   [options.compositeId]     - RGB composite ID or null
+ * @param {Object}   [options.viewState]       - Current deck.gl view state
+ * @param {number[]} [options.bounds]          - [minX,minY,maxX,maxY]
+ * @param {string}   [options.filename]        - Source filename
+ * @param {string}   [options.crs]             - CRS string (e.g. "EPSG:32610")
  * @returns {Promise<Blob>} PNG blob
  */
 export async function exportFigure(glCanvas, options = {}) {
@@ -37,7 +64,6 @@ export async function exportFigure(glCanvas, options = {}) {
   const W = glCanvas.width;
   const H = glCanvas.height;
 
-  // Create offscreen canvas
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -46,108 +72,226 @@ export async function exportFigure(glCanvas, options = {}) {
   // Draw the WebGL canvas content
   ctx.drawImage(glCanvas, 0, 0);
 
-  // DPR-aware font sizing (overlays should look consistent regardless of DPR)
+  // DPR-aware sizing
   const dpr = window.devicePixelRatio || 1;
-  const scale = (v) => Math.round(v * dpr);
+  const s = (v) => Math.round(v * dpr);
 
-  // Draw overlays
-  drawScaleBar(ctx, W, H, viewState, bounds, scale);
+  const projected = isProjectedBounds(bounds);
 
+  // 1. Figure border
+  drawBorder(ctx, W, H, s);
+
+  // 2. Coordinate grid + tick labels
+  drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s);
+
+  // 3. Corner coordinates
+  drawCornerCoordinates(ctx, W, H, viewState, projected, s);
+
+  // 4. Scale bar (bottom-left)
+  drawScaleBar(ctx, W, H, viewState, bounds, projected, s);
+
+  // 5. Legend (top-right)
   if (compositeId) {
-    drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, scale);
+    drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s);
   } else {
-    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, scale);
+    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
   }
 
-  drawMetadata(ctx, W, H, { filename, crs, compositeId, useDecibels }, scale);
+  // 6. Metadata panel (bottom-right)
+  drawMetadata(ctx, W, H, {
+    filename, crs, compositeId, useDecibels, viewState, bounds, projected,
+  }, s);
 
-  // Export as PNG blob
+  // 7. SARdine branding (top-left)
+  drawBranding(ctx, W, H, s);
+
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');
   });
 }
 
-/**
- * Draw a scale bar overlay on the 2D canvas (bottom-left).
- */
-function drawScaleBar(ctx, W, H, viewState, bounds, scale) {
-  if (!viewState || !bounds) return;
+// ── 1. Figure border ────────────────────────────────────────────────────────
 
-  const isProjected = Math.abs(bounds[0]) > 180 || Math.abs(bounds[2]) > 180;
-  if (!isProjected) return;
-
-  const pixelsPerMeter = Math.pow(2, viewState.zoom || 0);
-  const targetPixels = scale(150);
-  const targetMeters = targetPixels / pixelsPerMeter;
-
-  const magnitude = Math.pow(10, Math.floor(Math.log10(targetMeters)));
-  const normalized = targetMeters / magnitude;
-  let niceNumber;
-  if (normalized < 1.5) niceNumber = 1;
-  else if (normalized < 3.5) niceNumber = 2;
-  else if (normalized < 7.5) niceNumber = 5;
-  else niceNumber = 10;
-
-  const scaleMeters = niceNumber * magnitude;
-  const scalePixels = scaleMeters * pixelsPerMeter;
-
-  let label;
-  if (scaleMeters >= 1000) {
-    label = `${(scaleMeters / 1000).toFixed(scaleMeters >= 10000 ? 0 : 1)} km`;
-  } else {
-    label = `${scaleMeters.toFixed(scaleMeters >= 100 ? 0 : 0)} m`;
-  }
-
-  const x = scale(16);
-  const y = H - scale(16);
-  const barHeight = scale(6);
-  const fontSize = scale(13);
-
-  // Background
-  const bgPad = scale(8);
-  const bgW = scalePixels + bgPad * 2;
-  const bgH = barHeight + fontSize + bgPad * 3;
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  roundRect(ctx, x - bgPad, y - bgH, bgW, bgH + bgPad, scale(4));
-  ctx.fill();
-
-  // Bar
-  ctx.fillStyle = 'white';
-  ctx.fillRect(x, y - barHeight, scalePixels, barHeight);
-  ctx.strokeStyle = 'black';
-  ctx.lineWidth = scale(1);
-  ctx.strokeRect(x, y - barHeight, scalePixels, barHeight);
-
-  // Label
-  ctx.font = `bold ${fontSize}px monospace`;
-  ctx.fillStyle = 'white';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'bottom';
-  ctx.fillText(label, x + scalePixels / 2, y - barHeight - scale(4));
+function drawBorder(ctx, W, H, s) {
+  ctx.strokeStyle = THEME.border;
+  ctx.lineWidth = s(2);
+  ctx.strokeRect(s(1), s(1), W - s(2), H - s(2));
 }
 
-/**
- * Draw RGB channel legend (top-right).
- */
-function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, scale) {
+// ── 2. Coordinate grid ─────────────────────────────────────────────────────
+
+function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
+  if (!viewState || !bounds) return;
+
+  const extent = computeVisibleExtent(viewState, W, H);
+  const ppu = extent.pixelsPerUnit;
+  const [cx, cy] = viewState.target || [0, 0];
+
+  const toX = (wx) => (wx - cx) * ppu + W / 2;
+  const toY = (wy) => (wy - cy) * ppu + H / 2;
+
+  const dx = niceInterval(extent.width, 5);
+  const dy = niceInterval(extent.height, 5);
+
+  // Gridlines
+  ctx.strokeStyle = 'rgba(30, 58, 95, 0.35)';
+  ctx.lineWidth = s(1);
+  ctx.setLineDash([s(4), s(4)]);
+
+  const tickFontSize = s(10);
+  const tickPad = s(5);
+
+  // Vertical gridlines
+  const xStart = Math.ceil(extent.minX / dx) * dx;
+  for (let wx = xStart; wx <= extent.maxX; wx += dx) {
+    const px = toX(wx);
+    if (px < s(2) || px > W - s(2)) continue;
+    ctx.beginPath();
+    ctx.moveTo(px, 0);
+    ctx.lineTo(px, H);
+    ctx.stroke();
+
+    // Tick label at bottom
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.font = `${tickFontSize}px ${FONT_MONO}`;
+    ctx.fillStyle = 'rgba(90, 112, 153, 0.70)';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(formatTickValue(wx, projected), px, H - tickPad);
+    ctx.restore();
+  }
+
+  // Horizontal gridlines
+  const yStart = Math.ceil(extent.minY / dy) * dy;
+  for (let wy = yStart; wy <= extent.maxY; wy += dy) {
+    const py = toY(wy);
+    if (py < s(2) || py > H - s(2)) continue;
+    ctx.beginPath();
+    ctx.moveTo(0, py);
+    ctx.lineTo(W, py);
+    ctx.stroke();
+
+    // Tick label at left
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.font = `${tickFontSize}px ${FONT_MONO}`;
+    ctx.fillStyle = 'rgba(90, 112, 153, 0.70)';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(formatTickValue(wy, projected), tickPad, py);
+    ctx.restore();
+  }
+
+  ctx.setLineDash([]);
+}
+
+// ── 3. Corner coordinates ───────────────────────────────────────────────────
+
+function drawCornerCoordinates(ctx, W, H, viewState, projected, s) {
+  if (!viewState) return;
+
+  const extent = computeVisibleExtent(viewState, W, H);
+  const corners = [
+    { wx: extent.minX, wy: extent.maxY, align: 'left',  baseline: 'top',    px: s(10), py: s(10) },
+    { wx: extent.maxX, wy: extent.maxY, align: 'right', baseline: 'top',    px: W - s(10), py: s(10) },
+    { wx: extent.minX, wy: extent.minY, align: 'left',  baseline: 'bottom', px: s(10), py: H - s(10) },
+    { wx: extent.maxX, wy: extent.minY, align: 'right', baseline: 'bottom', px: W - s(10), py: H - s(10) },
+  ];
+
+  const fontSize = s(9);
+  const pad = s(5);
+  const lineH = s(12);
+
+  for (const c of corners) {
+    const line1 = formatCoord(c.wy, projected, 'y');
+    const line2 = formatCoord(c.wx, projected, 'x');
+
+    ctx.font = `${fontSize}px ${FONT_MONO}`;
+    const tw = Math.max(ctx.measureText(line1).width, ctx.measureText(line2).width);
+
+    const pillW = tw + pad * 2;
+    const pillH = lineH * 2 + pad * 2;
+    const pillX = c.align === 'left' ? c.px : c.px - pillW;
+    const pillY = c.baseline === 'top' ? c.py : c.py - pillH;
+
+    // Pill background
+    ctx.fillStyle = 'rgba(15, 31, 56, 0.80)';
+    roundRect(ctx, pillX, pillY, pillW, pillH, s(THEME.radiusMd));
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
+    ctx.lineWidth = s(1);
+    ctx.stroke();
+
+    // Text
+    ctx.fillStyle = THEME.cyan;
+    ctx.font = `${fontSize}px ${FONT_MONO}`;
+    ctx.textAlign = c.align;
+    ctx.textBaseline = 'top';
+    const textX = c.align === 'left' ? pillX + pad : pillX + pillW - pad;
+    ctx.fillText(line1, textX, pillY + pad);
+    ctx.fillText(line2, textX, pillY + pad + lineH);
+  }
+}
+
+// ── 4. Scale bar ────────────────────────────────────────────────────────────
+
+function drawScaleBar(ctx, W, H, viewState, bounds, projected, s) {
+  if (!viewState || !bounds || !projected) return;
+
+  const ppu = Math.pow(2, viewState.zoom || 0);
+  const { barPixels, label } = computeScaleBar(ppu, s(150));
+
+  const barH = s(4);
+  const fontSize = s(11);
+  const pad = s(8);
+  const x = s(16);
+  const y = H - s(16);
+
+  // Panel pill background
+  const bgW = barPixels + pad * 2;
+  const bgH = barH + fontSize + pad * 3;
+
+  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
+  roundRect(ctx, x - pad, y - bgH, bgW, bgH + pad, s(THEME.radiusSm));
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
+  ctx.lineWidth = s(1);
+  ctx.stroke();
+
+  // Cyan bar
+  ctx.fillStyle = THEME.cyan;
+  roundRect(ctx, x, y - barH, barPixels, barH, s(2));
+  ctx.fill();
+
+  // Label
+  ctx.font = `500 ${fontSize}px ${FONT_MONO}`;
+  ctx.fillStyle = THEME.textSecondary;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText(label, x + barPixels / 2, y - barH - s(4));
+}
+
+// ── 5a. RGB legend ──────────────────────────────────────────────────────────
+
+function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s) {
   const preset = SAR_COMPOSITES[compositeId];
   const title = preset?.name || 'RGB';
 
   const channels = [
-    { key: 'R', color: '#ff4444' },
-    { key: 'G', color: '#44ff44' },
-    { key: 'B', color: '#4444ff' },
+    { key: 'R', color: CHANNEL_COLORS.R },
+    { key: 'G', color: CHANNEL_COLORS.G },
+    { key: 'B', color: CHANNEL_COLORS.B },
   ];
 
-  const fontSize = scale(12);
-  const titleFontSize = scale(13);
-  const swatchSize = scale(12);
-  const lineHeight = scale(18);
-  const pad = scale(10);
-  const x = W - scale(20);
+  const fontSize = s(11);
+  const titleFontSize = s(12);
+  const swatchSize = s(12);
+  const lineHeight = s(18);
+  const pad = s(10);
 
   // Measure width
-  ctx.font = `bold ${titleFontSize}px monospace`;
+  ctx.font = `bold ${titleFontSize}px ${FONT_MONO}`;
   let maxWidth = ctx.measureText(title).width;
 
   const labels = channels.map(({ key }) => {
@@ -157,80 +301,85 @@ function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, scal
     return `${label} ${limStr}`;
   });
 
-  ctx.font = `${fontSize}px monospace`;
+  ctx.font = `${fontSize}px ${FONT_MONO}`;
   for (const l of labels) {
-    maxWidth = Math.max(maxWidth, ctx.measureText(l).width + swatchSize + scale(8));
+    maxWidth = Math.max(maxWidth, ctx.measureText(l).width + swatchSize + s(8));
   }
 
   const boxW = maxWidth + pad * 2;
-  const boxH = titleFontSize + lineHeight * 3 + pad * 2 + scale(4);
-  const boxX = x - boxW;
-  const boxY = scale(20);
+  const boxH = titleFontSize + lineHeight * 3 + pad * 2 + s(4);
+  const boxX = W - s(20) - boxW;
+  const boxY = s(20);
 
   // Background
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-  roundRect(ctx, boxX, boxY, boxW, boxH, scale(4));
+  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
+  roundRect(ctx, boxX, boxY, boxW, boxH, s(THEME.radiusMd));
   ctx.fill();
+  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
+  ctx.lineWidth = s(1);
+  ctx.stroke();
 
   // Title
-  ctx.fillStyle = 'white';
-  ctx.font = `bold ${titleFontSize}px monospace`;
+  ctx.fillStyle = THEME.textPrimary;
+  ctx.font = `bold ${titleFontSize}px ${FONT_MONO}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillText(title, boxX + pad, boxY + pad);
 
   // Channels
-  let cy = boxY + pad + titleFontSize + scale(6);
+  let cy = boxY + pad + titleFontSize + s(6);
   for (let i = 0; i < channels.length; i++) {
     const { color } = channels[i];
 
     // Swatch
     ctx.fillStyle = color;
-    roundRect(ctx, boxX + pad, cy + scale(1), swatchSize, swatchSize, scale(2));
+    roundRect(ctx, boxX + pad, cy + s(1), swatchSize, swatchSize, s(2));
     ctx.fill();
 
     // Label
-    ctx.fillStyle = 'white';
-    ctx.font = `${fontSize}px monospace`;
+    ctx.fillStyle = THEME.textSecondary;
+    ctx.font = `${fontSize}px ${FONT_MONO}`;
     ctx.textBaseline = 'top';
-    ctx.fillText(labels[i], boxX + pad + swatchSize + scale(6), cy);
+    ctx.fillText(labels[i], boxX + pad + swatchSize + s(6), cy);
 
     cy += lineHeight;
   }
 }
 
-/**
- * Draw single-band colormap gradient bar (top-right).
- */
-function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, scale) {
+// ── 5b. Colormap bar ────────────────────────────────────────────────────────
+
+function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s) {
   const [min, max] = Array.isArray(contrastLimits) ? contrastLimits : [0, 1];
   const unit = useDecibels ? ' dB' : '';
   const colormapFunc = getColormap(colormapName);
 
-  const barW = scale(20);
-  const barH = scale(150);
-  const pad = scale(10);
-  const fontSize = scale(12);
-  const boxW = barW + pad * 2 + scale(50);
-  const boxH = barH + pad * 2 + fontSize * 2 + scale(8);
-  const boxX = W - scale(20) - boxW;
-  const boxY = scale(20);
+  const barW = s(20);
+  const barH = s(150);
+  const pad = s(10);
+  const fontSize = s(11);
+  const boxW = barW + pad * 2 + s(50);
+  const boxH = barH + pad * 2 + fontSize * 2 + s(8);
+  const boxX = W - s(20) - boxW;
+  const boxY = s(20);
 
   // Background
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-  roundRect(ctx, boxX, boxY, boxW, boxH, scale(4));
+  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
+  roundRect(ctx, boxX, boxY, boxW, boxH, s(THEME.radiusMd));
   ctx.fill();
+  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
+  ctx.lineWidth = s(1);
+  ctx.stroke();
 
   // Max label
-  ctx.fillStyle = 'white';
-  ctx.font = `${fontSize}px monospace`;
+  ctx.fillStyle = THEME.textSecondary;
+  ctx.font = `${fontSize}px ${FONT_MONO}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillText(`${max.toFixed(1)}${unit}`, boxX + pad, boxY + pad);
 
   // Gradient bar
   const gradX = boxX + pad;
-  const gradY = boxY + pad + fontSize + scale(4);
+  const gradY = boxY + pad + fontSize + s(4);
 
   for (let y = 0; y < barH; y++) {
     const t = 1 - y / barH;
@@ -240,61 +389,115 @@ function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s
   }
 
   // Min label
-  ctx.fillStyle = 'white';
+  ctx.fillStyle = THEME.textSecondary;
   ctx.textBaseline = 'top';
-  ctx.fillText(`${min.toFixed(1)}${unit}`, boxX + pad, gradY + barH + scale(4));
+  ctx.fillText(`${min.toFixed(1)}${unit}`, boxX + pad, gradY + barH + s(4));
 }
 
-/**
- * Draw metadata annotation (bottom-right).
- */
-function drawMetadata(ctx, W, H, meta, scale) {
-  const { filename, crs, compositeId, useDecibels } = meta;
+// ── 6. Metadata panel ───────────────────────────────────────────────────────
 
-  const lines = [];
-  if (filename) lines.push(filename);
+function drawMetadata(ctx, W, H, meta, s) {
+  const { filename, crs, compositeId, useDecibels, viewState, bounds, projected } = meta;
+
+  // Build label:value pairs with semantic colors
+  const entries = [];
+
+  if (filename) {
+    entries.push({ label: 'SOURCE', value: filename, color: THEME.textPrimary });
+  }
   if (compositeId) {
     const preset = SAR_COMPOSITES[compositeId];
-    lines.push(`Composite: ${preset?.name || compositeId}`);
+    entries.push({ label: 'COMPOSITE', value: preset?.name || compositeId, color: THEME.cyan });
   }
-  if (crs) lines.push(crs);
-  lines.push(`Scale: ${useDecibels ? 'dB' : 'linear'}`);
+  if (crs) {
+    entries.push({ label: 'CRS', value: crs, color: THEME.orange });
+  }
+  entries.push({ label: 'SCALE', value: useDecibels ? 'dB' : 'linear', color: THEME.textSecondary });
 
-  const fontSize = scale(11);
-  const lineHeight = scale(15);
-  const pad = scale(8);
-
-  ctx.font = `${fontSize}px monospace`;
-
-  let maxWidth = 0;
-  for (const line of lines) {
-    maxWidth = Math.max(maxWidth, ctx.measureText(line).width);
+  // Visible extent
+  if (viewState && bounds) {
+    const ext = computeVisibleExtent(viewState, W, H);
+    entries.push({
+      label: 'EXTENT',
+      value: formatExtent(ext.width, ext.height, projected),
+      color: THEME.cyan,
+    });
   }
 
-  const boxW = maxWidth + pad * 2;
-  const boxH = lines.length * lineHeight + pad * 2;
-  const boxX = W - scale(16) - boxW;
-  const boxY = H - scale(16) - boxH;
+  // Timestamp
+  entries.push({
+    label: 'EXPORTED',
+    value: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+    color: THEME.textMuted,
+  });
+
+  const labelFontSize = s(9);
+  const valueFontSize = s(11);
+  const lineH = s(16);
+  const pad = s(10);
+  const labelWidth = s(72);  // fixed label column width
+
+  // Measure max value width
+  ctx.font = `${valueFontSize}px ${FONT_MONO}`;
+  let maxValueW = 0;
+  for (const e of entries) {
+    maxValueW = Math.max(maxValueW, ctx.measureText(e.value).width);
+  }
+
+  const boxW = labelWidth + maxValueW + pad * 2 + s(4);
+  const boxH = entries.length * lineH + pad * 2;
+  const boxX = W - s(16) - boxW;
+  const boxY = H - s(16) - boxH;
 
   // Background
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  roundRect(ctx, boxX, boxY, boxW, boxH, scale(4));
+  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
+  roundRect(ctx, boxX, boxY, boxW, boxH, s(THEME.radiusMd));
   ctx.fill();
+  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
+  ctx.lineWidth = s(1);
+  ctx.stroke();
 
-  // Text
-  ctx.fillStyle = '#ccc';
-  ctx.font = `${fontSize}px monospace`;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const y = boxY + pad + i * lineH;
 
-  for (let i = 0; i < lines.length; i++) {
-    ctx.fillText(lines[i], boxX + pad, boxY + pad + i * lineHeight);
+    // Label — uppercase, letter-spaced, muted
+    ctx.font = `600 ${labelFontSize}px ${FONT_MONO}`;
+    ctx.fillStyle = THEME.textMuted;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(e.label, boxX + pad, y);
+
+    // Value — semantic color
+    ctx.font = `${valueFontSize}px ${FONT_MONO}`;
+    ctx.fillStyle = e.color;
+    ctx.fillText(e.value, boxX + pad + labelWidth, y);
   }
 }
 
-/**
- * Format contrast limit for a given channel.
- */
+// ── 7. Branding ─────────────────────────────────────────────────────────────
+
+function drawBranding(ctx, W, H, s) {
+  const fontSize = s(12);
+  ctx.font = `bold ${fontSize}px ${FONT_MONO}`;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+
+  const x = s(12);
+  const y = s(10);
+
+  // "SAR" in cyan
+  ctx.fillStyle = THEME.cyan;
+  const sarW = ctx.measureText('SAR').width;
+  ctx.fillText('SAR', x, y);
+
+  // "dine" in primary
+  ctx.fillStyle = THEME.textPrimary;
+  ctx.fillText('dine', x + sarW, y);
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
 function formatLimit(contrastLimits, ch, useDecibels) {
   if (!contrastLimits) return '';
   if (Array.isArray(contrastLimits)) {
@@ -311,23 +514,6 @@ function formatLimit(contrastLimits, ch, useDecibels) {
 }
 
 /**
- * Draw a rounded rectangle path.
- */
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
-  ctx.closePath();
-}
-
-/**
  * Download a Blob as a file.
  */
 export function downloadBlob(blob, filename) {
@@ -338,5 +524,5 @@ export function downloadBlob(blob, filename) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
