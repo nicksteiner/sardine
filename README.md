@@ -31,9 +31,9 @@ SARdine loads NASA NISAR Level-2 GCOV products directly in the browser. It parse
 |:---|:---|
 | **NISAR GCOV HDF5** | L2 Geocoded Covariance — `HHHH` `HVHV` `VHVH` `VVVV` and cross-pol terms |
 | **Cloud-optimized streaming** | Paged-aggregation metadata read (~8 MB), chunk index, byte-range fetch on demand — same pattern as COG |
-| **RGB polarimetric composites** | `HH/HV/VV` · Pauli power · dual-pol VV/VH · custom presets → 3-channel GPU textures |
+| **RGB polarimetric composites** | 3-channel GPU textures |
 | **Cloud Optimized GeoTIFF** | Loads COGs from any URL — ICEYE, Capella, Umbra, Sentinel-1, any SAR vendor |
-| **dB scaling on GPU** | GLSL: linear power → σ° dB · colormaps (grayscale, viridis, inferno, plasma, phase) · per-channel contrast · 60 fps |
+| **dB scaling on GPU** | GLSL: linear power → σ° dB · colormaps (grayscale, viridis, inferno, plasma, phase) · per-channel contrast  |
 | **GeoTIFF export** | Current RGB composite → georeferenced 3-band GeoTIFF with CRS + tiepoints |
 | **Figure export** | deck.gl canvas → PNG with metadata overlay |
 
