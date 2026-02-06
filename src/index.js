@@ -6,7 +6,13 @@
  */
 
 // Loaders
-export { loadCOG, loadMultipleCOGs, loadCOGFullImage } from './loaders/cog-loader.js';
+export {
+  loadCOG,
+  loadMultipleCOGs,
+  loadCOGFullImage,
+  loadMultiBandCOG,
+  loadTemporalCOGs
+} from './loaders/cog-loader.js';
 
 // Layers
 export { SARTileLayer } from './layers/SARTileLayer.js';
@@ -47,6 +53,16 @@ export {
   createColorbarCanvas,
   applyColormap,
 } from './utils/colormap.js';
+
+export {
+  adaptiveLogScale,
+  percentileGammaStretch,
+  localContrastEnhance,
+  analyzeScene,
+  smartToneMap,
+  applyColorRamp,
+  COLOR_RAMPS,
+} from './utils/tone-mapping.js';
 
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';

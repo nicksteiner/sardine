@@ -21,6 +21,7 @@ export function SARViewer({
   useDecibels = true,
   colormap = 'grayscale',
   opacity = 1,
+  toneMapping, // Tone mapping configuration
   width = '100%',
   height = '100%',
   onViewStateChange,
@@ -120,6 +121,7 @@ export function SARViewer({
           useDecibels,
           colormap,
           opacity,
+          toneMapping,
           onLoadingChange: handleLoadingChange,
         }),
       ];
@@ -160,7 +162,7 @@ export function SARViewer({
     }
 
     return [];
-  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, opacity, handleLoadingChange]);
+  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, opacity, toneMapping, handleLoadingChange]);
 
   const views = useMemo(
     () =>
