@@ -24,6 +24,8 @@ const MSG_LINK = 0x0006;
 const MSG_DATA_LAYOUT = 0x0008;
 const MSG_FILTER_PIPELINE = 0x000B;
 const MSG_ATTRIBUTE = 0x000C;
+const MSG_OBJ_HEADER_CONTINUATION = 0x0010;
+const MSG_SYMBOL_TABLE = 0x0011;
 const MSG_LINK_INFO = 0x002A;  // not used yet, but defined for completeness
 
 // Data layout classes
@@ -161,6 +163,219 @@ function parseSuperblock(reader) {
   console.log(`[h5chunk] Root group address: 0x${superblock.rootGroupAddress.toString(16)}`);
 
   return superblock;
+}
+
+// ─── V1 Group Traversal (Symbol Table / B-tree / SNOD / Local Heap) ──────────
+
+/**
+ * Parse a v1 Local Heap (HEAP signature).
+ * Returns the raw string data buffer from which link names are read.
+ *
+ * Spec: https://docs.hdfgroup.org/hdf5/develop/_f_m_t3.html#LocalHeap
+ *
+ * @param {BufferReader} reader
+ * @param {number} address - Offset where the HEAP starts
+ * @param {Object} superblock
+ * @returns {{dataSegment: Uint8Array}|null}
+ */
+function parseLocalHeap(reader, address, superblock) {
+  try {
+    reader.seek(address);
+    const sig = reader.readBytes(4);
+    if (String.fromCharCode(...sig) !== 'HEAP') return null;
+
+    const version = reader.readUint8();
+    reader.skip(3); // reserved
+    const dataSize = reader.readLength(superblock.lengthSize);
+    const freeOffset = reader.readLength(superblock.lengthSize);
+    const dataAddr = reader.readOffset(superblock.offsetSize);
+
+    if (dataAddr + dataSize > reader.view.byteLength) return null;
+
+    const dataSegment = new Uint8Array(reader.view.buffer, dataAddr, dataSize);
+    return { dataSegment };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Read a null-terminated string from a local heap data segment.
+ */
+function readHeapString(heapData, offset) {
+  if (!heapData || offset >= heapData.length) return '';
+  let end = offset;
+  while (end < heapData.length && heapData[end] !== 0) end++;
+  return String.fromCharCode(...heapData.slice(offset, end));
+}
+
+/**
+ * Parse a Symbol Table Node (SNOD signature).
+ * Returns an array of { name, objAddr, cacheType, btreeAddr, heapAddr } entries.
+ *
+ * Spec: https://docs.hdfgroup.org/hdf5/develop/_f_m_t3.html#SymbolTableNode
+ *
+ * @param {BufferReader} reader
+ * @param {number} address
+ * @param {Object} superblock
+ * @param {Uint8Array} heapData - Local heap data segment for name resolution
+ * @returns {Array}
+ */
+function parseSymbolTableNode(reader, address, superblock, heapData) {
+  const entries = [];
+  try {
+    reader.seek(address);
+    const sig = reader.readBytes(4);
+    if (String.fromCharCode(...sig) !== 'SNOD') return entries;
+
+    const version = reader.readUint8();
+    reader.skip(1); // reserved
+    const numSymbols = reader.readUint16();
+
+    for (let i = 0; i < numSymbols; i++) {
+      const nameOffset = reader.readOffset(superblock.offsetSize);
+      const objAddr = reader.readOffset(superblock.offsetSize);
+      const cacheType = reader.readUint32();
+      reader.skip(4); // reserved
+      // Scratch pad (16 bytes) — for cached groups, contains B-tree & heap addrs
+      const scratch = reader.readBytes(16);
+
+      const name = readHeapString(heapData, nameOffset);
+      let btreeAddr = null;
+      let heapAddr = null;
+      if (cacheType === 1) {
+        // Cached group — extract B-tree address and local heap address from scratch
+        const sv = new DataView(scratch.buffer, scratch.byteOffset, 16);
+        btreeAddr = Number(sv.getBigUint64(0, true));
+        heapAddr = Number(sv.getBigUint64(8, true));
+      }
+
+      entries.push({ name, objAddr, cacheType, btreeAddr, heapAddr });
+    }
+  } catch (e) {
+    // Truncated SNOD
+  }
+  return entries;
+}
+
+/**
+ * Walk a v1 Group B-tree (TREE signature, node type 0) to enumerate children.
+ * Type-0 B-trees point to Symbol Table Nodes (SNODs) at the leaf level.
+ *
+ * @param {BufferReader} reader
+ * @param {number} address - Address of TREE node
+ * @param {Object} superblock
+ * @param {Uint8Array} heapData - Local heap data for name resolution
+ * @returns {Array} - Flat list of SNOD entries
+ */
+function walkGroupBTree(reader, address, superblock, heapData) {
+  const results = [];
+  try {
+    if (address >= reader.view.byteLength) return results;
+
+    reader.seek(address);
+    const sig = reader.readBytes(4);
+    if (String.fromCharCode(...sig) !== 'TREE') return results;
+
+    const nodeType = reader.readUint8();
+    if (nodeType !== 0) return results; // Not a group B-tree
+
+    const nodeLevel = reader.readUint8();
+    const entriesUsed = reader.readUint16();
+    reader.skip(superblock.offsetSize); // left sibling
+    reader.skip(superblock.offsetSize); // right sibling
+
+    if (nodeLevel === 0) {
+      // Leaf node: each entry is (key, childAddr) where child points to SNOD
+      for (let i = 0; i < entriesUsed; i++) {
+        reader.readOffset(superblock.offsetSize); // key (local heap offset — unused here)
+        const childAddr = reader.readOffset(superblock.offsetSize);
+        if (childAddr < reader.view.byteLength) {
+          const snodEntries = parseSymbolTableNode(reader, childAddr, superblock, heapData);
+          results.push(...snodEntries);
+          // Restore reader position after SNOD parsing
+          reader.seek(address + 4 + 1 + 1 + 2 + superblock.offsetSize * 2 +
+                       (i + 1) * superblock.offsetSize * 2);
+        }
+      }
+      // Final key
+      reader.readOffset(superblock.offsetSize);
+    } else {
+      // Internal node: entries point to child TREE nodes
+      for (let i = 0; i < entriesUsed; i++) {
+        reader.readOffset(superblock.offsetSize); // key
+        const childAddr = reader.readOffset(superblock.offsetSize);
+        if (childAddr < reader.view.byteLength) {
+          results.push(...walkGroupBTree(reader, childAddr, superblock, heapData));
+          // Restore position for next entry
+          reader.seek(address + 4 + 1 + 1 + 2 + superblock.offsetSize * 2 +
+                       (i + 1) * superblock.offsetSize * 2);
+        }
+      }
+    }
+  } catch (e) {
+    // Truncated B-tree
+  }
+  return results;
+}
+
+/**
+ * Enumerate children of a group given its Symbol Table message data
+ * (B-tree address + local heap address).
+ *
+ * @param {BufferReader} reader
+ * @param {number} btreeAddr - Group B-tree v1 address
+ * @param {number} heapAddr - Local heap address
+ * @param {Object} superblock
+ * @returns {Array<{name, objAddr, cacheType, btreeAddr, heapAddr}>}
+ */
+function enumerateGroupChildren(reader, btreeAddr, heapAddr, superblock) {
+  if (btreeAddr >= reader.view.byteLength || heapAddr >= reader.view.byteLength) return [];
+  const heap = parseLocalHeap(reader, heapAddr, superblock);
+  if (!heap) return [];
+  return walkGroupBTree(reader, btreeAddr, superblock, heap.dataSegment);
+}
+
+/**
+ * Parse v1 object header continuation messages from a fetched block.
+ * The continuation block contains the same packed message format as the
+ * main object header, but without its own prefix.
+ *
+ * @param {ArrayBuffer} contBuffer - The fetched continuation data
+ * @param {Object} superblock
+ * @returns {Array<{type, size, flags, offset, buffer}>} messages from the continuation
+ */
+function parseV1ContinuationBlock(contBuffer, superblock) {
+  const messages = [];
+  const contReader = new BufferReader(contBuffer);
+  const end = contBuffer.byteLength;
+
+  while (contReader.pos + 8 <= end) {
+    const msgType = contReader.readUint16();
+    const msgSize = contReader.readUint16();
+    const msgFlags = contReader.readUint8();
+    contReader.skip(3); // reserved
+
+    const msgStart = contReader.pos;
+
+    if (msgType !== 0 && msgSize > 0 && msgStart + msgSize <= end) {
+      messages.push({
+        type: msgType,
+        size: msgSize,
+        flags: msgFlags,
+        offset: msgStart,
+        _reader: contReader, // reference to the continuation reader
+        _buffer: contBuffer,
+      });
+    }
+
+    contReader.seek(msgStart + msgSize);
+    // Align to 8-byte boundary
+    if (contReader.pos % 8 !== 0) {
+      contReader.seek(contReader.pos + (8 - (contReader.pos % 8)));
+    }
+  }
+  return messages;
 }
 
 /**
@@ -301,8 +516,14 @@ function parseObjectHeader(reader, superblock, address) {
     const numMessages = reader.readUint16();
     const refCount = reader.readUint32();
     const headerSize = reader.readUint32();
+    // v1 header prefix is 12 bytes — align to 8-byte boundary (pad to 16)
+    const alignedStart = address + 16;
+    reader.seek(alignedStart);
+    const messagesEnd = alignedStart + headerSize;
 
-    for (let i = 0; i < numMessages; i++) {
+    // Parse messages within the header size, stopping at boundary
+    let msgCount = 0;
+    while (reader.pos + 8 <= messagesEnd && msgCount < numMessages) {
       const msgType = reader.readUint16();
       const msgSize = reader.readUint16();
       const msgFlags = reader.readUint8();
@@ -320,6 +541,11 @@ function parseObjectHeader(reader, superblock, address) {
       }
 
       reader.seek(msgStart + msgSize);
+      // Align to 8-byte boundary
+      if (reader.pos % 8 !== 0) {
+        reader.seek(reader.pos + (8 - (reader.pos % 8)));
+      }
+      msgCount++;
     }
   }
 
@@ -803,10 +1029,28 @@ export class H5Chunk {
 
     // Parse root group and traverse structure
     // This is where we build the dataset index
-
-    // For now, we'll use a simplified approach:
-    // Scan for known NISAR dataset paths
     await this._scanForDatasets(reader);
+  }
+
+  /**
+   * Fetch arbitrary bytes from the file (for continuation blocks outside the
+   * metadata buffer). Works for both local File objects and remote URLs.
+   *
+   * @param {number} offset - Byte offset in the file
+   * @param {number} length - Number of bytes to fetch
+   * @returns {Promise<ArrayBuffer>}
+   */
+  async _fetchBytes(offset, length) {
+    if (this.file) {
+      const slice = this.file.slice(offset, offset + length);
+      return slice.arrayBuffer();
+    } else if (this.url) {
+      const response = await fetch(this.url, {
+        headers: { 'Range': `bytes=${offset}-${offset + length - 1}` },
+      });
+      return response.arrayBuffer();
+    }
+    throw new Error('No file or URL available');
   }
 
   /**
@@ -866,7 +1110,10 @@ export class H5Chunk {
   }
 
   /**
-   * Parse an object (group or dataset) at a given address
+   * Parse an object (group or dataset) at a given address.
+   * Handles both v1 (Symbol Table) and v2 (Link messages) group structures,
+   * and follows Object Header Continuation blocks for v1 headers whose
+   * messages live beyond the initial header allocation.
    */
   async _parseObjectAtAddress(reader, address, path) {
     if (address >= this.metadataBuffer.byteLength) {
@@ -879,7 +1126,10 @@ export class H5Chunk {
     let datatype = null;
     let layout = null;
     let filters = null;
-    const childLinks = []; // Collect Link messages for group traversal
+    const childLinks = []; // Collect Link messages (v2 groups)
+    let symbolTableBTree = null;
+    let symbolTableHeap = null;
+    const continuationBlocks = []; // {offset, length} for v1 continuation
 
     for (const msg of messages) {
       try {
@@ -896,9 +1146,100 @@ export class H5Chunk {
           if (link && link.address != null) {
             childLinks.push(link);
           }
+        } else if (msg.type === MSG_SYMBOL_TABLE && msg.offset < this.metadataBuffer.byteLength) {
+          reader.seek(msg.offset);
+          symbolTableBTree = reader.readOffset(this.superblock.offsetSize);
+          symbolTableHeap = reader.readOffset(this.superblock.offsetSize);
+        } else if (msg.type === MSG_OBJ_HEADER_CONTINUATION) {
+          reader.seek(msg.offset);
+          const contOffset = reader.readOffset(this.superblock.offsetSize);
+          const contLength = reader.readLength(this.superblock.lengthSize);
+          if (contOffset > 0 && contLength > 0 && contLength < 64 * 1024) {
+            continuationBlocks.push({ offset: contOffset, length: contLength });
+          }
         }
       } catch (e) {
         // Continue with other messages
+      }
+    }
+
+    // ── Follow continuation blocks (v1 headers often have these) ────────
+    for (const cont of continuationBlocks) {
+      try {
+        let contBuffer;
+        if (cont.offset < this.metadataBuffer.byteLength &&
+            cont.offset + cont.length <= this.metadataBuffer.byteLength) {
+          // Continuation is within our metadata buffer
+          contBuffer = this.metadataBuffer.slice(cont.offset, cont.offset + cont.length);
+        } else {
+          // Need to fetch from file
+          console.log(`[h5chunk] Fetching continuation block at 0x${cont.offset.toString(16)} (${cont.length} bytes)`);
+          contBuffer = await this._fetchBytes(cont.offset, cont.length);
+        }
+
+        const contMessages = parseV1ContinuationBlock(contBuffer, this.superblock);
+        for (const cmsg of contMessages) {
+          try {
+            const cr = cmsg._reader;
+            if (cmsg.type === MSG_SYMBOL_TABLE) {
+              cr.seek(cmsg.offset);
+              symbolTableBTree = cr.readOffset(this.superblock.offsetSize);
+              symbolTableHeap = cr.readOffset(this.superblock.offsetSize);
+              console.log(`[h5chunk] Found Symbol Table in continuation: B-tree=0x${symbolTableBTree.toString(16)}, Heap=0x${symbolTableHeap.toString(16)}`);
+            } else if (cmsg.type === MSG_DATASPACE) {
+              dataspace = parseDataspaceMessage(cr, cmsg.offset);
+            } else if (cmsg.type === MSG_DATATYPE) {
+              datatype = parseDatatypeMessage(cr, cmsg.offset);
+            } else if (cmsg.type === MSG_DATA_LAYOUT) {
+              layout = parseDataLayoutMessage(cr, cmsg.offset, this.superblock);
+            } else if (cmsg.type === MSG_FILTER_PIPELINE) {
+              filters = parseFilterPipelineMessage(cr, cmsg.offset);
+            }
+          } catch (e) {
+            // Skip bad continuation messages
+          }
+        }
+      } catch (e) {
+        console.warn(`[h5chunk] Failed to read continuation at 0x${cont.offset.toString(16)}:`, e.message);
+      }
+    }
+
+    // ── Handle v1 groups via Symbol Table traversal ─────────────────────
+    if (symbolTableBTree != null && symbolTableHeap != null) {
+      const children = enumerateGroupChildren(
+        reader, symbolTableBTree, symbolTableHeap, this.superblock
+      );
+      console.log(`[h5chunk] Group ${path}: ${children.length} children via Symbol Table`);
+
+      for (const child of children) {
+        const childPath = path === '/' ? `/${child.name}` : `${path}/${child.name}`;
+
+        if (child.cacheType === 1 && child.btreeAddr != null && child.heapAddr != null) {
+          // Cached group — use scratch-pad B-tree/heap directly
+          if (child.btreeAddr < this.metadataBuffer.byteLength &&
+              child.heapAddr < this.metadataBuffer.byteLength) {
+            const grandChildren = enumerateGroupChildren(
+              reader, child.btreeAddr, child.heapAddr, this.superblock
+            );
+            console.log(`[h5chunk] Group ${childPath}: ${grandChildren.length} children (cached)`);
+
+            for (const gc of grandChildren) {
+              const gcPath = `${childPath}/${gc.name}`;
+              try {
+                await this._parseObjectAtAddress(reader, gc.objAddr, gcPath);
+              } catch (e) {
+                // Skip children we can't parse
+              }
+            }
+          }
+        } else {
+          // Non-cached entry — parse the object header to determine type
+          try {
+            await this._parseObjectAtAddress(reader, child.objAddr, childPath);
+          } catch (e) {
+            // Skip children we can't parse
+          }
+        }
       }
     }
 
@@ -948,7 +1289,7 @@ export class H5Chunk {
       }
     }
 
-    // Recursively follow hard links to traverse group hierarchy
+    // Recursively follow hard links to traverse group hierarchy (v2 groups)
     for (const link of childLinks) {
       const childPath = path === '/' ? `/${link.name}` : `${path}/${link.name}`;
       try {
@@ -1277,31 +1618,45 @@ export class H5Chunk {
    * @param {string} datasetId — dataset identifier from getDatasets()/findDatasetByPath()
    * @returns {{data: any, shape: number[], dtype: string}|null}
    */
-  readSmallDataset(datasetId) {
+  async readSmallDataset(datasetId) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) return null;
 
     const { layout, dtype, shape, bytesPerElement } = dataset;
     if (!layout) return null;
 
-    // Only works for contiguous datasets within metadata buffer
+    // Contiguous datasets
     if (layout.type === 'contiguous') {
-      if (layout.address == null || layout.address >= this.metadataBuffer.byteLength) {
-        return null; // Data is beyond our buffer
-      }
+      if (layout.address == null) return null;
+
       const totalElements = shape.reduce((a, b) => a * b, 1);
       const totalBytes = totalElements * bytesPerElement;
-      const endOffset = layout.address + totalBytes;
-      if (endOffset > this.metadataBuffer.byteLength) return null;
 
-      if (dtype === 'string') {
-        // HDF5 strings: stored as fixed-size byte arrays
-        return this._readStringDataset(layout.address, totalElements, bytesPerElement, shape);
+      // Try reading from metadata buffer first (fast path)
+      if (layout.address + totalBytes <= this.metadataBuffer.byteLength) {
+        if (dtype === 'string') {
+          return this._readStringDatasetFromBuffer(this.metadataBuffer, layout.address, totalElements, bytesPerElement, shape);
+        }
+        const slice = this.metadataBuffer.slice(layout.address, layout.address + totalBytes);
+        const data = this._decodeData(slice, dtype);
+        return { data, shape, dtype };
       }
 
-      const slice = this.metadataBuffer.slice(layout.address, endOffset);
-      const data = this._decodeData(slice, dtype);
-      return { data, shape, dtype };
+      // Data is beyond metadata buffer — fetch it via range request
+      // Only fetch small datasets (< 64KB) to avoid accidentally pulling large arrays
+      if (totalBytes > 65536) return null;
+      try {
+        const remoteBuffer = await this._fetchBytes(layout.address, totalBytes);
+        if (!remoteBuffer) return null;
+        if (dtype === 'string') {
+          return this._readStringDatasetFromBuffer(remoteBuffer, 0, totalElements, bytesPerElement, shape);
+        }
+        const data = this._decodeData(remoteBuffer, dtype);
+        return { data, shape, dtype };
+      } catch (e) {
+        console.warn(`[h5chunk] Failed to fetch small dataset ${datasetId}:`, e.message);
+        return null;
+      }
     }
 
     // For small chunked datasets (rare for metadata, but handle it)
@@ -1312,8 +1667,6 @@ export class H5Chunk {
         const endOffset = entry.offset + entry.size;
         if (endOffset <= this.metadataBuffer.byteLength) {
           const slice = this.metadataBuffer.slice(entry.offset, endOffset);
-          // May need decompression — but for metadata in the header page
-          // it's often uncompressed or filter mask is set to skip filters
           const data = this._decodeData(slice, dtype);
           return { data, shape, dtype };
         }
@@ -1324,21 +1677,20 @@ export class H5Chunk {
   }
 
   /**
-   * Read a fixed-length string dataset from the metadata buffer.
+   * Read a fixed-length string dataset from a given buffer.
    * @private
    */
-  _readStringDataset(offset, numElements, elementSize, shape) {
+  _readStringDatasetFromBuffer(buffer, baseOffset, numElements, elementSize, shape) {
     const strings = [];
+    const view = new Uint8Array(buffer);
     for (let i = 0; i < numElements; i++) {
-      const start = offset + i * elementSize;
+      const start = baseOffset + i * elementSize;
       const end = start + elementSize;
-      if (end > this.metadataBuffer.byteLength) break;
-      const bytes = new Uint8Array(this.metadataBuffer, start, elementSize);
-      // Decode bytes to string, trimming null padding
+      if (end > buffer.byteLength) break;
       let str = '';
-      for (let j = 0; j < bytes.length; j++) {
-        if (bytes[j] === 0) break;
-        str += String.fromCharCode(bytes[j]);
+      for (let j = start; j < end; j++) {
+        if (view[j] === 0) break;
+        str += String.fromCharCode(view[j]);
       }
       strings.push(str.trim());
     }
