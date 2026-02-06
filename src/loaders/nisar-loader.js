@@ -22,20 +22,8 @@ const PROCESSING_PARAMS = `${METADATA_PATH}/processingInformation/parameters`;
 // Standard polarization datasets in GCOV products
 const POLARIZATIONS = ['HHHH', 'HVHV', 'VHVH', 'VVVV', 'HHHV', 'HHVH', 'HHVV', 'HVVH', 'HVVV', 'VHVV'];
 
-// Default metadata size to read (8MB should cover most NISAR metadata)
-const DEFAULT_METADATA_SIZE = 8 * 1024 * 1024;
-
 // h5wasm module singleton
 let h5wasmModule = null;
-
-// Progressive loading thresholds
-const LOADING_TIERS = [
-  8 * 1024 * 1024,    // 8MB - initial metadata
-  32 * 1024 * 1024,   // 32MB
-  128 * 1024 * 1024,  // 128MB
-  512 * 1024 * 1024,  // 512MB
-  -1,                 // Full file
-];
 
 /**
  * Initialize h5wasm module (loads WASM, cached for reuse)
@@ -63,76 +51,83 @@ async function readFileRange(file, offset, length) {
 }
 
 /**
- * Open HDF5 file with chunked loading - progressively loads more data until h5wasm can open it
+ * Open HDF5 file using h5wasm's virtual filesystem
+ * This writes the buffer to emscripten's FS before opening
  * @param {File} file - Local file from input[type="file"]
- * @param {number} initialSize - Initial bytes to try loading
  * @returns {Promise<{h5file: h5wasm.File, file: File, fullLoaded: boolean, loadedSize: number}>}
  */
-async function openHDF5Chunked(file, initialSize = DEFAULT_METADATA_SIZE) {
+async function openHDF5File(file) {
   const H5 = await initH5wasm();
 
-  console.log(`[NISAR Loader] Opening HDF5 (chunked): ${file.name}`);
+  console.log(`[NISAR Loader] Opening HDF5: ${file.name}`);
   console.log(`[NISAR Loader] File size: ${(file.size / 1e9).toFixed(2)} GB`);
 
-  // For files smaller than initial size, just load the whole thing
-  if (file.size <= initialSize) {
-    console.log('[NISAR Loader] Small file, loading entirely');
-    const arrayBuffer = await file.arrayBuffer();
+  // Check file size - warn for very large files
+  const MAX_RECOMMENDED_SIZE = 500 * 1024 * 1024; // 500MB
+  if (file.size > MAX_RECOMMENDED_SIZE) {
+    console.warn(`[NISAR Loader] Large file (${(file.size / 1e9).toFixed(2)} GB) - this may use significant memory`);
+  }
+
+  // Load the entire file - h5wasm requires complete files
+  console.log('[NISAR Loader] Loading file into memory...');
+  const startTime = performance.now();
+
+  let arrayBuffer;
+  try {
+    arrayBuffer = await file.arrayBuffer();
+  } catch (e) {
+    throw new Error(`Failed to read file into memory: ${e.message}. File may be too large for browser.`);
+  }
+
+  const loadTime = performance.now() - startTime;
+  console.log(`[NISAR Loader] File loaded in ${(loadTime / 1000).toFixed(1)}s`);
+
+  // Use a unique filename to avoid conflicts in h5wasm's virtual FS
+  const uniqueName = `/tmp/${Date.now()}_${file.name}`;
+
+  try {
+    // Write to h5wasm's emscripten virtual filesystem
+    H5.FS.writeFile(uniqueName, new Uint8Array(arrayBuffer));
+    console.log(`[NISAR Loader] Written to virtual FS: ${uniqueName}`);
+
+    // Open the file from virtual filesystem
+    const h5file = new H5.File(uniqueName, 'r');
+
+    // Test if we can access the root group
+    const root = h5file.get('/');
+    if (!root) {
+      throw new Error('Failed to access root group');
+    }
+
+    console.log('[NISAR Loader] HDF5 file opened successfully');
+
     return {
-      h5file: new H5.File(arrayBuffer, file.name),
+      h5file,
       file,
       fullLoaded: true,
       loadedSize: file.size,
+      virtualPath: uniqueName,
     };
-  }
-
-  // Try progressively larger chunks until h5wasm can open the file
-  // h5wasm needs enough of the file to validate HDF5 structure
-  for (const tier of LOADING_TIERS) {
-    const loadSize = tier === -1 ? file.size : Math.min(tier, file.size);
-
-    console.log(`[NISAR Loader] Trying to open with ${(loadSize / 1e6).toFixed(1)} MB...`);
-
+  } catch (e) {
+    // Clean up on failure
     try {
-      const buffer = await readFileRange(file, 0, loadSize);
-
-      // h5wasm needs a unique filename for each buffer to avoid conflicts
-      const uniqueName = `${file.name}_${loadSize}`;
-      const h5file = new H5.File(buffer, uniqueName);
-
-      // Test if we can access the root group
-      const root = h5file.get('/');
-      if (root) {
-        console.log(`[NISAR Loader] Successfully opened with ${(loadSize / 1e6).toFixed(1)} MB`);
-        return {
-          h5file,
-          file,
-          fullLoaded: loadSize >= file.size,
-          loadedSize: loadSize,
-        };
-      }
-    } catch (e) {
-      console.warn(`[NISAR Loader] Failed to open with ${(loadSize / 1e6).toFixed(1)} MB:`, e.message);
-
-      // If this was the full file and it still failed, rethrow
-      if (loadSize >= file.size) {
-        throw new Error(`Failed to open HDF5 file: ${e.message}`);
-      }
-      // Otherwise try the next tier
+      H5.FS.unlink(uniqueName);
+    } catch (cleanupErr) {
+      // Ignore cleanup errors
     }
+    throw new Error(`Failed to open HDF5 file: ${e.message}`);
   }
+}
 
-  // If we get here, try loading the full file as a last resort
-  console.log('[NISAR Loader] Loading full file as last resort...');
-  const fullBuffer = await file.arrayBuffer();
-  const h5file = new H5.File(fullBuffer, file.name);
-
-  return {
-    h5file,
-    file,
-    fullLoaded: true,
-    loadedSize: file.size,
-  };
+/**
+ * Open HDF5 file - wrapper that handles errors gracefully
+ * @param {File} file - Local file from input[type="file"]
+ * @returns {Promise<{h5file: h5wasm.File, file: File, fullLoaded: boolean, loadedSize: number}>}
+ */
+async function openHDF5Chunked(file) {
+  // Note: Chunked/partial loading is not supported by h5wasm
+  // The file must be loaded entirely into memory
+  return openHDF5File(file);
 }
 
 /**
@@ -647,8 +642,8 @@ export async function loadNISARGCOV(file, options = {}) {
   console.log(`[NISAR Loader] Loading NISAR GCOV (chunked): ${file.name}`);
   console.log(`[NISAR Loader] Dataset: frequency${frequency}/${polarization}`);
 
-  // Open with chunked loading - progressively loads more if needed
-  const { h5file, fullLoaded, loadedSize } = await openHDF5Chunked(file, DEFAULT_METADATA_SIZE);
+  // Open HDF5 file (loads entire file into memory)
+  const { h5file, fullLoaded, loadedSize } = await openHDF5Chunked(file);
 
   console.log(`[NISAR Loader] Loaded: ${(loadedSize / 1e6).toFixed(1)} MB, Full: ${fullLoaded}`);
 
@@ -700,97 +695,20 @@ export async function loadNISARGCOV(file, options = {}) {
     '<u4': 4, 'uint32': 4,
   }[dataset.dtype] || 4;
 
-  // For chunked loading, we need dataset offset info
-  // h5wasm doesn't expose this directly, so we use the dataset reference
-  // when fullLoaded, or estimate for partial loads
+  // Dataset info for reference
   const datasetInfo = {
     shape: dataset.shape,
     dtype: dataset.dtype,
     chunks: layout?.chunks,
     bytesPerElement,
-    // Data offset estimation - will be refined
-    dataOffset: fullLoaded ? null : loadedSize,
   };
 
-  // Find which tier we're at based on loaded size
-  let initialTier = 0;
-  for (let i = 0; i < LOADING_TIERS.length; i++) {
-    if (LOADING_TIERS[i] === -1 || LOADING_TIERS[i] >= loadedSize) {
-      initialTier = i;
-      break;
-    }
-  }
-
-  // Store references for getTile with progressive loading support
+  // Store references for getTile
   const readerState = {
     h5file,
-    file,
     dataset,
-    fullLoaded,
     datasetInfo,
-    currentLoadTier: initialTier,
-    currentLoadedSize: loadedSize,
-    isReloading: false,
   };
-
-  /**
-   * Reload the HDF5 file with more data
-   * Called when slice fails due to data being beyond current buffer
-   */
-  async function reloadWithMoreData() {
-    if (readerState.isReloading) {
-      // Wait for ongoing reload
-      while (readerState.isReloading) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-      return;
-    }
-
-    if (readerState.fullLoaded) {
-      return; // Already fully loaded
-    }
-
-    readerState.isReloading = true;
-
-    try {
-      // Find next tier
-      const nextTier = readerState.currentLoadTier + 1;
-      if (nextTier >= LOADING_TIERS.length) {
-        // Load full file
-        console.log('[NISAR Loader] Loading full file...');
-        const arrayBuffer = await file.arrayBuffer();
-        const H5 = await initH5wasm();
-        readerState.h5file = new H5.File(arrayBuffer, file.name);
-        readerState.dataset = readerState.h5file.get(datasetPath);
-        readerState.fullLoaded = true;
-        readerState.currentLoadedSize = file.size;
-      } else {
-        const newSize = LOADING_TIERS[nextTier];
-        if (newSize === -1 || newSize >= file.size) {
-          // Load full file
-          console.log('[NISAR Loader] Loading full file...');
-          const arrayBuffer = await file.arrayBuffer();
-          const H5 = await initH5wasm();
-          readerState.h5file = new H5.File(arrayBuffer, file.name);
-          readerState.dataset = readerState.h5file.get(datasetPath);
-          readerState.fullLoaded = true;
-          readerState.currentLoadedSize = file.size;
-        } else {
-          console.log(`[NISAR Loader] Expanding buffer to ${(newSize / 1e6).toFixed(0)}MB...`);
-          const buffer = await readFileRange(file, 0, newSize);
-          const H5 = await initH5wasm();
-          readerState.h5file = new H5.File(buffer, file.name);
-          readerState.dataset = readerState.h5file.get(datasetPath);
-          readerState.currentLoadedSize = newSize;
-        }
-        readerState.currentLoadTier = nextTier;
-      }
-
-      console.log(`[NISAR Loader] Now loaded: ${(readerState.currentLoadedSize / 1e6).toFixed(1)}MB`);
-    } finally {
-      readerState.isReloading = false;
-    }
-  }
 
   /**
    * Get tile data for deck.gl TileLayer
@@ -827,31 +745,8 @@ export async function loadNISARGCOV(file, options = {}) {
         return null;
       }
 
-      let sliceData;
-      let retryCount = 0;
-      const maxRetries = LOADING_TIERS.length;
-
-      while (retryCount < maxRetries) {
-        try {
-          sliceData = readerState.dataset.slice([[top, bottom], [left, right]]);
-          break; // Success
-        } catch (e) {
-          if (readerState.fullLoaded) {
-            // Already fully loaded, can't retry
-            console.error(`[NISAR Loader] Slice failed on full file:`, e);
-            return null;
-          }
-
-          console.warn(`[NISAR Loader] Slice failed (tier ${readerState.currentLoadTier}), loading more data...`);
-          await reloadWithMoreData();
-          retryCount++;
-        }
-      }
-
-      if (!sliceData) {
-        console.error(`[NISAR Loader] Failed to load tile after ${retryCount} retries`);
-        return null;
-      }
+      // Read tile data from dataset
+      const sliceData = readerState.dataset.slice([[top, bottom], [left, right]]);
 
       // Convert to Float32Array if needed
       let data;
@@ -925,12 +820,8 @@ export async function loadNISARGCOVFullImage(file, options = {}, maxSize = 2048)
 
   console.log(`[NISAR Loader] Loading full image (max ${maxSize}px): ${file.name}`);
 
-  // For full image, we need to load more data
-  // Estimate: maxSize^2 * 4 bytes = ~16MB for 2048x2048 float32
-  const estimatedDataSize = maxSize * maxSize * 4;
-  const metadataSize = Math.max(DEFAULT_METADATA_SIZE, estimatedDataSize + DEFAULT_METADATA_SIZE);
-
-  const { h5file } = await openHDF5Chunked(file, metadataSize);
+  // Open HDF5 file (loads entire file into memory)
+  const { h5file } = await openHDF5Chunked(file);
 
   // Get the requested dataset
   const datasetPath = `${GRID_PATH}/frequency${frequency}/${polarization}`;
