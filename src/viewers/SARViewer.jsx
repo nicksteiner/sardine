@@ -20,7 +20,9 @@ export function SARViewer({
   contrastLimits = [-25, 0],
   useDecibels = true,
   colormap = 'grayscale',
+  compositeId = null, // SAR RGB composite ID (null = single band)
   opacity = 1,
+  quality = 'fast',
   width = '100%',
   height = '100%',
   onViewStateChange,
@@ -155,12 +157,13 @@ export function SARViewer({
           useDecibels,
           colormap,
           opacity,
+          quality,
         }),
       ];
     }
 
     return [];
-  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, opacity, handleLoadingChange]);
+  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, opacity, quality, handleLoadingChange]);
 
   const views = useMemo(
     () =>
@@ -204,6 +207,7 @@ export function SARViewer({
         colormap={colormap}
         contrastLimits={contrastLimits}
         useDecibels={useDecibels}
+        compositeId={compositeId}
       />
     </div>
   );
@@ -211,8 +215,9 @@ export function SARViewer({
 
 /**
  * ColorbarOverlay - Displays a colorbar legend
+ * Shows RGB channel legend when compositeId is set, otherwise shows colormap gradient.
  */
-function ColorbarOverlay({ colormap, contrastLimits, useDecibels }) {
+function ColorbarOverlay({ colormap, contrastLimits, useDecibels, compositeId }) {
   const [min, max] = contrastLimits;
   const unit = useDecibels ? 'dB' : '';
 
@@ -228,6 +233,31 @@ function ColorbarOverlay({ colormap, contrastLimits, useDecibels }) {
     fontFamily: 'monospace',
   };
 
+  // RGB composite mode — show channel legend
+  if (compositeId) {
+    const channelColors = [
+      { label: 'R', color: '#ff4444' },
+      { label: 'G', color: '#44ff44' },
+      { label: 'B', color: '#4444ff' },
+    ];
+
+    return (
+      <div style={colorbarStyle}>
+        <div style={{ marginBottom: '6px', fontWeight: 'bold' }}>RGB</div>
+        {channelColors.map(({ label, color }) => (
+          <div key={label} style={{ display: 'flex', alignItems: 'center', marginBottom: '3px' }}>
+            <div style={{ width: 12, height: 12, backgroundColor: color, marginRight: 6, borderRadius: 2 }} />
+            <span>{label}</span>
+          </div>
+        ))}
+        <div style={{ marginTop: '6px', borderTop: '1px solid #555', paddingTop: '4px' }}>
+          {min.toFixed(1)} – {max.toFixed(1)} {unit}
+        </div>
+      </div>
+    );
+  }
+
+  // Single-band mode — show colormap gradient
   const gradientStyle = {
     width: '20px',
     height: '150px',

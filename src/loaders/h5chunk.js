@@ -522,7 +522,10 @@ function parseBTreeV1(reader, address, superblock, rank, chunkSize) {
     const leftSibling = reader.readOffset(superblock.offsetSize);
     const rightSibling = reader.readOffset(superblock.offsetSize);
 
-    // Parse keys and children
+    // Read all entries first, then process.
+    // This avoids reader position corruption when recursing into child nodes,
+    // since the BufferReader has shared state (single pos field).
+    const entries = [];
     for (let i = 0; i < entriesUsed; i++) {
       // Key: chunk size (4 bytes) + filter mask (4 bytes) + chunk offsets (rank * 8 bytes each)
       const keyChunkSize = reader.readUint32();
@@ -537,18 +540,23 @@ function parseBTreeV1(reader, address, superblock, rank, chunkSize) {
       // For leaf nodes, this is the data chunk address
       const childAddress = reader.readOffset(superblock.offsetSize);
 
+      entries.push({ keyChunkSize, filterMask, chunkOffsets, childAddress });
+    }
+
+    // Now process entries (safe to recurse since we've finished reading this node)
+    for (const entry of entries) {
       if (nodeLevel === 0) {
         // Leaf node - childAddress is the actual chunk data address
-        const chunkKey = chunkOffsets.slice(0, -1).join(','); // Last dim is the element offset
+        const chunkKey = entry.chunkOffsets.slice(0, -1).join(','); // Last dim is the element offset
         chunks.set(chunkKey, {
-          offset: childAddress,
-          size: keyChunkSize,
-          filterMask,
-          indices: chunkOffsets.slice(0, -1),
+          offset: entry.childAddress,
+          size: entry.keyChunkSize,
+          filterMask: entry.filterMask,
+          indices: entry.chunkOffsets.slice(0, -1),
         });
       } else {
-        // Internal node - recurse
-        parseNode(childAddress);
+        // Internal node - recurse into child
+        parseNode(entry.childAddress);
       }
     }
   }
@@ -741,38 +749,26 @@ export class H5Chunk {
 
   /**
    * Scan for NISAR datasets
-   * This is a pragmatic approach - look for known paths
+   * Uses multiple strategies:
+   * 1. Parse from root group address
+   * 2. Scan for v1 object headers (no signature, but known structure)
+   * 3. Scan for v2 object headers (OHDR signature)
+   * 4. Look for Data Layout messages that indicate chunked datasets
    */
   async _scanForDatasets(reader) {
-    // NISAR GCOV structure:
-    // /science/LSAR/GCOV/grids/frequencyA/HHHH
-    // /science/LSAR/GCOV/grids/frequencyA/HVHV
-    // etc.
-
-    // For a proper implementation, we'd traverse the full HDF5 structure
-    // For now, we'll look for B-tree signatures and chunk records
-
     console.log('[h5chunk] Scanning for datasets...');
 
-    // Scan for BTREE/BTHD signatures
     const buffer = new Uint8Array(this.metadataBuffer);
-    const btrees = [];
 
-    for (let i = 0; i < buffer.length - 4; i++) {
-      // Look for 'TREE' (B-tree v1) or 'BTHD' (B-tree v2)
-      if (buffer[i] === 0x54 && buffer[i + 1] === 0x52 &&
-          buffer[i + 2] === 0x45 && buffer[i + 3] === 0x45) {
-        btrees.push({ type: 'v1', offset: i });
-      }
-      if (buffer[i] === 0x42 && buffer[i + 1] === 0x54 &&
-          buffer[i + 2] === 0x48 && buffer[i + 3] === 0x44) {
-        btrees.push({ type: 'v2', offset: i });
-      }
+    // Strategy 1: Parse from root group (v2 superblock points to object header)
+    try {
+      console.log(`[h5chunk] Parsing root group at 0x${this.superblock.rootGroupAddress.toString(16)}`);
+      await this._parseObjectAtAddress(reader, this.superblock.rootGroupAddress, '/');
+    } catch (e) {
+      console.warn('[h5chunk] Failed to parse root group:', e.message);
     }
 
-    console.log(`[h5chunk] Found ${btrees.length} B-tree headers`);
-
-    // Look for object headers
+    // Strategy 2: Scan for OHDR signatures (v2 object headers)
     const ohdrs = [];
     for (let i = 0; i < buffer.length - 4; i++) {
       if (buffer[i] === 0x4F && buffer[i + 1] === 0x48 &&
@@ -780,73 +776,379 @@ export class H5Chunk {
         ohdrs.push(i);
       }
     }
+    console.log(`[h5chunk] Found ${ohdrs.length} OHDR signatures`);
 
-    console.log(`[h5chunk] Found ${ohdrs.length} object headers`);
-
-    // Parse each object header to find datasets
     for (const addr of ohdrs) {
       try {
-        const messages = parseObjectHeader(reader, this.superblock, addr);
-
-        let hasDataspace = false;
-        let hasDatatype = false;
-        let dataspace = null;
-        let datatype = null;
-        let layout = null;
-        let filters = null;
-
-        for (const msg of messages) {
-          if (msg.type === MSG_DATASPACE) {
-            dataspace = parseDataspaceMessage(reader, msg.offset);
-            hasDataspace = true;
-          } else if (msg.type === MSG_DATATYPE) {
-            datatype = parseDatatypeMessage(reader, msg.offset);
-            hasDatatype = true;
-          } else if (msg.type === MSG_DATA_LAYOUT) {
-            layout = parseDataLayoutMessage(reader, msg.offset, this.superblock);
-          } else if (msg.type === MSG_FILTER_PIPELINE) {
-            filters = parseFilterPipelineMessage(reader, msg.offset);
-          }
-        }
-
-        // If we have dataspace and datatype, this is a dataset
-        if (hasDataspace && hasDatatype && dataspace.rank === 2) {
-          const datasetInfo = {
-            address: addr,
-            shape: dataspace.dims,
-            dtype: datatype.dtype,
-            bytesPerElement: datatype.size,
-            layout,
-            filters,
-            chunks: null,
-          };
-
-          // Parse chunk index if chunked
-          if (layout && layout.type === 'chunked' && layout.btreeAddress) {
-            try {
-              if (layout.version < 4) {
-                datasetInfo.chunks = parseBTreeV1(
-                  reader,
-                  layout.btreeAddress,
-                  this.superblock,
-                  dataspace.rank + 1, // +1 for element offset dimension
-                  layout.chunkDims
-                );
-              }
-            } catch (e) {
-              console.warn(`[h5chunk] Failed to parse B-tree at 0x${layout.btreeAddress.toString(16)}:`, e.message);
-            }
-          }
-
-          this.datasets.set(`dataset_${addr.toString(16)}`, datasetInfo);
-          console.log(`[h5chunk] Found 2D dataset at 0x${addr.toString(16)}: ${dataspace.dims.join('x')} ${datatype.dtype}`);
-        }
+        await this._parseObjectAtAddress(reader, addr, `obj_${addr.toString(16)}`);
       } catch (e) {
         // Skip invalid headers
       }
     }
 
-    console.log(`[h5chunk] Found ${this.datasets.size} datasets`);
+    // Strategy 3: Scan for FRHP (fractal heap) which contains link messages
+    const frhps = [];
+    for (let i = 0; i < buffer.length - 4; i++) {
+      if (buffer[i] === 0x46 && buffer[i + 1] === 0x52 &&
+          buffer[i + 2] === 0x48 && buffer[i + 3] === 0x50) {
+        frhps.push(i);
+      }
+    }
+    console.log(`[h5chunk] Found ${frhps.length} FRHP (fractal heap) signatures`);
+
+    // Strategy 4: Look for chunked data layout patterns
+    // Scan for Data Layout message patterns (version 3 or 4 with chunked class)
+    await this._scanForChunkedLayouts(reader, buffer);
+
+    console.log(`[h5chunk] Found ${this.datasets.size} datasets total`);
+  }
+
+  /**
+   * Parse an object (group or dataset) at a given address
+   */
+  async _parseObjectAtAddress(reader, address, path) {
+    if (address >= this.metadataBuffer.byteLength) {
+      return; // Beyond our metadata buffer
+    }
+
+    const messages = parseObjectHeader(reader, this.superblock, address);
+
+    let dataspace = null;
+    let datatype = null;
+    let layout = null;
+    let filters = null;
+
+    for (const msg of messages) {
+      try {
+        if (msg.type === MSG_DATASPACE && msg.offset < this.metadataBuffer.byteLength) {
+          dataspace = parseDataspaceMessage(reader, msg.offset);
+        } else if (msg.type === MSG_DATATYPE && msg.offset < this.metadataBuffer.byteLength) {
+          datatype = parseDatatypeMessage(reader, msg.offset);
+        } else if (msg.type === MSG_DATA_LAYOUT && msg.offset < this.metadataBuffer.byteLength) {
+          layout = parseDataLayoutMessage(reader, msg.offset, this.superblock);
+        } else if (msg.type === MSG_FILTER_PIPELINE && msg.offset < this.metadataBuffer.byteLength) {
+          filters = parseFilterPipelineMessage(reader, msg.offset);
+        }
+      } catch (e) {
+        // Continue with other messages
+      }
+    }
+
+    // If we have dataspace and datatype, this is a dataset
+    if (dataspace && datatype && dataspace.rank >= 1) {
+      const datasetId = `dataset_${address.toString(16)}`;
+
+      // Skip if already found
+      if (this.datasets.has(datasetId)) {
+        return;
+      }
+
+      const datasetInfo = {
+        address,
+        path,
+        shape: dataspace.dims,
+        dtype: datatype.dtype,
+        bytesPerElement: datatype.size,
+        layout,
+        filters,
+        chunks: null,
+      };
+
+      // Parse chunk index if chunked and B-tree is within our metadata
+      if (layout && layout.type === 'chunked' && layout.btreeAddress) {
+        if (layout.btreeAddress < this.metadataBuffer.byteLength) {
+          try {
+            if (layout.version < 4) {
+              datasetInfo.chunks = parseBTreeV1(
+                reader,
+                layout.btreeAddress,
+                this.superblock,
+                dataspace.rank + 1,
+                layout.chunkDims
+              );
+            }
+          } catch (e) {
+            console.warn(`[h5chunk] B-tree parse failed at 0x${layout.btreeAddress.toString(16)}`);
+          }
+        }
+      }
+
+      this.datasets.set(datasetId, datasetInfo);
+
+      if (dataspace.rank === 2) {
+        console.log(`[h5chunk] Found 2D dataset: ${dataspace.dims.join('x')} ${datatype.dtype} at 0x${address.toString(16)}`);
+      }
+    }
+  }
+
+  /**
+   * Scan for chunked data layout messages directly in the buffer
+   * This catches datasets we might have missed by signature scanning
+   */
+  async _scanForChunkedLayouts(reader, buffer) {
+    // Look for Data Layout message version 3 or 4 with chunked class (0x02)
+    // Layout v3: [version=3][class=2][rank][btree_addr][chunk_dims...]
+    // Layout v4: [version=4][class=2][flags][rank][dim_size_enc][chunk_dims...][index_type][btree_addr]
+
+    const candidates = [];
+
+    for (let i = 0; i < buffer.length - 20; i++) {
+      // Check for version 3 chunked layout
+      if (buffer[i] === 3 && buffer[i + 1] === 2) {
+        // Version 3, class 2 (chunked)
+        const rank = buffer[i + 2];
+        if (rank >= 1 && rank <= 10) {
+          candidates.push({ offset: i, version: 3, rank });
+        }
+      }
+
+      // Check for version 4 chunked layout
+      if (buffer[i] === 4 && buffer[i + 1] === 2) {
+        // Version 4, class 2 (chunked)
+        const flags = buffer[i + 2];
+        const rank = buffer[i + 3];
+        if (rank >= 1 && rank <= 10 && flags <= 0x1F) {
+          candidates.push({ offset: i, version: 4, rank, flags });
+        }
+      }
+    }
+
+    console.log(`[h5chunk] Found ${candidates.length} potential chunked layout messages`);
+
+    // For each candidate, try to parse the layout directly and search for nearby dataspace/datatype
+    for (const cand of candidates) {
+      try {
+        // Parse the layout message directly
+        const layout = parseDataLayoutMessage(reader, cand.offset, this.superblock);
+
+        if (layout && layout.type === 'chunked' && layout.chunkDims) {
+          // Validate B-tree address - must be non-zero and reasonable
+          const isValidBtree = layout.btreeAddress > 0x100 &&
+                               layout.btreeAddress < this.file?.size || layout.btreeAddress < 2e9;
+
+          if (!isValidBtree) {
+            console.log(`[h5chunk] Skipping layout at 0x${cand.offset.toString(16)}: invalid btree addr 0x${layout.btreeAddress?.toString(16)}`);
+            continue;
+          }
+          // Now search nearby for Dataspace and Datatype messages
+          // They're typically within 200 bytes before the layout message
+          const searchStart = Math.max(0, cand.offset - 500);
+          const searchEnd = Math.min(buffer.length, cand.offset + 100);
+
+          let dataspace = null;
+          let datatype = null;
+
+          // Look for Dataspace message (version 1 or 2)
+          for (let j = searchStart; j < searchEnd - 10; j++) {
+            // Dataspace v1: [version=1][rank][flags][reserved x5][dims...]
+            // Dataspace v2: [version=2][rank][flags][type][dims...]
+            if ((buffer[j] === 1 || buffer[j] === 2) && buffer[j + 1] >= 1 && buffer[j + 1] <= 10) {
+              const dsRank = buffer[j + 1];
+              // Validate this looks like a dataspace for our layout
+              if (dsRank === cand.rank || dsRank === cand.rank - 1) {
+                try {
+                  dataspace = parseDataspaceMessage(reader, j);
+                  if (dataspace && dataspace.dims && dataspace.dims.length >= 1) {
+                    break;
+                  }
+                } catch (e) {
+                  dataspace = null;
+                }
+              }
+            }
+          }
+
+          // Look for Datatype message (floating point)
+          for (let j = searchStart; j < searchEnd - 10; j++) {
+            // Datatype class 1 (float) with version in high nibble
+            const classAndVersion = buffer[j];
+            const dtClass = classAndVersion & 0x0F;
+            const dtVersion = (classAndVersion >> 4) & 0x0F;
+
+            // Float class (1) or Fixed-point class (0)
+            if ((dtClass === 1 || dtClass === 0) && dtVersion >= 0 && dtVersion <= 4) {
+              // Next 3 bytes are bit fields, then 4 bytes for size
+              const size = buffer[j + 4] | (buffer[j + 5] << 8) | (buffer[j + 6] << 16) | (buffer[j + 7] << 24);
+              if (size === 4 || size === 8 || size === 2) {
+                try {
+                  datatype = parseDatatypeMessage(reader, j);
+                  if (datatype && datatype.dtype) {
+                    break;
+                  }
+                } catch (e) {
+                  datatype = null;
+                }
+              }
+            }
+          }
+
+          // Look for Filter Pipeline message nearby
+          let filters = null;
+          for (let j = searchStart; j < searchEnd - 10; j++) {
+            // Filter pipeline v1: version=1, numFilters=1..10
+            // Filter pipeline v2: version=2, numFilters=1..10
+            if ((buffer[j] === 1 || buffer[j] === 2) && buffer[j + 1] >= 1 && buffer[j + 1] <= 10) {
+              // Validate: for v1, bytes 2-7 should be reserved (zeros)
+              if (buffer[j] === 1 && (buffer[j + 2] !== 0 || buffer[j + 3] !== 0)) continue;
+              try {
+                const f = parseFilterPipelineMessage(reader, j);
+                if (f && f.length > 0 && f.every(flt => flt.id >= 1 && flt.id <= 32000)) {
+                  filters = f;
+                  break;
+                }
+              } catch (e) { /* skip */ }
+            }
+          }
+
+          // If we found both, create a dataset
+          if (dataspace && datatype && dataspace.rank >= 1) {
+            const datasetId = `layout_${cand.offset.toString(16)}`;
+
+            if (!this.datasets.has(datasetId)) {
+              // The last chunk dim is the element size in bytes (HDF5 convention).
+              // Use it to correct the dtype if the nearby datatype search was wrong.
+              const elemSize = layout.chunkDims?.[layout.chunkDims.length - 1];
+              let dtype = datatype.dtype;
+              let bytesPerElement = datatype.size;
+              if (elemSize && elemSize !== datatype.size && elemSize <= 8) {
+                bytesPerElement = elemSize;
+                if (elemSize === 4) dtype = 'float32';
+                else if (elemSize === 8) dtype = 'float64';
+                else if (elemSize === 2) dtype = 'float16';
+              }
+
+              const datasetInfo = {
+                address: cand.offset,
+                shape: dataspace.dims,
+                dtype,
+                bytesPerElement,
+                layout,
+                filters,
+                chunks: null,
+              };
+
+              // Try to parse B-tree if within metadata
+              if (layout.btreeAddress && layout.btreeAddress < this.metadataBuffer.byteLength) {
+                console.log(`[h5chunk] Parsing B-tree at 0x${layout.btreeAddress.toString(16)} for dataset at 0x${cand.offset.toString(16)}`);
+                try {
+                  datasetInfo.chunks = parseBTreeV1(
+                    reader,
+                    layout.btreeAddress,
+                    this.superblock,
+                    dataspace.rank + 1,
+                    layout.chunkDims
+                  );
+                  console.log(`[h5chunk] B-tree parsed: ${datasetInfo.chunks?.size || 0} chunks found`);
+                } catch (e) {
+                  console.warn(`[h5chunk] B-tree parse failed:`, e.message);
+                }
+              } else if (layout.btreeAddress) {
+                console.log(`[h5chunk] B-tree at 0x${layout.btreeAddress.toString(16)} is beyond metadata buffer (${this.metadataBuffer.byteLength} bytes)`);
+              }
+
+              this.datasets.set(datasetId, datasetInfo);
+
+              if (dataspace.rank === 2) {
+                console.log(`[h5chunk] Found 2D chunked dataset: ${dataspace.dims.join('x')} ${datatype.dtype} (chunks: ${layout.chunkDims?.join('x') || 'unknown'})`);
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // Skip this candidate
+      }
+    }
+  }
+
+  /**
+   * Parse a v1 object header (no signature, starts with version byte = 1)
+   */
+  async _parseV1ObjectHeader(reader, address) {
+    reader.seek(address);
+
+    const version = reader.readUint8();
+    if (version !== 1) {
+      return;
+    }
+
+    reader.skip(1); // reserved
+    const numMessages = reader.readUint16();
+    const refCount = reader.readUint32();
+    const headerSize = reader.readUint32();
+
+    if (numMessages > 100 || headerSize > 10000) {
+      return; // Sanity check
+    }
+
+    let dataspace = null;
+    let datatype = null;
+    let layout = null;
+    let filters = null;
+
+    for (let i = 0; i < numMessages; i++) {
+      const msgType = reader.readUint16();
+      const msgSize = reader.readUint16();
+      const msgFlags = reader.readUint8();
+      reader.skip(3); // reserved
+
+      const msgStart = reader.pos;
+
+      try {
+        if (msgType === MSG_DATASPACE && msgStart + msgSize <= this.metadataBuffer.byteLength) {
+          dataspace = parseDataspaceMessage(reader, msgStart);
+        } else if (msgType === MSG_DATATYPE && msgStart + msgSize <= this.metadataBuffer.byteLength) {
+          datatype = parseDatatypeMessage(reader, msgStart);
+        } else if (msgType === MSG_DATA_LAYOUT && msgStart + msgSize <= this.metadataBuffer.byteLength) {
+          layout = parseDataLayoutMessage(reader, msgStart, this.superblock);
+        } else if (msgType === MSG_FILTER_PIPELINE && msgStart + msgSize <= this.metadataBuffer.byteLength) {
+          filters = parseFilterPipelineMessage(reader, msgStart);
+        }
+      } catch (e) {
+        // Continue
+      }
+
+      reader.seek(msgStart + msgSize);
+    }
+
+    // If we found a dataset
+    if (dataspace && datatype && dataspace.rank >= 1) {
+      const datasetId = `dataset_${address.toString(16)}`;
+
+      if (!this.datasets.has(datasetId)) {
+        const datasetInfo = {
+          address,
+          shape: dataspace.dims,
+          dtype: datatype.dtype,
+          bytesPerElement: datatype.size,
+          layout,
+          filters,
+          chunks: null,
+        };
+
+        // Try to parse B-tree
+        if (layout && layout.type === 'chunked' && layout.btreeAddress) {
+          if (layout.btreeAddress < this.metadataBuffer.byteLength) {
+            try {
+              datasetInfo.chunks = parseBTreeV1(
+                reader,
+                layout.btreeAddress,
+                this.superblock,
+                dataspace.rank + 1,
+                layout.chunkDims
+              );
+            } catch (e) {
+              // B-tree might be beyond metadata
+            }
+          }
+        }
+
+        this.datasets.set(datasetId, datasetInfo);
+
+        if (dataspace.rank === 2) {
+          console.log(`[h5chunk] Found v1 2D dataset: ${dataspace.dims.join('x')} ${datatype.dtype}`);
+        }
+      }
+    }
   }
 
   /**
@@ -880,7 +1182,12 @@ export class H5Chunk {
       throw new Error('Dataset is not chunked or chunk index not available');
     }
 
-    const chunkKey = `${row},${col}`;
+    // B-tree keys are pixel offsets (e.g. "0,512"), not chunk indices (e.g. "0,1").
+    // Convert chunk indices to pixel offsets using chunk dimensions.
+    const chunkDims = dataset.layout?.chunkDims || [];
+    const rowOffset = chunkDims.length >= 1 ? row * chunkDims[0] : row;
+    const colOffset = chunkDims.length >= 2 ? col * chunkDims[1] : col;
+    const chunkKey = `${rowOffset},${colOffset}`;
     const chunkInfo = dataset.chunks.get(chunkKey);
 
     if (!chunkInfo) {
@@ -904,8 +1211,28 @@ export class H5Chunk {
 
     // Decompress if needed
     let data = buffer;
+    const chunkDimsProduct = (dataset.layout?.chunkDims || [])
+      .slice(0, -1) // exclude element size dim
+      .reduce((a, b) => a * b, 1);
+    const expectedBytes = chunkDimsProduct * dataset.bytesPerElement;
+
     if (dataset.filters && chunkInfo.filterMask === 0) {
       data = await this._decompressChunk(buffer, dataset.filters);
+    } else if (!dataset.filters && buffer.byteLength < expectedBytes) {
+      // No filter info but data is obviously compressed — try deflate as fallback
+      try {
+        data = await this._decompressChunk(buffer, [{ id: FILTER_DEFLATE }]);
+      } catch (e) {
+        // If deflate fails, try shuffle+deflate
+        try {
+          data = await this._decompressChunk(buffer, [
+            { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
+            { id: FILTER_DEFLATE },
+          ]);
+        } catch (e2) {
+          // Use raw data as-is
+        }
+      }
     }
 
     // Convert to Float32Array
@@ -989,34 +1316,7 @@ export class H5Chunk {
 
       switch (filter.id) {
         case FILTER_DEFLATE:
-          // Use pako for deflate
-          if (typeof pako !== 'undefined') {
-            data = pako.inflate(data);
-          } else {
-            // Try DecompressionStream if available
-            if (typeof DecompressionStream !== 'undefined') {
-              const ds = new DecompressionStream('deflate-raw');
-              const writer = ds.writable.getWriter();
-              writer.write(data);
-              writer.close();
-              const reader = ds.readable.getReader();
-              const chunks = [];
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                chunks.push(value);
-              }
-              const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
-              data = new Uint8Array(totalLength);
-              let offset = 0;
-              for (const chunk of chunks) {
-                data.set(chunk, offset);
-                offset += chunk.length;
-              }
-            } else {
-              throw new Error('No deflate decompressor available');
-            }
-          }
+          data = await this._inflateData(data);
           break;
 
         case FILTER_SHUFFLE:
@@ -1028,6 +1328,43 @@ export class H5Chunk {
     }
 
     return data.buffer;
+  }
+
+  /**
+   * Inflate (decompress) zlib-compressed data.
+   * HDF5 deflate filter uses zlib format.
+   * Works in both Node.js (via zlib module) and browser (via DecompressionStream).
+   */
+  async _inflateData(data) {
+    // 1. Try browser DecompressionStream first (native, no dependencies)
+    //    'deflate' format = RFC 1950 zlib, which is what HDF5 deflate uses
+    if (typeof DecompressionStream !== 'undefined') {
+      try {
+        const ds = new DecompressionStream('deflate');
+        const writer = ds.writable.getWriter();
+        writer.write(data);
+        writer.close();
+        const reader = ds.readable.getReader();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+        }
+        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          result.set(chunk, offset);
+          offset += chunk.length;
+        }
+        return result;
+      } catch (e) {
+        // DecompressionStream failed, try other methods
+      }
+    }
+
+    throw new Error('No deflate decompressor available (need DecompressionStream)');
   }
 
   /**

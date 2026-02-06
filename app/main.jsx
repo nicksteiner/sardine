@@ -1,6 +1,10 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
+import { loadNISARRGBComposite } from '../src/loaders/nisar-loader.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
+import { writeRGBGeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 
 /**
@@ -91,14 +95,24 @@ function generateMarkdownState(state) {
     `- **File:** ${state.file || '(none)'}`,
   ];
 
-  // Add dataset line for NISAR files
-  if (state.source === 'nisar' && state.dataset) {
-    lines.push(`- **Dataset:** ${state.dataset.frequency}/${state.dataset.polarization}`);
+  // Add dataset/composite lines for NISAR files
+  if (state.source === 'nisar') {
+    if (state.displayMode === 'rgb' && state.composite) {
+      lines.push(`- **Composite:** ${state.composite}`);
+    } else if (state.dataset) {
+      lines.push(`- **Dataset:** ${state.dataset.frequency}/${state.dataset.polarization}`);
+    }
   }
 
   lines.push(
     `- **Contrast:** ${state.contrastMin} to ${state.contrastMax}${state.useDecibels ? ' dB' : ''}`,
-    `- **Colormap:** ${state.colormap}`,
+  );
+
+  if (state.displayMode !== 'rgb') {
+    lines.push(`- **Colormap:** ${state.colormap}`);
+  }
+
+  lines.push(
     `- **dB Mode:** ${state.useDecibels ? 'on' : 'off'}`,
     `- **View:** [${state.view.center[0].toFixed(4)}, ${state.view.center[1].toFixed(4)}], zoom ${state.view.zoom.toFixed(2)}`,
   );
@@ -124,9 +138,15 @@ function App() {
   const [selectedFrequency, setSelectedFrequency] = useState('A');
   const [selectedPolarization, setSelectedPolarization] = useState('HHHH');
 
+  // RGB composite state
+  const [displayMode, setDisplayMode] = useState('single'); // 'single' | 'rgb'
+  const [compositeId, setCompositeId] = useState(null);
+  const [availableComposites, setAvailableComposites] = useState([]);
+
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
+  const [quality, setQuality] = useState('fast');
   const [contrastMin, setContrastMin] = useState(-25);
   const [contrastMax, setContrastMax] = useState(0);
   const [viewCenter, setViewCenter] = useState([0, 0]);
@@ -164,12 +184,14 @@ function App() {
     source: fileType,
     file: fileType === 'cog' ? cogUrl : (nisarFile?.name || ''),
     dataset: fileType === 'nisar' ? { frequency: selectedFrequency, polarization: selectedPolarization } : null,
+    displayMode,
+    composite: compositeId,
     contrastMin,
     contrastMax,
     colormap,
     useDecibels,
     view: { center: viewCenter, zoom: viewZoom },
-  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
+  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
 
   // Update markdown when state changes (unless edited)
   useEffect(() => {
@@ -369,6 +391,20 @@ function App() {
         setSelectedPolarization(datasets[0].polarization);
       }
 
+      // Compute available composites and auto-select
+      const composites = getAvailableComposites(datasets);
+      setAvailableComposites(composites);
+
+      const autoComposite = autoSelectComposite(datasets);
+      if (autoComposite) {
+        setCompositeId(autoComposite);
+        setDisplayMode('rgb');
+        addStatusLog('info', `Auto-selected RGB composite: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
+      } else {
+        setDisplayMode('single');
+        setCompositeId(null);
+      }
+
       addStatusLog('success', `Found ${datasets.length} datasets`,
         datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
     } catch (e) {
@@ -379,7 +415,7 @@ function App() {
     }
   }, [addStatusLog]);
 
-  // Load selected NISAR dataset
+  // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
     if (!nisarFile) {
       setError('Please select a NISAR GCOV HDF5 file');
@@ -389,31 +425,53 @@ function App() {
 
     setLoading(true);
     setError(null);
-    addStatusLog('info', `Loading NISAR dataset: ${selectedFrequency}/${selectedPolarization}`);
 
     try {
-      const data = await loadNISARGCOV(nisarFile, {
-        frequency: selectedFrequency,
-        polarization: selectedPolarization,
-      });
+      let data;
 
-      setImageData(data);
-      addStatusLog('success', 'NISAR dataset loaded',
-        `${data.width}x${data.height}, CRS: ${data.crs}`);
+      if (displayMode === 'rgb' && compositeId) {
+        // RGB composite mode
+        const requiredPols = getRequiredDatasets(compositeId);
+        addStatusLog('info', `Loading RGB composite: ${compositeId} (${requiredPols.join(', ')})`);
 
-      // Use embedded statistics for auto-contrast if available
-      if (data.stats && data.stats.mean_value !== undefined) {
-        const { mean_value, sample_stddev } = data.stats;
-        if (mean_value > 0 && sample_stddev > 0) {
-          // 2-sigma stretch in dB
-          const meanDb = 10 * Math.log10(mean_value);
-          const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
-          setContrastMin(Math.round(meanDb - 2 * stdDb));
-          setContrastMax(Math.round(meanDb + 2 * stdDb));
-          addStatusLog('info', 'Auto-contrast from HDF5 statistics',
-            `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
+        data = await loadNISARRGBComposite(nisarFile, {
+          frequency: selectedFrequency,
+          compositeId,
+          requiredPols,
+        });
+
+        // In RGB mode, pass getRGBTile as getTile
+        data.getTile = data.getRGBTile;
+
+        addStatusLog('success', 'RGB composite loaded',
+          `${data.width}x${data.height}, Composite: ${compositeId}`);
+      } else {
+        // Single band mode
+        addStatusLog('info', `Loading NISAR dataset: ${selectedFrequency}/${selectedPolarization}`);
+
+        data = await loadNISARGCOV(nisarFile, {
+          frequency: selectedFrequency,
+          polarization: selectedPolarization,
+        });
+
+        addStatusLog('success', 'NISAR dataset loaded',
+          `${data.width}x${data.height}, CRS: ${data.crs}`);
+
+        // Use embedded statistics for auto-contrast if available
+        if (data.stats && data.stats.mean_value !== undefined) {
+          const { mean_value, sample_stddev } = data.stats;
+          if (mean_value > 0 && sample_stddev > 0) {
+            const meanDb = 10 * Math.log10(mean_value);
+            const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+            setContrastMin(Math.round(meanDb - 2 * stdDb));
+            setContrastMax(Math.round(meanDb + 2 * stdDb));
+            addStatusLog('info', 'Auto-contrast from HDF5 statistics',
+              `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
+          }
         }
       }
+
+      setImageData(data);
 
       // Update view to fit bounds
       if (data.bounds) {
@@ -422,7 +480,6 @@ function App() {
         const centerY = (minY + maxY) / 2;
         setViewCenter([centerX, centerY]);
 
-        // For projected coordinates (meters), calculate appropriate zoom
         const spanX = maxX - minX;
         const spanY = maxY - minY;
         const maxSpan = Math.max(spanX, spanY);
@@ -443,7 +500,95 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [nisarFile, selectedFrequency, selectedPolarization, addStatusLog]);
+  }, [nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog]);
+
+  // Export current view as GeoTIFF
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportGeoTIFF = useCallback(async () => {
+    if (!imageData) {
+      addStatusLog('error', 'No image data to export');
+      return;
+    }
+
+    setExporting(true);
+    addStatusLog('info', 'Starting GeoTIFF export...');
+
+    try {
+      const exportWidth = Math.min(imageData.width, 4096);
+      const exportHeight = Math.min(imageData.height, 4096);
+      const tileSize = 256;
+
+      // For RGB composite mode, read tiles and assemble
+      if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
+        addStatusLog('info', `Exporting RGB composite at ${exportWidth}x${exportHeight}...`);
+
+        // Create a grid of tiles to cover the image
+        const tilesX = Math.ceil(exportWidth / tileSize);
+        const tilesY = Math.ceil(exportHeight / tileSize);
+        const rgba = new Uint8ClampedArray(exportWidth * exportHeight * 4);
+
+        const stepX = imageData.width / exportWidth;
+        const stepY = imageData.height / exportHeight;
+
+        for (let ty = 0; ty < tilesY; ty++) {
+          for (let tx = 0; tx < tilesX; tx++) {
+            const tileLeft = tx * tileSize * stepX;
+            const tileTop = ty * tileSize * stepY;
+            const tileRight = Math.min((tx + 1) * tileSize * stepX, imageData.width);
+            const tileBottom = Math.min((ty + 1) * tileSize * stepY, imageData.height);
+
+            // Y-flip for OrthographicView coordinates
+            const worldTop = imageData.height - tileBottom;
+            const worldBottom = imageData.height - tileTop;
+
+            const tileData = await imageData.getRGBTile({
+              x: tx, y: ty, z: 0,
+              bbox: { left: tileLeft, top: worldTop, right: tileRight, bottom: worldBottom },
+              quality: 'high',
+            });
+
+            if (tileData && tileData.bands) {
+              const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
+              const tileImage = createRGBTexture(rgbBands, tileSize, tileSize, contrastLimits, useDecibels);
+
+              // Copy tile into output
+              const outStartX = tx * tileSize;
+              const outStartY = ty * tileSize;
+              for (let py = 0; py < tileSize && outStartY + py < exportHeight; py++) {
+                for (let px = 0; px < tileSize && outStartX + px < exportWidth; px++) {
+                  const srcIdx = (py * tileSize + px) * 4;
+                  const dstIdx = ((outStartY + py) * exportWidth + (outStartX + px)) * 4;
+                  rgba[dstIdx] = tileImage.data[srcIdx];
+                  rgba[dstIdx + 1] = tileImage.data[srcIdx + 1];
+                  rgba[dstIdx + 2] = tileImage.data[srcIdx + 2];
+                  rgba[dstIdx + 3] = tileImage.data[srcIdx + 3];
+                }
+              }
+            }
+          }
+          addStatusLog('info', `Export progress: ${Math.round((ty + 1) / tilesY * 100)}%`);
+        }
+
+        // Extract EPSG from CRS string
+        const epsgMatch = imageData.crs?.match(/EPSG:(\d+)/);
+        const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 32610;
+
+        const geotiff = writeRGBGeoTIFF(rgba, exportWidth, exportHeight, imageData.bounds, epsgCode);
+        const filename = `sardine_rgb_${compositeId}_${exportWidth}x${exportHeight}.tif`;
+        downloadBuffer(geotiff, filename);
+
+        addStatusLog('success', `Exported: ${filename} (${(geotiff.byteLength / 1e6).toFixed(1)} MB)`);
+      } else {
+        addStatusLog('warning', 'Single-band GeoTIFF export not yet implemented. Use RGB composite mode.');
+      }
+    } catch (e) {
+      addStatusLog('error', 'Export failed', e.message);
+      console.error('GeoTIFF export error:', e);
+    } finally {
+      setExporting(false);
+    }
+  }, [imageData, displayMode, compositeId, contrastLimits, useDecibels, addStatusLog]);
 
   return (
     <div id="app">
@@ -550,8 +695,42 @@ function App() {
                     </select>
                   </div>
 
+                  {/* Display Mode */}
+                  <div className="control-group">
+                    <label>Display Mode</label>
+                    <select
+                      value={displayMode}
+                      onChange={(e) => setDisplayMode(e.target.value)}
+                    >
+                      <option value="single">Single Band</option>
+                      <option value="rgb" disabled={availableComposites.length === 0}>
+                        RGB Composite
+                      </option>
+                    </select>
+                  </div>
+
+                  {/* Composite preset selector (only in RGB mode) */}
+                  {displayMode === 'rgb' && availableComposites.length > 0 && (
+                    <div className="control-group">
+                      <label>Composite</label>
+                      <select
+                        value={compositeId || ''}
+                        onChange={(e) => setCompositeId(e.target.value)}
+                      >
+                        {availableComposites.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
+                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
+                      </div>
+                    </div>
+                  )}
+
                   <button onClick={handleLoadNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : 'Load Dataset'}
+                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
                   </button>
                 </>
               )}
@@ -562,16 +741,19 @@ function App() {
           <div className="control-section">
             <h3>Display</h3>
             
-            <div className="control-group">
-              <label>Colormap</label>
-              <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
-                <option value="grayscale">Grayscale</option>
-                <option value="viridis">Viridis</option>
-                <option value="inferno">Inferno</option>
-                <option value="plasma">Plasma</option>
-                <option value="phase">Phase</option>
-              </select>
-            </div>
+            {/* Colormap selector — hidden in RGB composite mode */}
+            {displayMode !== 'rgb' && (
+              <div className="control-group">
+                <label>Colormap</label>
+                <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
+                  <option value="grayscale">Grayscale</option>
+                  <option value="viridis">Viridis</option>
+                  <option value="inferno">Inferno</option>
+                  <option value="plasma">Plasma</option>
+                  <option value="phase">Phase</option>
+                </select>
+              </div>
+            )}
 
             <div className="control-group">
               <div className="control-row">
@@ -584,6 +766,29 @@ function App() {
                 <label htmlFor="useDb">dB Scaling</label>
               </div>
             </div>
+
+            <div className="control-group">
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="highQuality"
+                  checked={quality === 'high'}
+                  onChange={(e) => setQuality(e.target.checked ? 'high' : 'fast')}
+                />
+                <label htmlFor="highQuality">High Quality (slower)</label>
+              </div>
+            </div>
+
+            {/* Export GeoTIFF */}
+            {imageData && displayMode === 'rgb' && (
+              <button
+                onClick={handleExportGeoTIFF}
+                disabled={exporting}
+                style={{ marginTop: '8px', width: '100%' }}
+              >
+                {exporting ? 'Exporting...' : 'Export GeoTIFF'}
+              </button>
+            )}
           </div>
 
           {/* Contrast Settings */}
@@ -647,6 +852,8 @@ function App() {
               contrastLimits={contrastLimits}
               useDecibels={useDecibels}
               colormap={colormap}
+              compositeId={displayMode === 'rgb' ? compositeId : null}
+              quality={quality}
               opacity={1}
               width="100%"
               height="100%"

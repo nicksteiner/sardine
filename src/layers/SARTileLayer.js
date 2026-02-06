@@ -1,12 +1,14 @@
 import { TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
 import { getColormap } from '../utils/colormap.js';
+import { computeRGBBands, createRGBTexture } from '../utils/sar-composites.js';
 
 /**
  * SARTileLayer - A deck.gl TileLayer specialized for SAR imagery
  * Supports decibel scaling and various colormaps
  */
 export class SARTileLayer extends TileLayer {
+  static componentName = 'SARTileLayer';
   /**
    * Create a SARTileLayer
    * @param {Object} props - Layer properties
@@ -25,47 +27,71 @@ export class SARTileLayer extends TileLayer {
       useDecibels = true,
       colormap = 'grayscale',
       opacity = 1,
-      minZoom = 0,
+      quality = 'fast',
+      minZoom,
       maxZoom = 20,
       tileSize = 256,
       ...otherProps
     } = props;
 
+    // For OrthographicView, compute minZoom so that at minZoom one tile
+    // covers the entire extent. At zoom z, each tile covers tileSize * 2^(-z)
+    // world units. We need tileSize * 2^(-minZoom) >= maxSpan.
+    let computedMinZoom = minZoom;
+    if (computedMinZoom === undefined && bounds) {
+      const [minX, minY, maxX, maxY] = bounds;
+      const maxSpan = Math.max(maxX - minX, maxY - minY);
+      computedMinZoom = -Math.ceil(Math.log2(maxSpan / tileSize));
+    }
+    if (computedMinZoom === undefined) computedMinZoom = -8;
+
     super({
       id: props.id || 'sar-tile-layer',
       getTileData: async (tile) => {
+        // Pass tile bbox so getTile knows the world-coordinate region
+        const { bbox } = tile;
         const tileData = await getTile({
           x: tile.index.x,
           y: tile.index.y,
           z: tile.index.z,
+          bbox,
+          quality,
         });
 
         if (!tileData) {
           return null;
         }
 
-        // Convert Float32 data to RGBA texture
+        // RGB composite mode: tileData has {bands, width, height, compositeId}
+        if (tileData.bands && tileData.compositeId) {
+          const rgbBands = computeRGBBands(tileData.bands, tileData.compositeId, tileData.width);
+          return createRGBTexture(rgbBands, tileData.width, tileData.height, contrastLimits, useDecibels);
+        }
+
+        // Single-band mode: convert Float32 data to RGBA texture
         const { data, width, height } = tileData;
         return createSARTexture(data, width, height, contrastLimits, useDecibels, colormap);
       },
       extent: bounds,
-      minZoom,
+      minZoom: computedMinZoom,
       maxZoom,
       tileSize,
       opacity,
       renderSubLayers: (props) => {
-        const {
-          bbox: { west, south, east, north },
-        } = props.tile;
-
         if (!props.data) {
           return null;
         }
 
+        const { bbox } = props.tile;
+        // OrthographicView uses left/top/right/bottom; geographic uses west/south/east/north
+        const tileBounds = bbox.west !== undefined
+          ? [bbox.west, bbox.south, bbox.east, bbox.north]
+          : [bbox.left, bbox.top, bbox.right, bbox.bottom];
+
         return new BitmapLayer({
           id: `${props.id}-bitmap`,
           image: props.data,
-          bounds: [west, south, east, north],
+          bounds: tileBounds,
           opacity: props.opacity,
         });
       },

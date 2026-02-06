@@ -7,7 +7,7 @@
 
 // Loaders
 export { loadCOG, loadMultipleCOGs, loadCOGFullImage } from './loaders/cog-loader.js';
-export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage } from './loaders/nisar-loader.js';
+export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite } from './loaders/nisar-loader.js';
 
 // Layers
 export { SARTileLayer } from './layers/SARTileLayer.js';
@@ -49,9 +49,20 @@ export {
   applyColormap,
 } from './utils/colormap.js';
 
+export {
+  SAR_COMPOSITES,
+  autoSelectComposite,
+  getAvailableComposites,
+  getRequiredDatasets,
+  computeRGBBands,
+  createRGBTexture,
+} from './utils/sar-composites.js';
+
+export { writeRGBGeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
+
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';
-import { loadNISARGCOV, listNISARDatasets } from './loaders/nisar-loader.js';
+import { loadNISARGCOV, listNISARDatasets, loadNISARRGBComposite } from './loaders/nisar-loader.js';
 import { SARTileLayer } from './layers/SARTileLayer.js';
 import { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 import { SARViewer } from './viewers/SARViewer.jsx';
@@ -63,6 +74,7 @@ export default {
   loadCOG,
   loadNISARGCOV,
   listNISARDatasets,
+  loadNISARRGBComposite,
   SARTileLayer,
   SARTiledCOGLayer,
   SARViewer,

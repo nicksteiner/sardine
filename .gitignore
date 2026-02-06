@@ -48,3 +48,4 @@ coverage/
 *.tgz
 
 test_data/
+test_output/
