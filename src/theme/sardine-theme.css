@@ -1,0 +1,546 @@
+/*
+ * SARdine Design System — sardine-theme.css
+ * ===========================================
+ * Dark-first operational SAR flood monitoring theme.
+ * Based on the SARdine Style Guide v1.0 (Feb 2026).
+ *
+ * Fonts: JetBrains Mono (data), Space Grotesk (headings), IBM Plex Sans (body)
+ * Palette: Deep navy backgrounds, cyan/orange/green/magenta accents
+ */
+
+/* ─── WEB FONTS ─── */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+
+/* ═══════════════════════════════════════════════
+   DESIGN TOKENS (CSS Custom Properties)
+   ═══════════════════════════════════════════════ */
+:root {
+  /* ─── PRIMARY PALETTE ─── */
+  --sardine-bg:            #0a1628;
+  --sardine-bg-raised:     #0f1f38;
+  --sardine-bg-panel:      #122240;
+  --sardine-bg-hover:      #1a2d50;
+  --sardine-border:        #1e3a5f;
+  --sardine-border-subtle: #162d4a;
+
+  /* ─── ACCENT: SAR SIGNAL CYAN ─── */
+  --sardine-cyan:       #4ec9d4;
+  --sardine-cyan-dim:   #2a8a93;
+  --sardine-cyan-glow:  rgba(78, 201, 212, 0.25);
+  --sardine-cyan-bg:    rgba(78, 201, 212, 0.08);
+
+  /* ─── ACCENT: FLOOD ALERT ORANGE ─── */
+  --sardine-orange:      #e8833a;
+  --sardine-orange-dim:  #b5642a;
+  --sardine-orange-glow: rgba(232, 131, 58, 0.25);
+  --sardine-orange-bg:   rgba(232, 131, 58, 0.08);
+
+  /* ─── ACCENT: VV POLARIZATION GREEN ─── */
+  --sardine-green:      #3ddc84;
+  --sardine-green-dim:  #2a9e5e;
+  --sardine-green-glow: rgba(61, 220, 132, 0.2);
+
+  /* ─── ACCENT: HH POLARIZATION MAGENTA ─── */
+  --sardine-magenta:      #d45cff;
+  --sardine-magenta-dim:  #9a3db8;
+  --sardine-magenta-glow: rgba(212, 92, 255, 0.2);
+
+  /* ─── TEXT ─── */
+  --text-primary:   #e8edf5;
+  --text-secondary: #8fa4c4;
+  --text-muted:     #5a7099;
+  --text-disabled:  #3a5070;
+
+  /* ─── STATUS ─── */
+  --status-flood:   #ff5c5c;
+  --status-water:   #4ea8ff;
+  --status-dry:     #c4a35a;
+  --status-success: #3ddc84;
+
+  /* ─── TYPOGRAPHY ─── */
+  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body:    'IBM Plex Sans', sans-serif;
+
+  /* ─── SPACING ─── */
+  --space-xs:  4px;
+  --space-sm:  8px;
+  --space-md:  16px;
+  --space-lg:  24px;
+  --space-xl:  32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* ─── RADII ─── */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* ─── TRANSITIONS ─── */
+  --transition-fast: 150ms ease;
+  --transition-med:  250ms ease;
+}
+
+
+/* ═══════════════════════════════════════════════
+   RESET & BASE
+   ═══════════════════════════════════════════════ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--sardine-bg);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* ─── SCANLINE OVERLAY (subtle radar-display feel) ─── */
+body::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+
+/* ═══════════════════════════════════════════════
+   APP LAYOUT
+   ═══════════════════════════════════════════════ */
+#app {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* ─── HEADER ─── */
+.header {
+  background: var(--sardine-bg-panel);
+  padding: var(--space-sm) var(--space-lg);
+  border-bottom: 1px solid var(--sardine-border);
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+}
+
+.header h1 {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -1px;
+  color: var(--text-primary);
+}
+
+.header h1 .sar {
+  color: var(--sardine-cyan);
+}
+
+.header .subtitle {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+
+/* ─── MAIN LAYOUT ─── */
+.main-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  padding-bottom: 0;
+  transition: padding-bottom 0.3s ease;
+}
+
+
+/* ─── CONTROLS PANEL (Left Sidebar) ─── */
+.controls-panel {
+  width: 280px;
+  background: var(--sardine-bg-panel);
+  padding: var(--space-md);
+  overflow-y: auto;
+  border-right: 1px solid var(--sardine-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.control-section {
+  background: var(--sardine-bg-raised);
+  padding: var(--space-md);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--sardine-border);
+}
+
+.control-section h3 {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  margin-bottom: var(--space-sm);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--sardine-border-subtle);
+}
+
+
+/* ─── FORM ELEMENTS ─── */
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
+}
+
+.control-group:last-child {
+  margin-bottom: 0;
+}
+
+.control-group label {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+}
+
+.control-group input[type="text"],
+.control-group select {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sardine-border);
+  background: var(--sardine-bg);
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--transition-fast);
+  width: 100%;
+}
+
+.control-group input[type="text"]:focus,
+.control-group select:focus {
+  border-color: var(--sardine-cyan);
+  box-shadow: 0 0 0 3px var(--sardine-cyan-bg);
+}
+
+.control-group input[type="text"]::placeholder {
+  color: var(--text-disabled);
+}
+
+.control-group select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M6 8L1 3h10z' fill='%235a7099'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 32px;
+}
+
+.control-group input[type="range"] {
+  width: 100%;
+  accent-color: var(--sardine-cyan);
+  height: 6px;
+}
+
+.control-group input[type="file"] {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+
+/* ─── CHECKBOXES ─── */
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.control-row input[type="checkbox"] {
+  accent-color: var(--sardine-cyan);
+}
+
+.control-row label {
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+
+/* ─── BUTTONS ─── */
+button {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--sardine-cyan);
+  background: var(--sardine-cyan);
+  color: var(--sardine-bg);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-transform: uppercase;
+}
+
+button:hover {
+  background: #5ed8e6;
+  box-shadow: 0 0 20px var(--sardine-cyan-glow);
+}
+
+button:disabled {
+  background: var(--sardine-border);
+  border-color: var(--sardine-border);
+  color: var(--text-disabled);
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Secondary / ghost button variant */
+button.btn-secondary {
+  background: transparent;
+  color: var(--sardine-cyan);
+  border-color: var(--sardine-cyan-dim);
+}
+
+button.btn-secondary:hover {
+  background: var(--sardine-cyan-bg);
+  border-color: var(--sardine-cyan);
+}
+
+/* Alert button variant */
+button.btn-alert {
+  background: var(--sardine-orange);
+  border-color: var(--sardine-orange);
+  color: var(--sardine-bg);
+}
+
+button.btn-alert:hover {
+  box-shadow: 0 0 20px var(--sardine-orange-glow);
+}
+
+/* Danger button variant */
+button.btn-danger {
+  background: rgba(255, 92, 92, 0.1);
+  color: var(--status-flood);
+  border-color: rgba(255, 92, 92, 0.3);
+}
+
+button.btn-danger:hover {
+  background: rgba(255, 92, 92, 0.2);
+  border-color: var(--status-flood);
+}
+
+
+/* ─── VIEWER CONTAINER ─── */
+.viewer-container {
+  flex: 1;
+  position: relative;
+  background: var(--sardine-bg);
+}
+
+
+/* ─── STATE PANEL (Right Sidebar) ─── */
+.state-panel {
+  width: 350px;
+  background: var(--sardine-bg-raised);
+  border-left: 1px solid var(--sardine-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.state-panel-header {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--sardine-bg-panel);
+  border-bottom: 1px solid var(--sardine-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.state-panel-header h3 {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.5px;
+}
+
+.state-panel-header .badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--sardine-cyan);
+  background: var(--sardine-cyan-bg);
+  border: 1px solid var(--sardine-border);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.state-content {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.state-textarea {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: var(--sardine-bg);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  padding: var(--space-md);
+  resize: none;
+  outline: none;
+  transition: background var(--transition-fast);
+}
+
+.state-textarea:focus {
+  background: var(--sardine-bg-raised);
+}
+
+.apply-button {
+  margin: var(--space-sm) var(--space-md);
+  display: block;
+}
+
+
+/* ─── LOADING / ERROR STATES ─── */
+.loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+}
+
+.error {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--status-flood);
+  text-align: center;
+  padding: var(--space-lg);
+  max-width: 80%;
+  background: rgba(255, 92, 92, 0.05);
+  border: 1px solid rgba(255, 92, 92, 0.2);
+  border-radius: var(--radius-md);
+}
+
+
+/* ─── VALUE DISPLAY (monospace data) ─── */
+.value-display {
+  font-family: var(--font-mono);
+  color: var(--sardine-cyan);
+  font-size: 0.75rem;
+}
+
+
+/* ─── STATUS CHIPS ─── */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.5px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+
+/* ─── PROGRESS BARS ─── */
+.progress-track {
+  height: 6px;
+  background: var(--sardine-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--sardine-cyan-dim), var(--sardine-cyan));
+  transition: width 1s ease;
+}
+
+.progress-fill.alert {
+  background: linear-gradient(90deg, var(--sardine-orange-dim), var(--sardine-orange));
+}
+
+
+/* ─── ANIMATIONS ─── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes spin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+
+/* ─── SCROLLBAR STYLING ─── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--sardine-bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--sardine-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sardine-cyan-dim);
+}
+
+
+/* ─── RESPONSIVE ─── */
+@media (max-width: 768px) {
+  .controls-panel {
+    width: 220px;
+  }
+  .state-panel {
+    width: 280px;
+  }
+}

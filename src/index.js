@@ -34,6 +34,8 @@ export {
   autoContrastLimits,
   computeHistogram,
   sampleTileStats,
+  computeChannelStats,
+  sampleViewportStats,
 } from './utils/stats.js';
 
 export {
@@ -59,6 +61,8 @@ export {
 } from './utils/sar-composites.js';
 
 export { writeRGBGeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
+
+export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';

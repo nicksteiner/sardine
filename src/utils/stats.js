@@ -204,9 +204,100 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
   };
 }
 
+/**
+ * Compute histogram and percentile statistics for a single channel of values.
+ * @param {number[]} values - Raw float values (will be filtered for valid > 0)
+ * @param {boolean} useDecibels - Apply 10*log10 before computing
+ * @param {number} numBins - Number of histogram bins
+ * @returns {Object|null} {bins, min, max, mean, binWidth, count, p2, p98}
+ */
+export function computeChannelStats(values, useDecibels = false, numBins = 128) {
+  const processed = [];
+
+  for (let i = 0; i < values.length; i++) {
+    const val = values[i];
+    if (val <= 0 || isNaN(val)) continue;
+
+    if (useDecibels) {
+      processed.push(10 * Math.log10(Math.max(val, 1e-10)));
+    } else {
+      processed.push(val);
+    }
+  }
+
+  if (processed.length === 0) return null;
+
+  processed.sort((a, b) => a - b);
+
+  const p2 = processed[Math.floor(0.02 * processed.length)];
+  const p98 = processed[Math.min(Math.floor(0.98 * processed.length), processed.length - 1)];
+  const min = processed[0];
+  const max = processed[processed.length - 1];
+  const mean = processed.reduce((a, b) => a + b, 0) / processed.length;
+
+  const binWidth = (max - min) / numBins || 1;
+  const bins = new Array(numBins).fill(0);
+
+  for (const val of processed) {
+    const idx = Math.floor((val - min) / binWidth);
+    bins[Math.max(0, Math.min(numBins - 1, idx))]++;
+  }
+
+  return { bins, min, max, mean, binWidth, count: processed.length, p2, p98 };
+}
+
+/**
+ * Sample tile data from an OrthographicView loader and compute histogram stats.
+ * Reads a 3x3 grid of overview tiles for representative coverage.
+ *
+ * @param {Function} getTile - Tile fetcher ({x, y, z, bbox, quality}) => {data, width, height}
+ * @param {number} imgWidth - Full image width in pixels
+ * @param {number} imgHeight - Full image height in pixels
+ * @param {boolean} useDecibels - Compute stats in dB
+ * @param {number} numBins - Histogram bins
+ * @returns {Promise<Object|null>} Channel stats or null
+ */
+export async function sampleViewportStats(getTile, imgWidth, imgHeight, useDecibels = true, numBins = 128) {
+  const gridSize = 3;
+  const stepX = imgWidth / gridSize;
+  const stepY = imgHeight / gridSize;
+  const allValues = [];
+
+  for (let ty = 0; ty < gridSize; ty++) {
+    for (let tx = 0; tx < gridSize; tx++) {
+      const left = tx * stepX;
+      const right = (tx + 1) * stepX;
+      const worldBottom = imgHeight - (ty + 1) * stepY;
+      const worldTop = imgHeight - ty * stepY;
+
+      try {
+        const tileData = await getTile({
+          x: tx, y: ty, z: 0,
+          bbox: { left, top: worldBottom, right, bottom: worldTop },
+          quality: 'fast',
+        });
+
+        if (tileData && tileData.data) {
+          for (let i = 0; i < tileData.data.length; i++) {
+            const v = tileData.data[i];
+            if (v > 0 && !isNaN(v)) allValues.push(v);
+          }
+        }
+      } catch (e) {
+        // Skip failed tiles
+      }
+    }
+  }
+
+  if (allValues.length === 0) return null;
+  return computeChannelStats(allValues, useDecibels, numBins);
+}
+
 export default {
   computeStats,
   autoContrastLimits,
   computeHistogram,
   sampleTileStats,
+  computeChannelStats,
+  sampleViewportStats,
 };

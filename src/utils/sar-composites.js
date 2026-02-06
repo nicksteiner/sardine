@@ -206,8 +206,21 @@ export function computeRGBBands(bandData, compositeId, tileSize) {
  * @returns {ImageData}
  */
 export function createRGBTexture(bands, width, height, contrastLimits, useDecibels) {
-  const [min, max] = contrastLimits;
-  const range = max - min || 1;
+  // Support per-channel contrast: {R: [min,max], G: [min,max], B: [min,max]}
+  // or uniform: [min, max]
+  const channelKeys = ['R', 'G', 'B'];
+  const limits = {};
+  if (Array.isArray(contrastLimits)) {
+    const [min, max] = contrastLimits;
+    for (const ch of channelKeys) {
+      limits[ch] = [min, max];
+    }
+  } else {
+    for (const ch of channelKeys) {
+      limits[ch] = contrastLimits[ch] || [-25, 0];
+    }
+  }
+
   const rgba = new Uint8ClampedArray(width * height * 4);
 
   for (let i = 0; i < width * height; i++) {
@@ -215,7 +228,7 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
     let anyValid = false;
 
     for (let c = 0; c < 3; c++) {
-      const channelKey = ['R', 'G', 'B'][c];
+      const channelKey = channelKeys[c];
       const raw = bands[channelKey][i];
 
       if (isNaN(raw) || raw === 0) {
@@ -225,18 +238,19 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
 
       anyValid = true;
 
+      const [chMin, chMax] = limits[channelKey];
+      const range = chMax - chMin || 1;
       let value;
       if (useDecibels) {
         const db = 10 * Math.log10(Math.max(raw, 1e-10));
-        value = (db - min) / range;
+        value = (db - chMin) / range;
       } else {
-        value = (raw - min) / range;
+        value = (raw - chMin) / range;
       }
 
       rgba[idx + c] = Math.round(Math.max(0, Math.min(1, value)) * 255);
     }
 
-    // Alpha: opaque if any channel has valid data
     rgba[idx + 3] = anyValid ? 255 : 0;
   }
 

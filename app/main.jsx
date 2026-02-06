@@ -1,11 +1,15 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
 import { loadNISARRGBComposite } from '../src/loaders/nisar-loader.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
 import { writeRGBGeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
+import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
+import { HistogramPanel } from '../src/components/Histogram.jsx';
+import { exportFigure, downloadBlob } from '../src/utils/figure-export.js';
 
 /**
  * Parse markdown state into object
@@ -143,6 +147,11 @@ function App() {
   const [compositeId, setCompositeId] = useState(null);
   const [availableComposites, setAvailableComposites] = useState([]);
 
+  // Per-channel contrast for RGB mode (linear values)
+  const [rgbContrastLimits, setRgbContrastLimits] = useState(null);
+  // Histogram data: {single: stats} or {R: stats, G: stats, B: stats}
+  const [histogramData, setHistogramData] = useState(null);
+
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
@@ -165,6 +174,7 @@ function App() {
     [viewCenter, viewZoom]
   );
   const markdownUpdateRef = useRef(false);
+  const viewerRef = useRef(null);
 
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
@@ -178,6 +188,46 @@ function App() {
 
   // Memoize arrays to prevent unnecessary re-renders
   const contrastLimits = useMemo(() => [contrastMin, contrastMax], [contrastMin, contrastMax]);
+
+  // For RGB mode, use per-channel limits; for single-band, use uniform limits
+  const effectiveContrastLimits = useMemo(() => {
+    if (displayMode === 'rgb' && rgbContrastLimits) {
+      return rgbContrastLimits;
+    }
+    return contrastLimits;
+  }, [displayMode, rgbContrastLimits, contrastLimits]);
+
+  // Auto-stretch: reset to 2-98% percentiles from cached histogram
+  const handleAutoStretch = useCallback(() => {
+    if (!histogramData) {
+      addStatusLog('warning', 'No histogram data — load a dataset first');
+      return;
+    }
+
+    if (displayMode === 'rgb') {
+      const newLimits = {};
+      for (const ch of ['R', 'G', 'B']) {
+        if (histogramData[ch]) {
+          newLimits[ch] = [histogramData[ch].p2, histogramData[ch].p98];
+        }
+      }
+      if (Object.keys(newLimits).length === 0) {
+        addStatusLog('warning', 'No per-channel statistics available');
+        return;
+      }
+      setRgbContrastLimits(newLimits);
+      addStatusLog('success', 'RGB contrast reset to 2–98% percentiles',
+        ['R', 'G', 'B'].map(ch => newLimits[ch] ? `${ch}: ${newLimits[ch][0].toExponential(2)}–${newLimits[ch][1].toExponential(2)}` : '').join(', '));
+    } else if (histogramData.single) {
+      const p2 = Math.round(histogramData.single.p2);
+      const p98 = Math.round(histogramData.single.p98);
+      setContrastMin(p2);
+      setContrastMax(p98);
+      addStatusLog('success', `Contrast reset to ${p2} – ${p98} dB`);
+    } else {
+      addStatusLog('warning', 'No histogram data for current mode');
+    }
+  }, [histogramData, displayMode, addStatusLog]);
 
   // Generate markdown from current state
   const currentState = useMemo(() => ({
@@ -491,6 +541,68 @@ function App() {
           `Center: [${centerX.toFixed(0)}, ${centerY.toFixed(0)}], Zoom: ${zoom.toFixed(2)}`);
       }
 
+      // Compute histograms for per-channel contrast
+      try {
+        if (displayMode === 'rgb' && data.getRGBTile) {
+          addStatusLog('info', 'Computing per-channel histograms (linear)...');
+          const tileSize = 256;
+          const gridSize = 3;
+          const stepX = data.width / gridSize;
+          const stepY = data.height / gridSize;
+          const rawValues = { R: [], G: [], B: [] };
+
+          for (let ty = 0; ty < gridSize; ty++) {
+            for (let tx = 0; tx < gridSize; tx++) {
+              const left = tx * stepX;
+              const right = (tx + 1) * stepX;
+              const worldBottom = data.height - (ty + 1) * stepY;
+              const worldTop = data.height - ty * stepY;
+
+              const tileData = await data.getRGBTile({
+                x: tx, y: ty, z: 0,
+                bbox: { left, top: worldBottom, right, bottom: worldTop },
+                quality: 'fast',
+              });
+
+              if (tileData && tileData.bands) {
+                const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
+                for (const ch of ['R', 'G', 'B']) {
+                  const arr = rgbBands[ch];
+                  for (let i = 0; i < arr.length; i++) {
+                    if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+                  }
+                }
+              }
+            }
+          }
+
+          const hists = {};
+          const lims = {};
+          for (const ch of ['R', 'G', 'B']) {
+            const st = computeChannelStats(rawValues[ch], false);
+            hists[ch] = st;
+            lims[ch] = st ? [st.p2, st.p98] : [0, 1];
+          }
+
+          setHistogramData(hists);
+          setRgbContrastLimits(lims);
+          setUseDecibels(false); // Linear for RGB composites
+          addStatusLog('success', 'Per-channel contrast set (linear 2–98%)',
+            ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
+        } else if (data.getTile) {
+          addStatusLog('info', 'Computing histogram from tile samples...');
+          const stats = await sampleViewportStats(data.getTile, data.width, data.height, true);
+          if (stats) {
+            setHistogramData({ single: stats });
+            setContrastMin(Math.round(stats.p2));
+            setContrastMax(Math.round(stats.p98));
+            addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)} dB`);
+          }
+        }
+      } catch (e) {
+        addStatusLog('warning', 'Could not compute histogram', e.message);
+      }
+
       addStatusLog('success', 'NISAR GCOV loaded and ready to display');
     } catch (e) {
       setError(`Failed to load NISAR dataset: ${e.message}`);
@@ -512,24 +624,44 @@ function App() {
     }
 
     setExporting(true);
-    addStatusLog('info', 'Starting GeoTIFF export...');
+    const exportStart = performance.now();
+    addStatusLog('info', '--- GeoTIFF Export Started ---');
 
     try {
       const exportWidth = Math.min(imageData.width, 4096);
       const exportHeight = Math.min(imageData.height, 4096);
       const tileSize = 256;
 
+      // Extract EPSG from CRS string
+      const epsgMatch = imageData.crs?.match(/EPSG:(\d+)/);
+      const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 32610;
+
+      addStatusLog('info', `Output dimensions: ${exportWidth} x ${exportHeight}`);
+      addStatusLog('info', `Source dimensions: ${imageData.width} x ${imageData.height}`);
+      addStatusLog('info', `CRS: EPSG:${epsgCode}`);
+      addStatusLog('info', `Bounds: [${imageData.bounds.map(b => b.toFixed(2)).join(', ')}]`);
+
       // For RGB composite mode, read tiles and assemble
       if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
-        addStatusLog('info', `Exporting RGB composite at ${exportWidth}x${exportHeight}...`);
+        const exportLimits = rgbContrastLimits || effectiveContrastLimits;
+        addStatusLog('info', `Composite: ${compositeId}`);
+        addStatusLog('info', `Scaling: ${useDecibels ? 'dB' : 'linear'}`);
+        if (exportLimits.R) {
+          addStatusLog('info', `R limits: ${exportLimits.R[0].toExponential(2)} – ${exportLimits.R[1].toExponential(2)}`);
+          addStatusLog('info', `G limits: ${exportLimits.G[0].toExponential(2)} – ${exportLimits.G[1].toExponential(2)}`);
+          addStatusLog('info', `B limits: ${exportLimits.B[0].toExponential(2)} – ${exportLimits.B[1].toExponential(2)}`);
+        }
 
-        // Create a grid of tiles to cover the image
         const tilesX = Math.ceil(exportWidth / tileSize);
         const tilesY = Math.ceil(exportHeight / tileSize);
+        const totalTiles = tilesX * tilesY;
         const rgba = new Uint8ClampedArray(exportWidth * exportHeight * 4);
+
+        addStatusLog('info', `Reading ${totalTiles} tiles (${tilesX}x${tilesY} grid)...`);
 
         const stepX = imageData.width / exportWidth;
         const stepY = imageData.height / exportHeight;
+        let tilesRead = 0;
 
         for (let ty = 0; ty < tilesY; ty++) {
           for (let tx = 0; tx < tilesX; tx++) {
@@ -538,7 +670,6 @@ function App() {
             const tileRight = Math.min((tx + 1) * tileSize * stepX, imageData.width);
             const tileBottom = Math.min((ty + 1) * tileSize * stepY, imageData.height);
 
-            // Y-flip for OrthographicView coordinates
             const worldTop = imageData.height - tileBottom;
             const worldBottom = imageData.height - tileTop;
 
@@ -550,9 +681,8 @@ function App() {
 
             if (tileData && tileData.bands) {
               const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
-              const tileImage = createRGBTexture(rgbBands, tileSize, tileSize, contrastLimits, useDecibels);
+              const tileImage = createRGBTexture(rgbBands, tileSize, tileSize, exportLimits, useDecibels);
 
-              // Copy tile into output
               const outStartX = tx * tileSize;
               const outStartY = ty * tileSize;
               for (let py = 0; py < tileSize && outStartY + py < exportHeight; py++) {
@@ -566,19 +696,23 @@ function App() {
                 }
               }
             }
+            tilesRead++;
           }
-          addStatusLog('info', `Export progress: ${Math.round((ty + 1) / tilesY * 100)}%`);
+          const pct = Math.round((ty + 1) / tilesY * 100);
+          addStatusLog('info', `Tiles: ${tilesRead}/${totalTiles} (${pct}%)`);
         }
 
-        // Extract EPSG from CRS string
-        const epsgMatch = imageData.crs?.match(/EPSG:(\d+)/);
-        const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 32610;
-
+        addStatusLog('info', 'Encoding GeoTIFF...');
         const geotiff = writeRGBGeoTIFF(rgba, exportWidth, exportHeight, imageData.bounds, epsgCode);
-        const filename = `sardine_rgb_${compositeId}_${exportWidth}x${exportHeight}.tif`;
-        downloadBuffer(geotiff, filename);
 
-        addStatusLog('success', `Exported: ${filename} (${(geotiff.byteLength / 1e6).toFixed(1)} MB)`);
+        const filename = `sardine_rgb_${compositeId}_${exportWidth}x${exportHeight}.tif`;
+        const sizeMB = (geotiff.byteLength / 1e6).toFixed(1);
+        const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
+
+        downloadBuffer(geotiff, filename);
+        addStatusLog('success', `Exported: ${filename}`);
+        addStatusLog('success', `File size: ${sizeMB} MB, Time: ${elapsed}s`);
+        addStatusLog('info', '--- GeoTIFF Export Complete ---');
       } else {
         addStatusLog('warning', 'Single-band GeoTIFF export not yet implemented. Use RGB composite mode.');
       }
@@ -588,14 +722,52 @@ function App() {
     } finally {
       setExporting(false);
     }
-  }, [imageData, displayMode, compositeId, contrastLimits, useDecibels, addStatusLog]);
+  }, [imageData, displayMode, compositeId, effectiveContrastLimits, rgbContrastLimits, useDecibels, addStatusLog]);
+
+  // Save current view as PNG figure with overlays
+  const handleSaveFigure = useCallback(async () => {
+    if (!viewerRef.current) {
+      addStatusLog('error', 'Viewer not ready');
+      return;
+    }
+
+    const glCanvas = viewerRef.current.getCanvas();
+    if (!glCanvas) {
+      addStatusLog('error', 'Could not capture canvas');
+      return;
+    }
+
+    addStatusLog('info', 'Capturing figure...');
+
+    try {
+      const vs = viewerRef.current.getViewState();
+      const blob = await exportFigure(glCanvas, {
+        colormap,
+        contrastLimits: effectiveContrastLimits,
+        useDecibels,
+        compositeId: displayMode === 'rgb' ? compositeId : null,
+        viewState: vs,
+        bounds: imageData?.bounds,
+        filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
+        crs: imageData?.crs || '',
+      });
+
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const figName = `sardine_figure_${ts}.png`;
+      downloadBlob(blob, figName);
+      addStatusLog('success', `Figure saved: ${figName}`);
+    } catch (e) {
+      addStatusLog('error', 'Figure export failed', e.message);
+      console.error('Figure export error:', e);
+    }
+  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog]);
 
   return (
     <div id="app">
       {/* Header */}
       <div className="header">
-        <h1>🐟 SARdine</h1>
-        <span className="subtitle">Prompt-driven SAR imagery analysis</span>
+        <h1><span className="sar">SAR</span>dine</h1>
+        <span className="subtitle">Operational SAR Imagery Analysis</span>
       </div>
 
       {/* Main Layout */}
@@ -642,18 +814,26 @@ function App() {
                 <input
                   type="file"
                   accept=".h5,.hdf5,.he5"
+                  id="nisar-file-input"
+                  style={{ display: 'none' }}
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
                       handleNISARFileSelect(file);
                     }
                   }}
-                  style={{ fontSize: '12px' }}
                 />
+                <button
+                  className="btn-secondary"
+                  onClick={() => document.getElementById('nisar-file-input').click()}
+                  style={{ width: '100%' }}
+                >
+                  {nisarFile ? 'Change File...' : 'Choose File...'}
+                </button>
               </div>
 
               {nisarFile && (
-                <div className="control-group" style={{ fontSize: '12px', color: '#888' }}>
+                <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
               )}
@@ -723,7 +903,7 @@ function App() {
                           </option>
                         ))}
                       </select>
-                      <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                         {availableComposites.find(c => c.id === compositeId)?.description || ''}
                       </div>
                     </div>
@@ -779,54 +959,95 @@ function App() {
               </div>
             </div>
 
-            {/* Export GeoTIFF */}
-            {imageData && displayMode === 'rgb' && (
-              <button
-                onClick={handleExportGeoTIFF}
-                disabled={exporting}
-                style={{ marginTop: '8px', width: '100%' }}
-              >
-                {exporting ? 'Exporting...' : 'Export GeoTIFF'}
-              </button>
+            {/* Export buttons */}
+            {imageData && (
+              <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+                {displayMode === 'rgb' && (
+                  <button
+                    onClick={handleExportGeoTIFF}
+                    disabled={exporting}
+                    style={{ flex: 1 }}
+                  >
+                    {exporting ? 'Exporting...' : 'Export GeoTIFF'}
+                  </button>
+                )}
+                <button
+                  onClick={handleSaveFigure}
+                  style={{ flex: 1 }}
+                >
+                  Save Figure (PNG)
+                </button>
+              </div>
             )}
           </div>
 
-          {/* Contrast Settings */}
-          <div className="control-section">
-            <h3>Contrast</h3>
-            
-            <div className="control-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <label>Min</label>
-                <span className="value-display">
-                  {contrastMin}{useDecibels ? ' dB' : ''}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={useDecibels ? -50 : 0}
-                max={useDecibels ? 0 : 100}
-                value={contrastMin}
-                onChange={(e) => setContrastMin(Number(e.target.value))}
-              />
-            </div>
+          {/* Histogram & Contrast */}
+          {displayMode === 'rgb' && histogramData ? (
+            <HistogramPanel
+              histograms={histogramData}
+              mode="rgb"
+              contrastLimits={rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }}
+              useDecibels={useDecibels}
+              onContrastChange={setRgbContrastLimits}
+              onAutoStretch={handleAutoStretch}
+            />
+          ) : (
+            <div className="control-section">
+              <h3>Contrast</h3>
 
-            <div className="control-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <label>Max</label>
-                <span className="value-display">
-                  {contrastMax}{useDecibels ? ' dB' : ''}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={useDecibels ? -50 : 0}
-                max={useDecibels ? 10 : 200}
-                value={contrastMax}
-                onChange={(e) => setContrastMax(Number(e.target.value))}
-              />
+              {/* Histogram display + auto-stretch for single-band */}
+              {histogramData?.single && (
+                <HistogramPanel
+                  histograms={histogramData}
+                  mode="single"
+                  contrastLimits={contrastLimits}
+                  useDecibels={useDecibels}
+                  onContrastChange={([min, max]) => {
+                    setContrastMin(Math.round(min));
+                    setContrastMax(Math.round(max));
+                  }}
+                  onAutoStretch={handleAutoStretch}
+                />
+              )}
+
+              {/* Manual dB sliders (single-band mode) */}
+              {!histogramData?.single && (
+                <>
+                  <div className="control-group">
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <label>Min</label>
+                      <span className="value-display">
+                        {contrastMin}{useDecibels ? ' dB' : ''}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={useDecibels ? -50 : 0}
+                      max={useDecibels ? 0 : 100}
+                      value={contrastMin}
+                      onChange={(e) => setContrastMin(Number(e.target.value))}
+                    />
+                  </div>
+
+                  <div className="control-group">
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <label>Max</label>
+                      <span className="value-display">
+                        {contrastMax}{useDecibels ? ' dB' : ''}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={useDecibels ? -50 : 0}
+                      max={useDecibels ? 10 : 200}
+                      value={contrastMax}
+                      onChange={(e) => setContrastMax(Number(e.target.value))}
+                    />
+                  </div>
+                </>
+              )}
             </div>
-          </div>
+          )}
         </div>
 
         {/* Viewer Container */}
@@ -845,11 +1066,12 @@ function App() {
 
           {imageData && (
             <SARViewer
+              ref={viewerRef}
               cogUrl={imageData.cogUrl}
               getTile={imageData.getTile}
               imageData={imageData.data ? imageData : null}
               bounds={imageData.bounds}
-              contrastLimits={contrastLimits}
+              contrastLimits={effectiveContrastLimits}
               useDecibels={useDecibels}
               colormap={colormap}
               compositeId={displayMode === 'rgb' ? compositeId : null}
@@ -863,27 +1085,7 @@ function App() {
           )}
         </div>
 
-        {/* State Panel (Phase 2) */}
-        <div className="state-panel">
-          <div className="state-panel-header">
-            <h3>State (Markdown)</h3>
-            <span className="badge">{isMarkdownEdited ? 'Edited' : 'Live'}</span>
-          </div>
-          <div className="state-content">
-            <textarea
-              className="state-textarea"
-              value={markdownState}
-              onChange={handleMarkdownChange}
-              placeholder="State will appear here..."
-              spellCheck={false}
-            />
-            {isMarkdownEdited && (
-              <button className="apply-button" onClick={handleApplyMarkdown}>
-                Apply Changes
-              </button>
-            )}
-          </div>
-        </div>
+        {/* State Panel (Phase 2) — hidden for now; will be replaced by ComfyUI-style node state */}
       </div>
 
       {/* Status Window */}
