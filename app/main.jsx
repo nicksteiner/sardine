@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits } from '../src/index.js';
+import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 
 /**
@@ -10,7 +10,9 @@ import { StatusWindow } from '../src/components/StatusWindow.jsx';
  */
 function parseMarkdownState(markdown) {
   const state = {
+    source: 'cog',
     file: '',
+    dataset: null,
     contrastMin: -25,
     contrastMax: 0,
     colormap: 'grayscale',
@@ -21,13 +23,28 @@ function parseMarkdownState(markdown) {
   const lines = markdown.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
-    
+
+    // Parse source type
+    const sourceMatch = trimmed.match(/\*\*Source:\*\*\s*(\w+)/);
+    if (sourceMatch) {
+      state.source = sourceMatch[1].toLowerCase();
+    }
+
     // Parse file
     const fileMatch = trimmed.match(/\*\*File:\*\*\s*(.+)/);
     if (fileMatch) {
       state.file = fileMatch[1].trim();
     }
-    
+
+    // Parse dataset (for NISAR: A/HHHH)
+    const datasetMatch = trimmed.match(/\*\*Dataset:\*\*\s*([AB])\/(\w+)/);
+    if (datasetMatch) {
+      state.dataset = {
+        frequency: datasetMatch[1],
+        polarization: datasetMatch[2],
+      };
+    }
+
     // Parse contrast
     const contrastMatch = trimmed.match(/\*\*Contrast:\*\*\s*([-\d.]+)\s*to\s*([-\d.]+)\s*(dB)?/);
     if (contrastMatch) {
@@ -35,19 +52,19 @@ function parseMarkdownState(markdown) {
       state.contrastMax = parseFloat(contrastMatch[2]);
       state.useDecibels = contrastMatch[3] === 'dB';
     }
-    
+
     // Parse colormap
     const colormapMatch = trimmed.match(/\*\*Colormap:\*\*\s*(\w+)/);
     if (colormapMatch) {
       state.colormap = colormapMatch[1].toLowerCase();
     }
-    
+
     // Parse dB mode
     const dbMatch = trimmed.match(/\*\*dB Mode:\*\*\s*(on|off)/i);
     if (dbMatch) {
       state.useDecibels = dbMatch[1].toLowerCase() === 'on';
     }
-    
+
     // Parse view
     const viewMatch = trimmed.match(/\*\*View:\*\*\s*\[([-\d.]+),\s*([-\d.]+)\],?\s*zoom\s*([-\d.]+)/);
     if (viewMatch) {
@@ -57,7 +74,7 @@ function parseMarkdownState(markdown) {
       };
     }
   }
-  
+
   return state;
 }
 
@@ -70,13 +87,22 @@ function generateMarkdownState(state) {
   const lines = [
     '## State',
     '',
+    `- **Source:** ${state.source || 'cog'}`,
     `- **File:** ${state.file || '(none)'}`,
+  ];
+
+  // Add dataset line for NISAR files
+  if (state.source === 'nisar' && state.dataset) {
+    lines.push(`- **Dataset:** ${state.dataset.frequency}/${state.dataset.polarization}`);
+  }
+
+  lines.push(
     `- **Contrast:** ${state.contrastMin} to ${state.contrastMax}${state.useDecibels ? ' dB' : ''}`,
     `- **Colormap:** ${state.colormap}`,
     `- **dB Mode:** ${state.useDecibels ? 'on' : 'off'}`,
     `- **View:** [${state.view.center[0].toFixed(4)}, ${state.view.center[1].toFixed(4)}], zoom ${state.view.zoom.toFixed(2)}`,
-  ];
-  
+  );
+
   return lines.join('\n');
 }
 
@@ -86,10 +112,17 @@ function generateMarkdownState(state) {
  */
 function App() {
   // Core state
+  const [fileType, setFileType] = useState('cog'); // 'cog' | 'nisar'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // NISAR-specific state
+  const [nisarFile, setNisarFile] = useState(null);
+  const [nisarDatasets, setNisarDatasets] = useState([]);
+  const [selectedFrequency, setSelectedFrequency] = useState('A');
+  const [selectedPolarization, setSelectedPolarization] = useState('HHHH');
 
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
@@ -128,13 +161,15 @@ function App() {
 
   // Generate markdown from current state
   const currentState = useMemo(() => ({
-    file: cogUrl,
+    source: fileType,
+    file: fileType === 'cog' ? cogUrl : (nisarFile?.name || ''),
+    dataset: fileType === 'nisar' ? { frequency: selectedFrequency, polarization: selectedPolarization } : null,
     contrastMin,
     contrastMax,
     colormap,
     useDecibels,
     view: { center: viewCenter, zoom: viewZoom },
-  }), [cogUrl, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
+  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
 
   // Update markdown when state changes (unless edited)
   useEffect(() => {
@@ -314,6 +349,102 @@ function App() {
     }
   }, []);
 
+  // Handle NISAR file selection - read metadata to get available datasets
+  const handleNISARFileSelect = useCallback(async (file) => {
+    if (!file) return;
+
+    setNisarFile(file);
+    setNisarDatasets([]);
+    setLoading(true);
+    setError(null);
+    addStatusLog('info', `Reading NISAR GCOV metadata from: ${file.name}`);
+
+    try {
+      const datasets = await listNISARDatasets(file);
+      setNisarDatasets(datasets);
+
+      // Set defaults to first available dataset
+      if (datasets.length > 0) {
+        setSelectedFrequency(datasets[0].frequency);
+        setSelectedPolarization(datasets[0].polarization);
+      }
+
+      addStatusLog('success', `Found ${datasets.length} datasets`,
+        datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
+    } catch (e) {
+      setError(`Failed to read NISAR file: ${e.message}`);
+      addStatusLog('error', 'Failed to read NISAR metadata', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog]);
+
+  // Load selected NISAR dataset
+  const handleLoadNISAR = useCallback(async () => {
+    if (!nisarFile) {
+      setError('Please select a NISAR GCOV HDF5 file');
+      addStatusLog('error', 'No NISAR file selected');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    addStatusLog('info', `Loading NISAR dataset: ${selectedFrequency}/${selectedPolarization}`);
+
+    try {
+      const data = await loadNISARGCOV(nisarFile, {
+        frequency: selectedFrequency,
+        polarization: selectedPolarization,
+      });
+
+      setImageData(data);
+      addStatusLog('success', 'NISAR dataset loaded',
+        `${data.width}x${data.height}, CRS: ${data.crs}`);
+
+      // Use embedded statistics for auto-contrast if available
+      if (data.stats && data.stats.mean_value !== undefined) {
+        const { mean_value, sample_stddev } = data.stats;
+        if (mean_value > 0 && sample_stddev > 0) {
+          // 2-sigma stretch in dB
+          const meanDb = 10 * Math.log10(mean_value);
+          const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+          setContrastMin(Math.round(meanDb - 2 * stdDb));
+          setContrastMax(Math.round(meanDb + 2 * stdDb));
+          addStatusLog('info', 'Auto-contrast from HDF5 statistics',
+            `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
+        }
+      }
+
+      // Update view to fit bounds
+      if (data.bounds) {
+        const [minX, minY, maxX, maxY] = data.bounds;
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        setViewCenter([centerX, centerY]);
+
+        // For projected coordinates (meters), calculate appropriate zoom
+        const spanX = maxX - minX;
+        const spanY = maxY - minY;
+        const maxSpan = Math.max(spanX, spanY);
+        const viewportSize = 1000;
+        const zoom = Math.log2(viewportSize / maxSpan);
+
+        setViewZoom(zoom);
+        addStatusLog('info', 'View state updated',
+          `Center: [${centerX.toFixed(0)}, ${centerY.toFixed(0)}], Zoom: ${zoom.toFixed(2)}`);
+      }
+
+      addStatusLog('success', 'NISAR GCOV loaded and ready to display');
+    } catch (e) {
+      setError(`Failed to load NISAR dataset: ${e.message}`);
+      setImageData(null);
+      addStatusLog('error', 'Failed to load NISAR dataset', e.message);
+      console.error('NISAR loading error:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, [nisarFile, selectedFrequency, selectedPolarization, addStatusLog]);
+
   return (
     <div id="app">
       {/* Header */}
@@ -326,22 +457,106 @@ function App() {
       <div className="main-layout">
         {/* Controls Panel */}
         <div className="controls-panel">
-          {/* Load Section */}
+          {/* Data Source Selection */}
           <div className="control-section">
-            <h3>Load Image</h3>
+            <h3>Data Source</h3>
             <div className="control-group">
-              <label>COG URL</label>
-              <input
-                type="text"
-                value={cogUrl}
-                onChange={(e) => setCogUrl(e.target.value)}
-                placeholder="https://bucket.s3.amazonaws.com/image.tif"
-              />
+              <label>File Type</label>
+              <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
+                <option value="cog">Cloud Optimized GeoTIFF (URL)</option>
+                <option value="nisar">NISAR GCOV HDF5 (Local File)</option>
+              </select>
             </div>
-            <button onClick={handleLoadCOG} disabled={loading}>
-              {loading ? 'Loading...' : 'Load COG'}
-            </button>
           </div>
+
+          {/* COG URL Input */}
+          {fileType === 'cog' && (
+            <div className="control-section">
+              <h3>Load COG</h3>
+              <div className="control-group">
+                <label>COG URL</label>
+                <input
+                  type="text"
+                  value={cogUrl}
+                  onChange={(e) => setCogUrl(e.target.value)}
+                  placeholder="https://bucket.s3.amazonaws.com/image.tif"
+                />
+              </div>
+              <button onClick={handleLoadCOG} disabled={loading}>
+                {loading ? 'Loading...' : 'Load COG'}
+              </button>
+            </div>
+          )}
+
+          {/* NISAR HDF5 Input */}
+          {fileType === 'nisar' && (
+            <div className="control-section">
+              <h3>Load NISAR GCOV</h3>
+              <div className="control-group">
+                <label>HDF5 File</label>
+                <input
+                  type="file"
+                  accept=".h5,.hdf5,.he5"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      handleNISARFileSelect(file);
+                    }
+                  }}
+                  style={{ fontSize: '12px' }}
+                />
+              </div>
+
+              {nisarFile && (
+                <div className="control-group" style={{ fontSize: '12px', color: '#888' }}>
+                  {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
+                </div>
+              )}
+
+              {nisarDatasets.length > 0 && (
+                <>
+                  <div className="control-group">
+                    <label>Frequency</label>
+                    <select
+                      value={selectedFrequency}
+                      onChange={(e) => {
+                        setSelectedFrequency(e.target.value);
+                        // Update polarization to first available for this frequency
+                        const freqDatasets = nisarDatasets.filter(d => d.frequency === e.target.value);
+                        if (freqDatasets.length > 0) {
+                          setSelectedPolarization(freqDatasets[0].polarization);
+                        }
+                      }}
+                    >
+                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
+                        <option key={f} value={f}>Frequency {f}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="control-group">
+                    <label>Polarization</label>
+                    <select
+                      value={selectedPolarization}
+                      onChange={(e) => setSelectedPolarization(e.target.value)}
+                    >
+                      {nisarDatasets
+                        .filter(d => d.frequency === selectedFrequency)
+                        .map(d => (
+                          <option key={d.polarization} value={d.polarization}>
+                            {d.polarization}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <button onClick={handleLoadNISAR} disabled={loading}>
+                    {loading ? 'Loading...' : 'Load Dataset'}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Display Settings */}
           <div className="control-section">
@@ -417,7 +632,9 @@ function App() {
 
           {!loading && !error && !imageData && (
             <div className="loading">
-              Enter a Cloud Optimized GeoTIFF URL and click Load to begin
+              {fileType === 'cog'
+                ? 'Enter a Cloud Optimized GeoTIFF URL and click Load to begin'
+                : 'Select a NISAR GCOV HDF5 file to begin'}
             </div>
           )}
 
