@@ -64,8 +64,7 @@ async function readFileRange(file, offset, length) {
 }
 
 /**
- * Open HDF5 file using h5wasm's virtual filesystem
- * This writes the buffer to emscripten's FS before opening
+ * Open HDF5 file by loading it into memory
  * @param {File} file - Local file from input[type="file"]
  * @returns {Promise<{h5file: h5wasm.File, file: File, fullLoaded: boolean, loadedSize: number}>}
  */
@@ -95,16 +94,10 @@ async function openHDF5File(file) {
   const loadTime = performance.now() - startTime;
   console.log(`[NISAR Loader] File loaded in ${(loadTime / 1000).toFixed(1)}s`);
 
-  // Use a unique filename to avoid conflicts in h5wasm's virtual FS
-  const uniqueName = `/tmp/${Date.now()}_${file.name}`;
-
   try {
-    // Write to h5wasm's emscripten virtual filesystem
-    H5.FS.writeFile(uniqueName, new Uint8Array(arrayBuffer));
-    console.log(`[NISAR Loader] Written to virtual FS: ${uniqueName}`);
-
-    // Open the file from virtual filesystem
-    const h5file = new H5.File(uniqueName, 'r');
+    // Create h5wasm File directly from buffer
+    // h5wasm handles the virtual filesystem internally
+    const h5file = new H5.File(arrayBuffer, file.name);
 
     // Test if we can access the root group
     const root = h5file.get('/');
@@ -119,15 +112,8 @@ async function openHDF5File(file) {
       file,
       fullLoaded: true,
       loadedSize: file.size,
-      virtualPath: uniqueName,
     };
   } catch (e) {
-    // Clean up on failure
-    try {
-      H5.FS.unlink(uniqueName);
-    } catch (cleanupErr) {
-      // Ignore cleanup errors
-    }
     throw new Error(`Failed to open HDF5 file: ${e.message}`);
   }
 }
