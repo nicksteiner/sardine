@@ -59,42 +59,8 @@ npm run dev
 2. Select a `.h5` file
 3. SARdine reads metadata, discovers frequency bands (`L`/`S`) and polarizations
 4. Choose **Single Band** or **RGB Composite** display mode
-5. Click **Load** — data streams in chunk-by-chunk
+5. Click **Load** — data streams
 
-#### Programmatically
-
-```javascript
-import {
-  listNISARDatasets,
-  loadNISARGCOV,
-  loadNISARRGBComposite,
-} from 'sardine';
-
-// → Discover what's in the file
-const datasets = await listNISARDatasets(file);
-// → [{frequency: 'A', polarization: 'HHHH'}, {frequency: 'A', polarization: 'HVHV'}, ...]
-
-// → Load a single polarization band
-const { getTile, bounds, width, height, crs, stats } = await loadNISARGCOV(file, {
-  frequency: 'A',
-  polarization: 'HHHH',
-});
-
-// → Load an RGB composite
-const rgb = await loadNISARRGBComposite(file, {
-  frequency: 'A',
-  compositeId: 'pauli-power',
-});
-```
-
-#### RGB composite presets
-
-| Preset | R | G | B | Use case |
-|:---|:---|:---|:---|:---|
-| `hh-hv-vv` | `HHHH` | `HVHV` | `VVVV` | Standard quad-pol overview |
-| `pauli-power` | `\|HH−VV\|` | `HV` | `HH+VV` | Scattering mechanism decomposition |
-| `dual-pol-v` | `VV` | `VH` | `VV÷VH` | Sentinel-1 style dual-pol |
-| `dual-pol-h` | `HH` | `HV` | `HH÷HV` | H-transmit dual-pol |
 
 ---
 
