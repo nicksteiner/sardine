@@ -1677,7 +1677,7 @@ export async function loadNISARGCOV(file, options = {}) {
 
   // Extract metadata using spec-driven paths
   const metadata = await extractMetadata(h5file, frequency, band);
-  const { bounds, crs, width, height } = metadata;
+  const { bounds, crs, width, height, pixelSizeX, pixelSizeY } = metadata;
 
   // Get dataset statistics and fill value
   const stats = getDatasetStats(dataset);
@@ -1791,6 +1791,7 @@ export async function loadNISARGCOV(file, options = {}) {
     crs,
     width,
     height,
+    pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) },
     stats,
     fillValue,
     frequency,
@@ -1858,7 +1859,7 @@ export async function loadNISARGCOVFullImage(file, options = {}, maxSize = 2048)
 
   // Extract metadata using spec-driven paths
   const metadata = await extractMetadata(h5file, frequency, band);
-  const { bounds, crs } = metadata;
+  const { bounds, crs, pixelSizeX, pixelSizeY } = metadata;
 
   // Calculate downsample factor
   const maxDim = Math.max(fullWidth, fullHeight);
@@ -1982,15 +1983,69 @@ export async function loadNISARRGBComposite(file, options = {}) {
   const chunkH = matchingDatasets[0].chunkDims?.[0] || 512;
   const chunkW = matchingDatasets[0].chunkDims?.[1] || 512;
 
-  const bounds = [0, 0, width, height];
+  // Extract bounds, CRS, and pixel spacing from metadata
+  let bounds = [0, 0, width, height];
+  let crs = 'EPSG:32610'; // fallback
+
+  try {
+    // Read coordinate arrays for bounds (primary method per spec §5.3)
+    const xCoordId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
+    const yCoordId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
+
+    console.log(`[NISAR Loader] RGB coordinate dataset IDs: x=${xCoordId}, y=${yCoordId}`);
+
+    if (xCoordId != null && yCoordId != null) {
+      try {
+        const xCoords = await streamReader.readSmallDataset(xCoordId);
+        const yCoords = await streamReader.readSmallDataset(yCoordId);
+
+        console.log(`[NISAR Loader] RGB coordinate array lengths: x=${xCoords?.data?.length}, y=${yCoords?.data?.length}`);
+
+        if (xCoords && xCoords.data && xCoords.data.length > 0 &&
+            yCoords && yCoords.data && yCoords.data.length > 0) {
+          // Calculate bounds from first and last coordinates (more efficient than Math.min/max on large arrays)
+          const minX = Math.min(xCoords.data[0], xCoords.data[xCoords.data.length - 1]);
+          const maxX = Math.max(xCoords.data[0], xCoords.data[xCoords.data.length - 1]);
+          const minY = Math.min(yCoords.data[0], yCoords.data[yCoords.data.length - 1]);
+          const maxY = Math.max(yCoords.data[0], yCoords.data[yCoords.data.length - 1]);
+          bounds = [minX, minY, maxX, maxY];
+          console.log(`[NISAR Loader] RGB composite bounds from coordinates: [${bounds.join(', ')}]`);
+        }
+      } catch (coordError) {
+        console.warn(`[NISAR Loader] Failed to read coordinate arrays:`, coordError);
+      }
+    }
+
+    if (bounds[0] === 0 && bounds[1] === 0 && bounds[2] === width && bounds[3] === height) {
+      // Fallback: try coordinate spacing to compute bounds
+      const xSpacingId = streamReader.findDatasetByPath(paths.xCoordinateSpacing(activeFreq));
+      const ySpacingId = streamReader.findDatasetByPath(paths.yCoordinateSpacing(activeFreq));
+
+      if (xSpacingId != null && ySpacingId != null) {
+        const xData = await streamReader.readSmallDataset(xSpacingId);
+        const yData = await streamReader.readSmallDataset(ySpacingId);
+
+        if (xData && xData.data && xData.data.length > 0 &&
+            yData && yData.data && yData.data.length > 0) {
+          const dx = xData.data[0];
+          const dy = yData.data[0]; // negative for north-up
+          bounds = [0, 0, width * Math.abs(dx), height * Math.abs(dy)];
+          console.log(`[NISAR Loader] RGB composite bounds from spacing: [${bounds.join(', ')}]`);
+        }
+      } else {
+        console.warn('[NISAR Loader] RGB composite: Could not find coordinate or spacing info, using pixel coordinates');
+      }
+    }
+  } catch (e) {
+    console.warn(`[NISAR Loader] Could not read geotransform:`, e);
+  }
 
   // Read CRS from spec path
-  let crs = 'EPSG:32610'; // fallback
   try {
     const projId = streamReader.findDatasetByPath(paths.projection(activeFreq));
     if (projId != null) {
       const projData = await streamReader.readSmallDataset(projId);
-      if (projData?.data?.[0] > 0) {
+      if (projData && projData.data && projData.data[0] > 0) {
         crs = `EPSG:${projData.data[0]}`;
         console.log(`[NISAR Loader] RGB composite CRS: ${crs}`);
       }
@@ -1998,6 +2053,16 @@ export async function loadNISARRGBComposite(file, options = {}) {
   } catch (e) {
     console.warn(`[NISAR Loader] Could not read projection, using fallback: ${crs}`);
   }
+
+  // Calculate pixel size from bounds and dimensions (same as extractMetadata)
+  const pixelSizeX = (bounds[2] - bounds[0]) / (width - 1 || 1);
+  const pixelSizeY = (bounds[3] - bounds[1]) / (height - 1 || 1);
+
+  console.log(`[NISAR Loader] RGB composite metadata:`, {
+    bounds,
+    crs,
+    pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) }
+  });
 
   // Per-dataset chunk caches
   const chunkCaches = {};
@@ -2061,24 +2126,69 @@ export async function loadNISARRGBComposite(file, options = {}) {
   async function getRGBTile({ x, y, z, bbox, multiLook = false }) {
     const ml = multiLook ? 'ml' : 'nn';
     const tileKey = `rgb_${x},${y},${z},${ml}`;
-    if (tileCache.has(tileKey)) return tileCache.get(tileKey);
+
+    console.log(`[NISAR Tile] Request: tile(${x},${y},${z}), multiLook=${multiLook}, bbox=`, bbox ? `[${bbox.left?.toFixed(0)}, ${bbox.top?.toFixed(0)}, ${bbox.right?.toFixed(0)}, ${bbox.bottom?.toFixed(0)}]` : 'none');
+
+    if (tileCache.has(tileKey)) {
+      console.log(`[NISAR Tile] Cache hit: ${tileKey}`);
+      return tileCache.get(tileKey);
+    }
 
     try {
       const tileSize = 256;
 
-      // Compute pixel region from bbox (same logic as single-band getTile)
+      // Compute pixel region from bbox
+      // bbox can be in either pixel or world coordinates - auto-detect
       let left, top, right, bottom;
       if (bbox) {
         if (bbox.left !== undefined) {
-          left = Math.max(0, Math.floor(bbox.left));
-          right = Math.min(width, Math.ceil(bbox.right));
-          top = Math.max(0, height - Math.ceil(bbox.bottom));
-          bottom = Math.min(height, height - Math.floor(bbox.top));
+          // Auto-detect coordinate system based on magnitude
+          // If values >> image dimensions, assume world coords (UTM meters)
+          const isWorldCoords = bbox.left > width * 2 || bbox.right > width * 2 ||
+                                Math.abs(bbox.top) > height * 2 || Math.abs(bbox.bottom) > height * 2;
+
+          if (isWorldCoords) {
+            // World coordinates from deck.gl (UTM meters)
+            // bbox.top = min world Y, bbox.bottom = max world Y (confusing naming!)
+            const [minX, minY, maxX, maxY] = bounds;
+            const worldLeft = bbox.left;
+            const worldRight = bbox.right;
+            const worldMinY = bbox.top;      // min Y in world (despite "top" name)
+            const worldMaxY = bbox.bottom;   // max Y in world (despite "bottom" name)
+
+            // Convert to pixel coordinates
+            // Y axis is flipped: world Y increases upward, pixel row increases downward
+            const pixelLeft = (worldLeft - minX) / pixelSizeX;
+            const pixelRight = (worldRight - minX) / pixelSizeX;
+            const pixelTop = (maxY - worldMaxY) / pixelSizeY;     // top of image (row 0)
+            const pixelBottom = (maxY - worldMinY) / pixelSizeY;  // bottom of image
+
+            left = Math.max(0, Math.floor(pixelLeft));
+            right = Math.min(width, Math.ceil(pixelRight));
+            top = Math.max(0, Math.floor(pixelTop));
+            bottom = Math.min(height, Math.ceil(pixelBottom));
+          } else {
+            // Pixel coordinates (histogram sampling)
+            // Handle Y coordinates in either orientation
+            left = Math.max(0, Math.floor(bbox.left));
+            right = Math.min(width, Math.ceil(bbox.right));
+            const y1 = bbox.top;
+            const y2 = bbox.bottom;
+            top = Math.max(0, Math.floor(Math.min(y1, y2)));
+            bottom = Math.min(height, Math.ceil(Math.max(y1, y2)));
+          }
         } else {
-          left = Math.max(0, Math.floor(bbox.west));
-          top = Math.max(0, Math.floor(bbox.south));
-          right = Math.min(width, Math.ceil(bbox.east));
-          bottom = Math.min(height, Math.ceil(bbox.north));
+          // Geographic coordinates (west, south, east, north)
+          const [minX, minY, maxX, maxY] = bounds;
+          const pixelLeft = (bbox.west - minX) / pixelSizeX;
+          const pixelRight = (bbox.east - minX) / pixelSizeX;
+          const pixelTop = (maxY - bbox.north) / pixelSizeY;
+          const pixelBottom = (maxY - bbox.south) / pixelSizeY;
+
+          left = Math.max(0, Math.floor(pixelLeft));
+          right = Math.min(width, Math.ceil(pixelRight));
+          top = Math.max(0, Math.floor(pixelTop));
+          bottom = Math.min(height, Math.ceil(pixelBottom));
         }
       } else {
         const scale = Math.pow(2, z);
@@ -2194,10 +2304,13 @@ export async function loadNISARRGBComposite(file, options = {}) {
         keys.forEach(k => tileCache.delete(k));
       }
       tileCache.set(tileKey, tile);
+
+      console.log(`[NISAR Tile] Success: ${tileKey}, region=[${left},${top},${right},${bottom}], samples=${Object.keys(bandArrays)[0] ? bandArrays[Object.keys(bandArrays)[0]].length : 0}`);
+
       return tile;
 
     } catch (error) {
-      console.error(`[NISAR Loader] Failed to load RGB tile:`, error);
+      console.error(`[NISAR Tile] Failed: ${tileKey}`, error);
       return null;
     }
   }
@@ -2218,6 +2331,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
     crs,
     width,
     height,
+    pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) },
     composite: compositeId,
     band,
     identification,

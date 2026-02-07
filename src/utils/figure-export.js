@@ -192,10 +192,8 @@ function drawCornerCoordinates(ctx, W, H, viewState, projected, s) {
   if (!viewState) return;
 
   const extent = computeVisibleExtent(viewState, W, H);
+  // Only show bottom-right corner coordinate
   const corners = [
-    { wx: extent.minX, wy: extent.maxY, align: 'left',  baseline: 'top',    px: s(10), py: s(10) },
-    { wx: extent.maxX, wy: extent.maxY, align: 'right', baseline: 'top',    px: W - s(10), py: s(10) },
-    { wx: extent.minX, wy: extent.minY, align: 'left',  baseline: 'bottom', px: s(10), py: H - s(10) },
     { wx: extent.maxX, wy: extent.minY, align: 'right', baseline: 'bottom', px: W - s(10), py: H - s(10) },
   ];
 
@@ -423,13 +421,6 @@ function drawMetadata(ctx, W, H, meta, s) {
       color: THEME.cyan,
     });
   }
-
-  // Timestamp
-  entries.push({
-    label: 'EXPORTED',
-    value: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
-    color: THEME.textMuted,
-  });
 
   const labelFontSize = s(9);
   const valueFontSize = s(11);

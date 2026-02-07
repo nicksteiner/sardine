@@ -4,7 +4,7 @@ import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
 import { loadNISARRGBComposite } from '../src/loaders/nisar-loader.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
-import { writeRGBGeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { writeRGBAGeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
@@ -180,6 +180,7 @@ function App() {
   const [gamma, setGamma] = useState(1.0);
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
+  const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
@@ -749,18 +750,34 @@ function App() {
     addStatusLog('info', '--- GeoTIFF Export Started ---');
 
     try {
-      const exportWidth = Math.min(imageData.width, 4096);
-      const exportHeight = Math.min(imageData.height, 4096);
+      // Apply multilook window to output dimensions
+      const sourceWidth = imageData.width;
+      const sourceHeight = imageData.height;
+      const mlWindow = exportMultilookWindow || 1;
+
+      // Reduce output resolution by multilook factor, then cap at 4096
+      const targetWidth = Math.floor(sourceWidth / mlWindow);
+      const targetHeight = Math.floor(sourceHeight / mlWindow);
+      const exportWidth = Math.min(targetWidth, 4096);
+      const exportHeight = Math.min(targetHeight, 4096);
       const tileSize = 256;
 
       // Extract EPSG from CRS string
       const epsgMatch = imageData.crs?.match(/EPSG:(\d+)/);
       const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 32610;
 
+      // Calculate actual multilook factor applied (accounting for 4096 cap)
+      const actualMlX = sourceWidth / exportWidth;
+      const actualMlY = sourceHeight / exportHeight;
+
+      addStatusLog('info', `Source dimensions: ${sourceWidth} x ${sourceHeight}`);
+      addStatusLog('info', `Multilook window: ${mlWindow}×${mlWindow}`);
       addStatusLog('info', `Output dimensions: ${exportWidth} x ${exportHeight}`);
-      addStatusLog('info', `Source dimensions: ${imageData.width} x ${imageData.height}`);
+      addStatusLog('info', `Effective averaging: ${actualMlX.toFixed(1)}×${actualMlY.toFixed(1)}`);
       addStatusLog('info', `CRS: EPSG:${epsgCode}`);
       addStatusLog('info', `Bounds: [${imageData.bounds.map(b => b.toFixed(2)).join(', ')}]`);
+      addStatusLog('info', `Format: Cloud Optimized GeoTIFF (RGBA, 512×512 tiles)`);
+      addStatusLog('info', `Compression: DEFLATE with horizontal predictor`);
 
       // For RGB composite mode, read tiles and assemble
       if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
@@ -779,24 +796,26 @@ function App() {
         const rgba = new Uint8ClampedArray(exportWidth * exportHeight * 4);
 
         addStatusLog('info', `Reading ${totalTiles} tiles (${tilesX}x${tilesY} grid)...`);
+        addStatusLog('info', `Applying ${mlWindow}×${mlWindow} multilook (box-filter averaging)...`);
 
-        const stepX = imageData.width / exportWidth;
-        const stepY = imageData.height / exportHeight;
+        const stepX = sourceWidth / exportWidth;
+        const stepY = sourceHeight / exportHeight;
         let tilesRead = 0;
 
         for (let ty = 0; ty < tilesY; ty++) {
           for (let tx = 0; tx < tilesX; tx++) {
             const tileLeft = tx * tileSize * stepX;
             const tileTop = ty * tileSize * stepY;
-            const tileRight = Math.min((tx + 1) * tileSize * stepX, imageData.width);
-            const tileBottom = Math.min((ty + 1) * tileSize * stepY, imageData.height);
+            const tileRight = Math.min((tx + 1) * tileSize * stepX, sourceWidth);
+            const tileBottom = Math.min((ty + 1) * tileSize * stepY, sourceHeight);
 
-            const worldTop = imageData.height - tileBottom;
-            const worldBottom = imageData.height - tileTop;
+            const worldTop = sourceHeight - tileBottom;
+            const worldBottom = sourceHeight - tileTop;
 
             const tileData = await imageData.getRGBTile({
               x: tx, y: ty, z: 0,
               bbox: { left: tileLeft, top: worldTop, right: tileRight, bottom: worldBottom },
+              multiLook: mlWindow > 1,  // Apply box-filter averaging when reading from source
             });
 
             if (tileData && tileData.bands) {
@@ -822,10 +841,32 @@ function App() {
           addStatusLog('info', `Tiles: ${tilesRead}/${totalTiles} (${pct}%)`);
         }
 
-        addStatusLog('info', 'Encoding GeoTIFF...');
-        const geotiff = writeRGBGeoTIFF(rgba, exportWidth, exportHeight, imageData.bounds, epsgCode);
+        // Calculate output pixel spacing
+        const boundsWidth = imageData.bounds[2] - imageData.bounds[0];
+        const boundsHeight = imageData.bounds[3] - imageData.bounds[1];
+        const outputPixelX = boundsWidth / exportWidth;
+        const outputPixelY = boundsHeight / exportHeight;
 
-        const filename = `sardine_rgb_${compositeId}_${exportWidth}x${exportHeight}.tif`;
+        addStatusLog('info', 'Encoding COG with overviews...');
+        addStatusLog('info', `Output pixel spacing: ${outputPixelX.toFixed(1)}m × ${outputPixelY.toFixed(1)}m`);
+        addStatusLog('info', `Multilook applied: ${mlWindow}×${mlWindow} box-filter (source → export)`);
+        addStatusLog('info', `Overview multilook: inverse-dB averaging for pyramid levels`);
+        addStatusLog('info', `GeoTIFF bounds: [${imageData.bounds.map(b => b.toFixed(1)).join(', ')}]`);
+        addStatusLog('info', `GeoTIFF EPSG: ${epsgCode}, dimensions: ${exportWidth}×${exportHeight}`);
+        const geotiff = writeRGBAGeoTIFF(rgba, exportWidth, exportHeight, imageData.bounds, epsgCode, {
+          generateOverviews: true,
+          dbLimits: exportLimits,
+          useDecibels: useDecibels,
+          // Overview multilook: use 2×2 for overview pyramids (source multilook already applied)
+          multilookWindow: 2,
+          onProgress: (pct) => {
+            if (pct % 25 === 0 && pct > 0 && pct < 100) {
+              addStatusLog('info', `Encoding: ${pct}%`);
+            }
+          }
+        });
+
+        const filename = `sardine_rgba_${compositeId}_${exportWidth}x${exportHeight}.tif`;
         const sizeMB = (geotiff.byteLength / 1e6).toFixed(1);
         const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
 
@@ -884,6 +925,32 @@ function App() {
       console.error('Figure export error:', e);
     }
   }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog]);
+
+  // Reload/restart current rendering
+  const handleReload = useCallback(() => {
+    if (!imageData) {
+      addStatusLog('warning', 'No data loaded to reload');
+      return;
+    }
+
+    addStatusLog('info', 'Reloading current view...');
+
+    // Force re-render by clearing and re-loading
+    setImageData(null);
+    setHistogramData(null);
+
+    // Trigger re-load after a short delay
+    setTimeout(() => {
+      if (fileType === 'nisar' && nisarFile) {
+        // Re-trigger NISAR load by updating a dependency
+        setSelectedFrequency(prev => prev); // Force useEffect re-run
+      } else if (fileType === 'cog' && cogUrl) {
+        // Re-trigger COG load
+        setCogUrl(prev => prev);
+      }
+      addStatusLog('success', 'Reload triggered');
+    }, 100);
+  }, [imageData, fileType, nisarFile, cogUrl, addStatusLog]);
 
   return (
     <div id="app">
@@ -1037,6 +1104,73 @@ function App() {
             </CollapsibleSection>
           )}
 
+          {/* Current Session Status */}
+          {imageData && (
+            <div style={{
+              background: 'var(--sardine-bg-raised)',
+              border: '1px solid var(--sardine-border)',
+              borderRadius: 'var(--radius-md)',
+              padding: 'var(--space-md)',
+              marginBottom: 'var(--space-md)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-md)',
+            }}>
+              <div style={{
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                background: loading ? 'var(--sardine-cyan)' : 'var(--status-success)',
+                boxShadow: loading ? '0 0 6px var(--sardine-cyan)' : '0 0 6px var(--sardine-green-glow)',
+                animation: loading ? 'pulse 2s infinite' : 'none',
+                flexShrink: 0,
+              }} />
+              <div style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                letterSpacing: '1px',
+                textTransform: 'uppercase',
+                color: 'var(--text-secondary)',
+                flex: 1,
+              }}>
+                {loading ? 'Processing' : 'Data Loaded'}
+              </div>
+              <button
+                onClick={handleReload}
+                disabled={loading}
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.7rem',
+                  color: 'var(--sardine-cyan)',
+                  background: 'var(--sardine-cyan-bg)',
+                  border: '1px solid var(--sardine-cyan-dim)',
+                  padding: '4px 12px',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  transition: 'all var(--transition-fast)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  opacity: loading ? 0.5 : 1,
+                }}
+                onMouseEnter={(e) => {
+                  if (!loading) {
+                    e.target.style.background = 'var(--sardine-cyan)';
+                    e.target.style.color = 'var(--sardine-bg)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!loading) {
+                    e.target.style.background = 'var(--sardine-cyan-bg)';
+                    e.target.style.color = 'var(--sardine-cyan)';
+                  }
+                }}
+              >
+                {loading ? '⟳ Reloading...' : '⟳ Reload'}
+              </button>
+            </div>
+          )}
+
           {/* Display Settings */}
           <CollapsibleSection title="Display">
             
@@ -1077,6 +1211,34 @@ function App() {
                 <label htmlFor="showGrid">Coordinate Grid</label>
               </div>
             </div>
+
+            {/* Export settings */}
+            {imageData && displayMode === 'rgb' && (
+              <div className="control-group" style={{ marginTop: '8px' }}>
+                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+                  Multilook Window (Export)
+                </label>
+                <div style={{ display: 'flex', gap: '4px', marginBottom: '4px' }}>
+                  {[1, 2, 4, 8, 16].map(size => (
+                    <button
+                      key={size}
+                      className={exportMultilookWindow === size ? '' : 'btn-secondary'}
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      onClick={() => setExportMultilookWindow(size)}
+                      title={size === 1 ? 'No multilook (full resolution)' : `${size}×${size} averaging window`}
+                    >
+                      {size === 1 ? 'None' : `${size}×${size}`}
+                    </button>
+                  ))}
+                </div>
+                {imageData.pixelSpacing && (
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    Source: {imageData.pixelSpacing.x?.toFixed(1)}m × {imageData.pixelSpacing.y?.toFixed(1)}m posting
+                    {exportMultilookWindow > 1 && ` → ${(imageData.pixelSpacing.x * exportMultilookWindow).toFixed(1)}m export`}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Export buttons */}
             {imageData && (

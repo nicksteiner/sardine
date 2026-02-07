@@ -60,7 +60,7 @@ export {
   createRGBTexture,
 } from './utils/sar-composites.js';
 
-export { writeRGBGeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
+export { writeRGBAGeoTIFF, writeRGBGeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
 
 export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
