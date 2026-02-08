@@ -4,7 +4,7 @@ import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
 import { loadNISARRGBComposite } from '../src/loaders/nisar-loader.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
-import { writeRGBAGeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
@@ -745,145 +745,124 @@ function App() {
       return;
     }
 
+    if (!imageData.getExportStripe) {
+      addStatusLog('error', 'Raw data export requires RGB composite mode with getExportStripe');
+      return;
+    }
+
     setExporting(true);
     const exportStart = performance.now();
     addStatusLog('info', '--- GeoTIFF Export Started ---');
 
     try {
-      // Apply multilook window to output dimensions
       const sourceWidth = imageData.width;
       const sourceHeight = imageData.height;
-      const mlWindow = exportMultilookWindow || 1;
 
-      // Reduce output resolution by multilook factor, then cap at 4096
-      const targetWidth = Math.floor(sourceWidth / mlWindow);
-      const targetHeight = Math.floor(sourceHeight / mlWindow);
-      const exportWidth = Math.min(targetWidth, 4096);
-      const exportHeight = Math.min(targetHeight, 4096);
-      const tileSize = 256;
+      // Integer multilook — no 4096 cap, safety cap at 8192
+      let effectiveMl = exportMultilookWindow || 1;
+      while (Math.floor(sourceWidth / effectiveMl) > 8192) effectiveMl *= 2;
+
+      const exportWidth = Math.floor(sourceWidth / effectiveMl);
+      const exportHeight = Math.floor(sourceHeight / effectiveMl);
 
       // Extract EPSG from CRS string
       const epsgMatch = imageData.crs?.match(/EPSG:(\d+)/);
       const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 32610;
 
-      // Calculate actual multilook factor applied (accounting for 4096 cap)
-      const actualMlX = sourceWidth / exportWidth;
-      const actualMlY = sourceHeight / exportHeight;
+      // Band names from the loaded composite's required polarizations
+      const bandNames = imageData.requiredPols || ['HHHH', 'HVHV', 'VVVV'];
 
-      addStatusLog('info', `Source dimensions: ${sourceWidth} x ${sourceHeight}`);
-      addStatusLog('info', `Multilook window: ${mlWindow}×${mlWindow}`);
-      addStatusLog('info', `Output dimensions: ${exportWidth} x ${exportHeight}`);
-      addStatusLog('info', `Effective averaging: ${actualMlX.toFixed(1)}×${actualMlY.toFixed(1)}`);
-      addStatusLog('info', `CRS: EPSG:${epsgCode}`);
-      addStatusLog('info', `Bounds: [${imageData.bounds.map(b => b.toFixed(2)).join(', ')}]`);
-      addStatusLog('info', `Format: Cloud Optimized GeoTIFF (RGBA, 512×512 tiles)`);
-      addStatusLog('info', `Compression: DEFLATE with horizontal predictor`);
+      addStatusLog('info', `Source: ${sourceWidth} x ${sourceHeight}`);
+      addStatusLog('info', `Multilook: ${effectiveMl}x${effectiveMl} (integer)`);
+      addStatusLog('info', `Export: ${exportWidth} x ${exportHeight}`);
+      addStatusLog('info', `Bands: ${bandNames.join(', ')} (Float32, raw linear power)`);
+      addStatusLog('info', `EPSG: ${epsgCode}`);
+      addStatusLog('info', `Format: GeoTIFF (Float32, 512x512 tiles, DEFLATE)`);
 
-      // For RGB composite mode, read tiles and assemble
-      if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
-        const exportLimits = rgbContrastLimits || effectiveContrastLimits;
-        addStatusLog('info', `Composite: ${compositeId}`);
-        addStatusLog('info', `Scaling: ${useDecibels ? 'dB' : 'linear'}`);
-        if (exportLimits.R) {
-          addStatusLog('info', `R limits: ${exportLimits.R[0].toExponential(2)} – ${exportLimits.R[1].toExponential(2)}`);
-          addStatusLog('info', `G limits: ${exportLimits.G[0].toExponential(2)} – ${exportLimits.G[1].toExponential(2)}`);
-          addStatusLog('info', `B limits: ${exportLimits.B[0].toExponential(2)} – ${exportLimits.B[1].toExponential(2)}`);
-        }
+      // Allocate output arrays for each band
+      const bands = {};
+      for (const name of bandNames) {
+        bands[name] = new Float32Array(exportWidth * exportHeight);
+      }
 
-        const tilesX = Math.ceil(exportWidth / tileSize);
-        const tilesY = Math.ceil(exportHeight / tileSize);
-        const totalTiles = tilesX * tilesY;
-        const rgba = new Uint8ClampedArray(exportWidth * exportHeight * 4);
+      // Stripe-based reading: 256 output rows per stripe
+      const stripeRows = 256;
+      const numStripes = Math.ceil(exportHeight / stripeRows);
 
-        addStatusLog('info', `Reading ${totalTiles} tiles (${tilesX}x${tilesY} grid)...`);
-        addStatusLog('info', `Applying ${mlWindow}×${mlWindow} multilook (box-filter averaging)...`);
+      for (let s = 0; s < numStripes; s++) {
+        const startRow = s * stripeRows;
+        const numRows = Math.min(stripeRows, exportHeight - startRow);
 
-        const stepX = sourceWidth / exportWidth;
-        const stepY = sourceHeight / exportHeight;
-        let tilesRead = 0;
+        addStatusLog('info', `Reading stripe ${s + 1}/${numStripes} (rows ${startRow}-${startRow + numRows - 1})...`);
 
-        for (let ty = 0; ty < tilesY; ty++) {
-          for (let tx = 0; tx < tilesX; tx++) {
-            const tileLeft = tx * tileSize * stepX;
-            const tileTop = ty * tileSize * stepY;
-            const tileRight = Math.min((tx + 1) * tileSize * stepX, sourceWidth);
-            const tileBottom = Math.min((ty + 1) * tileSize * stepY, sourceHeight);
-
-            const worldTop = sourceHeight - tileBottom;
-            const worldBottom = sourceHeight - tileTop;
-
-            const tileData = await imageData.getRGBTile({
-              x: tx, y: ty, z: 0,
-              bbox: { left: tileLeft, top: worldTop, right: tileRight, bottom: worldBottom },
-              multiLook: mlWindow > 1,  // Apply box-filter averaging when reading from source
-            });
-
-            if (tileData && tileData.bands) {
-              const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
-              const tileImage = createRGBTexture(rgbBands, tileSize, tileSize, exportLimits, useDecibels, gamma, stretchMode);
-
-              const outStartX = tx * tileSize;
-              const outStartY = ty * tileSize;
-              for (let py = 0; py < tileSize && outStartY + py < exportHeight; py++) {
-                for (let px = 0; px < tileSize && outStartX + px < exportWidth; px++) {
-                  const srcIdx = (py * tileSize + px) * 4;
-                  const dstIdx = ((outStartY + py) * exportWidth + (outStartX + px)) * 4;
-                  rgba[dstIdx] = tileImage.data[srcIdx];
-                  rgba[dstIdx + 1] = tileImage.data[srcIdx + 1];
-                  rgba[dstIdx + 2] = tileImage.data[srcIdx + 2];
-                  rgba[dstIdx + 3] = tileImage.data[srcIdx + 3];
-                }
-              }
-            }
-            tilesRead++;
-          }
-          const pct = Math.round((ty + 1) / tilesY * 100);
-          addStatusLog('info', `Tiles: ${tilesRead}/${totalTiles} (${pct}%)`);
-        }
-
-        // Calculate output pixel spacing
-        const boundsWidth = imageData.bounds[2] - imageData.bounds[0];
-        const boundsHeight = imageData.bounds[3] - imageData.bounds[1];
-        const outputPixelX = boundsWidth / exportWidth;
-        const outputPixelY = boundsHeight / exportHeight;
-
-        addStatusLog('info', 'Encoding COG with overviews...');
-        addStatusLog('info', `Output pixel spacing: ${outputPixelX.toFixed(1)}m × ${outputPixelY.toFixed(1)}m`);
-        addStatusLog('info', `Multilook applied: ${mlWindow}×${mlWindow} box-filter (source → export)`);
-        addStatusLog('info', `Overview multilook: inverse-dB averaging for pyramid levels`);
-        addStatusLog('info', `GeoTIFF bounds: [${imageData.bounds.map(b => b.toFixed(1)).join(', ')}]`);
-        addStatusLog('info', `GeoTIFF EPSG: ${epsgCode}, dimensions: ${exportWidth}×${exportHeight}`);
-        const geotiff = writeRGBAGeoTIFF(rgba, exportWidth, exportHeight, imageData.bounds, epsgCode, {
-          generateOverviews: true,
-          dbLimits: exportLimits,
-          useDecibels: useDecibels,
-          // Overview multilook: use 2×2 for overview pyramids (source multilook already applied)
-          multilookWindow: 2,
-          onProgress: (pct) => {
-            if (pct % 25 === 0 && pct > 0 && pct < 100) {
-              addStatusLog('info', `Encoding: ${pct}%`);
-            }
-          }
+        const stripe = await imageData.getExportStripe({
+          startRow,
+          numRows,
+          ml: effectiveMl,
+          exportWidth,
         });
 
-        const filename = `sardine_rgba_${compositeId}_${exportWidth}x${exportHeight}.tif`;
-        const sizeMB = (geotiff.byteLength / 1e6).toFixed(1);
-        const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
-
-        downloadBuffer(geotiff, filename);
-        addStatusLog('success', `Exported: ${filename}`);
-        addStatusLog('success', `File size: ${sizeMB} MB, Time: ${elapsed}s`);
-        addStatusLog('info', '--- GeoTIFF Export Complete ---');
-      } else {
-        addStatusLog('warning', 'Single-band GeoTIFF export not yet implemented. Use RGB composite mode.');
+        // Copy stripe data into output arrays
+        for (const name of bandNames) {
+          if (stripe.bands[name]) {
+            bands[name].set(stripe.bands[name], startRow * exportWidth);
+          }
+        }
       }
+
+      // Pixel-edge bounds correction: NISAR coords are pixel-CENTER,
+      // GeoTIFF PixelIsArea expects pixel-EDGE
+      const nativeSpacingX = imageData.pixelSpacing?.x || ((imageData.bounds[2] - imageData.bounds[0]) / sourceWidth);
+      const nativeSpacingY = imageData.pixelSpacing?.y || ((imageData.bounds[3] - imageData.bounds[1]) / sourceHeight);
+      const exportBounds = [
+        imageData.bounds[0] - nativeSpacingX / 2,  // minX - half pixel
+        imageData.bounds[1] - nativeSpacingY / 2,  // minY - half pixel
+        imageData.bounds[2] + nativeSpacingX / 2,  // maxX + half pixel
+        imageData.bounds[3] + nativeSpacingY / 2,  // maxY + half pixel
+      ];
+
+      const exportPixelX = (exportBounds[2] - exportBounds[0]) / exportWidth;
+      const exportPixelY = (exportBounds[3] - exportBounds[1]) / exportHeight;
+
+      addStatusLog('info', `Pixel scale: ${exportPixelX.toFixed(1)}m x ${exportPixelY.toFixed(1)}m`);
+      addStatusLog('info', `Bounds (pixel-edge): [${exportBounds.map(b => b.toFixed(1)).join(', ')}]`);
+
+      // Write Float32 multi-band GeoTIFF
+      addStatusLog('info', 'Writing Float32 GeoTIFF...');
+      const geotiff = writeFloat32GeoTIFF(bands, bandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
+        onProgress: (pct) => {
+          if (pct % 20 === 0 && pct > 0 && pct < 100) {
+            addStatusLog('info', `Encoding: ${pct}%`);
+          }
+        }
+      });
+
+      // Georef verification logging
+      addStatusLog('info', '--- Georef Verification ---');
+      addStatusLog('info', `EPSG: ${epsgCode}`);
+      addStatusLog('info', `Pixel scale: ${exportPixelX.toFixed(6)} x ${exportPixelY.toFixed(6)}`);
+      addStatusLog('info', `Expected: ${(nativeSpacingX * effectiveMl).toFixed(1)}m (native ${nativeSpacingX.toFixed(1)}m x ${effectiveMl}ml)`);
+      addStatusLog('info', `UL corner: (${exportBounds[0].toFixed(2)}, ${exportBounds[3].toFixed(2)})`);
+      addStatusLog('info', `LR corner: (${exportBounds[2].toFixed(2)}, ${exportBounds[1].toFixed(2)})`);
+      addStatusLog('info', `Dimensions: ${exportWidth} x ${exportHeight} = ${sourceWidth}/${effectiveMl} x ${sourceHeight}/${effectiveMl}`);
+      const intCheck = (sourceWidth % effectiveMl === 0 && sourceHeight % effectiveMl === 0) ? 'exact' : 'truncated';
+      addStatusLog('info', `Integer multilook: ${intCheck}`);
+
+      const filename = `sardine_${bandNames.join('-')}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+      const sizeMB = (geotiff.byteLength / 1e6).toFixed(1);
+      const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
+
+      downloadBuffer(geotiff, filename);
+      addStatusLog('success', `Exported: ${filename}`);
+      addStatusLog('success', `File size: ${sizeMB} MB, Time: ${elapsed}s`);
+      addStatusLog('info', '--- GeoTIFF Export Complete ---');
     } catch (e) {
       addStatusLog('error', 'Export failed', e.message);
       console.error('GeoTIFF export error:', e);
     } finally {
       setExporting(false);
     }
-  }, [imageData, displayMode, compositeId, effectiveContrastLimits, rgbContrastLimits, useDecibels, addStatusLog]);
+  }, [imageData, exportMultilookWindow, addStatusLog]);
 
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
@@ -1213,7 +1192,7 @@ function App() {
             </div>
 
             {/* Export settings */}
-            {imageData && displayMode === 'rgb' && (
+            {imageData && imageData.getExportStripe && (
               <div className="control-group" style={{ marginTop: '8px' }}>
                 <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
                   Multilook Window (Export)
@@ -1243,13 +1222,13 @@ function App() {
             {/* Export buttons */}
             {imageData && (
               <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
-                {displayMode === 'rgb' && (
+                {imageData?.getExportStripe && (
                   <button
                     onClick={handleExportGeoTIFF}
                     disabled={exporting}
                     style={{ flex: 1 }}
                   >
-                    {exporting ? 'Exporting...' : 'Export GeoTIFF'}
+                    {exporting ? 'Exporting...' : 'Export GeoTIFF (Float32)'}
                   </button>
                 )}
                 <button

@@ -839,6 +839,208 @@ function writeLegacyOverflow(view, bytes, offset, entry) {
 }
 
 /**
+ * Write a multi-band Float32 GeoTIFF with raw data values.
+ *
+ * Produces a standard GeoTIFF (not COG) suitable for analysis software:
+ *   - N bands of Float32 data (one per polarization)
+ *   - 512×512 tiled layout for efficient access
+ *   - DEFLATE compression
+ *   - Full georeferencing (ModelTiepoint, ModelPixelScale, GeoKeys)
+ *   - Band-interleaved-by-pixel layout (BIP/chunky)
+ *
+ * @param {Object} bands - { HHHH: Float32Array, HVHV: Float32Array, ... }
+ * @param {string[]} bandNames - Band names in order, e.g. ['HHHH', 'HVHV']
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {number[]} bounds - [minX, minY, maxX, maxY] pixel-EDGE bounds
+ * @param {number} epsgCode - EPSG code
+ * @param {Object} [options] - { onProgress }
+ * @returns {ArrayBuffer} - Complete TIFF file
+ */
+export function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, epsgCode, options = {}) {
+  const { onProgress } = options;
+  const numBands = bandNames.length;
+  const [minX, minY, maxX, maxY] = bounds;
+  const pixelScaleX = (maxX - minX) / width;
+  const pixelScaleY = (maxY - minY) / height;
+
+  if (onProgress) onProgress(0);
+
+  // --- Step 1: Extract and compress 512×512 tiles ---
+  const tilesX = Math.ceil(width / TILE_SIZE);
+  const tilesY = Math.ceil(height / TILE_SIZE);
+  const numTiles = tilesX * tilesY;
+  const compressedTiles = [];
+
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      const x0 = tx * TILE_SIZE;
+      const y0 = ty * TILE_SIZE;
+      const tileW = Math.min(TILE_SIZE, width - x0);
+      const tileH = Math.min(TILE_SIZE, height - y0);
+
+      // Extract tile data: band-interleaved-by-pixel (BIP)
+      // Each pixel has numBands Float32 values
+      const tileData = new Float32Array(TILE_SIZE * TILE_SIZE * numBands);
+
+      for (let py = 0; py < tileH; py++) {
+        for (let px = 0; px < tileW; px++) {
+          const srcIdx = (y0 + py) * width + (x0 + px);
+          const dstIdx = (py * TILE_SIZE + px) * numBands;
+          for (let b = 0; b < numBands; b++) {
+            tileData[dstIdx + b] = bands[bandNames[b]][srcIdx];
+          }
+        }
+      }
+
+      // Compress as raw bytes
+      const tileBytes = new Uint8Array(tileData.buffer, tileData.byteOffset, tileData.byteLength);
+      const compressed = pako.deflate(tileBytes, { level: 6 });
+      compressedTiles.push({ data: compressed, byteCount: compressed.byteLength });
+    }
+
+    if (onProgress) onProgress(Math.round((ty + 1) / tilesY * 60));
+  }
+
+  // --- Step 2: Build IFD entries ---
+  const entries = [];
+
+  entries.push(makeEntry(TAG_IMAGE_WIDTH, TYPE_LONG, 1, width));
+  entries.push(makeEntry(TAG_IMAGE_LENGTH, TYPE_LONG, 1, height));
+
+  // BitsPerSample: 32 per band
+  const bitsPerSample = new Array(numBands).fill(32);
+  entries.push(makeArrayEntry(TAG_BITS_PER_SAMPLE, TYPE_SHORT, bitsPerSample));
+
+  // Compression: DEFLATE
+  entries.push(makeEntry(TAG_COMPRESSION, TYPE_SHORT, 1, 8));
+
+  // Photometric: 1 = MinIsBlack (generic data, not RGB)
+  entries.push(makeEntry(TAG_PHOTOMETRIC, TYPE_SHORT, 1, 1));
+
+  // SamplesPerPixel
+  entries.push(makeEntry(TAG_SAMPLES_PER_PIXEL, TYPE_SHORT, 1, numBands));
+
+  // PlanarConfig: 1 = chunky/BIP
+  entries.push(makeEntry(TAG_PLANAR_CONFIG, TYPE_SHORT, 1, 1));
+
+  // TileWidth, TileLength
+  entries.push(makeEntry(TAG_TILE_WIDTH, TYPE_LONG, 1, TILE_SIZE));
+  entries.push(makeEntry(TAG_TILE_LENGTH, TYPE_LONG, 1, TILE_SIZE));
+
+  // TileOffsets (placeholder)
+  const tileOffsets = new Array(numTiles).fill(0);
+  entries.push(makeArrayEntry(TAG_TILE_OFFSETS, TYPE_LONG, tileOffsets));
+
+  // TileByteCounts
+  const tileByteCounts = compressedTiles.map(t => t.byteCount);
+  entries.push(makeArrayEntry(TAG_TILE_BYTE_COUNTS, TYPE_LONG, tileByteCounts));
+
+  // SampleFormat: 3 = IEEE floating point (for all bands)
+  const sampleFormat = new Array(numBands).fill(3);
+  entries.push(makeArrayEntry(TAG_SAMPLE_FORMAT, TYPE_SHORT, sampleFormat));
+
+  // GeoTIFF tags
+  entries.push(makeArrayEntry(TAG_MODEL_TIEPOINT, TYPE_DOUBLE, [0, 0, 0, minX, maxY, 0]));
+  entries.push(makeArrayEntry(TAG_MODEL_PIXEL_SCALE, TYPE_DOUBLE, [pixelScaleX, pixelScaleY, 0]));
+
+  const isGeographic = epsgCode >= 4000 && epsgCode < 5000;
+  const modelType = isGeographic ? MODEL_TYPE_GEOGRAPHIC : MODEL_TYPE_PROJECTED;
+  const csKeyId = isGeographic ? KEY_GEOGRAPHIC_TYPE : KEY_PROJECTED_CS_TYPE;
+
+  entries.push(makeArrayEntry(TAG_GEO_KEY_DIRECTORY, TYPE_SHORT, [
+    1, 1, 0, 3,
+    KEY_GT_MODEL_TYPE, 0, 1, modelType,
+    KEY_GT_RASTER_TYPE, 0, 1, RASTER_TYPE_PIXEL_IS_AREA,
+    csKeyId, 0, 1, epsgCode,
+  ]));
+
+  // Sort by tag
+  entries.sort((a, b) => a.tag - b.tag);
+
+  // --- Step 3: Calculate file layout ---
+  const headerSize = 8;
+  const ifdSize = 2 + entries.length * 12 + 4;
+  const ifdOffset = headerSize;
+
+  // Overflow data (arrays too large for 4 bytes)
+  let overflowSize = 0;
+  for (const entry of entries) {
+    const byteSize = getEntryByteSize(entry);
+    if (byteSize > 4) {
+      entry.needsOverflow = true;
+      entry.overflowSize = byteSize;
+      overflowSize += byteSize;
+      if (overflowSize % 2 !== 0) overflowSize++;
+    }
+  }
+
+  const overflowOffset = ifdOffset + ifdSize;
+  const tileDataOffset = overflowOffset + overflowSize;
+  const totalTileBytes = compressedTiles.reduce((sum, t) => sum + t.byteCount, 0);
+  const totalSize = tileDataOffset + totalTileBytes;
+
+  // --- Step 4: Write the file ---
+  const buffer = new ArrayBuffer(totalSize);
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+
+  // TIFF header
+  view.setUint16(0, 0x4949, true); // Little-endian
+  view.setUint16(2, 42, true);     // Magic
+  view.setUint32(4, ifdOffset, true);
+
+  // Write IFD
+  let pos = ifdOffset;
+  view.setUint16(pos, entries.length, true); pos += 2;
+
+  let curOverflow = overflowOffset;
+  let curTileData = tileDataOffset;
+
+  for (const entry of entries) {
+    view.setUint16(pos, entry.tag, true); pos += 2;
+    view.setUint16(pos, entry.type, true); pos += 2;
+    view.setUint32(pos, entry.count, true); pos += 4;
+
+    const byteSize = getEntryByteSize(entry);
+
+    if (byteSize <= 4) {
+      writeEntryValue(view, pos, entry);
+      pos += 4;
+    } else if (entry.tag === TAG_TILE_OFFSETS) {
+      // Write pointer to overflow, then fill in tile offsets
+      view.setUint32(pos, curOverflow, true); pos += 4;
+      let tilePos = tileDataOffset;
+      for (let i = 0; i < compressedTiles.length; i++) {
+        view.setUint32(curOverflow, tilePos, true);
+        curOverflow += 4;
+        tilePos += compressedTiles[i].byteCount;
+      }
+      if (curOverflow % 2 !== 0) curOverflow++;
+    } else {
+      // Other overflow arrays
+      view.setUint32(pos, curOverflow, true); pos += 4;
+      writeEntryArray(view, curOverflow, entry);
+      curOverflow += entry.overflowSize;
+      if (curOverflow % 2 !== 0) curOverflow++;
+    }
+  }
+
+  // Next IFD pointer (0 = none)
+  view.setUint32(pos, 0, true);
+
+  // Write tile data
+  let tileWritePos = tileDataOffset;
+  for (const tile of compressedTiles) {
+    bytes.set(tile.data, tileWritePos);
+    tileWritePos += tile.byteCount;
+  }
+
+  if (onProgress) onProgress(100);
+  return buffer;
+}
+
+/**
  * Trigger a file download in the browser.
  * @param {ArrayBuffer} buffer - File data
  * @param {string} filename - Download filename

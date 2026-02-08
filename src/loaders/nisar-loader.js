@@ -2315,6 +2315,82 @@ export async function loadNISARRGBComposite(file, options = {}) {
     }
   }
 
+  /**
+   * Export stripe reader — reads source data in horizontal stripes and applies
+   * exact ml×ml box-filter averaging for GeoTIFF export.
+   *
+   * Unlike getRGBTile (designed for display tiles), this function:
+   * - Uses exact integer source coordinates (no floor/ceil quantization)
+   * - Averages ALL ml×ml source pixels per output pixel (no sub-sampling)
+   * - Returns raw Float32 band data (no RGB conversion or contrast scaling)
+   *
+   * @param {Object} params
+   * @param {number} params.startRow - First output row in this stripe
+   * @param {number} params.numRows - Number of output rows to produce
+   * @param {number} params.ml - Multilook factor (integer)
+   * @param {number} params.exportWidth - Output width in pixels
+   * @returns {Promise<{bands: Object, width: number, height: number}>}
+   */
+  async function getExportStripe({ startRow, numRows, ml, exportWidth }) {
+    // Source region for this stripe
+    const srcTop = startRow * ml;
+    const srcBottom = Math.min((startRow + numRows) * ml, height);
+
+    // Pre-fetch all chunks covering this stripe region (all columns, all bands)
+    const minChunkRow = Math.floor(srcTop / chunkH);
+    const maxChunkRow = Math.floor(Math.min(srcBottom - 1, height - 1) / chunkH);
+    const minChunkCol = 0;
+    const maxChunkCol = Math.floor((width - 1) / chunkW);
+
+    const fetches = [];
+    for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
+      for (let cc = minChunkCol; cc <= maxChunkCol; cc++) {
+        for (const pol of requiredPols) {
+          fetches.push(getCachedChunk(pol, cr, cc));
+        }
+      }
+    }
+    await Promise.all(fetches);
+
+    // Allocate output arrays
+    const bandArrays = {};
+    for (const pol of requiredPols) {
+      bandArrays[pol] = new Float32Array(exportWidth * numRows);
+    }
+
+    // Exact box-filter averaging: each output pixel averages ALL ml×ml source pixels
+    for (let oy = 0; oy < numRows; oy++) {
+      for (let ox = 0; ox < exportWidth; ox++) {
+        const sx0 = ox * ml;
+        const sy0 = (startRow + oy) * ml;
+        const sx1 = Math.min(sx0 + ml, width);
+        const sy1 = Math.min(sy0 + ml, height);
+
+        for (const pol of requiredPols) {
+          let sum = 0;
+          let count = 0;
+          for (let sy = sy0; sy < sy1; sy++) {
+            const cr = Math.floor(sy / chunkH);
+            for (let sx = sx0; sx < sx1; sx++) {
+              const cc = Math.floor(sx / chunkW);
+              const v = samplePixel(
+                chunkCaches[pol].get(`${cr},${cc}`),
+                sy, sx, cr, cc
+              );
+              if (v > 0) {
+                sum += v;
+                count++;
+              }
+            }
+          }
+          bandArrays[pol][oy * exportWidth + ox] = count > 0 ? sum / count : 0;
+        }
+      }
+    }
+
+    return { bands: bandArrays, width: exportWidth, height: numRows };
+  }
+
   // Build available datasets list
   const availableDatasets = Object.keys(polMap).map(pol => ({
     frequency: activeFreq,
@@ -2327,11 +2403,13 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
   const result = {
     getRGBTile,
+    getExportStripe,
     bounds,
     crs,
     width,
     height,
     pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) },
+    requiredPols,
     composite: compositeId,
     band,
     identification,
