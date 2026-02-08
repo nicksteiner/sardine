@@ -13,11 +13,15 @@ export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBC
 export { SARTileLayer } from './layers/SARTileLayer.js';
 export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
 export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
+export { SARGPUBitmapLayer } from './layers/SARGPUBitmapLayer.js';
+export { SARGPULayer } from './layers/SARGPULayer.js';
 export {
   sarVertexShader,
   sarFragmentShader,
   COLORMAP_IDS,
   getColormapId,
+  STRETCH_MODE_IDS,
+  getStretchModeId,
 } from './layers/shaders.js';
 
 // Viewers

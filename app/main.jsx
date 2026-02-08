@@ -243,8 +243,9 @@ function App() {
       addStatusLog('success', 'RGB contrast reset to 2–98% percentiles',
         ['R', 'G', 'B'].map(ch => newLimits[ch] ? `${ch}: ${newLimits[ch][0].toExponential(2)}–${newLimits[ch][1].toExponential(2)}` : '').join(', '));
     } else if (histogramData.single) {
-      const p2 = Math.round(histogramData.single.p2);
-      const p98 = Math.round(histogramData.single.p98);
+      // Keep decimal precision for dB values
+      const p2 = Number(histogramData.single.p2.toFixed(1));
+      const p98 = Number(histogramData.single.p98.toFixed(1));
       setContrastMin(p2);
       setContrastMax(p98);
       addStatusLog('success', `Contrast reset to ${p2} – ${p98} dB`);
@@ -350,6 +351,19 @@ function App() {
       if (imageData) handleRecomputeHistogram();
     }
   }, [histogramScope, imageData, handleRecomputeHistogram]);
+
+  // Recompute histogram when switching between dB and linear mode
+  const useDecibelsRef = useRef(useDecibels);
+  useEffect(() => {
+    if (useDecibels !== useDecibelsRef.current) {
+      useDecibelsRef.current = useDecibels;
+      // Recompute histogram in the new scale
+      if (imageData && displayMode === 'single') {
+        handleRecomputeHistogram();
+      }
+    }
+  }, [useDecibels, imageData, displayMode, handleRecomputeHistogram]);
+
 
   // Generate markdown from current state
   const currentState = useMemo(() => ({
@@ -713,12 +727,14 @@ function App() {
             ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
         } else if (data.getTile) {
           addStatusLog('info', 'Computing histogram from tile samples...');
-          const stats = await sampleViewportStats(data.getTile, data.width, data.height, true);
+          const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
           if (stats) {
             setHistogramData({ single: stats });
-            setContrastMin(Math.round(stats.p2));
-            setContrastMax(Math.round(stats.p98));
-            addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)} dB`);
+            // Keep decimal precision for dB values (don't round)
+            setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
+            setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
+            const unit = useDecibels ? 'dB' : '';
+            addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
           }
         }
       } catch (e) {

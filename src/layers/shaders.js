@@ -43,6 +43,8 @@ uniform float uMin;
 uniform float uMax;
 uniform bool uUseDecibels;
 uniform int uColormap;
+uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=gamma, 3=sigmoid
+uniform float uGamma;
 
 in vec2 vTexCoord;
 out vec4 fragColor;
@@ -121,7 +123,24 @@ void main(void) {
   }
   
   value = clamp(value, 0.0, 1.0);
-  
+
+  // Apply stretch mode
+  if (uStretchMode == 1) {
+    // sqrt stretch
+    value = sqrt(value);
+  } else if (uStretchMode == 2) {
+    // gamma stretch
+    value = pow(value, uGamma);
+  } else if (uStretchMode == 3) {
+    // sigmoid stretch
+    float gain = uGamma * 8.0;
+    float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
+    float lo = 1.0 / (1.0 + exp(gain * 0.5));
+    float hi = 1.0 / (1.0 + exp(-gain * 0.5));
+    value = (raw - lo) / (hi - lo);
+  }
+  // else: linear (no modification)
+
   vec3 color;
   if (uColormap == 0) {
     color = grayscale(value);
@@ -166,9 +185,30 @@ export function getColormapId(name) {
   return COLORMAP_IDS[name] ?? COLORMAP_IDS.grayscale;
 }
 
+/**
+ * Stretch mode name to integer mapping for shader
+ */
+export const STRETCH_MODE_IDS = {
+  linear: 0,
+  sqrt: 1,
+  gamma: 2,
+  sigmoid: 3,
+};
+
+/**
+ * Get stretch mode ID from name
+ * @param {string} name - Stretch mode name
+ * @returns {number} Stretch mode ID for shader
+ */
+export function getStretchModeId(name) {
+  return STRETCH_MODE_IDS[name] ?? STRETCH_MODE_IDS.linear;
+}
+
 export default {
   sarVertexShader,
   sarFragmentShader,
   COLORMAP_IDS,
   getColormapId,
+  STRETCH_MODE_IDS,
+  getStretchModeId,
 };

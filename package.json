@@ -9,7 +9,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "example": "vite --config vite.example.config.js"
+    "example": "vite --config vite.example.config.js",
+    "test": "node test/run-tests.js",
+    "test:layer": "vite --open /test/layer-test.html",
+    "test:quick": "node test/quick-validation.js",
+    "test:watch": "nodemon -w src -x 'npm run test:quick'",
+    "debug:gpu": "vite --open /test/gpu-debug.html --force"
   },
   "keywords": [
     "sar",

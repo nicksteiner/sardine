@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SAR Layer Tests</title>
+  <style>
+    body {
+      font-family: monospace;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    .test {
+      margin: 10px 0;
+      padding: 10px;
+      background: #252526;
+      border-left: 4px solid #007acc;
+    }
+    .test.pass { border-color: #4ec9b0; }
+    .test.fail { border-color: #f48771; }
+    .test.running { border-color: #dcdcaa; }
+    #canvas { border: 1px solid #3c3c3c; margin: 10px 0; }
+    pre { margin: 5px 0; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>SARdine Layer Test Suite</h1>
+  <div id="results"></div>
+  <canvas id="canvas" width="512" height="512"></canvas>
+
+  <script type="module">
+    import { SARGPULayer } from '../src/layers/SARGPULayer.js';
+    import { Deck, OrthographicView } from '@deck.gl/core';
+
+    const results = document.getElementById('results');
+    const log = (test, status, message) => {
+      const div = document.createElement('div');
+      div.className = `test ${status}`;
+      div.innerHTML = `<strong>[${status.toUpperCase()}]</strong> ${test}<pre>${message}</pre>`;
+      results.appendChild(div);
+      console.log(`[${status}] ${test}:`, message);
+    };
+
+    // Test data generator
+    function generateTestData(width, height) {
+      const data = new Float32Array(width * height);
+      for (let i = 0; i < data.length; i++) {
+        // SAR amplitude: random values between 0.001 and 100
+        data[i] = Math.random() * 99.999 + 0.001;
+      }
+      return data;
+    }
+
+    // Test 1: WebGL2 + Float Texture Support
+    log('Test 1', 'running', 'Checking WebGL2 and R32F texture support...');
+    const canvas = document.getElementById('canvas');
+    const gl = canvas.getContext('webgl2');
+
+    if (!gl) {
+      log('Test 1', 'fail', 'WebGL2 not available');
+    } else {
+      const floatExt = gl.getExtension('EXT_color_buffer_float');
+      const floatLinearExt = gl.getExtension('OES_texture_float_linear');
+
+      if (floatExt && floatLinearExt) {
+        log('Test 1', 'pass', 'WebGL2 + R32F textures supported');
+      } else {
+        log('Test 1', 'fail', `Missing extensions: ${!floatExt ? 'EXT_color_buffer_float ' : ''}${!floatLinearExt ? 'OES_texture_float_linear' : ''}`);
+      }
+    }
+
+    // Test 2: R32F Texture Creation
+    log('Test 2', 'running', 'Creating R32F texture directly...');
+    try {
+      const testData = generateTestData(256, 256);
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 256, 0, gl.RED, gl.FLOAT, testData);
+
+      const error = gl.getError();
+      if (error === gl.NO_ERROR) {
+        log('Test 2', 'pass', `Created 256x256 R32F texture, data range: [${Math.min(...testData).toFixed(3)}, ${Math.max(...testData).toFixed(3)}]`);
+        gl.deleteTexture(texture);
+      } else {
+        log('Test 2', 'fail', `WebGL error: ${error}`);
+      }
+    } catch (err) {
+      log('Test 2', 'fail', err.message);
+    }
+
+    // Test 3: SARGPULayer Instantiation
+    log('Test 3', 'running', 'Creating SARGPULayer instance...');
+    try {
+      const testData = generateTestData(256, 256);
+      const bounds = [0, 0, 256, 256];
+
+      const layer = new SARGPULayer({
+        id: 'test-gpu-layer',
+        data: testData,
+        width: 256,
+        height: 256,
+        bounds,
+        contrastLimits: [-25, 0],
+        useDecibels: true,
+        colormap: 'grayscale'
+      });
+
+      log('Test 3', 'pass', `Layer created: ${layer.id}, props: ${Object.keys(layer.props).length}`);
+    } catch (err) {
+      log('Test 3', 'fail', err.message);
+    }
+
+    // Test 4: Deck.gl Integration
+    log('Test 4', 'running', 'Integrating with deck.gl...');
+    try {
+      const testData = generateTestData(256, 256);
+      const bounds = [0, 0, 256, 256];
+
+      const deck = new Deck({
+        canvas: 'canvas',
+        views: [new OrthographicView({id: 'ortho'})],
+        initialViewState: {
+          target: [128, 128, 0],
+          zoom: 0
+        },
+        layers: [
+          new SARGPULayer({
+            id: 'test-gpu-layer-deck',
+            data: testData,
+            width: 256,
+            height: 256,
+            bounds,
+            contrastLimits: [-25, 0],
+            useDecibels: true,
+            colormap: 'viridis'
+          })
+        ],
+        onError: (error) => {
+          log('Test 4', 'fail', `Deck error: ${error.message}\n${error.stack}`);
+        },
+        onLoad: () => {
+          setTimeout(() => {
+            log('Test 4', 'pass', 'Layer rendered successfully in deck.gl');
+
+            // Test 5: Performance Test
+            runPerformanceTest(deck);
+          }, 500);
+        }
+      });
+    } catch (err) {
+      log('Test 4', 'fail', err.message + '\n' + err.stack);
+    }
+
+    // Test 5: Performance - Parameter Changes
+    function runPerformanceTest(deck) {
+      log('Test 5', 'running', 'Testing contrast adjustment performance...');
+
+      const testData = generateTestData(256, 256);
+      const frameTimes = [];
+      let frameCount = 0;
+      const maxFrames = 60;
+
+      const testLayer = () => {
+        const startTime = performance.now();
+
+        // Change contrast limits rapidly
+        const min = -30 + frameCount * 0.1;
+        const max = -5 + frameCount * 0.05;
+
+        deck.setProps({
+          layers: [
+            new SARGPULayer({
+              id: 'test-gpu-layer-perf',
+              data: testData,
+              width: 256,
+              height: 256,
+              bounds: [0, 0, 256, 256],
+              contrastLimits: [min, max],
+              useDecibels: true,
+              colormap: 'viridis'
+            })
+          ]
+        });
+
+        requestAnimationFrame(() => {
+          const frameTime = performance.now() - startTime;
+          frameTimes.push(frameTime);
+          frameCount++;
+
+          if (frameCount < maxFrames) {
+            testLayer();
+          } else {
+            const avgFrameTime = frameTimes.reduce((a, b) => a + b) / frameTimes.length;
+            const maxFrameTime = Math.max(...frameTimes);
+            const fps = 1000 / avgFrameTime;
+
+            if (avgFrameTime < 16.67 && fps >= 60) {
+              log('Test 5', 'pass', `Average: ${avgFrameTime.toFixed(2)}ms (${fps.toFixed(1)} FPS), Max: ${maxFrameTime.toFixed(2)}ms`);
+            } else {
+              log('Test 5', 'fail', `Too slow: ${avgFrameTime.toFixed(2)}ms (${fps.toFixed(1)} FPS), expected <16.67ms (60 FPS)`);
+            }
+          }
+        });
+      };
+
+      setTimeout(testLayer, 100);
+    }
+  </script>
+</body>
+</html>
