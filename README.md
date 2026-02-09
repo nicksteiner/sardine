@@ -36,6 +36,7 @@ SARdine loads NASA NISAR Level-2 GCOV products directly in the browser. It parse
 | **dB scaling on GPU** | GLSL: linear power → σ° dB · colormaps (grayscale, viridis, inferno, plasma, phase) · per-channel contrast  |
 | **GeoTIFF export** | Current RGB composite → georeferenced 3-band GeoTIFF with CRS + tiepoints |
 | **Figure export** | deck.gl canvas → PNG with metadata overlay |
+| **Overture Maps overlay** | Stream buildings, roads, places from Overture Maps Foundation GeoParquet — vector context on top of SAR |
 
 ---
 
@@ -221,6 +222,7 @@ node test-h5-images.mjs       # → Read chunks, write PGM images to test_output
 | Basemap annotations + drawing | 🔜 Next |
 | GUNW / InSAR phase visualization | 🔜 Planned |
 | ASF catalog search integration | 🔜 Planned |
+| Overture Maps vector overlay | ✅ Complete |
 
 ---
 

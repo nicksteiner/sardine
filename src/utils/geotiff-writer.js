@@ -30,6 +30,9 @@ const TAG_TILE_BYTE_COUNTS = 325;
 const TAG_EXTRA_SAMPLES = 338;
 const TAG_SAMPLE_FORMAT = 339;
 
+// GDAL metadata tag
+const TAG_GDAL_NODATA = 42113;
+
 // GeoTIFF tag IDs
 const TAG_MODEL_PIXEL_SCALE = 33550;
 const TAG_MODEL_TIEPOINT = 33922;
@@ -38,6 +41,7 @@ const TAG_GEO_DOUBLE_PARAMS = 34736;
 const TAG_GEO_ASCII_PARAMS = 34737;
 
 // TIFF types
+const TYPE_ASCII = 2;    // null-terminated string
 const TYPE_SHORT = 3;    // uint16
 const TYPE_LONG = 4;     // uint32
 const TYPE_DOUBLE = 12;  // float64
@@ -681,7 +685,7 @@ function makeArrayEntry(tag, type, data) {
  * Helper: Get byte size of entry data
  */
 function getEntryByteSize(entry) {
-  const typeSize = { [TYPE_SHORT]: 2, [TYPE_LONG]: 4, [TYPE_DOUBLE]: 8 };
+  const typeSize = { [TYPE_ASCII]: 1, [TYPE_SHORT]: 2, [TYPE_LONG]: 4, [TYPE_DOUBLE]: 8 };
   return (typeSize[entry.type] || 2) * entry.count;
 }
 
@@ -689,10 +693,19 @@ function getEntryByteSize(entry) {
  * Helper: Write entry value inline (≤4 bytes)
  */
 function writeEntryValue(view, pos, entry) {
-  if (entry.type === TYPE_SHORT && entry.count === 1) {
-    view.setUint16(pos, entry.value, true);
+  // Resolve value: makeEntry sets .value, makeArrayEntry sets .data
+  const val = entry.value !== undefined ? entry.value : (entry.data ? entry.data[0] : 0);
+
+  if (entry.type === TYPE_ASCII && entry.asciiValue) {
+    // Write ASCII bytes inline (up to 4 bytes including null terminator)
+    const str = entry.asciiValue;
+    for (let i = 0; i < Math.min(entry.count, 4); i++) {
+      view.setUint8(pos + i, i < str.length ? str.charCodeAt(i) : 0);
+    }
+  } else if (entry.type === TYPE_SHORT && entry.count === 1) {
+    view.setUint16(pos, val, true);
   } else if (entry.type === TYPE_LONG && entry.count === 1) {
-    view.setUint32(pos, entry.value, true);
+    view.setUint32(pos, val, true);
   } else if (entry.type === TYPE_SHORT && entry.count === 2 && entry.data) {
     view.setUint16(pos, entry.data[0], true);
     view.setUint16(pos + 2, entry.data[1], true);
@@ -703,6 +716,13 @@ function writeEntryValue(view, pos, entry) {
  * Helper: Write entry array data
  */
 function writeEntryArray(view, pos, entry) {
+  if (entry.type === TYPE_ASCII && entry.asciiValue) {
+    const str = entry.asciiValue;
+    for (let i = 0; i < entry.count; i++) {
+      view.setUint8(pos + i, i < str.length ? str.charCodeAt(i) : 0);
+    }
+    return;
+  }
   if (entry.type === TYPE_SHORT) {
     for (let i = 0; i < entry.count; i++) {
       view.setUint16(pos, entry.data[i], true);
@@ -921,6 +941,13 @@ export function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, eps
   // SamplesPerPixel
   entries.push(makeEntry(TAG_SAMPLES_PER_PIXEL, TYPE_SHORT, 1, numBands));
 
+  // ExtraSamples: required when SamplesPerPixel > 1 with Photometric=MinIsBlack
+  // Photometric=1 implies 1 color channel; extra bands are type 0 (EXTRASAMPLE_UNSPECIFIED)
+  if (numBands > 1) {
+    const extraSamples = new Array(numBands - 1).fill(0); // 0 = unspecified
+    entries.push(makeArrayEntry(TAG_EXTRA_SAMPLES, TYPE_SHORT, extraSamples));
+  }
+
   // PlanarConfig: 1 = chunky/BIP
   entries.push(makeEntry(TAG_PLANAR_CONFIG, TYPE_SHORT, 1, 1));
 
@@ -954,6 +981,9 @@ export function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, eps
     KEY_GT_RASTER_TYPE, 0, 1, RASTER_TYPE_PIXEL_IS_AREA,
     csKeyId, 0, 1, epsgCode,
   ]));
+
+  // GDAL_NODATA: mark NaN as no-data so QGIS renders it as transparent
+  entries.push({ tag: TAG_GDAL_NODATA, type: TYPE_ASCII, count: 4, asciiValue: 'nan' });
 
   // Sort by tag
   entries.sort((a, b) => a.tag - b.tag);
@@ -1004,19 +1034,25 @@ export function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, eps
 
     const byteSize = getEntryByteSize(entry);
 
-    if (byteSize <= 4) {
+    if (entry.tag === TAG_TILE_OFFSETS) {
+      // TileOffsets need actual tile data positions, not placeholder values
+      if (byteSize <= 4) {
+        // Single tile: write offset inline
+        view.setUint32(pos, tileDataOffset, true); pos += 4;
+      } else {
+        // Multiple tiles: write pointer to overflow array
+        view.setUint32(pos, curOverflow, true); pos += 4;
+        let tilePos = tileDataOffset;
+        for (let i = 0; i < compressedTiles.length; i++) {
+          view.setUint32(curOverflow, tilePos, true);
+          curOverflow += 4;
+          tilePos += compressedTiles[i].byteCount;
+        }
+        if (curOverflow % 2 !== 0) curOverflow++;
+      }
+    } else if (byteSize <= 4) {
       writeEntryValue(view, pos, entry);
       pos += 4;
-    } else if (entry.tag === TAG_TILE_OFFSETS) {
-      // Write pointer to overflow, then fill in tile offsets
-      view.setUint32(pos, curOverflow, true); pos += 4;
-      let tilePos = tileDataOffset;
-      for (let i = 0; i < compressedTiles.length; i++) {
-        view.setUint32(curOverflow, tilePos, true);
-        curOverflow += 4;
-        tilePos += compressedTiles[i].byteCount;
-      }
-      if (curOverflow % 2 !== 0) curOverflow++;
     } else {
       // Other overflow arrays
       view.setUint32(pos, curOverflow, true); pos += 4;

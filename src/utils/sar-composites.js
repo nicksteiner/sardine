@@ -155,20 +155,21 @@ export function getRequiredDatasets(compositeId) {
 }
 
 /**
- * Compute RGB channel values from raw band data for a single tile.
+ * Compute RGB channel values from raw band data.
  *
  * @param {Object} bandData - Map of polarization name → Float32Array
  * @param {string} compositeId - Which composite preset to apply
- * @param {number} tileSize - Number of pixels (width = height = tileSize)
+ * @param {number} tileSize - Tile width (assumes square tile if numPixels not given)
+ * @param {number} [numPixels] - Total pixel count (for non-square images)
  * @returns {{R: Float32Array, G: Float32Array, B: Float32Array}}
  */
-export function computeRGBBands(bandData, compositeId, tileSize) {
+export function computeRGBBands(bandData, compositeId, tileSize, numPixels) {
   const preset = SAR_COMPOSITES[compositeId];
   if (!preset) {
     throw new Error(`Unknown composite: ${compositeId}`);
   }
 
-  const numPixels = tileSize * tileSize;
+  if (numPixels === undefined) numPixels = tileSize * tileSize;
   const result = {};
 
   for (const channel of ['R', 'G', 'B']) {

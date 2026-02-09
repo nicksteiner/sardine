@@ -634,6 +634,123 @@ function parseDatatypeMessage(reader, offset) {
 }
 
 /**
+ * Parse an HDF5 attribute message (MSG_ATTRIBUTE = 0x000C).
+ *
+ * Returns { name, value } where value is a decoded JS value:
+ *   - Number or TypedArray for numeric attributes
+ *   - String for string attributes
+ *   - null if parsing fails
+ *
+ * Supports attribute message versions 1, 2, and 3.
+ * See HDF5 spec: IV.A.2.m "Attribute Message"
+ */
+function parseAttributeMessage(reader, offset, metadataBuffer) {
+  try {
+    reader.seek(offset);
+    const version = reader.readUint8();
+
+    if (version < 1 || version > 3) return null;
+
+    let nameSize, dtypeSize, dspaceSize;
+    let encoding = 0;
+
+    if (version === 1) {
+      reader.readUint8(); // reserved
+      nameSize = reader.readUint16();
+      dtypeSize = reader.readUint16();
+      dspaceSize = reader.readUint16();
+    } else {
+      // version 2 or 3
+      const flags = reader.readUint8();
+      nameSize = reader.readUint16();
+      dtypeSize = reader.readUint16();
+      dspaceSize = reader.readUint16();
+      if (version === 3 && (flags & 0x04)) {
+        encoding = reader.readUint8();
+      }
+    }
+
+    // Read attribute name
+    const nameBytes = reader.readBytes(nameSize);
+    let name = '';
+    for (let i = 0; i < nameBytes.length; i++) {
+      if (nameBytes[i] === 0) break;
+      name += String.fromCharCode(nameBytes[i]);
+    }
+
+    // v1 pads name to 8-byte boundary
+    if (version === 1) {
+      const padded = Math.ceil(nameSize / 8) * 8;
+      reader.seek(offset + 8 + padded);
+    }
+
+    // Parse datatype
+    const dtypeOffset = reader.pos;
+    const datatype = parseDatatypeMessage(reader, dtypeOffset);
+    if (version === 1) {
+      const dtypePadded = Math.ceil(dtypeSize / 8) * 8;
+      reader.seek(dtypeOffset + dtypePadded);
+    } else {
+      reader.seek(dtypeOffset + dtypeSize);
+    }
+
+    // Parse dataspace
+    const dspaceOffset = reader.pos;
+    const dataspace = parseDataspaceMessage(reader, dspaceOffset);
+    if (version === 1) {
+      const dspacePadded = Math.ceil(dspaceSize / 8) * 8;
+      reader.seek(dspaceOffset + dspacePadded);
+    } else {
+      reader.seek(dspaceOffset + dspaceSize);
+    }
+
+    // Read raw data
+    const totalElements = dataspace.dims.reduce((a, b) => a * b, 1) || 1;
+    const dataBytes = totalElements * datatype.size;
+    const dataOffset = reader.pos;
+
+    if (dataOffset + dataBytes > metadataBuffer.byteLength) return null;
+
+    // Decode the attribute value
+    if (datatype.dtype === 'string') {
+      const view = new Uint8Array(metadataBuffer, dataOffset, dataBytes);
+      let str = '';
+      for (let i = 0; i < view.length; i++) {
+        if (view[i] === 0) break;
+        str += String.fromCharCode(view[i]);
+      }
+      return { name, value: str.trim() };
+    }
+
+    const slice = metadataBuffer.slice(dataOffset, dataOffset + dataBytes);
+    let value;
+    if (datatype.dtype === 'float64') {
+      value = new Float64Array(slice);
+    } else if (datatype.dtype === 'float32') {
+      value = new Float32Array(slice);
+    } else if (datatype.dtype === 'uint32') {
+      value = new Uint32Array(slice);
+    } else if (datatype.dtype === 'int32') {
+      value = new Int32Array(slice);
+    } else if (datatype.dtype === 'uint16') {
+      value = new Uint16Array(slice);
+    } else if (datatype.dtype === 'int16') {
+      value = new Int16Array(slice);
+    } else {
+      return { name, value: null };
+    }
+
+    // Return scalar for single-element arrays
+    if (totalElements === 1) {
+      return { name, value: value[0] };
+    }
+    return { name, value };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * Parse data layout message to get chunk info
  */
 function parseDataLayoutMessage(reader, offset, superblock) {
@@ -843,8 +960,14 @@ function parseBTreeV1(reader, address, superblock, rank, chunkSize) {
           indices: entry.chunkOffsets.slice(0, -1),
         });
       } else {
-        // Internal node - recurse into child
-        parseNode(entry.childAddress);
+        // Internal node - recurse into child.
+        // Wrap individually so one out-of-range child doesn't lose
+        // chunks that were already collected from other children.
+        try {
+          parseNode(entry.childAddress);
+        } catch (e) {
+          console.warn(`[h5chunk] B-tree child at 0x${entry.childAddress.toString(16)} failed: ${e.message}`);
+        }
       }
     }
   }
@@ -965,6 +1088,7 @@ export class H5Chunk {
   constructor() {
     this.superblock = null;
     this.datasets = new Map(); // path -> {shape, dtype, layout, chunks}
+    this.objectAttributes = new Map(); // path -> {attrName: value}
     this.metadataBuffer = null;
     this.file = null;
     this.url = null;
@@ -1130,6 +1254,7 @@ export class H5Chunk {
     let symbolTableBTree = null;
     let symbolTableHeap = null;
     const continuationBlocks = []; // {offset, length} for v1 continuation
+    const attributes = new Map(); // Collect attribute messages
 
     for (const msg of messages) {
       try {
@@ -1141,6 +1266,11 @@ export class H5Chunk {
           layout = parseDataLayoutMessage(reader, msg.offset, this.superblock);
         } else if (msg.type === MSG_FILTER_PIPELINE && msg.offset < this.metadataBuffer.byteLength) {
           filters = parseFilterPipelineMessage(reader, msg.offset);
+        } else if (msg.type === MSG_ATTRIBUTE && msg.offset < this.metadataBuffer.byteLength) {
+          const attr = parseAttributeMessage(reader, msg.offset, this.metadataBuffer);
+          if (attr && attr.name) {
+            attributes.set(attr.name, attr.value);
+          }
         } else if (msg.type === MSG_LINK && msg.offset < this.metadataBuffer.byteLength) {
           const link = parseLinkMessage(reader, msg.offset, this.superblock);
           if (link && link.address != null) {
@@ -1194,6 +1324,11 @@ export class H5Chunk {
               layout = parseDataLayoutMessage(cr, cmsg.offset, this.superblock);
             } else if (cmsg.type === MSG_FILTER_PIPELINE) {
               filters = parseFilterPipelineMessage(cr, cmsg.offset);
+            } else if (cmsg.type === MSG_ATTRIBUTE) {
+              const attr = parseAttributeMessage(cr, cmsg.offset, contBuffer);
+              if (attr && attr.name) {
+                attributes.set(attr.name, attr.value);
+              }
             }
           } catch (e) {
             // Skip bad continuation messages
@@ -1244,7 +1379,7 @@ export class H5Chunk {
     }
 
     // If we have dataspace and datatype, this is a dataset
-    if (dataspace && datatype && dataspace.rank >= 1) {
+    if (dataspace && datatype && dataspace.rank >= 0) {
       const datasetId = `dataset_${address.toString(16)}`;
 
       // Skip if already found
@@ -1261,6 +1396,7 @@ export class H5Chunk {
         layout,
         filters,
         chunks: null,
+        attributes: attributes.size > 0 ? Object.fromEntries(attributes) : null,
       };
 
       // Parse chunk index if chunked and B-tree is within our metadata
@@ -1287,6 +1423,11 @@ export class H5Chunk {
       if (dataspace.rank === 2) {
         console.log(`[h5chunk] Found 2D dataset: ${dataspace.dims.join('x')} ${datatype.dtype} at 0x${address.toString(16)} path=${path}`);
       }
+    }
+
+    // Store attributes for any object (dataset or group) that has them
+    if (attributes.size > 0 && path) {
+      this.objectAttributes.set(path, Object.fromEntries(attributes));
     }
 
     // Recursively follow hard links to traverse group hierarchy (v2 groups)
@@ -1420,7 +1561,7 @@ export class H5Chunk {
           }
 
           // If we found both, create a dataset
-          if (dataspace && datatype && dataspace.rank >= 1) {
+          if (dataspace && datatype && dataspace.rank >= 0) {
             const datasetId = `layout_${cand.offset.toString(16)}`;
 
             if (!this.datasets.has(datasetId)) {
@@ -1530,7 +1671,7 @@ export class H5Chunk {
     }
 
     // If we found a dataset
-    if (dataspace && datatype && dataspace.rank >= 1) {
+    if (dataspace && datatype && dataspace.rank >= 0) {
       const datasetId = `dataset_${address.toString(16)}`;
 
       if (!this.datasets.has(datasetId)) {
@@ -1604,6 +1745,126 @@ export class H5Chunk {
       }
     }
     return null;
+  }
+
+  /**
+   * Get HDF5 attributes for an object (dataset or group) by path.
+   *
+   * Attributes are parsed from MSG_ATTRIBUTE messages in object headers
+   * during file opening. Returns an object { attrName: value } or null.
+   *
+   * @param {string} path — HDF5 path (e.g. '/science/LSAR/GCOV/grids/frequencyA/projection')
+   * @returns {Object|null}
+   */
+  getAttributes(path) {
+    // Direct path match
+    if (this.objectAttributes.has(path)) {
+      return this.objectAttributes.get(path);
+    }
+    // Try matching via dataset info
+    for (const [, info] of this.datasets.entries()) {
+      if (info.path === path && info.attributes) {
+        return info.attributes;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Get HDF5 attributes for a dataset by its ID.
+   * @param {string} datasetId — dataset identifier
+   * @returns {Object|null}
+   */
+  getDatasetAttributes(datasetId) {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) return null;
+    // Try dataset-stored attributes first
+    if (dataset.attributes) return dataset.attributes;
+    // Try path-based lookup
+    if (dataset.path) return this.getAttributes(dataset.path);
+    return null;
+  }
+
+  /**
+   * Read the first and last element of a 1D contiguous dataset.
+   *
+   * Useful for large coordinate arrays where we only need the endpoints
+   * to compute bounds. Reads just 2 elements instead of the entire array.
+   *
+   * @param {string} datasetId — dataset identifier
+   * @returns {{first: number, last: number, length: number}|null}
+   */
+  async readDatasetEndpoints(datasetId) {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) return null;
+
+    const { layout, dtype, shape, bytesPerElement } = dataset;
+    if (!layout || !shape || shape.length !== 1) return null;
+
+    const length = shape[0];
+    if (length < 1) return null;
+
+    // For contiguous datasets, we know exact byte positions
+    if (layout.type === 'contiguous' && layout.address != null) {
+      const firstOffset = layout.address;
+      const lastOffset = layout.address + (length - 1) * bytesPerElement;
+
+      let firstBuf, lastBuf;
+
+      // Try metadata buffer first
+      if (firstOffset + bytesPerElement <= this.metadataBuffer.byteLength) {
+        firstBuf = this.metadataBuffer.slice(firstOffset, firstOffset + bytesPerElement);
+      } else {
+        firstBuf = await this._fetchBytes(firstOffset, bytesPerElement);
+      }
+
+      if (length === 1) {
+        const firstVal = this._decodeSingleValue(firstBuf, dtype);
+        return { first: firstVal, last: firstVal, length };
+      }
+
+      if (lastOffset + bytesPerElement <= this.metadataBuffer.byteLength) {
+        lastBuf = this.metadataBuffer.slice(lastOffset, lastOffset + bytesPerElement);
+      } else {
+        lastBuf = await this._fetchBytes(lastOffset, bytesPerElement);
+      }
+
+      if (!firstBuf || !lastBuf) return null;
+
+      const firstVal = this._decodeSingleValue(firstBuf, dtype);
+      const lastVal = this._decodeSingleValue(lastBuf, dtype);
+
+      if (firstVal == null || lastVal == null) return null;
+      return { first: firstVal, last: lastVal, length };
+    }
+
+    // For chunked 1D datasets, try reading the first and last chunks
+    if (layout.type === 'chunked' && dataset.chunks) {
+      const data = await this.readSmallDataset(datasetId);
+      if (data?.data?.length > 0) {
+        return { first: data.data[0], last: data.data[data.data.length - 1], length };
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Decode a single numeric value from a buffer.
+   * @private
+   */
+  _decodeSingleValue(buffer, dtype) {
+    if (!buffer || buffer.byteLength === 0) return null;
+    const view = new DataView(buffer);
+    switch (dtype) {
+      case 'float64': return view.getFloat64(0, true);
+      case 'float32': return view.getFloat32(0, true);
+      case 'uint32': return view.getUint32(0, true);
+      case 'int32': return view.getInt32(0, true);
+      case 'uint16': return view.getUint16(0, true);
+      case 'int16': return view.getInt16(0, true);
+      default: return null;
+    }
   }
 
   /**

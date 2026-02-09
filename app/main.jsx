@@ -9,8 +9,44 @@ import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.j
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
-import { exportFigure, downloadBlob } from '../src/utils/figure-export.js';
-import { STRETCH_MODES } from '../src/utils/stretch.js';
+import { exportFigure, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
+import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
+import { getColormap } from '../src/utils/colormap.js';
+import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
+import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+
+/**
+ * NxN box-filter smoothing for a Float32Array image band.
+ * Operates in linear power space (correct for SAR multiplicative speckle).
+ * NaN/zero values are excluded from the average to preserve no-data masks.
+ *
+ * Used in rendered exports to reduce residual speckle that's visible at the
+ * export multilook factor but not in the on-screen display (which implicitly
+ * averages many more pixels at overview zoom levels).
+ */
+function smoothBand(data, width, height, kernel) {
+  const half = Math.floor(kernel / 2);
+  const out = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const yMin = Math.max(0, y - half);
+    const yMax = Math.min(height - 1, y + half);
+    for (let x = 0; x < width; x++) {
+      const xMin = Math.max(0, x - half);
+      const xMax = Math.min(width - 1, x + half);
+      let sum = 0, count = 0;
+      for (let ky = yMin; ky <= yMax; ky++) {
+        const rowOff = ky * width;
+        for (let kx = xMin; kx <= xMax; kx++) {
+          const v = data[rowOff + kx];
+          if (v > 0 && !isNaN(v)) { sum += v; count++; }
+        }
+      }
+      const idx = y * width + x;
+      out[idx] = count > 0 ? sum / count : data[idx];
+    }
+  }
+  return out;
+}
 
 /**
  * Parse markdown state into object
@@ -181,6 +217,7 @@ function App() {
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
+  const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
@@ -188,6 +225,14 @@ function App() {
   // Markdown state
   const [markdownState, setMarkdownState] = useState('');
   const [isMarkdownEdited, setIsMarkdownEdited] = useState(false);
+
+  // Overture Maps overlay state
+  const [overtureEnabled, setOvertureEnabled] = useState(false);
+  const [overtureThemes, setOvertureThemes] = useState(['buildings']); // enabled themes
+  const [overtureData, setOvertureData] = useState(null);
+  const [overtureLoading, setOvertureLoading] = useState(false);
+  const [overtureOpacity, setOvertureOpacity] = useState(0.7);
+  const overtureDebounceRef = useRef(null);
 
   // Memoize initialViewState to prevent infinite re-renders
   const initialViewState = useMemo(
@@ -581,14 +626,14 @@ function App() {
       const composites = getAvailableComposites(datasets);
       setAvailableComposites(composites);
 
+      // Pre-select a composite for when the user switches to RGB mode,
+      // but always default to single-band display
       const autoComposite = autoSelectComposite(datasets);
+      setCompositeId(autoComposite);
+      setDisplayMode('single');
+
       if (autoComposite) {
-        setCompositeId(autoComposite);
-        setDisplayMode('rgb');
-        addStatusLog('info', `Auto-selected RGB composite: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
-      } else {
-        setDisplayMode('single');
-        setCompositeId(null);
+        addStatusLog('info', `RGB composite available: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
       }
 
       addStatusLog('success', `Found ${datasets.length} datasets`,
@@ -762,7 +807,7 @@ function App() {
     }
 
     if (!imageData.getExportStripe) {
-      addStatusLog('error', 'Raw data export requires RGB composite mode with getExportStripe');
+      addStatusLog('error', 'Export not available for this data source (requires NISAR streaming loader)');
       return;
     }
 
@@ -774,26 +819,51 @@ function App() {
       const sourceWidth = imageData.width;
       const sourceHeight = imageData.height;
 
-      // Integer multilook — no 4096 cap, safety cap at 8192
+      // Use the user's selected multilook factor directly
       let effectiveMl = exportMultilookWindow || 1;
-      while (Math.floor(sourceWidth / effectiveMl) > 8192) effectiveMl *= 2;
-
       const exportWidth = Math.floor(sourceWidth / effectiveMl);
       const exportHeight = Math.floor(sourceHeight / effectiveMl);
+
+      // Check per-band size — each Float32Array must fit in one JS ArrayBuffer (~2GB).
+      // Bands are separate allocations so total across bands is fine; the constraint
+      // is per-array, not aggregate.
+      const perBandBytes = exportWidth * exportHeight * 4;
+      const MAX_SINGLE_ARRAY = 1.8e9; // ~1.8GB per Float32Array (leave headroom below 2GB JS limit)
+      if (perBandBytes > MAX_SINGLE_ARRAY) {
+        const suggestedMl = effectiveMl * 2;
+        addStatusLog('error', `Single band too large (${(perBandBytes / 1e9).toFixed(1)}GB). Increase multilook to ${suggestedMl}x or higher.`);
+        setExporting(false);
+        return;
+      }
 
       // Extract EPSG from CRS string
       const epsgMatch = imageData.crs?.match(/EPSG:(\d+)/);
       const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 32610;
 
-      // Band names from the loaded composite's required polarizations
-      const bandNames = imageData.requiredPols || ['HHHH', 'HVHV', 'VVVV'];
+      // Band names from the loaded data's required polarizations
+      // Single-band: ['HHHH'], RGB composite: ['HHHH', 'HVHV', 'VVVV'], etc.
+      const bandNames = imageData.requiredPols || [imageData.polarization || 'HHHH'];
 
       addStatusLog('info', `Source: ${sourceWidth} x ${sourceHeight}`);
       addStatusLog('info', `Multilook: ${effectiveMl}x${effectiveMl} (integer)`);
       addStatusLog('info', `Export: ${exportWidth} x ${exportHeight}`);
-      addStatusLog('info', `Bands: ${bandNames.join(', ')} (Float32, raw linear power)`);
+      const isRendered = exportMode === 'rendered';
+      addStatusLog('info', `Bands: ${bandNames.join(', ')} (${isRendered ? 'RGBA rendered' : 'Float32, raw linear power'})`);
       addStatusLog('info', `EPSG: ${epsgCode}`);
-      addStatusLog('info', `Format: GeoTIFF (Float32, 512x512 tiles, DEFLATE)`);
+      if (isRendered) {
+        if (displayMode === 'rgb' && compositeId && effectiveContrastLimits && !Array.isArray(effectiveContrastLimits)) {
+          const limStr = ['R', 'G', 'B'].map(ch => {
+            const lim = effectiveContrastLimits[ch];
+            return lim ? `${ch}:[${lim[0].toExponential(1)},${lim[1].toExponential(1)}]` : '';
+          }).filter(Boolean).join(' ');
+          addStatusLog('info', `Render: composite="${compositeId}", ${useDecibels ? 'dB' : 'linear'}, per-channel ${limStr}, ${stretchMode}, gamma=${gamma}`);
+        } else {
+          addStatusLog('info', `Render: ${useDecibels ? 'dB' : 'linear'}, contrast [${contrastMin}, ${contrastMax}], ${colormap}, ${stretchMode}, gamma=${gamma}`);
+        }
+        addStatusLog('info', `Format: GeoTIFF (RGBA uint8, 512x512 tiles, DEFLATE)`);
+      } else {
+        addStatusLog('info', `Format: GeoTIFF (Float32, 512x512 tiles, DEFLATE)`);
+      }
 
       // Allocate output arrays for each band
       const bands = {};
@@ -828,13 +898,23 @@ function App() {
 
       // Pixel-edge bounds correction: NISAR coords are pixel-CENTER,
       // GeoTIFF PixelIsArea expects pixel-EDGE
-      const nativeSpacingX = imageData.pixelSpacing?.x || ((imageData.bounds[2] - imageData.bounds[0]) / sourceWidth);
-      const nativeSpacingY = imageData.pixelSpacing?.y || ((imageData.bounds[3] - imageData.bounds[1]) / sourceHeight);
+      // Use worldBounds (real-world coordinates) for georeferencing if available
+      if (!imageData.worldBounds) {
+        addStatusLog('warning', 'No world coordinates found in HDF5 — exported GeoTIFF will lack proper georeferencing');
+      }
+      const geoBounds = imageData.worldBounds || imageData.bounds;
+      // worldBounds are pixel-CENTER: span = (N-1) * spacing, so divide by (N-1)
+      const nativeSpacingX = imageData.pixelSpacing?.x || ((geoBounds[2] - geoBounds[0]) / (sourceWidth - 1));
+      const nativeSpacingY = imageData.pixelSpacing?.y || ((geoBounds[3] - geoBounds[1]) / (sourceHeight - 1));
+      // Pixel-edge bounds must match the pixels actually used by multilooking.
+      // getExportStripe reads source pixels 0..(exportWidth*ml - 1), truncating
+      // any remainder when sourceWidth isn't evenly divisible by ml.
+      // Posting = nativeSpacing * ml, guaranteed exact by construction.
       const exportBounds = [
-        imageData.bounds[0] - nativeSpacingX / 2,  // minX - half pixel
-        imageData.bounds[1] - nativeSpacingY / 2,  // minY - half pixel
-        imageData.bounds[2] + nativeSpacingX / 2,  // maxX + half pixel
-        imageData.bounds[3] + nativeSpacingY / 2,  // maxY + half pixel
+        geoBounds[0] - nativeSpacingX / 2,                                             // minX edge
+        geoBounds[1] - nativeSpacingY / 2,                                             // minY edge
+        geoBounds[0] - nativeSpacingX / 2 + exportWidth * effectiveMl * nativeSpacingX,  // maxX edge
+        geoBounds[1] - nativeSpacingY / 2 + exportHeight * effectiveMl * nativeSpacingY, // maxY edge
       ];
 
       const exportPixelX = (exportBounds[2] - exportBounds[0]) / exportWidth;
@@ -843,15 +923,91 @@ function App() {
       addStatusLog('info', `Pixel scale: ${exportPixelX.toFixed(1)}m x ${exportPixelY.toFixed(1)}m`);
       addStatusLog('info', `Bounds (pixel-edge): [${exportBounds.map(b => b.toFixed(1)).join(', ')}]`);
 
-      // Write Float32 multi-band GeoTIFF
-      addStatusLog('info', 'Writing Float32 GeoTIFF...');
-      const geotiff = writeFloat32GeoTIFF(bands, bandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
-        onProgress: (pct) => {
-          if (pct % 20 === 0 && pct > 0 && pct < 100) {
-            addStatusLog('info', `Encoding: ${pct}%`);
+      let geotiff;
+      let filename;
+
+      if (isRendered) {
+        // --- Rendered export: apply same pipeline as GPU shader ---
+        // Spatial smoothing: the export at ml=N averages N×N source pixels per
+        // output pixel, but the on-screen display at overview zoom implicitly
+        // averages far more (hundreds at low zoom).  A 3×3 post-multilook
+        // box-filter bridges the gap, raising the effective look count by ~9×
+        // (e.g. ml=4 → 16 looks → ~144 effective looks after smoothing).
+        // This is especially important for ratio channels (HH/HV) where
+        // residual speckle is amplified by the division.
+        const smoothKernel = 3;
+        addStatusLog('info', `Smoothing bands: ${smoothKernel}×${smoothKernel} box filter (speckle reduction)...`);
+        for (const name of bandNames) {
+          bands[name] = smoothBand(bands[name], exportWidth, exportHeight, smoothKernel);
+        }
+
+        const numPixels = exportWidth * exportHeight;
+        let rgbaData;
+
+        if (displayMode === 'rgb' && compositeId) {
+          // RGB composite: apply computeRGBBands (same transform as GPU tile path)
+          // then per-channel dB/contrast/stretch via createRGBTexture
+          addStatusLog('info', `Applying RGB composite "${compositeId}" + per-channel contrast...`);
+          const rgbBands = computeRGBBands(bands, compositeId, exportWidth, exportWidth * exportHeight);
+          const rgbImageData = createRGBTexture(
+            rgbBands, exportWidth, exportHeight,
+            effectiveContrastLimits,  // per-channel {R:[min,max], G:[min,max], B:[min,max]}
+            useDecibels, gamma, stretchMode
+          );
+          rgbaData = new Uint8ClampedArray(rgbImageData.data);
+        } else {
+          // Single-band: apply colormap
+          addStatusLog('info', `Applying ${useDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
+          const colormapFunc = getColormap(colormap);
+          const cMin = contrastMin;
+          const cMax = contrastMax;
+          const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+          rgbaData = new Uint8ClampedArray(numPixels * 4);
+          const bandData = bands[bandNames[0]];
+
+          for (let i = 0; i < numPixels; i++) {
+            const amplitude = bandData[i];
+            let value;
+            if (useDecibels) {
+              const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
+              value = (db - cMin) / (cMax - cMin);
+            } else {
+              value = (amplitude - cMin) / (cMax - cMin);
+            }
+            value = Math.max(0, Math.min(1, value));
+            if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+            const [r, g, b] = colormapFunc(value);
+            rgbaData[i * 4] = r;
+            rgbaData[i * 4 + 1] = g;
+            rgbaData[i * 4 + 2] = b;
+            rgbaData[i * 4 + 3] = (amplitude === 0 || isNaN(amplitude)) ? 0 : 255;
           }
         }
-      });
+
+        addStatusLog('info', 'Writing RGBA GeoTIFF...');
+        geotiff = writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
+          generateOverviews: false,
+          onProgress: (pct) => {
+            if (pct % 20 === 0 && pct > 0 && pct < 100) {
+              addStatusLog('info', `Encoding: ${pct}%`);
+            }
+          }
+        });
+
+        filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+      } else {
+        // --- Raw export: Float32 linear power ---
+        addStatusLog('info', 'Writing Float32 GeoTIFF...');
+        geotiff = writeFloat32GeoTIFF(bands, bandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
+          onProgress: (pct) => {
+            if (pct % 20 === 0 && pct > 0 && pct < 100) {
+              addStatusLog('info', `Encoding: ${pct}%`);
+            }
+          }
+        });
+
+        filename = `sardine_${bandNames.join('-')}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+      }
 
       // Georef verification logging
       addStatusLog('info', '--- Georef Verification ---');
@@ -864,7 +1020,6 @@ function App() {
       const intCheck = (sourceWidth % effectiveMl === 0 && sourceHeight % effectiveMl === 0) ? 'exact' : 'truncated';
       addStatusLog('info', `Integer multilook: ${intCheck}`);
 
-      const filename = `sardine_${bandNames.join('-')}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
       const sizeMB = (geotiff.byteLength / 1e6).toFixed(1);
       const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
 
@@ -878,7 +1033,7 @@ function App() {
     } finally {
       setExporting(false);
     }
-  }, [imageData, exportMultilookWindow, addStatusLog]);
+  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, addStatusLog]);
 
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
@@ -921,6 +1076,35 @@ function App() {
     }
   }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog]);
 
+  const handleExportColorbar = useCallback(async () => {
+    if (displayMode !== 'rgb' || !compositeId) {
+      addStatusLog('error', 'Colorbar export requires RGB composite mode');
+      return;
+    }
+
+    try {
+      const blob = await exportRGBColorbar({
+        compositeId,
+        contrastLimits: effectiveContrastLimits,
+        useDecibels,
+        stretchMode,
+        gamma,
+      });
+
+      if (!blob) {
+        addStatusLog('error', 'Failed to generate colorbar');
+        return;
+      }
+
+      const filename = `colorbar_${compositeId}.png`;
+      downloadBlob(blob, filename);
+      addStatusLog('success', `Colorbar saved: ${filename}`);
+    } catch (e) {
+      addStatusLog('error', 'Colorbar export failed', e.message);
+      console.error('Colorbar export error:', e);
+    }
+  }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, displayMode, addStatusLog]);
+
   // Reload/restart current rendering
   const handleReload = useCallback(() => {
     if (!imageData) {
@@ -947,6 +1131,74 @@ function App() {
     }, 100);
   }, [imageData, fileType, nisarFile, cogUrl, addStatusLog]);
 
+  // Fetch Overture features when viewport changes (debounced)
+  useEffect(() => {
+    if (!overtureEnabled || overtureThemes.length === 0 || !imageData) return;
+
+    // Clear previous debounce
+    if (overtureDebounceRef.current) {
+      clearTimeout(overtureDebounceRef.current);
+    }
+
+    overtureDebounceRef.current = setTimeout(async () => {
+      try {
+        setOvertureLoading(true);
+
+        // Calculate viewport bbox in pixel/projected coordinates
+        const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
+        const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
+        const cx = viewCenter[0];
+        const cy = viewCenter[1];
+
+        const projBbox = [
+          cx - vpHalfW,
+          cy - vpHalfH,
+          cx + vpHalfW,
+          cy + vpHalfH,
+        ];
+
+        // Convert to WGS84 for Overture queries
+        const crs = imageData.crs || 'EPSG:4326';
+        const wgs84Bbox = projectedToWGS84(
+          imageData.worldBounds || projBbox,
+          crs
+        );
+
+        addStatusLog('info', `Fetching Overture data: [${wgs84Bbox.map(b => b.toFixed(4)).join(', ')}]`);
+
+        const data = await fetchAllOvertureThemes(overtureThemes, wgs84Bbox, {
+          onProgress: (pct) => {
+            if (pct === 100) addStatusLog('info', 'Overture fetch complete');
+          },
+        });
+
+        setOvertureData(data);
+
+        const totalFeatures = Object.values(data).reduce(
+          (sum, fc) => sum + (fc.features?.length || 0), 0
+        );
+        addStatusLog('success', `Overture: ${totalFeatures} features loaded`);
+      } catch (e) {
+        addStatusLog('warning', 'Overture fetch failed', e.message);
+      } finally {
+        setOvertureLoading(false);
+      }
+    }, 800); // 800ms debounce
+
+    return () => {
+      if (overtureDebounceRef.current) {
+        clearTimeout(overtureDebounceRef.current);
+      }
+    };
+  }, [overtureEnabled, overtureThemes, viewCenter, viewZoom, imageData, addStatusLog]);
+
+  // Build Overture overlay layers for deck.gl
+  const overtureLayers = useMemo(() => {
+    if (!overtureEnabled || !overtureData) return [];
+    return createOvertureLayers(overtureData, { opacity: overtureOpacity });
+  }, [overtureEnabled, overtureData, overtureOpacity]);
+
+  // NOTE: Duplicate block removed — all handlers defined above
   return (
     <div id="app">
       {/* Header */}
@@ -1166,6 +1418,89 @@ function App() {
             </div>
           )}
 
+          {/* Overture Maps Overlay */}
+          <CollapsibleSection title="Overture Maps" defaultOpen={false}>
+            <div className="control-group">
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="overtureEnabled"
+                  checked={overtureEnabled}
+                  onChange={(e) => {
+                    setOvertureEnabled(e.target.checked);
+                    if (!e.target.checked) setOvertureData(null);
+                    addStatusLog('info', e.target.checked
+                      ? 'Overture Maps overlay enabled'
+                      : 'Overture Maps overlay disabled');
+                  }}
+                />
+                <label htmlFor="overtureEnabled">
+                  Enable Overlay
+                  {overtureLoading && <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>⟳</span>}
+                </label>
+              </div>
+            </div>
+
+            {overtureEnabled && (
+              <>
+                <div className="control-group">
+                  <label>Themes</label>
+                  {Object.entries(OVERTURE_THEMES).map(([key, theme]) => (
+                    <div className="control-row" key={key}>
+                      <input
+                        type="checkbox"
+                        id={`overture-${key}`}
+                        checked={overtureThemes.includes(key)}
+                        onChange={(e) => {
+                          setOvertureThemes(prev =>
+                            e.target.checked
+                              ? [...prev, key]
+                              : prev.filter(t => t !== key)
+                          );
+                        }}
+                      />
+                      <label htmlFor={`overture-${key}`}>
+                        <span style={{
+                          display: 'inline-block',
+                          width: '10px',
+                          height: '10px',
+                          borderRadius: '2px',
+                          backgroundColor: `rgba(${theme.color.join(',')})`,
+                          marginRight: '6px',
+                          verticalAlign: 'middle',
+                        }} />
+                        {theme.label}
+                      </label>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="control-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <label>Opacity</label>
+                    <span className="value-display">{(overtureOpacity * 100).toFixed(0)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={overtureOpacity}
+                    onChange={(e) => setOvertureOpacity(Number(e.target.value))}
+                  />
+                </div>
+
+                {overtureData && (
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    {Object.entries(overtureData).map(([key, fc]) => (
+                      <div key={key}>{OVERTURE_THEMES[key]?.label}: {fc.features?.length || 0} features</div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </CollapsibleSection>
+
           {/* Display Settings */}
           <CollapsibleSection title="Display">
             
@@ -1235,6 +1570,36 @@ function App() {
               </div>
             )}
 
+            {/* Export mode toggle */}
+            {imageData && imageData.getExportStripe && (
+              <div className="control-group" style={{ marginTop: '8px' }}>
+                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+                  Export Data
+                </label>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {[
+                    { id: 'raw', label: 'Raw', desc: 'Float32 linear power — for analysis (QGIS, Python)' },
+                    { id: 'rendered', label: 'Displayed', desc: 'RGBA with current dB/contrast/colormap — as seen on screen' },
+                  ].map(mode => (
+                    <button
+                      key={mode.id}
+                      className={exportMode === mode.id ? '' : 'btn-secondary'}
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      onClick={() => setExportMode(mode.id)}
+                      title={mode.desc}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {exportMode === 'raw'
+                    ? 'Float32 linear power values — suitable for analysis'
+                    : `RGBA with ${useDecibels ? 'dB' : 'linear'} stretch, ${colormap} colormap`}
+                </div>
+              </div>
+            )}
+
             {/* Export buttons */}
             {imageData && (
               <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
@@ -1244,7 +1609,7 @@ function App() {
                     disabled={exporting}
                     style={{ flex: 1 }}
                   >
-                    {exporting ? 'Exporting...' : 'Export GeoTIFF (Float32)'}
+                    {exporting ? 'Exporting...' : exportMode === 'raw' ? 'Export GeoTIFF (Float32)' : 'Export GeoTIFF (Rendered)'}
                   </button>
                 )}
                 <button
@@ -1252,6 +1617,17 @@ function App() {
                   style={{ flex: 1 }}
                 >
                   Save Figure (PNG)
+                </button>
+              </div>
+            )}
+            {displayMode === 'rgb' && compositeId && (
+              <div style={{ marginTop: '6px' }}>
+                <button
+                  onClick={handleExportColorbar}
+                  className="btn-secondary"
+                  style={{ width: '100%', fontSize: '0.7rem', padding: '4px 8px' }}
+                >
+                  Export Colorbar (PNG)
                 </button>
               </div>
             )}
@@ -1417,11 +1793,10 @@ function App() {
               height="100%"
               onViewStateChange={handleViewStateChange}
               initialViewState={initialViewState}
+              extraLayers={overtureLayers}
             />
           )}
         </div>
-
-        {/* State Panel (Phase 2) — hidden for now; will be replaced by ComfyUI-style node state */}
       </div>
 
       {/* Status Window */}
@@ -1460,7 +1835,9 @@ function App() {
   );
 }
 
-// Mount the app
+// Mount the app (guard against Vite HMR re-execution)
 const container = document.getElementById('app');
-const root = createRoot(container);
-root.render(<App />);
+if (!container._reactRoot) {
+  container._reactRoot = createRoot(container);
+}
+container._reactRoot.render(<App />);

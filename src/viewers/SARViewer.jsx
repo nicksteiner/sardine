@@ -35,6 +35,7 @@ export const SARViewer = forwardRef(function SARViewer({
   onViewStateChange,
   initialViewState,
   style = {},
+  extraLayers = [],   // Additional deck.gl layers (e.g., Overture overlay)
 }, ref) {
   const containerRef = useRef(null);
 
@@ -194,6 +195,12 @@ export const SARViewer = forwardRef(function SARViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
   }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, handleLoadingChange, redrawTick]);
 
+  const allLayers = useMemo(() => {
+    const baseLayers = layers;
+    // Append any extra overlay layers (Overture, annotations, etc.)
+    return [...baseLayers, ...extraLayers];
+  }, [layers, extraLayers]);
+
   const views = useMemo(
     () =>
       new OrthographicView({
@@ -221,7 +228,7 @@ export const SARViewer = forwardRef(function SARViewer({
         views={views}
         viewState={viewState}
         onViewStateChange={handleViewStateChange}
-        layers={layers}
+        layers={allLayers}
         controller={true}
         glOptions={{ preserveDrawingBuffer: true }}
       />

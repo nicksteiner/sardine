@@ -29,100 +29,50 @@ void main() {
 
 /**
  * Fragment shader - SAR processing (dB, colormap, stretch)
- * Copy of colormap functions from shaders.js
+ * Supports both single-band (colormap) and RGB (3-band composite) modes.
  */
 const fs = `#version 300 es
 #define SHADER_NAME sar-gpu-layer-fragment
 
 precision highp float;
 
+// Single-band texture (always bound)
 uniform sampler2D uTexture;
+// RGB-mode textures (only used when uMode > 0.5)
+uniform sampler2D uTextureG;
+uniform sampler2D uTextureB;
+
 uniform float uMin;
 uniform float uMax;
 uniform float uUseDecibels;
 uniform float uColormap;
 uniform float uGamma;
 uniform float uStretchMode;
+uniform float uMode;  // 0 = single-band + colormap, 1 = RGB composite
+// Per-channel min/max for RGB mode (falls back to uMin/uMax if equal)
+uniform float uMinR;
+uniform float uMaxR;
+uniform float uMinG;
+uniform float uMaxG;
+uniform float uMinB;
+uniform float uMaxB;
 
 in vec2 vTexCoord;
 out vec4 fragColor;
 
-// Viridis colormap
-vec3 viridis(float t) {
-  const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
-  const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
-  const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
-  const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
-  const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
-  const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
-  const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+// ─── Shared: dB scaling + contrast + stretch ─────────────────────────
 
-  t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-}
-
-// Inferno colormap
-vec3 inferno(float t) {
-  const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
-  const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
-  const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
-  const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
-  const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
-  const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
-  const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
-
-  t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-}
-
-// Plasma colormap
-vec3 plasma(float t) {
-  const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
-  const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
-  const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
-  const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
-  const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
-  const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
-  const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
-
-  t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-}
-
-// Phase colormap (hue-based)
-vec3 phaseColormap(float t) {
-  t = clamp(t, 0.0, 1.0);
-  float angle = t * 6.28318530718;
-  return vec3(
-    0.5 + 0.5 * cos(angle),
-    0.5 + 0.5 * cos(angle + 2.09439510239),
-    0.5 + 0.5 * cos(angle + 4.18879020479)
-  );
-}
-
-// Grayscale colormap
-vec3 grayscale(float t) {
-  t = clamp(t, 0.0, 1.0);
-  return vec3(t, t, t);
-}
-
-void main() {
-  // Read raw float amplitude from R channel
-  vec4 texel = texture(uTexture, vTexCoord);
-  float amplitude = texel.r;
-
-  // Apply dB scaling and contrast
+float processChannel(float amplitude, float cMin, float cMax) {
   float value;
   if (uUseDecibels > 0.5) {
     float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
-    value = (db - uMin) / (uMax - uMin);
+    value = (db - cMin) / (cMax - cMin);
   } else {
-    value = (amplitude - uMin) / (uMax - uMin);
+    value = (amplitude - cMin) / (cMax - cMin);
   }
 
   value = clamp(value, 0.0, 1.0);
 
-  // Apply stretch mode
   int stretchMode = int(uStretchMode + 0.5);
   if (stretchMode == 1) {
     value = sqrt(value);
@@ -136,27 +86,108 @@ void main() {
     value = (raw - lo) / (hi - lo);
   }
 
-  // Apply colormap
-  vec3 rgb;
-  int colormapId = int(uColormap + 0.5);
-  if (colormapId == 0) {
-    rgb = grayscale(value);
-  } else if (colormapId == 1) {
-    rgb = viridis(value);
-  } else if (colormapId == 2) {
-    rgb = inferno(value);
-  } else if (colormapId == 3) {
-    rgb = plasma(value);
-  } else if (colormapId == 4) {
-    rgb = phaseColormap(value);
+  return value;
+}
+
+// ─── Colormaps (single-band mode only) ───────────────────────────────
+
+vec3 viridis(float t) {
+  const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+  const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
+  const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
+  const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+  const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
+  const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+  const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+  t = clamp(t, 0.0, 1.0);
+  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+}
+
+vec3 inferno(float t) {
+  const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
+  const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
+  const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
+  const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
+  const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
+  const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
+  const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
+  t = clamp(t, 0.0, 1.0);
+  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+}
+
+vec3 plasma(float t) {
+  const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
+  const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
+  const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
+  const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
+  const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
+  const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
+  const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
+  t = clamp(t, 0.0, 1.0);
+  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+}
+
+vec3 phaseColormap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  float angle = t * 6.28318530718;
+  return vec3(
+    0.5 + 0.5 * cos(angle),
+    0.5 + 0.5 * cos(angle + 2.09439510239),
+    0.5 + 0.5 * cos(angle + 4.18879020479)
+  );
+}
+
+vec3 grayscale(float t) {
+  t = clamp(t, 0.0, 1.0);
+  return vec3(t, t, t);
+}
+
+// ─── Main ────────────────────────────────────────────────────────────
+
+void main() {
+  if (uMode > 0.5) {
+    // ── RGB composite mode: 3 separate R32F textures ──
+    float ampR = texture(uTexture, vTexCoord).r;
+    float ampG = texture(uTextureG, vTexCoord).r;
+    float ampB = texture(uTextureB, vTexCoord).r;
+
+    vec3 rgb = vec3(
+      processChannel(ampR, uMinR, uMaxR),
+      processChannel(ampG, uMinG, uMaxG),
+      processChannel(ampB, uMinB, uMaxB)
+    );
+
+    // Any channel valid → visible
+    bool anyValid = (ampR != 0.0 && !isnan(ampR)) ||
+                    (ampG != 0.0 && !isnan(ampG)) ||
+                    (ampB != 0.0 && !isnan(ampB));
+    float alpha = anyValid ? 1.0 : 0.0;
+
+    fragColor = vec4(rgb, alpha);
   } else {
-    rgb = grayscale(value);
+    // ── Single-band mode: R32F texture + colormap ──
+    float amplitude = texture(uTexture, vTexCoord).r;
+    float value = processChannel(amplitude, uMin, uMax);
+
+    vec3 rgb;
+    int colormapId = int(uColormap + 0.5);
+    if (colormapId == 0) {
+      rgb = grayscale(value);
+    } else if (colormapId == 1) {
+      rgb = viridis(value);
+    } else if (colormapId == 2) {
+      rgb = inferno(value);
+    } else if (colormapId == 3) {
+      rgb = plasma(value);
+    } else if (colormapId == 4) {
+      rgb = phaseColormap(value);
+    } else {
+      rgb = grayscale(value);
+    }
+
+    float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
+    fragColor = vec4(rgb, alpha);
   }
-
-  // Handle no-data
-  float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
-
-  fragColor = vec4(rgb, alpha);
 }
 `;
 
@@ -180,6 +211,13 @@ export class SARGPULayer extends Layer {
     this.setState({ needsGeometryUpdate: true });
   }
 
+  // Override: we draw a static quad, not instanced rendering.
+  // Return 0 so deck.gl skips attribute buffer management entirely.
+  // Our draw() renders the geometry directly via model.draw().
+  getNumInstances() {
+    return 0;
+  }
+
   updateState({ props, oldProps }) {
     const { gl } = this.context;
     const { data, width, height, bounds } = props;
@@ -192,10 +230,6 @@ export class SARGPULayer extends Layer {
       }
 
       const [minX, minY, maxX, maxY] = bounds;
-
-      console.log(`[SARGPULayer] Creating geometry with bounds: [${minX}, ${minY}, ${maxX}, ${maxY}]`);
-      console.log(`[SARGPULayer] Coordinate system:`, props.coordinateSystem);
-      console.log(`[SARGPULayer] Current viewport:`, this.context.viewport);
 
       // Create quad with world coordinates from bounds
       const positions = new Float32Array([
@@ -240,23 +274,39 @@ export class SARGPULayer extends Layer {
       });
 
       this.setState({ model, needsGeometryUpdate: false });
-      console.log('[SARGPULayer] ✅ Model created with world coordinates');
-      console.log('[SARGPULayer] Position range: X=[', minX, ',', maxX, '], Y=[', minY, ',', maxY, ']');
     }
 
-    // Upload R32F texture when data changes
-    if (data && (data !== oldProps.data || width !== oldProps.width || height !== oldProps.height)) {
-      console.log(`[SARGPULayer] Uploading R32F texture: ${width}×${height}`);
+    // Upload R32F texture(s) when data changes
+    const { dataR, dataG, dataB, mode = 'single' } = props;
+    const isRGB = mode === 'rgb';
 
+    if (isRGB) {
+      // RGB mode: upload 3 separate R32F textures
+      const rChanged = dataR !== oldProps.dataR;
+      const gChanged = dataG !== oldProps.dataG;
+      const bChanged = dataB !== oldProps.dataB;
+      const sizeChanged = width !== oldProps.width || height !== oldProps.height;
+
+      if (dataR && dataG && dataB && (rChanged || gChanged || bChanged || sizeChanged)) {
+        const texR = this._createR32FTexture(dataR, width, height);
+        const texG = this._createR32FTexture(dataG, width, height);
+        const texB = this._createR32FTexture(dataB, width, height);
+
+        if (texR && texG && texB) {
+          // Clean up old textures
+          if (this.state.texture) gl.deleteTexture(this.state.texture);
+          if (this.state.textureG) gl.deleteTexture(this.state.textureG);
+          if (this.state.textureB) gl.deleteTexture(this.state.textureB);
+
+          this.setState({ texture: texR, textureG: texG, textureB: texB });
+        }
+      }
+    } else if (data && (data !== oldProps.data || width !== oldProps.width || height !== oldProps.height)) {
       const texture = this._createR32FTexture(data, width, height);
 
       if (texture) {
-        if (this.state.texture) {
-          // Delete old raw WebGL texture
-          gl.deleteTexture(this.state.texture);
-        }
+        if (this.state.texture) gl.deleteTexture(this.state.texture);
         this.setState({ texture });
-        console.log('[SARGPULayer] ✅ R32F texture uploaded');
       }
     }
   }
@@ -300,52 +350,87 @@ export class SARGPULayer extends Layer {
   }
 
   draw({ uniforms }) {
-    const { model, texture } = this.state;
+    const { model, texture, textureG, textureB } = this.state;
 
-    if (!model || !texture) {
-      console.warn('[SARGPULayer] Skipping draw - missing model or texture');
-      return;
-    }
+    if (!model || !texture) return;
 
     const {
       contrastLimits = [-25, 0],
       useDecibels = true,
       colormap = 'grayscale',
       gamma = 1.0,
-      stretchMode = 'linear'
+      stretchMode = 'linear',
+      mode = 'single'
     } = this.props;
 
-    // Debug: Log draw call on first frame
-    if (!this.state.hasDrawn) {
-      console.log('[SARGPULayer] 🎨 First draw call');
-      console.log('[SARGPULayer] Viewport:', this.context.viewport);
-      console.log('[SARGPULayer] Uniforms received:', Object.keys(uniforms));
-      console.log('[SARGPULayer] Contrast limits:', contrastLimits);
-      this.setState({ hasDrawn: true });
-    }
+    const isRGB = mode === 'rgb';
 
     try {
       const { gl } = this.context;
 
-      // Manually bind raw WebGL texture to texture unit 0
+      // Bind R texture to unit 0 (always)
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, texture);
 
-      // Set uniforms and draw
-      model.setUniforms({
-        ...uniforms,  // Includes deck.gl's projection uniforms from modules
-        uTexture: 0,  // Texture unit 0 (not the texture object itself)
-        uMin: contrastLimits[0],
-        uMax: contrastLimits[1],
+      // Resolve per-channel contrast limits
+      // contrastLimits can be [min, max] (uniform) or {R: [min,max], G: [min,max], B: [min,max]}
+      let uMin, uMax, uMinR, uMaxR, uMinG, uMaxG, uMinB, uMaxB;
+
+      if (isRGB && contrastLimits && !Array.isArray(contrastLimits)) {
+        // Per-channel object: {R: [min,max], G: [min,max], B: [min,max]}
+        const rLim = contrastLimits.R || [-25, 0];
+        const gLim = contrastLimits.G || [-25, 0];
+        const bLim = contrastLimits.B || [-25, 0];
+        uMinR = rLim[0]; uMaxR = rLim[1];
+        uMinG = gLim[0]; uMaxG = gLim[1];
+        uMinB = bLim[0]; uMaxB = bLim[1];
+        // Set single-band min/max to R channel as fallback
+        uMin = uMinR; uMax = uMaxR;
+      } else {
+        // Uniform array: [min, max]
+        const lim = Array.isArray(contrastLimits) ? contrastLimits : [-25, 0];
+        uMin = lim[0]; uMax = lim[1];
+        uMinR = uMin; uMaxR = uMax;
+        uMinG = uMin; uMaxG = uMax;
+        uMinB = uMin; uMaxB = uMax;
+      }
+
+      const layerUniforms = {
+        ...uniforms,
+        uTexture: 0,
+        uMin, uMax,
+        uMinR, uMaxR,
+        uMinG, uMaxG,
+        uMinB, uMaxB,
         uUseDecibels: useDecibels ? 1.0 : 0.0,
         uColormap: getColormapId(colormap),
         uGamma: gamma,
-        uStretchMode: getStretchModeId(stretchMode)
-      });
+        uStretchMode: getStretchModeId(stretchMode),
+        uMode: isRGB ? 1.0 : 0.0,
+      };
 
+      if (isRGB && textureG && textureB) {
+        // Bind G and B textures to units 1 and 2
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, textureG);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, textureB);
+
+        layerUniforms.uTextureG = 1;
+        layerUniforms.uTextureB = 2;
+      }
+
+      model.setUniforms(layerUniforms);
       model.draw();
 
-      // Unbind texture
+      // Unbind textures
+      if (isRGB) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+      }
+      gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, null);
     } catch (err) {
       console.error('[SARGPULayer] Draw error:', err);
@@ -355,25 +440,32 @@ export class SARGPULayer extends Layer {
   finalizeState() {
     super.finalizeState();
     if (this.state.model) this.state.model.delete();
-    if (this.state.texture) {
-      // Handle raw WebGL texture cleanup
-      const { gl } = this.context;
-      if (gl) gl.deleteTexture(this.state.texture);
+    const { gl } = this.context;
+    if (gl) {
+      if (this.state.texture) gl.deleteTexture(this.state.texture);
+      if (this.state.textureG) gl.deleteTexture(this.state.textureG);
+      if (this.state.textureB) gl.deleteTexture(this.state.textureB);
     }
   }
 }
 
 SARGPULayer.layerName = 'SARGPULayer';
 SARGPULayer.defaultProps = {
-  data: { type: 'object', value: null, compare: false },
+  // Single-band mode (use {length:0} not null — deck.gl's count() requires an object)
+  data: { type: 'object', value: {length: 0}, compare: false },
+  // RGB mode (3 separate Float32Arrays)
+  dataR: { type: 'object', value: null, compare: false },
+  dataG: { type: 'object', value: null, compare: false },
+  dataB: { type: 'object', value: null, compare: false },
+  mode: { type: 'string', value: 'single', compare: true },  // 'single' or 'rgb'
   width: { type: 'number', value: 256, min: 1 },
   height: { type: 'number', value: 256, min: 1 },
   bounds: { type: 'array', value: [-180, -90, 180, 90], compare: true },
-  contrastLimits: { type: 'array', value: [-25, 0], compare: true },
+  // type: 'object' to accept both [min,max] and {R:[],G:[],B:[]} formats
+  contrastLimits: { type: 'object', value: [-25, 0], compare: true },
   useDecibels: { type: 'boolean', value: true, compare: true },
   colormap: { type: 'string', value: 'grayscale', compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true }
   // Note: coordinateSystem is NOT defined here - it will inherit from parent layer
-  // This allows the layer to work with both CARTESIAN (pixel coords) and LNGLAT (geographic) systems
 };

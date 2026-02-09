@@ -11,10 +11,11 @@
     "preview": "vite preview",
     "example": "vite --config vite.example.config.js",
     "test": "node test/run-tests.js",
-    "test:layer": "vite --open /test/layer-test.html",
+    "test:layer": "vite --config vite.test.config.js --open /test/layer-test.html",
     "test:quick": "node test/quick-validation.js",
     "test:watch": "nodemon -w src -x 'npm run test:quick'",
-    "debug:gpu": "vite --open /test/gpu-debug.html --force"
+    "debug:gpu": "vite --config vite.test.config.js --open /test/gpu-debug.html --force",
+    "benchmark": "vite --config vite.test.config.js --open /test/benchmarks/gpu-vs-cpu.html --force"
   },
   "keywords": [
     "sar",
@@ -40,7 +41,10 @@
     "maplibre-gl": "^4.0.0",
     "pako": "^2.1.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "parquet-wasm": "^0.6.1",
+    "@loaders.gl/parquet": "^4.3.0",
+    "@loaders.gl/core": "^4.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",

@@ -1,7 +1,6 @@
 import { TileLayer } from '@deck.gl/geo-layers';
-import { BitmapLayer } from '@deck.gl/layers';
 import { getColormap } from '../utils/colormap.js';
-import { computeRGBBands, createRGBTexture } from '../utils/sar-composites.js';
+import { computeRGBBands } from '../utils/sar-composites.js';
 import { applyStretch } from '../utils/stretch.js';
 import { SARGPULayer } from './SARGPULayer.js';
 
@@ -80,28 +79,28 @@ export class SARTileLayer extends TileLayer {
           ? [bbox.west, bbox.south, bbox.east, bbox.north]
           : [bbox.left, bbox.top, bbox.right, bbox.bottom];
 
-        // RGB composite mode - still uses CPU for now (Phase 2 will add GPU support)
+        // RGB composite mode - GPU accelerated (3x R32F textures)
         if (tileData.bands && tileData.compositeId) {
           const rgbBands = computeRGBBands(tileData.bands, tileData.compositeId, tileData.width);
-          const image = createRGBTexture(rgbBands, tileData.width, tileData.height, contrastLimits, useDecibels, gamma, stretchMode);
-          return new BitmapLayer({
-            id: `${subProps.id}-bitmap`,
-            image,
+
+          return new SARGPULayer({
+            id: `${subProps.id}-gpu-rgb`,
+            mode: 'rgb',
+            data: {length: 0},  // deck.gl requires non-null data object
+            dataR: rgbBands.R,
+            dataG: rgbBands.G,
+            dataB: rgbBands.B,
+            width: tileData.width,
+            height: tileData.height,
             bounds: tileBounds,
+            contrastLimits,
+            useDecibels,
+            colormap,
+            gamma,
+            stretchMode,
             opacity: subProps.opacity,
           });
         } else if (tileData.data) {
-          // Single-band mode - USE CUSTOM GPU LAYER!
-          console.log(`[SARTileLayer] 🚀 Custom GPU layer active for tile ${subProps.id}`);
-          console.log(`[SARTileLayer] Tile bounds:`, tileBounds);
-          console.log(`[SARTileLayer] Tile dimensions:`, tileData.width, 'x', tileData.height);
-
-          // DEBUG: Check if data is actually zeros
-          const nonZero = tileData.data.filter(v => v !== 0).length;
-          const dataMin = Math.min(...tileData.data.filter(v => v > 0));
-          const dataMax = Math.max(...tileData.data);
-          console.log(`[SARTileLayer] Data check: ${nonZero}/${tileData.data.length} non-zero, range [${dataMin}, ${dataMax}]`);
-
           return new SARGPULayer({
             id: `${subProps.id}-gpu`,
             data: tileData.data,  // Raw Float32Array - uploaded as R32F texture

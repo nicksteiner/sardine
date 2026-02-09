@@ -14,6 +14,7 @@
  */
 
 import { getColormap } from './colormap.js';
+import { applyStretch } from './stretch.js';
 import { SAR_COMPOSITES } from './sar-composites.js';
 import {
   THEME,
@@ -502,6 +503,222 @@ function formatLimit(contrastLimits, ch, useDecibels) {
   return useDecibels
     ? `${lim[0].toFixed(1)}–${lim[1].toFixed(1)} dB`
     : `${lim[0].toExponential(1)}–${lim[1].toExponential(1)}`;
+}
+
+// ── Standalone RGB colorbar (triangle) ───────────────────────────────────────
+
+/**
+ * Generate a standalone RGB colorbar as a triangular color-space diagram.
+ *
+ * The triangle vertices represent the three channels (R, G, B).  Each
+ * interior pixel is coloured by its barycentric coordinates: wR, wG, wB
+ * determine the relative intensity of each channel.  The stretch function
+ * is applied so the gradient matches the on-screen rendering.
+ *
+ * Layout:
+ *               R: HHHH
+ *                 ▲
+ *                ╱ ╲
+ *               ╱   ╲
+ *              ╱  ●  ╲
+ *             ╱_______╲
+ *       G: HVHV     B: HH/HV
+ *
+ *       R  −41.4 – −1.5 dB
+ *       G  −24.7 – −8.2 dB
+ *       B   −4.0 – 11.5 dB
+ *
+ * @param {Object} options
+ * @param {string}   options.compositeId   - SAR composite preset ID
+ * @param {Object}   options.contrastLimits - {R:[min,max], G:[min,max], B:[min,max]}
+ * @param {boolean}  [options.useDecibels=true]
+ * @param {string}   [options.stretchMode='linear']
+ * @param {number}   [options.gamma=1.0]
+ * @returns {Promise<Blob>} PNG blob
+ */
+export function exportRGBColorbar(options = {}) {
+  const {
+    compositeId,
+    contrastLimits,
+    useDecibels = true,
+    stretchMode = 'linear',
+    gamma = 1.0,
+  } = options;
+
+  const preset = SAR_COMPOSITES[compositeId];
+  if (!preset) return Promise.resolve(null);
+
+  const dpr = window.devicePixelRatio || 1;
+  const s = (v) => Math.round(v * dpr);
+
+  const pad = s(14);
+  const triSide = s(240);
+  const triH = Math.round(triSide * Math.sqrt(3) / 2);
+
+  // Canvas sizing: title, label above apex, triangle, labels below base, range table
+  const titleH = s(28);
+  const apexLabelH = s(20);
+  const baseLabelH = s(22);
+  const rangeTableH = s(56);
+  const canvasW = triSide + pad * 2 + s(60);   // extra room for base labels
+  const canvasH = titleH + apexLabelH + triH + baseLabelH + rangeTableH + pad * 2;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = THEME.bg;
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  // Border
+  ctx.strokeStyle = THEME.border;
+  ctx.lineWidth = s(1);
+  roundRect(ctx, s(1), s(1), canvasW - s(2), canvasH - s(2), s(THEME.radiusMd));
+  ctx.stroke();
+
+  // ── Title row ──
+  let y = pad;
+  ctx.font = `bold ${s(13)}px ${FONT_MONO}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = THEME.cyan;
+  const sarTextW = ctx.measureText('SAR').width;
+  ctx.fillText('SAR', pad, y);
+  ctx.fillStyle = THEME.textPrimary;
+  ctx.fillText('dine', pad + sarTextW, y);
+
+  ctx.fillStyle = THEME.textSecondary;
+  ctx.font = `${s(11)}px ${FONT_MONO}`;
+  ctx.textAlign = 'right';
+  ctx.fillText(preset.name, canvasW - pad, y + s(2));
+  ctx.textAlign = 'left';
+
+  y += titleH;
+
+  // ── Triangle vertices: R (top), G (bottom-left), B (bottom-right) ──
+  const cx = canvasW / 2;
+  const triTop = y + apexLabelH;
+  const vR = [cx, triTop];
+  const vG = [cx - triSide / 2, triTop + triH];
+  const vB = [cx + triSide / 2, triTop + triH];
+
+  // ── Render triangle via ImageData + barycentric interpolation ──
+  const bboxX0 = Math.floor(vG[0]);
+  const bboxX1 = Math.ceil(vB[0]);
+  const bboxY0 = Math.floor(vR[1]);
+  const bboxY1 = Math.ceil(vG[1]);
+  const imgW = bboxX1 - bboxX0;
+  const imgH = bboxY1 - bboxY0;
+  const imgData = ctx.getImageData(bboxX0, bboxY0, imgW, imgH);
+  const px = imgData.data;
+
+  // Pre-compute barycentric denominator
+  const e0 = [vG[0] - vR[0], vG[1] - vR[1]];  // R → G
+  const e1 = [vB[0] - vR[0], vB[1] - vR[1]];  // R → B
+  const d00 = e0[0] * e0[0] + e0[1] * e0[1];
+  const d01 = e0[0] * e1[0] + e0[1] * e1[1];
+  const d11 = e1[0] * e1[0] + e1[1] * e1[1];
+  const invDenom = 1 / (d00 * d11 - d01 * d01);
+
+  for (let iy = 0; iy < imgH; iy++) {
+    for (let ix = 0; ix < imgW; ix++) {
+      const pX = bboxX0 + ix + 0.5;
+      const pY = bboxY0 + iy + 0.5;
+      const ep = [pX - vR[0], pY - vR[1]];
+      const d20 = ep[0] * e0[0] + ep[1] * e0[1];
+      const d21 = ep[0] * e1[0] + ep[1] * e1[1];
+
+      const wG = (d11 * d20 - d01 * d21) * invDenom;
+      const wB = (d00 * d21 - d01 * d20) * invDenom;
+      const wR = 1 - wG - wB;
+
+      if (wR >= 0 && wG >= 0 && wB >= 0) {
+        const r = Math.round(applyStretch(wR, stretchMode, gamma) * 255);
+        const g = Math.round(applyStretch(wG, stretchMode, gamma) * 255);
+        const b = Math.round(applyStretch(wB, stretchMode, gamma) * 255);
+        const idx = (iy * imgW + ix) * 4;
+        px[idx] = r;
+        px[idx + 1] = g;
+        px[idx + 2] = b;
+        px[idx + 3] = 255;
+      }
+    }
+  }
+
+  ctx.putImageData(imgData, bboxX0, bboxY0);
+
+  // Triangle outline
+  ctx.strokeStyle = THEME.border;
+  ctx.lineWidth = s(1.5);
+  ctx.beginPath();
+  ctx.moveTo(vR[0], vR[1]);
+  ctx.lineTo(vG[0], vG[1]);
+  ctx.lineTo(vB[0], vB[1]);
+  ctx.closePath();
+  ctx.stroke();
+
+  // ── Vertex labels ──
+  const chDefs = {
+    R: preset.channels.R,
+    G: preset.channels.G,
+    B: preset.channels.B,
+  };
+
+  const labelR = chDefs.R?.label || chDefs.R?.dataset || 'R';
+  const labelG = chDefs.G?.label || chDefs.G?.dataset || 'G';
+  const labelB = chDefs.B?.label || chDefs.B?.dataset || 'B';
+
+  const labelFont = `bold ${s(11)}px ${FONT_MONO}`;
+  const subFont = `${s(10)}px ${FONT_MONO}`;
+
+  // R — above apex
+  ctx.font = labelFont;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle = CHANNEL_COLORS.R;
+  ctx.fillText(`R: ${labelR}`, vR[0], vR[1] - s(4));
+
+  // G — below-left of base
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = CHANNEL_COLORS.G;
+  ctx.fillText(`G: ${labelG}`, vG[0] + s(4), vG[1] + s(4));
+
+  // B — below-right of base
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = CHANNEL_COLORS.B;
+  ctx.fillText(`B: ${labelB}`, vB[0] - s(4), vB[1] + s(4));
+
+  // ── Contrast range table ──
+  y = vG[1] + baseLabelH + s(8);
+  const rangeX = pad + s(4);
+  const unit = useDecibels ? ' dB' : '';
+
+  for (const ch of ['R', 'G', 'B']) {
+    const color = CHANNEL_COLORS[ch];
+    const lim = contrastLimits?.[ch] || [-25, 0];
+    const minStr = useDecibels ? lim[0].toFixed(1) : lim[0].toExponential(1);
+    const maxStr = useDecibels ? lim[1].toFixed(1) : lim[1].toExponential(1);
+
+    ctx.font = labelFont;
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(ch, rangeX, y);
+
+    ctx.font = subFont;
+    ctx.fillStyle = THEME.textMuted;
+    ctx.fillText(`${minStr} – ${maxStr}${unit}`, rangeX + s(18), y + s(1));
+
+    y += s(16);
+  }
+
+  return new Promise((resolve) => {
+    canvas.toBlob(resolve, 'image/png');
+  });
 }
 
 /**

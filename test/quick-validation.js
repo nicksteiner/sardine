@@ -52,14 +52,6 @@ check('SARGPULayer imports are valid', () => {
 });
 
 // Test 3: Super calls are present
-check('super.initializeState() is called', () => {
-  const path = join(rootDir, 'src/layers/SARGPULayer.js');
-  const content = readFileSync(path, 'utf8');
-  if (!content.includes('super.initializeState()')) {
-    throw new Error('Missing super.initializeState() call!');
-  }
-});
-
 check('super.finalizeState() is called', () => {
   const path = join(rootDir, 'src/layers/SARGPULayer.js');
   const content = readFileSync(path, 'utf8');

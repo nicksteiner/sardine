@@ -39,8 +39,10 @@ sardine/
 ├── src/                      # Core library (reusable components)
 │   ├── index.js             # Main exports
 │   ├── loaders/
-│   │   └── cog-loader.js    # geotiff.js wrapper for COGs
+│   │   ├── cog-loader.js    # geotiff.js wrapper for COGs
+│   │   └── overture-loader.js   # Overture Maps GeoParquet streaming loader
 │   ├── layers/
+│   │   ├── OvertureLayer.js     # deck.gl GeoJsonLayer for Overture vector overlay
 │   │   ├── SARTileLayer.js  # deck.gl layer with dB shader
 │   │   └── shaders.js       # GLSL for dB scaling, colormaps
 │   ├── viewers/
