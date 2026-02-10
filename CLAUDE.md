@@ -1,268 +1,271 @@
-# SARdine - Claude Code Project Guide
+# SARdine — Claude Code Project Guide
 
-This document provides context for Claude Code (or any AI coding assistant) to understand the SARdine project goals, architecture, and development phases.
+Context for Claude Code (or any AI coding assistant) to understand the SARdine project.
 
-## Project Overview
+## What SARdine Is
 
-**SARdine** is a prompt-driven geospatial analysis tool for SAR (Synthetic Aperture Radar) imagery. The goal is to create an intuitive interface where users can:
+**SARdine** is a browser-native SAR imagery viewer and analysis tool. It loads NISAR HDF5 GCOV products and Cloud Optimized GeoTIFFs directly in the browser — no server, no Python, no GDAL. GPU-accelerated rendering with GLSL shaders. Client-side GeoTIFF export.
 
-1. Load and visualize SAR imagery (Cloud Optimized GeoTIFFs)
-2. Adjust visualization parameters through natural language
-3. Eventually run processing pipelines and compare results
-
-The project is being developed in **7 phases**, each fully functional before moving to the next.
+**Core capabilities today:**
+- Stream NISAR L2 GCOV HDF5 files via chunked range reads (h5chunk.js)
+- Load Cloud Optimized GeoTIFFs via geotiff.js
+- GPU-accelerated dB scaling + colormaps at 60 fps (SARGPULayer)
+- Polarimetric RGB composites (HH/HV/VV, Pauli, dual-pol ratios)
+- Per-channel contrast with histogram and auto-stretch
+- Stretch modes: linear, sqrt, gamma, sigmoid
+- Client-side GeoTIFF export (raw Float32 + rendered RGBA)
+- Figure export with scale bar, coordinates, colorbar overlays
+- RGB triangle colorbar export
+- Overture Maps vector overlay via PMTiles
 
 ## Tech Stack
 
 | Technology | Purpose |
-|------------|---------|
+|:-----------|:--------|
 | **React 18** | UI framework |
-| **deck.gl 8.9** | WebGL map/image rendering |
-| **geotiff.js** | Load Cloud Optimized GeoTIFFs (COGs) |
-| **MapLibre GL** | Basemap rendering (Phase 4+) |
+| **deck.gl 8.9** | WebGL tile/bitmap rendering |
+| **@luma.gl/core** | WebGL2 texture + shader management |
+| **geotiff.js** | COG loading (HTTP range reads) |
+| **h5chunk.js** | Cloud-optimized HDF5 streaming (pure JS, no WASM for streaming) |
+| **h5wasm** | HDF5 attribute/metadata parsing (WASM, used alongside h5chunk) |
+| **pako** | Inflate/deflate for HDF5 chunk decompression |
+| **MapLibre GL** | Basemap rendering |
+| **parquet-wasm** | Overture Maps GeoParquet decoding |
 | **Vite** | Build tool and dev server |
 
 ### Key Design Decisions
 
-- **No Viv dependency** - We use geotiff.js directly for COG loading
-- **Minimal dependencies** - Keep the bundle lean
-- **State as Markdown** - Human-readable state representation
-- **COGs on S3** - Works with remote files, no special backend needed (until Phase 5)
+- **h5chunk for streaming** — Pure JS HDF5 chunk reader. Parses superblock, object headers, B-trees to build a chunk index. Fetches only viewport-intersecting chunks via File.slice() or HTTP Range. No need to load entire file into memory.
+- **GPU-first rendering** — dB conversion, colormap application, and contrast stretching all run in GLSL fragment shaders. CPU fallback exists but GPU path is default.
+- **No server required** — Everything runs client-side. h5chunk streams from local File objects. geotiff.js streams from URLs.
+- **Minimal dependencies** — No GDAL, no Python, no tile server.
 
 ## Project Structure
 
 ```
 sardine/
-├── app/                      # Main SARdine application
-│   ├── index.html           # Entry HTML
-│   └── main.jsx             # React app with Phase 1-2 features
-├── src/                      # Core library (reusable components)
-│   ├── index.js             # Main exports
+├── app/
+│   ├── index.html              # Entry HTML
+│   └── main.jsx                # Main React application (~3000 lines)
+├── src/
+│   ├── index.js                # Library exports
 │   ├── loaders/
-│   │   ├── cog-loader.js    # geotiff.js wrapper for COGs
-│   │   └── overture-loader.js   # Overture Maps GeoParquet streaming loader
+│   │   ├── cog-loader.js       # geotiff.js COG wrapper
+│   │   ├── h5chunk.js          # Cloud-optimized HDF5 chunk reader (pure JS)
+│   │   ├── hdf5-chunked.js     # Legacy HDF5 implementation
+│   │   ├── nisar-loader.js     # NISAR GCOV product loader (~3000 lines)
+│   │   └── overture-loader.js  # Overture Maps PMTiles/GeoParquet
 │   ├── layers/
-│   │   ├── OvertureLayer.js     # deck.gl GeoJsonLayer for Overture vector overlay
-│   │   ├── SARTileLayer.js  # deck.gl layer with dB shader
-│   │   └── shaders.js       # GLSL for dB scaling, colormaps
+│   │   ├── SARGPULayer.js      # Primary GPU-accelerated layer (WebGL2 textures)
+│   │   ├── SARGPUBitmapLayer.js # GPU bitmap variant
+│   │   ├── SARBitmapLayer.js   # CPU-fallback bitmap layer
+│   │   ├── SARTileLayer.js     # Original tile layer (Phase 1)
+│   │   ├── SARTiledCOGLayer.js # Tiled COG layer
+│   │   ├── OvertureLayer.js    # Overture Maps vector overlay
+│   │   └── shaders.js          # GLSL vertex + fragment shaders (dB, colormaps, stretch)
 │   ├── viewers/
-│   │   ├── SARViewer.jsx    # Basic orthographic viewer
-│   │   ├── ComparisonViewer.jsx  # Side-by-side (Phase 6)
-│   │   └── MapViewer.jsx    # With basemap (Phase 4)
-│   └── utils/
-│       ├── stats.js         # Histogram, auto-contrast
-│       └── colormap.js      # Grayscale, viridis, etc.
-├── examples/                 # Example usage
-│   └── basic/
+│   │   ├── SARViewer.jsx       # Orthographic viewer (no basemap)
+│   │   ├── MapViewer.jsx       # MapLibre basemap + SAR overlay
+│   │   └── ComparisonViewer.jsx # Side-by-side / swipe comparison
+│   ├── components/
+│   │   ├── Histogram.jsx       # Interactive histogram with percentile markers
+│   │   ├── StatusWindow.jsx    # Scrolling status/log panel
+│   │   ├── ScaleBar.jsx        # Dynamic scale bar overlay
+│   │   ├── CoordinateGrid.jsx  # Lat/lon grid overlay
+│   │   ├── CornerCoordinates.jsx # Corner coordinate labels
+│   │   └── LoadingIndicator.jsx # Loading spinner
+│   ├── utils/
+│   │   ├── sar-composites.js   # RGB composite presets (Pauli, dual-pol, quad-pol)
+│   │   ├── stretch.js          # Stretch modes (linear, sqrt, gamma, sigmoid)
+│   │   ├── colormap.js         # Colormaps (grayscale, viridis, inferno, plasma, phase)
+│   │   ├── stats.js            # Histogram computation, auto-contrast, percentile stats
+│   │   ├── geotiff-writer.js   # Client-side GeoTIFF writer (RGBA + RGB + Float32)
+│   │   ├── figure-export.js    # Figure/colorbar PNG export with overlays
+│   │   ├── geo-overlays.js     # Scale bar, coordinates, theme constants
+│   │   └── gpu-detect.js       # WebGL2 capability detection
+│   └── theme/
+│       └── sardine-theme.css   # CSS custom properties (dark theme)
+├── test/
+│   ├── run-tests.js            # Main test runner (100+ checks)
+│   ├── quick-validation.js     # Fast smoke tests
+│   ├── layer-test.html         # Browser-based layer rendering test
+│   ├── gpu-debug.html          # GPU shader debugging page
+│   ├── georef-comparison.mjs   # Georeferencing validation
+│   └── benchmarks/
+│       └── gpu-vs-cpu.html     # GPU vs CPU rendering benchmark
+├── docs/
+│   ├── CLOUD_OPTIMIZED_HDF5.md # h5chunk technical design
+│   ├── COMPETITIVE_ANALYSIS.md # Market landscape analysis
+│   ├── VISUALIZATION.md        # SAR visualization roadmap
+│   └── sardine-style-guide.html # Visual design system
 ├── package.json
-├── vite.config.js           # Main app config
-└── vite.example.config.js   # Examples config
+├── vite.config.js
+└── CLAUDE.md                   # This file
 ```
 
-## Development Phases
+## Architecture
 
-### Phase 1: Basic Viewer ✅ COMPLETE
+### Data Flow
 
-**Goal**: Load a COG and adjust contrast with sliders.
-
-**Features**:
-- Load COG from URL via geotiff.js
-- Render with deck.gl TileLayer
-- dB scaling shader (toggle on/off)
-- Contrast limit sliders (min/max in dB)
-- Grayscale + viridis colormap
-- Auto-fit view to image bounds
-
-**Key Files**: `app/main.jsx`, `src/loaders/cog-loader.js`, `src/layers/SARTileLayer.js`
-
----
-
-### Phase 2: State as Markdown ✅ COMPLETE
-
-**Goal**: Edit markdown to control the viewer.
-
-**Features**:
-- Visible state panel showing current state as markdown
-- State updates live as you interact
-- State is editable — change the markdown, viewer updates
-- Bidirectional sync between UI and markdown
-
-**State Format**:
-```markdown
-## State
-- **File:** s3://bucket/flood.tif
-- **Contrast:** -22 to -3 dB
-- **Colormap:** grayscale
-- **dB Mode:** on
-- **View:** [lat, lon], zoom 12
+```
+File/URL → Loader → Chunks → GPU Texture → GLSL Shader → Screen
+                                              ↓
+                                    dB scale → stretch → colormap → contrast
 ```
 
-**Key Files**: `app/main.jsx` (parseMarkdownState, generateMarkdownState functions)
+### HDF5 Pipeline (NISAR GCOV)
 
----
-
-### Phase 3: Chat Input 🔜 PLANNED
-
-**Goal**: Type "increase contrast" and it does.
-
-**Features**:
-- Chat box for natural language input
-- LLM sees current state markdown, returns updated state
-- No code generation — just state changes
-- Examples: "brighten it up", "show me just the dark areas", "zoom to the river"
-
-**Implementation Notes**:
-- Will need LLM API integration (OpenAI, Anthropic, or local)
-- State changes only, no autonomy
-- Prompt: `current_state + user_message → updated_state`
-
----
-
-### Phase 4: Basemap + Annotations 🔜 PLANNED
-
-**Goal**: Draw on the map and reference drawings in chat.
-
-**Features**:
-- Add MapLibre basemap under SAR layer
-- User can draw polygons
-- Polygons added to state with labels
-- Chat can reference annotations: "ignore areas like poly_2"
-
-**State Addition**:
-```markdown
-## Annotations
-- poly_1: "flood" [geojson]
-- poly_2: "false positive - building" [geojson]
+```
+1. Open file → h5chunk parses superblock + metadata page (~8MB)
+2. Build chunk index: {dataset → [{offset, size, chunkCoords}]}
+3. For viewport tile: calculate intersecting chunks
+4. Read chunks via File.slice() → decompress (pako) → Float32Array
+5. Box-filter multilook (configurable ml factor)
+6. Upload as WebGL2 R32F texture
+7. Fragment shader: power → dB → normalize → stretch → colormap → RGBA
 ```
 
-**Key Files**: `src/viewers/MapViewer.jsx` (already exists, needs drawing tools)
+### COG Pipeline
 
----
-
-### Phase 5: Processing Backend Hook 🔜 PLANNED
-
-**Goal**: Say "lower the threshold" → backend reruns → see new result.
-
-**Features**:
-- Connect to processing backend (Nextflow or Python script)
-- State includes `## Parameters` section
-- Chat can modify parameters
-- "Rerun" button triggers backend
-- Backend outputs new COG, viewer auto-loads it
-
-**State Addition**:
-```markdown
-## Parameters
-| param | value |
-|-------|-------|
-| vv_threshold | -15 dB |
-| min_area | 500 px |
+```
+1. geotiff.js opens URL with HTTP Range support
+2. Reads IFD for overview selection based on zoom
+3. Fetches tiles → Float32Array
+4. Same GPU rendering pipeline as HDF5
 ```
 
----
+### RGB Composite Pipeline
 
-### Phase 6: Comparison Mode 🔜 PLANNED
+```
+1. Load all required polarization bands (e.g., HHHH, HVHV)
+2. computeRGBBands() applies preset formula (direct mapping or ratio)
+3. Upload 3 bands as separate textures or compute on CPU
+4. createRGBTexture() for CPU path: per-channel dB + stretch + contrast
+5. GPU path: 3-texture fragment shader with per-channel contrast
+```
 
-**Goal**: Compare two results and talk about differences.
+### Export Pipeline
 
-**Features**:
-- Side-by-side view (before/after or two dates)
-- Linked pan/zoom
-- Chat understands both: "the left one is better near the river"
-- Diff mode: highlight changes between outputs
-
-**Key Files**: `src/viewers/ComparisonViewer.jsx` (already exists, needs enhancement)
-
----
-
-### Phase 7: History + Rollback 🔜 PLANNED
-
-**Goal**: Undo via chat or timeline scrubber.
-
-**Features**:
-- Every state change saved with timestamp
-- Can scrub through history
-- "Go back to when the river looked right"
-- Export state history as reproducibility log
-
----
+```
+Raw Export:      chunks → multilook → Float32 GeoTIFF (with CRS + tiepoints)
+Rendered Export: chunks → multilook → smooth → composite → stretch → RGBA GeoTIFF
+Figure Export:   rendered + scale bar + coordinates + colorbar → PNG
+Colorbar Export: triangle ternary diagram → PNG
+```
 
 ## Development Commands
 
 ```bash
-# Install dependencies
-npm install
-
-# Start dev server (main app)
-npm run dev
-
-# Start example viewer
-npm run example
-
-# Build for production
-npm run build
+npm install          # Install dependencies
+npm run dev          # Start dev server (localhost:5173)
+npm test             # Run test suite (100+ checks)
+npm run test:quick   # Fast smoke tests
+npm run test:layer   # Browser layer rendering test
+npm run debug:gpu    # GPU shader debug page
+npm run benchmark    # GPU vs CPU performance comparison
+npm run build        # Production build → dist/
+npm run example      # Run example viewer
 ```
 
 ## Coding Guidelines
 
-### When Adding Features
-
-1. **Phase-by-phase** - Each phase ships standalone. No "I'll need this later" scaffolding.
-2. **Minimal changes** - Keep diffs small and focused.
-3. **State is human-readable** - No hidden config. Everything in markdown.
-4. **Test with real COGs** - Use actual SAR imagery for testing.
-
-### Code Style
+### Style
 
 - React functional components with hooks
 - ES modules (import/export)
-- No TypeScript (keeping it simple for now)
+- Plain JavaScript (no TypeScript in app code)
 - JSX for React components (.jsx extension)
+- Dark theme via CSS custom properties (sardine-theme.css)
 
 ### Key Patterns
 
-**State Management** (Phase 2):
+**NISAR HDF5 Loading:**
 ```javascript
-// Parse markdown → object
-const state = parseMarkdownState(markdown);
+import { listNISARDatasets, loadNISARGCOV } from './loaders/nisar-loader.js';
 
-// Object → markdown
-const markdown = generateMarkdownState(state);
+const datasets = await listNISARDatasets(file);
+// → [{frequency: 'frequencyA', polarization: 'HHHH', shape: [16704, 16272], ...}]
+
+const { getTile, bounds, getExportStripe } = await loadNISARGCOV(file, {
+  frequency: 'frequencyA',
+  polarization: 'HHHH',
+  multilook: 4,
+});
 ```
 
-**COG Loading**:
+**RGB Composites:**
 ```javascript
+import { computeRGBBands, createRGBTexture } from './utils/sar-composites.js';
+
+const rgb = computeRGBBands(bandData, 'dual-pol-h', tileSize);
+// rgb = {R: Float32Array, G: Float32Array, B: Float32Array}
+
+const imageData = createRGBTexture(rgb, width, height,
+  contrastLimits, useDecibels, gamma, stretchMode);
+```
+
+**COG Loading:**
+```javascript
+import { loadCOG } from './loaders/cog-loader.js';
 const { getTile, bounds } = await loadCOG(url);
 ```
 
-**Viewer Component**:
-```jsx
-<SARViewer
-  getTile={getTile}
-  bounds={bounds}
-  contrastLimits={[min, max]}
-  useDecibels={true}
-  colormap="viridis"
-/>
+**GeoTIFF Export:**
+```javascript
+import { writeRGBAGeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
+const buffer = writeRGBAGeoTIFF(rgbaData, width, height, bounds, crs);
+downloadBuffer(buffer, 'export.tif');
 ```
+
+### Important Implementation Details
+
+- **Multilook**: Export uses exact ml×ml box-filter on raw power values. On-screen uses chunk sub-sampling with nSub=4–8. Export at low ml can look noisier than on-screen display — a 3×3 spatial smooth is applied to rendered exports to compensate.
+- **Per-channel contrast**: RGB composites support `{R: [min,max], G: [min,max], B: [min,max]}` or uniform `[min, max]`.
+- **NaN/zero masking**: SAR nodata is 0 or NaN. Both are masked to transparent in shaders and CPU rendering.
+- **Coordinate system**: NISAR GCOV uses EPSG:4326 with lat/lon coordinate arrays stored as HDF5 datasets. Bounds extracted from coordinate arrays at file open time.
+- **Chunk decompression**: h5chunk handles deflate (via pako) + shuffle filter. Float16/32/64 decoding supported.
+
+### When Adding Features
+
+1. **Minimal changes** — Keep diffs small and focused.
+2. **GPU-first** — New visualization features should run in shaders when possible.
+3. **No server** — Everything must work client-side from local files or HTTP Range URLs.
+4. **Test with real data** — Use actual NISAR GCOV .h5 files and SAR GeoTIFFs for testing.
+5. **Export parity** — Any new rendering feature should work in both on-screen and export paths.
+
+## Roadmap
+
+### Shipped
+- COG viewer with dB scaling, colormaps, contrast sliders
+- NISAR HDF5 GCOV streaming via h5chunk
+- GPU-accelerated rendering (SARGPULayer with GLSL shaders)
+- RGB composite mode (Pauli, dual-pol-h, dual-pol-v, quad-pol)
+- Histogram panel with auto-contrast (percentile-based)
+- Stretch modes (sqrt, gamma, sigmoid)
+- GeoTIFF export (raw Float32 + rendered RGBA + RGB composites)
+- Figure export (PNG with overlays)
+- RGB triangle colorbar export
+- MapLibre basemap integration
+- Overture Maps vector overlay
+- Scale bar, coordinate grid, corner coordinates
+
+### Next
+- Chat/prompt interface for natural language visualization control
+- Drawing/annotation tools on the map
+- Time series multi-date loading and animation
+- Split view / swipe comparison
+- Flood thresholding with mask overlay and GeoJSON export
+- Server mode for Docker deployment (sardine-launch)
+- Processing backend hook (Nextflow / Python pipeline)
 
 ## Success Criteria
 
-After Phase 5, a user should be able to:
+A scientist should be able to:
 
-1. Load a SAR scene
-2. Say "detect flooding, ignore urban areas"
-3. See result
-4. Say "too aggressive on the edges"
-5. See updated result
-6. Export final product
+1. Drop a NISAR GCOV file into SARdine
+2. See sensible defaults immediately (dB, grayscale, auto-contrast)
+3. Switch polarizations, enable RGB composite
+4. Adjust contrast, colormap, stretch
+5. Export a publication-ready GeoTIFF or figure
 
-**Without writing code. Without opening QGIS. Without touching a config file.**
-
-## Future Ideas (Not Yet Planned)
-
-- Multi-user sessions (share with collaborator)
-- Voice input
-- Agent suggests changes proactively
-- Fine-tune model on user corrections
-- Generalize beyond SAR (any raster analysis)
+**Without writing code. Without opening QGIS. Without installing Python.**

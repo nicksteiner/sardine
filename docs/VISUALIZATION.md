@@ -1,4 +1,4 @@
-# SARdine SAR Visualization Plan
+# SARdine SAR Visualization
 
 ## Design Philosophy
 
@@ -9,27 +9,27 @@ A SAR scientist opens SARdine, points it at a NISAR product (or any supported SA
 ## 1. Data Ingestion
 
 ### What the scientist does
-Pastes an S3 URI, selects from a product catalog, or drags in a local file.
+Drags in a local file, pastes a COG URL, or browses a server data directory.
 
 ### What SARdine does
 
-| Input | Behavior |
-| :---- | :------- |
-| S3 URI to NISAR `.h5` | Stream directly from cloud via range reads. No download. |
-| S3 URI to ICEYE / Capella / Umbra `.tif` | Stream as COG via deck.gl TileLayer. |
-| Local `.h5` or `.tif` | Read via h5wasm or GeoTIFF.js in browser. |
-| Shopping list CSV | Batch load all products, populate time series selector. |
-| ASF search URL | Query ASF API, display available scenes on map, click to load. |
+| Input | Behavior | Status |
+| :---- | :------- | :----- |
+| Local NISAR `.h5` | Stream via h5chunk — chunked reads from File.slice(). No full load into memory. | **Shipped** |
+| Local `.tif` / `.tiff` (COG) | Load via geotiff.js, auto-detect overviews and CRS. | **Shipped** |
+| Remote COG URL | Stream via geotiff.js HTTP Range requests. | **Shipped** |
+| S3 URI to NISAR `.h5` | Stream directly from cloud via HTTP Range reads. No download. | Planned |
+| Shopping list CSV | Batch load all products, populate time series selector. | Planned |
+| ASF search URL | Query ASF API, display available scenes on map, click to load. | Planned |
 
-### Auto-detection
-SARdine reads the filename and metadata to auto-detect:
-- **Vendor**: NISAR, ICEYE, Capella, Umbra, Sentinel-1
-- **Product type**: GCOV, GUNW, GSLC, SLC, GRD, GEC
-- **Polarization**: HH, HV, VH, VV, dual-pol, quad-pol
-- **Orbit direction**: Ascending / Descending
-- **Frequency band**: L-band, S-band, C-band, X-band
-
-No menus to configure. It just knows.
+### Auto-detection (shipped)
+When loading a NISAR GCOV HDF5 file, SARdine automatically:
+- Discovers all frequency bands (frequencyA, frequencyB)
+- Enumerates available polarizations (HHHH, HVHV, VHVH, VVVV)
+- Reads coordinate arrays for georeferencing bounds
+- Parses product metadata (identification group attributes)
+- Selects default frequency/polarization
+- Auto-selects best RGB composite preset based on available polarizations
 
 ---
 
@@ -37,7 +37,7 @@ No menus to configure. It just knows.
 
 When a product loads, SARdine applies sensible SAR defaults immediately — no blank canvas, no "select a band" dialogs.
 
-### Backscatter (GCOV, GRD, GEC)
+### Backscatter (GCOV, GRD, GEC) — Shipped
 
 | Setting | Default | Why |
 | :------ | :------ | :-- |
@@ -45,28 +45,23 @@ When a product loads, SARdine applies sensible SAR defaults immediately — no b
 | Range | -25 to 0 dB | Reasonable for most land cover |
 | Colormap | Grayscale | Standard SAR convention |
 | Nodata | Transparent | NaN and 0 masked out |
+| Stretch | Linear | Clean starting point, user can switch |
+| Multilook | 4× (on-screen adaptive) | Balance resolution vs speckle |
 
-### Interferometry (GUNW)
+### Interferometry (GUNW) — Planned
 
 | Setting | Default | Why |
 | :------ | :------ | :-- |
-| Unwrapped phase | HSV cyclic colormap | Standard InSAR convention |
-| Coherence | Magma, 0–1 | Highlights low coherence areas |
+| Unwrapped phase | Phase (cyclic) colormap | Standard InSAR convention |
+| Coherence | Inferno, 0–1 | Highlights low coherence areas |
 | Connected components | Categorical colors | Identify disconnected regions |
 
-### Offset Tracking (GOFF)
+### Offset Tracking (GOFF) — Planned
 
 | Setting | Default | Why |
 | :------ | :------ | :-- |
 | Range/Azimuth offset | Diverging colormap (blue-white-red) | Show direction of motion |
 | Magnitude | Viridis | Highlight fast-moving areas |
-
-### Complex (GSLC, RSLC)
-
-| Setting | Default | Why |
-| :------ | :------ | :-- |
-| Amplitude | dB grayscale, -25 to 0 | Same as backscatter |
-| Phase | HSV cyclic | Standard convention |
 
 All of these are the starting point. The scientist tweaks from here, not from zero.
 
@@ -76,81 +71,179 @@ All of these are the starting point. The scientist tweaks from here, not from ze
 
 Everything a SAR scientist reaches for constantly, surfaced as immediate UI elements.
 
-### Stretch / Colormap Panel (Always Visible)
+### Stretch / Colormap Panel — Shipped
 
 ```
 ┌─────────────────────────────────────┐
-│  ◉ dB  ○ Linear  ○ Amplitude       │
+│  ☑ dB Scale                        │
 │                                     │
 │  Min ◄━━━━━━━━━━━━━━━━━━━━━► Max   │
-│  -30 dB                     5 dB    │
+│  -25.0 dB                  0.0 dB  │
 │                                     │
 │  Colormap: [Grayscale ▾]           │
-│  ☐ Histogram stretch (2–98%)       │
-│  ☐ Clip to AOI                     │
+│  Stretch:  [Linear ▾]              │
+│  Gamma:    [1.0 ▾]                 │
+│                                     │
+│  [Auto-Contrast]                    │
+│  ╔══════════════════════════════╗   │
+│  ║  Histogram (interactive)    ║   │
+│  ║  with percentile markers    ║   │
+│  ╚══════════════════════════════╝   │
 └─────────────────────────────────────┘
 ```
 
-- **dB / Linear / Amplitude toggle** — GPU converts on the fly, no re-fetch
+What's implemented:
+- **dB toggle** — GPU converts on the fly, no re-fetch
 - **Min/Max sliders** — real-time adjustment, GPU colormap update
-- **Histogram stretch** — auto-compute 2nd/98th percentile from visible viewport
-- **Colormap picker** — grayscale, viridis, magma, inferno, turbo, HSV cyclic, diverging
+- **Auto-contrast** — percentile-based (2nd/98th) from sampled tile data
+- **Colormap picker** — grayscale, viridis, inferno, plasma, phase
+- **Stretch modes** — linear, sqrt, gamma (adjustable exponent), sigmoid
+- **Interactive histogram** — with percentile markers and bin counts
+- **Per-channel contrast** — independent min/max for R, G, B in composite mode
 
 All of this runs on the GPU. Changing the stretch or colormap is instant.
 
-### Polarization Selector (Priority)
+### Polarization Selector — Shipped
 
 ```
 ┌─────────────────────────────────────┐
-│  Polarization                       │
-│  ◉ HH  ○ HV  ○ VH  ○ VV          │
+│  Frequency: [frequencyA ▾]         │
+│  Polarization: [HHHH ▾]            │
 │                                     │
-│  RGB Composite:                     │
-│  R: [co-pol ▾]  G: [cross-pol ▾]  B: [co-pol/cross-pol ▾] │
-│  ☐ Enable RGB mode                 │
+│  Display Mode:                      │
+│  ◉ Single Band  ○ RGB Composite    │
+│                                     │
+│  Composite: [HH / HV / HH÷HV ▾]  │
+│  Available: dual-pol-h, pauli-power │
+│                                     │
+│  Per-channel contrast:              │
+│  R (HHHH):  [-25, 0] dB           │
+│  G (HVHV):  [-30, -5] dB          │
+│  B (HH/HV): [0, 15] dB            │
 └─────────────────────────────────────┘
 ```
-Default --> R (co-pol), G (cross-pol), B (co-pol/cross-pol)
 
-- Single-pol view: one click switches between available polarizations
-- RGB composite: assign any pol to any channel, GPU blends in real time
-- Pauli decomposition preset: R=HH-VV, G=HV, B=HH+VV (one-click)
+What's implemented:
+- Single-pol view: dropdown switches between available polarizations
+- RGB composite mode: preset-based (dual-pol-h, dual-pol-v, pauli-power, hh-hv-vv)
+- Per-channel contrast limits (independent for each RGB channel)
+- Auto-selection of best composite based on available polarizations
+- Composite presets with formula channels (ratios, differences, sums)
 
-### Orbit / Geometry Info Bar (Always Visible)
+### Metadata Info — Partially Shipped
 
+Product metadata is parsed and displayed in the status window when a file is loaded. Full metadata info bar (track, frame, orbit direction, cycle) is planned.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  NISAR L2 GCOV │ Track 147 │ Frame 175 │ Asc │ L-band   │
-│  2026-01-31 10:44 UTC │ Cycle 016 │ DHDH │ 0.25.6      │
-└──────────────────────────────────────────────────────────┘
-```
+### Cursor Inspector — Planned
 
-Parsed from product metadata. Always visible. No hunting through file attributes.
-
-### Cursor Inspector
-
-Hover over any pixel and see:
-
-```
-┌─────────────────────────────┐
-│  Lat: 65.4321° Lon: -148.7654° │
-│  HH: -12.3 dB (0.059 linear)   │
-│  HV: -18.7 dB (0.013 linear)   │
-│  Incidence angle: 34.2°         │
-│  Slant range: 852.1 km          │
-└─────────────────────────────┘
-```
-
-Scientists live by pixel values. This should update at 60fps as the cursor moves.
+Hover over any pixel and see lat/lon, per-pol dB values, incidence angle. Should update at 60fps.
 
 ---
 
-## 4. Time Series & Change Detection
+## 4. Rendering Pipeline — Shipped
 
-### Timeline Scrubber (not priority)
+### GPU Path (default)
 
-When multiple acquisitions are loaded (e.g., from a shopping list CSV):
+The primary rendering pipeline runs entirely on the GPU:
+
+```
+Raw Float32 → WebGL2 R32F Texture → Fragment Shader
+                                        ↓
+                           power → dB (10·log₁₀)
+                                        ↓
+                           normalize to [0,1] using contrast limits
+                                        ↓
+                           apply stretch (sqrt/gamma/sigmoid)
+                                        ↓
+                           apply colormap (viridis/inferno/etc)
+                                        ↓
+                           output RGBA
+```
+
+For RGB composites, three textures are uploaded (one per channel) and the shader applies per-channel contrast, stretch, and outputs composite RGB.
+
+### CPU Fallback
+
+When WebGL2 is unavailable, `createRGBTexture()` performs the same pipeline on the CPU using `ImageData`. Used for:
+- Export rendering (GeoTIFF RGBA)
+- Figure export (PNG)
+- Systems without GPU support
+
+### Multilook
+
+| Context | Method | Effective looks |
+| :------ | :----- | :-------------- |
+| On-screen (overview zoom) | Chunk sub-sampling, nSub=4–8 | 16–64 per output pixel |
+| On-screen (full zoom) | Direct chunk pixels | 1 (raw resolution) |
+| Export (raw) | Exact ml×ml box-filter | ml² |
+| Export (rendered) | ml×ml box-filter + 3×3 smooth | ~ml²×9 |
+
+The 3×3 smooth on rendered exports compensates for the noise amplification in ratio channels (e.g., HH/HV).
+
+---
+
+## 5. Export — Shipped
+
+### GeoTIFF Export
+
+| Mode | Output | Use case |
+| :--- | :----- | :------- |
+| Raw | Float32 GeoTIFF, linear power values | GIS analysis, further processing |
+| Rendered | RGBA GeoTIFF with dB + colormap + stretch applied | Quick visualization, sharing |
+| RGB Composite | 3-band or 4-band RGBA GeoTIFF from composite | Publication, overlay in GIS |
+
+All exports include:
+- Proper GeoTIFF tags (ModelTiepointTag, ModelPixelScaleTag)
+- CRS via GeoKeyDirectoryTag (EPSG:4326 for NISAR)
+- Full-resolution multilook (configurable ml factor)
+
+### Figure Export
+
+PNG export with geo-overlays baked in:
+- Scale bar (adaptive units: m/km)
+- Corner coordinates
+- Colorbar (single-band) or legend (RGB)
+- File/dataset info annotation
+- SARdine branding
+
+### RGB Colorbar Export
+
+Standalone PNG of a triangular ternary color-space diagram showing the RGB channel mapping with:
+- Barycentric color interpolation with stretch applied
+- Channel labels at triangle vertices
+- Per-channel contrast range table
+- Composite name and parameters
+
+---
+
+## 6. Overlays — Partially Shipped
+
+### Base Maps — Shipped
+- MapLibre dark basemap
+- Toggle between SAR-only (orthographic) and map (geographic) views
+
+### Vector Overlays — Shipped
+- Overture Maps building/road/land-use polygons via PMTiles streaming
+- Auto-loaded from Overture CDN for visible viewport
+
+### Geo-annotations — Shipped
+- Scale bar overlay (dynamic, adapts to zoom)
+- Corner coordinate labels
+- Coordinate grid overlay (lat/lon lines)
+
+### Planned
+- User-uploaded GeoJSON/Shapefile (drag and drop)
+- Drawing tools (polygon, line, point annotation)
+- Flood extent polygons from threshold tool
+- NISAR frame/track footprint overlay
+
+---
+
+## 7. Time Series & Change Detection — Planned
+
+### Timeline Scrubber
+
+When multiple acquisitions are loaded:
 
 ```
 ┌────────────────────────────────────────────────────┐
@@ -162,11 +255,7 @@ When multiple acquisitions are loaded (e.g., from a shopping list CSV):
 └────────────────────────────────────────────────────┘
 ```
 
-- Click a date to jump to that acquisition
-- Play button animates through dates (configurable speed)
-- deck.gl transitions smoothly between frames
-
-### Split View / Swipe (not priority)
+### Split View / Swipe
 
 ```
 ┌──────────────────┬──────────────────┐
@@ -177,65 +266,20 @@ When multiple acquisitions are loaded (e.g., from a shopping list CSV):
 └──────────────────┴──────────────────┘
 ```
 
-- Vertical swipe divider between two dates
-- Both sides zoom/pan in sync
-- Drag the divider to reveal differences
+ComparisonViewer.jsx and SwipeComparisonViewer already exist in `src/viewers/` — need integration into main app.
 
-### Difference Map 
+### Difference Map
 
-One-click difference between any two dates:
-
-- **dB difference**: σ₀(t2) - σ₀(t1) — highlights backscatter change
-- **Log ratio**: 10·log₁₀(σ₀(t2) / σ₀(t1)) — standard change detection
-- **Coherence change**: γ(t2) - γ(t1) — for InSAR products
-- Rendered with diverging colormap (blue = decrease, red = increase)
+- **dB difference**: σ₀(t2) - σ₀(t1)
+- **Log ratio**: 10·log₁₀(σ₀(t2) / σ₀(t1))
+- Diverging colormap (blue = decrease, red = increase)
 - GPU computes the difference — no server round trip
 
 ---
 
-## 5. Analysis Tools
+## 8. Analysis Tools — Planned
 
-### Transect / Profile Tool (not priority)
-
-Draw a line on the map, get a backscatter profile:
-
-```
-     0 ┤
-   -5  ┤        ╭─╮
-  -10  ┤   ╭────╯ ╰──╮
-  -15  ┤───╯          ╰───╮
-  -20  ┤                   ╰──
-  -25  ┤
-       └─────────────────────── Distance (km)
-         Water  │ Veg  │  Urban
-```
-
-- Click two points → instant profile chart
-- Multi-date overlay: same transect across all loaded dates
-- Export as CSV
-
-### AOI Statistics (not priority)
-
-Draw a polygon → get stats for that region:
-
-```
-┌─────────────────────────────────────┐
-│  AOI Statistics (drawn polygon)     │
-│  Mean: -11.2 dB   Std: 3.4 dB     │
-│  Min: -24.1 dB    Max: -2.3 dB    │
-│  Pixels: 14,832                    │
-│  Area: 23.4 km²                    │
-│                                     │
-│  [Histogram]  [Time series plot]   │
-│  [Export CSV]  [Copy to clipboard] │
-└─────────────────────────────────────┘
-```
-
-- Time series plot of AOI mean across all loaded dates
-- Histogram of pixel values within AOI
-- All computed client-side from cached tile data
-
-### Flood Extent Thresholding (not priority)
+### Flood Extent Thresholding
 
 Since HiFLOWS is a core use case:
 
@@ -253,129 +297,97 @@ Since HiFLOWS is a core use case:
 └─────────────────────────────────────┘
 ```
 
-- Adjustable dB threshold with real-time mask preview
-- Otsu automatic thresholding
-- Export flood polygon as GeoJSON or raster as GeoTIFF
-- Change detection mode: (post - pre) with automatic threshold
+### Transect / Profile Tool
+
+Draw a line → get a backscatter profile chart. Multi-date overlay for the same transect.
+
+### AOI Statistics
+
+Draw a polygon → get mean, std, min, max, histogram for that region. All computed client-side.
 
 ---
 
-## 6. Layer Management
+## 9. Multi-Vendor Support Matrix
 
-### Base Maps (not priority)
-- Satellite imagery (default for context)
-- OpenStreetMap (for urban analysis)
-- Terrain/hillshade (for topographic context)
-- Dark/light minimal (for presentations)
-- None (SAR only)
+| Vendor | Format | Access | Polarizations | Status |
+| :----- | :----- | :----- | :------------ | :----- |
+| **NISAR** | HDF5 (cloud-opt) | Local file / S3 range read | HH+HV (L), VV (S), quad planned | **Shipped** |
+| Any COG | GeoTIFF / COG | URL / Local file | Any single-band | **Shipped** |
+| ICEYE | GeoTIFF / COG | S3 / HTTPS | VV | Planned |
+| Capella | GeoTIFF / COG | S3 / HTTPS | HH | Planned |
+| Umbra | GeoTIFF / COG | S3 / HTTPS | VV | Planned |
+| Sentinel-1 | SAFE / COG (ASF) | ASF S3 | VV+VH or HH+HV | Planned |
 
-### Overlay Layers (not priority)
-- Country/state/admin boundaries
-- Coastlines and water bodies
-- DEM contours
-- User-uploaded GeoJSON/Shapefile (drag and drop)
-- Flood extent polygons (from threshold tool)
-- NISAR frame/track footprints
-
-### Layer Opacity
-Every layer (including SAR) has an opacity slider. Scientists constantly toggle between SAR and optical for context.
+COG support is generic — any single-band Float32 GeoTIFF with overviews works today. Vendor-specific auto-detection (reading metadata to set defaults) is planned.
 
 ---
 
-## 7. Export & Sharing
+## 10. Architecture
 
-| Action | Output |
-| :----- | :----- |
-| Screenshot | PNG with scale bar, colorbar, metadata annotation |
-| Export visible extent | GeoTIFF (from cached tiles, client-side) |
-| Export flood polygon | GeoJSON |
-| Export transect/stats | CSV |
-| Share view | URL with encoded viewport, product, stretch settings |
-| Embed | iframe snippet for reports/websites |
-
-The share URL is critical — a scientist sends a colleague a link and they see the exact same view, same product, same stretch. No setup.
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Browser (Client)                       │
+│                                                          │
+│  ┌───────────┐  ┌───────────┐  ┌──────────────────────┐ │
+│  │ React UI  │  │ h5chunk   │  │ deck.gl              │ │
+│  │ Controls  │  │ (HDF5     │  │ SARGPULayer          │ │
+│  │ Histogram │  │  chunked  │  │ WebGL2 textures      │ │
+│  │ Status    │  │  reader)  │  │ GLSL shaders         │ │
+│  │ Export    │  │           │  │ (dB + stretch +      │ │
+│  │           │  │ geotiff.js│  │  colormap + composite)│ │
+│  │           │  │ (COG      │  │                      │ │
+│  │           │  │  reader)  │  │ MapLibre basemap     │ │
+│  └─────┬─────┘  └─────┬─────┘  └──────────┬───────────┘ │
+│        │              │                    │             │
+│        └──────────────┴────────────────────┘             │
+│                         │                                │
+└─────────────────────────┼────────────────────────────────┘
+                          │ File.slice() or HTTP Range GET
+                          ▼
+               ┌─────────────────────┐
+               │  Local File / S3    │
+               │  NISAR .h5 / .tif   │
+               └─────────────────────┘
+```
 
 ---
 
-## 8. Keyboard Shortcuts
+## 11. Keyboard Shortcuts — Planned
 
 | Key | Action |
 | :-- | :----- |
 | `1-4` | Switch polarization (HH, HV, VH, VV) |
 | `R` | Toggle RGB composite mode |
 | `D` | Toggle dB / Linear |
-| `H` | Histogram stretch to viewport |
+| `H` | Histogram auto-stretch |
 | `F` | Toggle flood mask |
 | `T` | Activate transect tool |
 | `←` `→` | Previous / next date |
 | `Space` | Play/pause time series |
-| `S` | Screenshot |
+| `S` | Screenshot / figure export |
 | `I` | Toggle cursor inspector |
 | `L` | Cycle base map |
-
-SAR scientists process hundreds of scenes. Keyboard shortcuts are not optional.
-
----
-
-## 9. Multi-Vendor Support Matrix
-
-| Vendor | Format | Access | Polarizations | Auto-detect |
-| :----- | :----- | :----- | :------------ | :---------- |
-| NISAR | HDF5 (cloud-opt) | S3 range read | HH+HV or VV (L), full quad planned | ✅ |
-| ICEYE | GeoTIFF / COG | S3 / HTTPS | VV | ✅ |
-| Capella | GeoTIFF / COG | S3 / HTTPS | HH | ✅ |
-| Umbra | GeoTIFF / COG | S3 / HTTPS | VV | ✅ |
-| Sentinel-1 | SAFE / COG (ASF) | ASF S3 | VV+VH or HH+HV | ✅ |
-| ALOS-2 | CEOS / GeoTIFF | Local / HTTPS | HH, HV, full quad | ✅ |
-
-SARdine abstracts all of this behind the same UI. The scientist doesn't care about format — they care about backscatter.
-
----
-
-## 10. Architecture Summary
-
-```
-┌──────────────────────────────────────────────────────┐
-│                    Browser (Client)                   │
-│                                                      │
-│  ┌─────────┐  ┌──────────┐  ┌─────────────────────┐ │
-│  │ UI      │  │ h5chunk  │  │ deck.gl             │ │
-│  │ Controls│  │ (range   │  │ TileLayer           │ │
-│  │ Panels  │  │  reader) │  │ GPU colormap        │ │
-│  │ Charts  │  │          │  │ GPU compositing     │ │
-│  │ Export  │  │          │  │ GPU change detect   │ │
-│  └────┬────┘  └────┬─────┘  └─────────┬───────────┘ │
-│       │            │                   │             │
-│       └────────────┴───────────────────┘             │
-│                        │                             │
-└────────────────────────┼─────────────────────────────┘
-                         │ HTTP Range GET
-                         ▼
-              ┌─────────────────────┐
-              │  S3 / Cloud Storage │
-              │  NISAR, ICEYE, etc. │
-              │  (us-west-2)        │
-              └─────────────────────┘
-```
-
-For NISAR: no server needed if h5chunk JS reader is built.
-For COG vendors (ICEYE, Capella, Umbra): no server needed — GeoTIFF.js reads COGs natively in browser.
-
-Optional thin tiler (titiler.xarray) as a fallback for complex HDF5 access or for generating pre-rendered tiles for slower connections.
 
 ---
 
 ## Priority Order
 
-1. **Load and render a single NISAR GCOV with sensible defaults** — this is the demo moment
-2. **Stretch controls + colormap picker** — first thing every scientist reaches for
-3. **Polarization switcher** — second thing they reach for
-4. **Cursor inspector with pixel values** — third thing
-5. **Multi-date loading from shopping CSV + timeline scrubber**
-6. **Split view / swipe comparison**
-7. **Difference map (change detection)**
-8. **Transect and AOI stats tools**
-9. **Flood thresholding + export**
-10. **Multi-vendor COG support**
-11. **Share URLs**
-12. **RGB composite / Pauli decomposition**
+### Shipped (top priorities delivered)
+1. ~~Load and render a single NISAR GCOV with sensible defaults~~
+2. ~~Stretch controls + colormap picker~~
+3. ~~Polarization switcher~~
+4. ~~RGB composite / Pauli decomposition~~
+5. ~~Multi-vendor COG support (generic)~~
+6. ~~GeoTIFF export (raw + rendered)~~
+7. ~~Figure export with overlays~~
+
+### Next priorities
+8. Cursor inspector with pixel values
+9. Keyboard shortcuts
+10. Flood thresholding + mask overlay + GeoJSON export
+11. Multi-date loading from shopping CSV + timeline scrubber
+12. Split view / swipe comparison
+13. Difference map (change detection)
+14. Transect and AOI stats tools
+15. Share URLs / deep linking
+16. Server mode (sardine-launch for Docker deployment)
