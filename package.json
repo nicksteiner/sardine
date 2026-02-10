@@ -16,8 +16,8 @@
     "test:watch": "nodemon -w src -x 'npm run test:quick'",
     "debug:gpu": "vite --config vite.test.config.js --open /test/gpu-debug.html --force",
     "benchmark": "vite --config vite.test.config.js --open /test/benchmarks/gpu-vs-cpu.html --force",
-    "launch": "node server/launch.js",
-    "launch:dev": "npm run build && node server/launch.js"
+    "launch": "node server/launch.cjs",
+    "launch:dev": "npm run build && node server/launch.cjs"
   },
   "keywords": [
     "sar",

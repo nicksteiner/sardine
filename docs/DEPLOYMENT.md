@@ -2,51 +2,56 @@
 
 Quick-start guide for running SARdine on the NISAR On-Demand system.
 
-## Prerequisites
+## Important: Node.js Version
 
-- Node.js ≥ 18 (already available on On-Demand)
-- NISAR data accessible at `/data/nisar/` (or your custom path)
-- Terminal access (JupyterLab terminal or SSH)
+The On-Demand JupyterLab system has an old Node.js (~v10) that **cannot run
+Vite or `npm install`**. The workflow is:
 
-## Setup (one-time)
+1. **Build locally** (on your laptop / workstation with Node ≥ 16)
+2. **Push/copy** the repo (with `dist/`) to the On-Demand system
+3. **Run only the server** on On-Demand — it's pure CommonJS, zero dependencies,
+   and works on Node ≥ 10
+
+## Setup (on your local machine — one time)
 
 ```bash
-# Clone or copy SARdine to your workspace
-cd /home/$USER
+cd sardine
+npm install
+npm run build        # produces dist/
+git add -f dist/     # force-add the build output
+git commit -m "Add built dist for On-Demand deployment"
+git push
+```
+
+## Deploy on JupyterLab On-Demand
+
+Open a JupyterLab terminal (**File → New → Terminal**):
+
+```bash
+cd ~
 git clone <repo-url> sardine
 cd sardine
-
-# Install dependencies
-npm install
-
-# Build the frontend
-npm run build
 ```
+
+No `npm install` needed — the server has zero dependencies.
 
 ## Launch
 
-### Default (NISAR data at /data/nisar, port 8050)
-
 ```bash
-npm run launch
-```
+# Default: data at /data/nisar, port 8050
+node server/launch.cjs
 
-### Custom data directory
-
-```bash
-node server/launch.js --data-dir /path/to/your/data --port 8050
-```
-
-### Build + launch (after code changes)
-
-```bash
-npm run launch:dev
+# Custom data directory
+node server/launch.cjs --data-dir /path/to/your/data --port 8050
 ```
 
 ## Access
 
-1. Open your browser to `http://localhost:8050`  
-   (Or use the JupyterLab proxy: your JupyterLab URL + `/proxy/8050/`)
+1. Open your browser to the JupyterLab proxy URL:
+   ```
+   https://<ondemand-host>/node/<compute-node>/<job-id>/proxy/8050/
+   ```
+   Or if ports are directly accessible: `http://localhost:8050`
 
 2. In SARdine, select **"Remote Bucket / S3"** as the file type
 
@@ -71,7 +76,7 @@ only the metadata + requested chunks are downloaded, not the entire file.
 ## CLI Options
 
 ```
-node server/launch.js [options]
+node server/launch.cjs [options]
 
   --data-dir, -d <path>   Data root directory  (default: /data/nisar)
   --port, -p <number>     Port number          (default: 8050)
@@ -79,23 +84,12 @@ node server/launch.js [options]
   --help                  Show help
 ```
 
-## JupyterLab Proxy Access
-
-If running inside JupyterLab On-Demand, the URL pattern is typically:
-
-```
-https://<ondemand-host>/node/<compute-node>/<job-id>/proxy/8050/
-```
-
-JupyterLab's `jupyter-server-proxy` should forward requests automatically.
-
 ## Background Execution
 
-To keep the server running after closing the terminal:
+To keep the server running after closing the terminal tab:
 
 ```bash
-# Using nohup
-nohup node server/launch.js --data-dir /data/nisar > sardine.log 2>&1 &
+nohup node server/launch.cjs --data-dir /data/nisar > sardine.log 2>&1 &
 
 # Check logs
 tail -f sardine.log
@@ -104,12 +98,31 @@ tail -f sardine.log
 kill $(lsof -ti:8050)
 ```
 
+## Updating
+
+When you make code changes locally:
+
+```bash
+# On your local machine
+npm run build
+git add -f dist/
+git commit -m "Rebuild dist"
+git push
+
+# On On-Demand
+cd ~/sardine
+git pull
+# Restart the server (kill old one first if running)
+kill $(lsof -ti:8050) 2>/dev/null
+node server/launch.cjs --data-dir /data/nisar
+```
+
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | Port already in use | `kill $(lsof -ti:8050)` then retry, or use `--port 9000` |
-| "Built frontend not found" | Run `npm run build` first |
+| "Built frontend not found" | Run `npm run build` locally, commit `dist/`, push, pull |
 | Data directory warnings | Check `--data-dir` path exists and is readable |
 | CORS errors | The server adds CORS headers automatically |
-| Large directories slow | The browser pages results — scroll down for "Load More" |
+| `require is not defined` | You're running `.js` instead of `.cjs` — use `node server/launch.cjs` |

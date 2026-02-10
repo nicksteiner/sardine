@@ -46,7 +46,7 @@ npm run dev
 **Option B: sardine-launch (server mode)**
 ```bash
 # Serves built frontend + file API for browsing /data
-node server/launch.js --data-dir /data/nisar/L2_GCOV --port 8050
+node server/launch.cjs --data-dir /data/nisar/L2_GCOV --port 8050
 # → http://localhost:8050
 # Browse and click to load — no drag-and-drop needed
 ```
