@@ -29,6 +29,7 @@ export const SARViewer = forwardRef(function SARViewer({
   compositeId = null, // SAR RGB composite ID (null = single band)
   showGrid = true,    // Show coordinate grid + corner coordinates
   opacity = 1,
+  toneMapping, // Tone mapping configuration
   width = '100%',
   height = '100%',
   onViewStateChange,
@@ -146,6 +147,7 @@ export const SARViewer = forwardRef(function SARViewer({
           gamma,
           stretchMode,
           opacity,
+          toneMapping,
           onLoadingChange: handleLoadingChange,
         }),
       ];
@@ -192,7 +194,7 @@ export const SARViewer = forwardRef(function SARViewer({
 
     return [];
   // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
-  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, handleLoadingChange, redrawTick]);
+  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, toneMapping, handleLoadingChange, redrawTick]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;

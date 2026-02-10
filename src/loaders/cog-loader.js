@@ -463,5 +463,222 @@ export async function loadMultipleCOGs(urls) {
   return Promise.all(urls.map(loadCOG));
 }
 
+/**
+ * Load multiple COGs as a multi-band dataset
+ * @param {Object} config - Configuration object
+ * @param {Object} config.bands - Object mapping band names to URLs
+ *   Example: { VV: 'url1.tif', VH: 'url2.tif' }
+ * @param {Array<string>} config.urls - Alternative: array of URLs with auto-detection
+ * @param {Object} config.metadata - Optional metadata override
+ * @returns {Promise<Object>} Multi-band dataset info
+ */
+export async function loadMultiBandCOG(config) {
+  const { bands, urls, metadata = {} } = config;
+
+  // If bands object provided, use it directly
+  let bandMapping = bands;
+
+  // If urls array provided, try to detect band names from filenames
+  if (!bandMapping && urls) {
+    // Validate URLs first
+    const validUrls = urls.filter(url => {
+      if (!url || typeof url !== 'string' || url.trim() === '') {
+        console.warn('[loadMultiBandCOG] Skipping empty or invalid URL');
+        return false;
+      }
+      return true;
+    });
+
+    if (validUrls.length === 0) {
+      throw new Error('No valid URLs provided');
+    }
+
+    bandMapping = detectBandNames(validUrls);
+  }
+
+  if (!bandMapping || Object.keys(bandMapping).length === 0) {
+    throw new Error('No valid bands or URLs provided');
+  }
+
+  // Load metadata from all bands
+  const bandNames = Object.keys(bandMapping);
+  const bandUrls = bandNames.map(name => bandMapping[name]);
+
+  console.log(`[loadMultiBandCOG] Loading ${bandNames.length} bands:`, bandNames);
+  console.log(`[loadMultiBandCOG] URLs:`, bandUrls);
+
+  // Load metadata from first band as reference
+  let referenceBand;
+  try {
+    referenceBand = await loadCOG(bandUrls[0]);
+  } catch (error) {
+    throw new Error(`Failed to load reference band "${bandNames[0]}" from ${bandUrls[0]}: ${error.message}`);
+  }
+
+  // Verify all bands have compatible dimensions and bounds
+  const bandMetadata = await Promise.all(
+    bandUrls.map(async (url, idx) => {
+      try {
+        const meta = await loadCOG(url);
+
+        // Check compatibility with reference
+        if (meta.width !== referenceBand.width || meta.height !== referenceBand.height) {
+          console.warn(`[loadMultiBandCOG] Band ${bandNames[idx]} has different dimensions. Expected ${referenceBand.width}x${referenceBand.height}, got ${meta.width}x${meta.height}`);
+        }
+
+        return {
+          name: bandNames[idx],
+          url,
+          ...meta,
+        };
+      } catch (error) {
+        throw new Error(`Failed to load band "${bandNames[idx]}" from ${url}: ${error.message}`);
+      }
+    })
+  );
+
+  return {
+    type: 'multi-band',
+    bandCount: bandNames.length,
+    bands: bandMetadata,
+    bandNames,
+    bandMapping,
+    // Use reference band for common properties
+    width: referenceBand.width,
+    height: referenceBand.height,
+    bounds: referenceBand.bounds,
+    imageCount: referenceBand.imageCount,
+    isCOG: referenceBand.isCOG,
+    tileWidth: referenceBand.tileWidth,
+    tileHeight: referenceBand.tileHeight,
+    ...metadata,
+  };
+}
+
+/**
+ * Detect band names from URLs based on common SAR naming conventions
+ * @param {Array<string>} urls - Array of URLs
+ * @returns {Object} Object mapping detected band names to URLs
+ */
+function detectBandNames(urls) {
+  const bandMapping = {};
+
+  // Common SAR band patterns
+  const patterns = [
+    { regex: /[_-]VV[_.-]/i, name: 'VV' },
+    { regex: /[_-]VH[_.-]/i, name: 'VH' },
+    { regex: /[_-]HH[_.-]/i, name: 'HH' },
+    { regex: /[_-]HV[_.-]/i, name: 'HV' },
+    { regex: /[_-]pre[_.-]/i, name: 'pre' },
+    { regex: /[_-]post[_.-]/i, name: 'post' },
+    { regex: /[_-]during[_.-]/i, name: 'during' },
+    { regex: /[_-]before[_.-]/i, name: 'before' },
+    { regex: /[_-]after[_.-]/i, name: 'after' },
+    { regex: /[_-]coh[_.-]/i, name: 'coherence' },
+    { regex: /[_-]phase[_.-]/i, name: 'phase' },
+    { regex: /[_-]amp[_.-]/i, name: 'amplitude' },
+    { regex: /[_-]int[_.-]/i, name: 'intensity' },
+  ];
+
+  urls.forEach((url, idx) => {
+    let detected = false;
+
+    // Try to match known patterns
+    for (const { regex, name } of patterns) {
+      if (regex.test(url)) {
+        // Handle multiple files with same band (add suffix)
+        let bandName = name;
+        let suffix = 1;
+        while (bandMapping[bandName]) {
+          suffix++;
+          bandName = `${name}_${suffix}`;
+        }
+        bandMapping[bandName] = url;
+        detected = true;
+        break;
+      }
+    }
+
+    // If no pattern matched, use generic name
+    if (!detected) {
+      bandMapping[`band_${idx + 1}`] = url;
+    }
+  });
+
+  console.log('[detectBandNames] Detected bands:', Object.keys(bandMapping));
+
+  return bandMapping;
+}
+
+/**
+ * Load temporal stack of COGs (multiple acquisitions)
+ * @param {Array<Object>} acquisitions - Array of {date, url, label} objects
+ * @returns {Promise<Object>} Temporal dataset info
+ */
+export async function loadTemporalCOGs(acquisitions) {
+  if (!Array.isArray(acquisitions) || acquisitions.length === 0) {
+    throw new Error('No acquisitions provided');
+  }
+
+  // Validate acquisitions
+  const validAcquisitions = acquisitions.filter(acq => {
+    if (!acq || !acq.url || typeof acq.url !== 'string' || acq.url.trim() === '') {
+      console.warn('[loadTemporalCOGs] Skipping invalid acquisition:', acq);
+      return false;
+    }
+    return true;
+  });
+
+  if (validAcquisitions.length === 0) {
+    throw new Error('No valid acquisitions with URLs provided');
+  }
+
+  console.log(`[loadTemporalCOGs] Loading ${validAcquisitions.length} acquisitions`);
+
+  // Sort by date
+  const sorted = [...validAcquisitions].sort((a, b) => {
+    const dateA = a.date ? new Date(a.date) : new Date(0);
+    const dateB = b.date ? new Date(b.date) : new Date(0);
+    return dateA - dateB;
+  });
+
+  // Load metadata for all acquisitions
+  const acqMetadata = await Promise.all(
+    sorted.map(async (acq, idx) => {
+      try {
+        const meta = await loadCOG(acq.url);
+        return {
+          index: idx,
+          date: acq.date,
+          label: acq.label || `T${idx + 1}`,
+          url: acq.url,
+          ...meta,
+        };
+      } catch (error) {
+        throw new Error(`Failed to load acquisition "${acq.label || acq.date || idx}" from ${acq.url}: ${error.message}`);
+      }
+    })
+  );
+
+  // Use first acquisition as reference
+  const reference = acqMetadata[0];
+
+  return {
+    type: 'temporal',
+    acquisitionCount: acqMetadata.length,
+    acquisitions: acqMetadata,
+    dateRange: {
+      start: sorted[0].date,
+      end: sorted[sorted.length - 1].date,
+    },
+    // Use reference for common properties
+    width: reference.width,
+    height: reference.height,
+    bounds: reference.bounds,
+    imageCount: reference.imageCount,
+    isCOG: reference.isCOG,
+  };
+}
+
 export { normalizeUrl };
 export default loadCOG;

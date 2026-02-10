@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import '../src/theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
+import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
@@ -66,6 +66,10 @@ function parseMarkdownState(markdown) {
     colormap: 'grayscale',
     useDecibels: true,
     view: { center: [0, 0], zoom: 0 },
+    toneMapEnabled: false,
+    toneMapMethod: 'auto',
+    toneMapGamma: 0.5,
+    toneMapStrength: 0.3,
   };
 
   const lines = markdown.split('\n');
@@ -121,6 +125,27 @@ function parseMarkdownState(markdown) {
         zoom: parseFloat(viewMatch[3]),
       };
     }
+
+    // Parse tone mapping
+    const toneMapMatch = trimmed.match(/\*\*Tone Mapping:\*\*\s*(on|off)/i);
+    if (toneMapMatch) {
+      state.toneMapEnabled = toneMapMatch[1].toLowerCase() === 'on';
+    }
+
+    const toneMapMethodMatch = trimmed.match(/\*\*Tone Map Method:\*\*\s*(\w+)/);
+    if (toneMapMethodMatch) {
+      state.toneMapMethod = toneMapMethodMatch[1];
+    }
+
+    const toneMapGammaMatch = trimmed.match(/\*\*Tone Map Gamma:\*\*\s*([\d.]+)/);
+    if (toneMapGammaMatch) {
+      state.toneMapGamma = parseFloat(toneMapGammaMatch[1]);
+    }
+
+    const toneMapStrengthMatch = trimmed.match(/\*\*Tone Map Strength:\*\*\s*([\d.]+)/);
+    if (toneMapStrengthMatch) {
+      state.toneMapStrength = parseFloat(toneMapStrengthMatch[1]);
+    }
   }
 
   return state;
@@ -158,8 +183,16 @@ function generateMarkdownState(state) {
 
   lines.push(
     `- **dB Mode:** ${state.useDecibels ? 'on' : 'off'}`,
-    `- **View:** [${state.view.center[0].toFixed(4)}, ${state.view.center[1].toFixed(4)}], zoom ${state.view.zoom.toFixed(2)}`,
+    `- **Tone Mapping:** ${state.toneMapEnabled ? 'on' : 'off'}`,
   );
+
+  if (state.toneMapEnabled) {
+    lines.push(`- **Tone Map Method:** ${state.toneMapMethod}`);
+    lines.push(`- **Tone Map Gamma:** ${state.toneMapGamma.toFixed(2)}`);
+    lines.push(`- **Tone Map Strength:** ${state.toneMapStrength.toFixed(2)}`);
+  }
+
+  lines.push(`- **View:** [${state.view.center[0].toFixed(4)}, ${state.view.center[1].toFixed(4)}], zoom ${state.view.zoom.toFixed(2)}`);
 
   return lines.join('\n');
 }
@@ -214,6 +247,12 @@ function App() {
   // Histogram data: {single: stats} or {R: stats, G: stats, B: stats}
   const [histogramData, setHistogramData] = useState(null);
 
+  // Multi-file state
+  const [multiFileMode, setMultiFileMode] = useState(false);
+  const [multiFileModeType, setMultiFileModeType] = useState('multi-band'); // 'multi-band' or 'temporal'
+  const [fileList, setFileList] = useState(['']); // Array of URLs
+  const [bandNames, setBandNames] = useState([]); // Auto-detected or manual
+
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
@@ -228,6 +267,12 @@ function App() {
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
+
+  // Tone mapping settings
+  const [toneMapEnabled, setToneMapEnabled] = useState(false);
+  const [toneMapMethod, setToneMapMethod] = useState('auto');
+  const [toneMapGamma, setToneMapGamma] = useState(0.5);
+  const [toneMapStrength, setToneMapStrength] = useState(0.3);
 
   // Markdown state
   const [markdownState, setMarkdownState] = useState('');
@@ -430,6 +475,15 @@ function App() {
     }
   }, [useDecibels, imageData, displayMode, handleRecomputeHistogram]);
 
+  // Memoize tone mapping config
+  const toneMapping = useMemo(() => ({
+    enabled: toneMapEnabled,
+    method: toneMapMethod === 'auto' ? undefined : toneMapMethod,
+    params: {
+      gamma: toneMapGamma,
+      strength: toneMapStrength,
+    },
+  }), [toneMapEnabled, toneMapMethod, toneMapGamma, toneMapStrength]);
 
   // Generate markdown from current state
   const currentState = useMemo(() => ({
@@ -442,8 +496,12 @@ function App() {
     contrastMax,
     colormap,
     useDecibels,
+    toneMapEnabled,
+    toneMapMethod,
+    toneMapGamma,
+    toneMapStrength,
     view: { center: viewCenter, zoom: viewZoom },
-  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
+  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, contrastMin, contrastMax, colormap, useDecibels, toneMapEnabled, toneMapMethod, toneMapGamma, toneMapStrength, viewCenter, viewZoom]);
 
   // Update markdown when state changes (unless edited)
   useEffect(() => {
@@ -488,6 +546,10 @@ function App() {
     setContrastMax(parsed.contrastMax);
     setColormap(parsed.colormap);
     setUseDecibels(parsed.useDecibels);
+    setToneMapEnabled(parsed.toneMapEnabled);
+    setToneMapMethod(parsed.toneMapMethod);
+    setToneMapGamma(parsed.toneMapGamma);
+    setToneMapStrength(parsed.toneMapStrength);
     setViewCenter(parsed.view.center);
     setViewZoom(parsed.view.zoom);
 
@@ -498,6 +560,94 @@ function App() {
 
   // Load COG
   const handleLoadCOG = useCallback(async () => {
+    // Check if multi-file mode
+    if (multiFileMode) {
+      const validFiles = fileList.filter(f => f && f.trim() !== '');
+      if (validFiles.length === 0) {
+        setError('Please enter at least one COG URL');
+        addStatusLog('error', 'No COG URLs provided in multi-file mode');
+        return;
+      }
+
+      setLoading(true);
+      setError(null);
+      addStatusLog('info', `Loading ${validFiles.length} files in ${multiFileModeType} mode`);
+
+      try {
+        let data;
+
+        if (multiFileModeType === 'multi-band') {
+          // Load as multi-band dataset
+          addStatusLog('info', 'Loading multi-band COG dataset...');
+          data = await loadMultiBandCOG({
+            urls: validFiles,
+            bands: bandNames.length === validFiles.length ? bandNames : null
+          });
+
+          addStatusLog('success', `Multi-band dataset loaded: ${data.bandNames.join(', ')}`,
+            `Dimensions: ${data.width}x${data.height}, Bands: ${data.bandCount}`);
+
+          // Update band names if auto-detected
+          if (data.bandNames) {
+            setBandNames(data.bandNames);
+          }
+        } else {
+          // Load as temporal dataset
+          addStatusLog('info', 'Loading temporal COG dataset...');
+          const acquisitions = validFiles.map((url, i) => ({
+            url,
+            date: bandNames[i] || `t${i}`,
+            label: bandNames[i] || `Time ${i}`
+          }));
+          data = await loadTemporalCOGs(acquisitions);
+
+          const acqLabels = data.acquisitions.map(a => a.label).join(', ');
+          addStatusLog('success', `Temporal dataset loaded: ${acqLabels}`,
+            `Dimensions: ${data.width}x${data.height}, Acquisitions: ${data.acquisitionCount}`);
+        }
+
+        setImageData(data);
+
+        // Update view to fit bounds
+        if (data.bounds) {
+          const [minX, minY, maxX, maxY] = data.bounds;
+          const centerX = (minX + maxX) / 2;
+          const centerY = (minY + maxY) / 2;
+          setViewCenter([centerX, centerY]);
+
+          const spanX = maxX - minX;
+          const spanY = maxY - minY;
+          const maxSpan = Math.max(spanX, spanY);
+          const isProjected = Math.abs(minX) > 180 || Math.abs(maxX) > 180;
+
+          let zoom;
+          if (isProjected) {
+            const viewportSize = 1000;
+            zoom = Math.log2(viewportSize / maxSpan);
+          } else {
+            zoom = Math.log2(360 / maxSpan) - 1;
+          }
+
+          setViewZoom(zoom);
+          addStatusLog('info', 'View state updated to fit image bounds',
+            `Center: [${centerX.toFixed(4)}, ${centerY.toFixed(4)}], Zoom: ${zoom.toFixed(2)}`);
+        }
+
+        addStatusLog('success', 'Multi-file dataset loaded and ready to display');
+
+      } catch (e) {
+        setError(`Failed to load multi-file dataset: ${e.message}`);
+        setImageData(null);
+        addStatusLog('error', 'Failed to load multi-file dataset', e.message);
+        console.error('Multi-file loading error:', e);
+      } finally {
+        setLoading(false);
+      }
+
+      return;
+    }
+
+    // Single file mode
     if (!cogUrl) {
       setError('Please enter a COG URL');
       addStatusLog('error', 'No COG URL provided');
@@ -611,7 +761,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [cogUrl, useDecibels, addStatusLog]);
+  }, [cogUrl, useDecibels, addStatusLog, multiFileMode, multiFileModeType, fileList, bandNames]);
 
   // Handle view state changes from viewer
   const handleViewStateChange = useCallback(({ viewState }) => {
@@ -1946,6 +2096,66 @@ function App() {
               </div>
             </div>
           </CollapsibleSection>
+
+          {/* Tone Mapping Settings */}
+          <CollapsibleSection title="Tone Mapping" defaultOpen={false}>
+            <div className="control-group">
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="toneMapEnabled"
+                  checked={toneMapEnabled}
+                  onChange={(e) => setToneMapEnabled(e.target.checked)}
+                />
+                <label htmlFor="toneMapEnabled">Enable Adaptive Tone Mapping</label>
+              </div>
+            </div>
+
+            {toneMapEnabled && (
+              <>
+                <div className="control-group">
+                  <label>Method</label>
+                  <select value={toneMapMethod} onChange={(e) => setToneMapMethod(e.target.value)}>
+                    <option value="auto">Auto (Scene Analysis)</option>
+                    <option value="adaptiveLog">Adaptive Log</option>
+                    <option value="percentileGamma">Percentile + Gamma</option>
+                    <option value="localContrast">Local Contrast</option>
+                    <option value="hybrid">Hybrid</option>
+                  </select>
+                </div>
+
+                <div className="control-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <label>Gamma</label>
+                    <span className="value-display">{toneMapGamma.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={2}
+                    step={0.05}
+                    value={toneMapGamma}
+                    onChange={(e) => setToneMapGamma(Number(e.target.value))}
+                  />
+                </div>
+
+                <div className="control-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <label>Strength</label>
+                    <span className="value-display">{toneMapStrength.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={toneMapStrength}
+                    onChange={(e) => setToneMapStrength(Number(e.target.value))}
+                  />
+                </div>
+              </>
+            )}
+          </CollapsibleSection>
         </div>
 
         {/* Viewer Container */}
@@ -1978,6 +2188,7 @@ function App() {
               multiLook={multiLook}
               showGrid={showGrid}
               opacity={1}
+              toneMapping={toneMapping}
               width="100%"
               height="100%"
               onViewStateChange={handleViewStateChange}

@@ -2,6 +2,7 @@ import { CompositeLayer } from '@deck.gl/core';
 import { SARBitmapLayer } from './SARBitmapLayer.js';
 import { fromUrl } from 'geotiff';
 import { normalizeUrl } from '../loaders/cog-loader.js';
+import { smartToneMap } from '../utils/tone-mapping.js';
 
 /**
  * SARTiledCOGLayer - A deck.gl layer for COGs in arbitrary projections
@@ -305,7 +306,24 @@ export class SARTiledCOGLayer extends CompositeLayer {
         window: [left, top, right, bottom],
       });
 
-      const data = new Float32Array(rasters[0]);
+      let data = new Float32Array(rasters[0]);
+
+      // Apply tone mapping if enabled
+      const { toneMapping } = this.props;
+      if (toneMapping && toneMapping.enabled) {
+        const toneMapResult = smartToneMap(data, tileWidth, tileHeight, {
+          method: toneMapping.method || 'auto',
+          noDataValue: toneMapping.noDataValue || 0,
+          ...toneMapping.params,
+        });
+
+        // Convert tone-mapped Uint8Array to Float32Array (normalized 0-1)
+        // This allows the shader to still apply colormaps
+        data = new Float32Array(toneMapResult.image.length);
+        for (let i = 0; i < toneMapResult.image.length; i++) {
+          data[i] = toneMapResult.image[i] / 255.0;
+        }
+      }
 
       const tileData = {
         data,
@@ -332,12 +350,18 @@ export class SARTiledCOGLayer extends CompositeLayer {
 
   renderLayers() {
     const { bounds, tiff } = this.state;
-    const { contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, onLoadingChange } = this.props;
+    const { contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, onLoadingChange, toneMapping } = this.props;
 
     // Wait for COG to be loaded before rendering
     if (!bounds || !tiff) {
       return [];
     }
+
+    // When tone mapping is enabled, data is already preprocessed (0-1 range)
+    // so we bypass dB conversion and use identity contrast limits
+    const useToneMapping = toneMapping && toneMapping.enabled;
+    const effectiveUseDecibels = useToneMapping ? false : useDecibels;
+    const effectiveContrastLimits = useToneMapping ? [0, 1] : contrastLimits;
 
     const viewport = this.context.viewport;
     const visibleTiles = this._getVisibleTiles(viewport);
@@ -430,8 +454,8 @@ export class SARTiledCOGLayer extends CompositeLayer {
             width: tileData.width,
             height: tileData.height,
             bounds: tileData.bounds,
-            contrastLimits,
-            useDecibels,
+            contrastLimits: effectiveContrastLimits,
+            useDecibels: effectiveUseDecibels,
             colormap,
             gamma,
             stretchMode,

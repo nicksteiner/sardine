@@ -6,7 +6,13 @@
  */
 
 // Loaders
-export { loadCOG, loadMultipleCOGs, loadCOGFullImage } from './loaders/cog-loader.js';
+export {
+  loadCOG,
+  loadMultipleCOGs,
+  loadCOGFullImage,
+  loadMultiBandCOG,
+  loadTemporalCOGs
+} from './loaders/cog-loader.js';
 export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite } from './loaders/nisar-loader.js';
 
 // Layers
@@ -73,6 +79,16 @@ export { writeRGBAGeoTIFF, writeRGBGeoTIFF, downloadBuffer } from './utils/geoti
 export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
 export { STRETCH_MODES, applyStretch } from './utils/stretch.js';
+
+export {
+  adaptiveLogScale,
+  percentileGammaStretch,
+  localContrastEnhance,
+  analyzeScene,
+  smartToneMap,
+  applyColorRamp,
+  COLOR_RAMPS,
+} from './utils/tone-mapping.js';
 
 // Overture Maps integration
 export {
