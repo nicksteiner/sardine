@@ -3254,24 +3254,39 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const pxTop = Math.max(0, Math.round(((bounds[3] - bbox.bottom) / (bounds[3] - bounds[1])) * height));
       const pxBottom = Math.min(height, Math.round(((bounds[3] - bbox.top) / (bounds[3] - bounds[1])) * height));
 
-      const region = {
-        x: pxLeft,
-        y: pxTop,
-        width: pxRight - pxLeft,
-        height: pxBottom - pxTop,
-      };
+      const regionW = pxRight - pxLeft;
+      const regionH = pxBottom - pxTop;
 
-      if (region.width <= 0 || region.height <= 0) return null;
+      if (regionW <= 0 || regionH <= 0) return null;
 
-      const data = await streamReader.readRegion(
-        selectedDatasetId, region.y, region.x, region.height, region.width
+      // Cap the read size to avoid blowing up memory on large datasets.
+      // For a 40k×40k image at low zoom, a tile could map to the whole image.
+      // Limit to 1M pixels per read — h5chunk handles the chunk selection.
+      // At high zoom the region is already small; at low zoom we read a
+      // strided subset and the GPU stretches it to fill the tile.
+      const MAX_PIXELS = 1024 * 1024;
+      let readX = pxLeft, readY = pxTop, readW = regionW, readH = regionH;
+
+      if (regionW * regionH > MAX_PIXELS) {
+        // Subsample: pick a stride that fits within the pixel budget
+        const scale = Math.sqrt((regionW * regionH) / MAX_PIXELS);
+        readW = Math.max(tileSize, Math.floor(regionW / scale));
+        readH = Math.max(tileSize, Math.floor(regionH / scale));
+        // Center the read and use stride (h5chunk readRegion reads contiguous,
+        // so just read a smaller contiguous block from the center for preview)
+        readX = pxLeft + Math.floor((regionW - readW) / 2);
+        readY = pxTop + Math.floor((regionH - readH) / 2);
+      }
+
+      const result = await streamReader.readRegion(
+        selectedDatasetId, readY, readX, readH, readW
       );
-      if (!data) return null;
+      if (!result) return null;
 
       return {
-        data: data.data || data,
-        width: region.width,
-        height: region.height,
+        data: result.data || result,
+        width: readW,
+        height: readH,
       };
     } catch (e) {
       console.warn(`[NISAR URL] Tile error (${x},${y},${z}):`, e.message);

@@ -356,13 +356,21 @@ function main() {
   var displayHost = opts.host === '0.0.0.0' ? 'localhost' : opts.host;
   var localUrl = 'http://' + displayHost + ':' + opts.port;
 
-  // Detect JupyterHub environment for proxy path
+  // Detect JupyterHub environment for proxy URL
   var jupyterUser = process.env.JUPYTERHUB_USER;
-  var jupyterBase = process.env.JUPYTERHUB_BASE_URL || '';
+  var jupyterBase = (process.env.JUPYTERHUB_BASE_URL || '').replace(/\/+$/, '');
   var proxyPath = null;
+  var proxyUrl = null;
   if (jupyterUser) {
-    var base = jupyterBase.replace(/\/+$/, '');
-    proxyPath = base + '/user/' + jupyterUser + '/proxy/' + opts.port + '/';
+    proxyPath = jupyterBase + '/user/' + jupyterUser + '/proxy/' + opts.port + '/';
+    // Extract public hostname from OAuth callback URL
+    // e.g. https://nisar.jpl.nasa.gov/ondemand/user/nsteiner/oauth_callback
+    var callbackUrl = process.env.JUPYTERHUB_OAUTH_CALLBACK_URL
+      || process.env.JUPYTERHUB_OAUTH_ACCESS_TOKEN_URL || '';
+    var hostMatch = callbackUrl.match(/^(https?:\/\/[^\/]+)/);
+    if (hostMatch) {
+      proxyUrl = hostMatch[1] + proxyPath;
+    }
   }
 
   server.listen(opts.port, opts.host, function () {
@@ -370,7 +378,9 @@ function main() {
     console.log('  SARdine server running');
     console.log('  ─────────────────────────────────────────');
     console.log('  Local:     ' + localUrl);
-    if (proxyPath) {
+    if (proxyUrl) {
+      console.log('  Proxy:     ' + proxyUrl);
+    } else if (proxyPath) {
       console.log('  Proxy:     *' + proxyPath);
     }
     console.log('  Data dir:  ' + opts.dataDir);
@@ -380,11 +390,7 @@ function main() {
     console.log('    /api/files     directory listing API');
     console.log('    /data/<path>   file serving (Range OK)');
     console.log('');
-    if (proxyPath) {
-      console.log('  Waiting for first request to detect public URL...');
-    } else {
-      console.log('  Open in browser: ' + localUrl);
-    }
+    console.log('  Open in browser: ' + (proxyUrl || localUrl));
     console.log('  Press Ctrl+C to stop');
     console.log('');
   });
