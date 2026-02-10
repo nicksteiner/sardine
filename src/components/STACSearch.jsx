@@ -6,7 +6,8 @@
  * existing remote loader via onSelectScene.
  *
  * Props:
- *   onSelectScene: ({url, name, type, ...}) => void — scene picked for loading
+ *   onSelectScene: ({url, name, type, ...}) => void — single scene picked for loading
+ *   onSelectMultiple: ({urls, names, types, mode, items}) => void — multiple scenes for multi-band/temporal
  *   onStatus: (type, message, details?) => void — status logging
  *   onLayersChange: (layers[]) => void — deck.gl footprint layers
  *   viewBounds: [west, south, east, north] | null — current map viewport for bbox
@@ -23,7 +24,7 @@ import {
   resolveAsset,
 } from '../loaders/stac-client.js';
 
-export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds }) {
+export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayersChange, viewBounds }) {
   // ─── Connection state ────────────────────────────────────────────────
   const [endpointUrl, setEndpointUrl] = useState(STAC_ENDPOINTS[0].url);
   const [customUrl, setCustomUrl] = useState('');
@@ -48,6 +49,11 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
   const [nextToken, setNextToken] = useState(null);
   const [matched, setMatched] = useState(null);
   const [selectedItemIdx, setSelectedItemIdx] = useState(null);
+
+  // ─── Multi-select ──────────────────────────────────────────────────
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [selectedIndices, setSelectedIndices] = useState(new Set());
+  const [multiMode, setMultiMode] = useState('temporal'); // 'temporal' | 'multi-band'
 
   // ─── Filters on results ──────────────────────────────────────────────
   const [filterPol, setFilterPol] = useState('');
@@ -140,9 +146,19 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
     }
   }, [activeUrl, selectedCollection, dateStart, dateEnd, useBbox, viewBounds, token, nextToken, items.length, onStatus]);
 
-  // ─── Scene selection ─────────────────────────────────────────────────
+  // ─── Scene selection (single) ────────────────────────────────────────
 
   const handleSelectItem = useCallback((item, idx) => {
+    if (multiSelect) {
+      // Toggle selection in multi-select mode
+      setSelectedIndices(prev => {
+        const next = new Set(prev);
+        if (next.has(idx)) next.delete(idx);
+        else next.add(idx);
+        return next;
+      });
+      return;
+    }
     setSelectedItemIdx(idx);
     const scene = itemToScene(item);
     if (!scene) {
@@ -151,7 +167,47 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
     }
     onSelectScene?.(scene);
     onStatus?.('info', `Selected: ${scene.name}`);
-  }, [onSelectScene, onStatus]);
+  }, [multiSelect, onSelectScene, onStatus]);
+
+  // ─── Load multiple selected items ──────────────────────────────────
+
+  const handleLoadMultiple = useCallback(() => {
+    if (selectedIndices.size < 2) {
+      onStatus?.('warning', 'Select at least 2 items for multi-file loading');
+      return;
+    }
+
+    const selected = [...selectedIndices]
+      .sort((a, b) => a - b)
+      .map(i => filteredItems[i])
+      .filter(Boolean);
+
+    const resolved = selected
+      .map(item => {
+        const asset = resolveAsset(item);
+        if (!asset) return null;
+        const p = item.properties || {};
+        return {
+          url: asset.href,
+          name: item.id,
+          type: asset.type,
+          datetime: p.datetime,
+          polarizations: p['sar:polarizations'],
+        };
+      })
+      .filter(Boolean);
+
+    if (resolved.length < 2) {
+      onStatus?.('warning', `Only ${resolved.length} items have loadable assets`);
+      return;
+    }
+
+    onSelectMultiple?.({
+      scenes: resolved,
+      mode: multiMode,
+    });
+    onStatus?.('info', `Loading ${resolved.length} items as ${multiMode}`);
+  }, [selectedIndices, filteredItems, multiMode, onSelectMultiple, onStatus]);
 
   // ─── Filter options from search results ──────────────────────────────
 
@@ -216,10 +272,17 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
 
     const result = [allLayer];
 
-    if (selectedItemIdx != null && filteredItems[selectedItemIdx]) {
+    // Highlight: multi-select or single-select
+    const highlightFeatures = multiSelect
+      ? [...selectedIndices].map(i => filteredItems[i]).filter(Boolean)
+      : (selectedItemIdx != null && filteredItems[selectedItemIdx])
+        ? [filteredItems[selectedItemIdx]]
+        : [];
+
+    if (highlightFeatures.length > 0) {
       result.push(new GeoJsonLayer({
         id: 'stac-results-selected',
-        data: { type: 'FeatureCollection', features: [filteredItems[selectedItemIdx]] },
+        data: { type: 'FeatureCollection', features: highlightFeatures },
         pickable: false,
         stroked: true,
         filled: true,
@@ -231,7 +294,7 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
     }
 
     return result;
-  }, [filteredItems, selectedItemIdx, handleSelectItem]);
+  }, [filteredItems, selectedItemIdx, selectedIndices, multiSelect, handleSelectItem]);
 
   useEffect(() => {
     onLayersChange?.(layers);
@@ -446,11 +509,60 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
         </div>
       )}
 
-      {/* Results count */}
+      {/* Results count + multi-select toggle */}
       {items.length > 0 && (
-        <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
-          {filteredItems.length}{filteredItems.length !== items.length ? `/${items.length}` : ''} items
-          {matched != null && ` of ${matched} total`}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+            {filteredItems.length}{filteredItems.length !== items.length ? `/${items.length}` : ''} items
+            {matched != null && ` of ${matched} total`}
+          </div>
+          <label style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={multiSelect}
+              onChange={e => {
+                setMultiSelect(e.target.checked);
+                setSelectedIndices(new Set());
+              }}
+            />
+            Multi
+          </label>
+        </div>
+      )}
+
+      {/* Multi-select controls */}
+      {multiSelect && items.length > 0 && (
+        <div style={{
+          display: 'flex', gap: 'var(--space-xs)', alignItems: 'center',
+          padding: '4px',
+          background: 'var(--sardine-bg-raised)',
+          borderRadius: 'var(--radius-sm)',
+          border: '1px solid var(--sardine-border)',
+        }}>
+          <select
+            value={multiMode}
+            onChange={e => setMultiMode(e.target.value)}
+            style={{ fontSize: '0.65rem', flex: 1 }}
+          >
+            <option value="temporal">Temporal Stack</option>
+            <option value="multi-band">Multi-Band</option>
+          </select>
+          <button
+            onClick={handleLoadMultiple}
+            disabled={selectedIndices.size < 2}
+            style={{ fontSize: '0.65rem', whiteSpace: 'nowrap' }}
+          >
+            Load {selectedIndices.size} Selected
+          </button>
+          {selectedIndices.size > 0 && (
+            <button
+              className="btn-secondary"
+              onClick={() => setSelectedIndices(new Set())}
+              style={{ fontSize: '0.6rem', padding: '2px 6px' }}
+            >
+              Clear
+            </button>
+          )}
         </div>
       )}
 
@@ -465,7 +577,7 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
         }}>
           {filteredItems.map((item, i) => {
             const p = item.properties || {};
-            const isSelected = i === selectedItemIdx;
+            const isSelected = multiSelect ? selectedIndices.has(i) : i === selectedItemIdx;
             const asset = resolveAsset(item);
             const hasAsset = !!asset;
             const date = formatDatetime(p.datetime);
@@ -493,6 +605,19 @@ export function STACSearch({ onSelectScene, onStatus, onLayersChange, viewBounds
                   alignItems: 'center',
                   gap: '4px',
                 }}>
+                  {multiSelect && (
+                    <span style={{
+                      width: '14px', height: '14px',
+                      border: '1px solid var(--sardine-border)',
+                      borderRadius: '2px',
+                      background: isSelected ? 'var(--sardine-cyan)' : 'transparent',
+                      flexShrink: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '0.55rem', color: 'var(--sardine-bg)',
+                    }}>
+                      {isSelected ? '\u2713' : ''}
+                    </span>
+                  )}
                   <span style={{
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',

@@ -1788,6 +1788,62 @@ function App() {
                     type: sceneInfo.type || 'nisar',
                   });
                 }}
+                onSelectMultiple={async ({ scenes, mode }) => {
+                  // Route multi-select to existing multi-file COG loaders
+                  const cogScenes = scenes.filter(s => s.type === 'cog');
+                  const nisarScenes = scenes.filter(s => s.type === 'nisar');
+
+                  if (cogScenes.length >= 2) {
+                    // Load COGs via existing multi-file pipeline
+                    const urls = cogScenes.map(s => s.url);
+                    const names = cogScenes.map(s => s.name);
+                    addStatusLog('info', `Loading ${cogScenes.length} COGs as ${mode}`);
+
+                    setLoading(true);
+                    setError(null);
+                    try {
+                      let data;
+                      if (mode === 'multi-band') {
+                        data = await loadMultiBandCOG({ urls, bands: names });
+                        addStatusLog('success', `Multi-band loaded: ${data.bandNames?.join(', ')}`);
+                      } else {
+                        const acquisitions = cogScenes.map(s => ({
+                          url: s.url,
+                          date: s.datetime || s.name,
+                          label: s.name,
+                        }));
+                        data = await loadTemporalCOGs(acquisitions);
+                        addStatusLog('success', `Temporal stack loaded: ${data.acquisitionCount} dates`);
+                      }
+                      setImageData(data);
+                      if (data.bounds) {
+                        const [minX, minY, maxX, maxY] = data.bounds;
+                        setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
+                        const span = Math.max(maxX - minX, maxY - minY);
+                        setViewZoom(Math.log2(360 / span) - 1);
+                      }
+                    } catch (e) {
+                      setError(`Multi-file load failed: ${e.message}`);
+                      addStatusLog('error', 'Multi-file load failed', e.message);
+                    } finally {
+                      setLoading(false);
+                    }
+                  } else if (nisarScenes.length >= 1) {
+                    // For NISAR HDF5 — load first selected, note that multi-HDF5 isn't supported yet
+                    addStatusLog('info', `Loading first NISAR scene: ${nisarScenes[0].name}`);
+                    if (nisarScenes.length > 1) {
+                      addStatusLog('warning', `Multi-HDF5 loading not yet supported — loading first of ${nisarScenes.length}`);
+                    }
+                    handleRemoteFileSelect({
+                      url: nisarScenes[0].url,
+                      name: nisarScenes[0].name,
+                      size: 0,
+                      type: 'nisar',
+                    });
+                  } else {
+                    addStatusLog('warning', 'No loadable scenes in selection');
+                  }
+                }}
                 onStatus={addStatusLog}
                 onLayersChange={setStacLayers}
                 viewBounds={imageData?.bounds || null}
