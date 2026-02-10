@@ -3315,7 +3315,37 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         return { data: tileData, width: sliceW, height: sliceH };
       }
 
-      // Large regions: sample by reading individual chunks (streaming-friendly)
+      // Large regions: fetch a sparse grid of chunks and sample from them.
+      // At low zoom a tile can span thousands of chunks — fetching all of them
+      // over HTTP is too slow. Instead, pick an evenly-spaced grid of chunks
+      // (max ~12×12 = 144 HTTP requests) and fill the tile from those.
+      const startCR = Math.floor(pxTop / chunkH);
+      const endCR = Math.floor((pxBottom - 1) / chunkH);
+      const startCC = Math.floor(pxLeft / chunkW);
+      const endCC = Math.floor((pxRight - 1) / chunkW);
+      const totalCR = endCR - startCR + 1;
+      const totalCC = endCC - startCC + 1;
+
+      // Stride: skip chunks to keep total fetches ≤ ~144
+      const MAX_CHUNKS_PER_AXIS = 12;
+      const strideR = Math.max(1, Math.ceil(totalCR / MAX_CHUNKS_PER_AXIS));
+      const strideC = Math.max(1, Math.ceil(totalCC / MAX_CHUNKS_PER_AXIS));
+
+      // Fetch the sparse grid of chunks in parallel
+      const chunkGrid = new Map(); // "cr,cc" → Float32Array
+      const fetchPromises = [];
+      for (let cr = startCR; cr <= endCR; cr += strideR) {
+        for (let cc = startCC; cc <= endCC; cc += strideC) {
+          fetchPromises.push(
+            getStreamChunk(cr, cc).then(data => {
+              if (data) chunkGrid.set(`${cr},${cc}`, data);
+            })
+          );
+        }
+      }
+      await Promise.all(fetchPromises);
+
+      // Sample tileSize×tileSize pixels from the fetched chunks
       const stepX = sliceW / tileSize;
       const stepY = sliceH / tileSize;
       tileData = new Float32Array(tileSize * tileSize);
@@ -3324,21 +3354,26 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         const srcY = pxTop + Math.floor((ty + 0.5) * stepY);
         if (srcY < 0 || srcY >= height) continue;
         const cr = Math.floor(srcY / chunkH);
+        // Snap to nearest fetched chunk row
+        const snapCR = startCR + Math.round((cr - startCR) / strideR) * strideR;
 
         for (let tx = 0; tx < tileSize; tx++) {
           const srcX = pxLeft + Math.floor((tx + 0.5) * stepX);
           if (srcX < 0 || srcX >= width) continue;
           const cc = Math.floor(srcX / chunkW);
+          const snapCC = startCC + Math.round((cc - startCC) / strideC) * strideC;
 
-          const chunk = await getStreamChunk(cr, cc);
+          const chunk = chunkGrid.get(`${snapCR},${snapCC}`);
           if (chunk) {
-            const localY = srcY - cr * chunkH;
-            const localX = srcX - cc * chunkW;
-            const idx = localY * chunkW + localX;
-            if (idx >= 0 && idx < chunk.length) {
-              const v = chunk[idx];
-              if (!isNaN(v) && v > 0) {
-                tileData[ty * tileSize + tx] = v;
+            const localY = srcY - snapCR * chunkH;
+            const localX = srcX - snapCC * chunkW;
+            if (localY >= 0 && localY < chunkH && localX >= 0 && localX < chunkW) {
+              const idx = localY * chunkW + localX;
+              if (idx >= 0 && idx < chunk.length) {
+                const v = chunk[idx];
+                if (!isNaN(v) && v > 0) {
+                  tileData[ty * tileSize + tx] = v;
+                }
               }
             }
           }
