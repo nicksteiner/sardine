@@ -3250,8 +3250,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   const chunkW = selectedDataset.chunkDims?.[1] || 512;
 
   // Per-chunk cache for streaming (keyed by "cr,cc")
+  // Sized to hold a full fine grid (24×24 = 576) plus headroom
   const chunkCache = new Map();
-  const MAX_CHUNK_CACHE = 256;
+  const MAX_CHUNK_CACHE = 600;
 
   async function getStreamChunk(cr, cc) {
     const key = `${cr},${cc}`;
@@ -3512,6 +3513,27 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     /** Set a callback to be notified when a tile's refined data is ready. */
     set onRefine(fn) { _onRefine = fn; },
     get onRefine() { return _onRefine; },
+    /**
+     * Eagerly fetch a coarse grid of chunks covering the full image.
+     * Warms the chunk cache so the first overview render is near-instant.
+     * Returns a promise that resolves when all overview chunks are cached.
+     */
+    async prefetchOverviewChunks() {
+      const totalCR = Math.ceil(height / chunkH);
+      const totalCC = Math.ceil(width / chunkW);
+      const COARSE_MAX = 8;
+      const strideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
+      const strideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
+      const fetches = [];
+      for (let cr = 0; cr < totalCR; cr += strideR) {
+        for (let cc = 0; cc < totalCC; cc += strideC) {
+          fetches.push(getStreamChunk(cr, cc));
+        }
+      }
+      console.log(`[NISAR Loader] Prefetching ${fetches.length} overview chunks (${totalCR}×${totalCC} grid, stride ${strideR}×${strideC})`);
+      await Promise.all(fetches);
+      console.log(`[NISAR Loader] Overview prefetch complete (${chunkCache.size} chunks cached)`);
+    },
   };
   return result;
 }

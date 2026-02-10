@@ -107,10 +107,19 @@ export { createOvertureLayers } from './layers/OvertureLayer.js';
 // Metadata Cube
 export { MetadataCube, loadMetadataCube } from './utils/metadata-cube.js';
 
+// S3 Pre-signed URL generation
+export {
+  presignS3Url,
+  presignMultiple,
+  presignGeoJSON,
+  parseS3Uri,
+} from './utils/s3-presign.js';
+
 // Components
 export { MetadataPanel } from './components/MetadataPanel.jsx';
 export { OverviewMap } from './components/OverviewMap.jsx';
 export { StatusWindow } from './components/StatusWindow.jsx';
+export { SceneCatalog } from './components/SceneCatalog.jsx';
 
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';
