@@ -18,6 +18,7 @@ import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
+import { STACSearch } from '../src/components/STACSearch.jsx';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -282,6 +283,9 @@ function App() {
 
   // Scene catalog overlay layers (from SceneCatalog component)
   const [catalogLayers, setCatalogLayers] = useState([]);
+
+  // STAC search overlay layers
+  const [stacLayers, setStacLayers] = useState([]);
 
   // Overture Maps overlay state
   const [overtureEnabled, setOvertureEnabled] = useState(false);
@@ -1519,6 +1523,7 @@ function App() {
                 <option value="nisar">NISAR GCOV HDF5 (Local File)</option>
                 <option value="remote">Remote Bucket / S3</option>
                 <option value="catalog">Scene Catalog (GeoJSON)</option>
+                <option value="stac">STAC Catalog Search</option>
               </select>
             </div>
           </CollapsibleSection>
@@ -1725,6 +1730,70 @@ function App() {
               />
 
               {/* Show dataset selectors when remote NISAR metadata is loaded (reuse remote pattern) */}
+              {remoteUrl && nisarDatasets.length > 0 && (
+                <>
+                  <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                    {remoteName}
+                  </div>
+
+                  <div className="control-group">
+                    <label>Frequency</label>
+                    <select
+                      value={selectedFrequency}
+                      onChange={(e) => {
+                        setSelectedFrequency(e.target.value);
+                        const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
+                        if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
+                      }}
+                    >
+                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
+                        <option key={f} value={f}>Frequency {f}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="control-group">
+                    <label>Polarization</label>
+                    <select
+                      value={selectedPolarization}
+                      onChange={(e) => setSelectedPolarization(e.target.value)}
+                    >
+                      {nisarDatasets
+                        .filter(d => d.frequency === selectedFrequency)
+                        .map(d => (
+                          <option key={d.polarization} value={d.polarization}>
+                            {d.polarization}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <button onClick={handleLoadRemoteNISAR} disabled={loading}>
+                    {loading ? 'Loading...' : 'Load Dataset'}
+                  </button>
+                </>
+              )}
+            </CollapsibleSection>
+          )}
+
+          {/* STAC Catalog Search */}
+          {fileType === 'stac' && (
+            <CollapsibleSection title="STAC Catalog Search">
+              <STACSearch
+                onSelectScene={(sceneInfo) => {
+                  handleRemoteFileSelect({
+                    url: sceneInfo.url,
+                    name: sceneInfo.name,
+                    size: sceneInfo.size || 0,
+                    type: sceneInfo.type || 'nisar',
+                  });
+                }}
+                onStatus={addStatusLog}
+                onLayersChange={setStacLayers}
+                viewBounds={imageData?.bounds || null}
+              />
+
+              {/* Show dataset selectors when remote NISAR metadata is loaded */}
               {remoteUrl && nisarDatasets.length > 0 && (
                 <>
                   <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
@@ -2228,7 +2297,7 @@ function App() {
               height="100%"
               onViewStateChange={handleViewStateChange}
               initialViewState={initialViewState}
-              extraLayers={[...overtureLayers, ...catalogLayers]}
+              extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
             />
           )}
 

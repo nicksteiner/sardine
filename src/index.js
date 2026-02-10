@@ -120,6 +120,22 @@ export { MetadataPanel } from './components/MetadataPanel.jsx';
 export { OverviewMap } from './components/OverviewMap.jsx';
 export { StatusWindow } from './components/StatusWindow.jsx';
 export { SceneCatalog } from './components/SceneCatalog.jsx';
+export { STACSearch } from './components/STACSearch.jsx';
+
+// STAC Catalog
+export {
+  STAC_ENDPOINTS,
+  fetchCatalog,
+  listCollections,
+  getCollection,
+  searchItems,
+  resolveAsset,
+  listAssets,
+  itemToScene,
+  extractItemFilters,
+  formatDatetime,
+  itemBbox,
+} from './loaders/stac-client.js';
 
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';
