@@ -3244,6 +3244,32 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     worldBounds = bounds;
   }
 
+  // Chunk dimensions for per-chunk streaming access
+  const chunkH = selectedDataset.chunkDims?.[0] || 512;
+  const chunkW = selectedDataset.chunkDims?.[1] || 512;
+
+  // Per-chunk cache for streaming (keyed by "cr,cc")
+  const chunkCache = new Map();
+  const MAX_CHUNK_CACHE = 256;
+
+  async function getStreamChunk(cr, cc) {
+    const key = `${cr},${cc}`;
+    if (chunkCache.has(key)) return chunkCache.get(key);
+    try {
+      const data = await streamReader.readChunk(selectedDatasetId, cr, cc);
+      const result = data?.data || data;
+      if (chunkCache.size >= MAX_CHUNK_CACHE) {
+        // Evict oldest entry
+        const first = chunkCache.keys().next().value;
+        chunkCache.delete(first);
+      }
+      chunkCache.set(key, result);
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
   // Build getTile function for on-demand chunk reading
   const getTile = async ({ x, y, z, bbox }) => {
     const tileSize = 256;
@@ -3254,40 +3280,72 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const pxTop = Math.max(0, Math.round(((bounds[3] - bbox.bottom) / (bounds[3] - bounds[1])) * height));
       const pxBottom = Math.min(height, Math.round(((bounds[3] - bbox.top) / (bounds[3] - bounds[1])) * height));
 
-      const regionW = pxRight - pxLeft;
-      const regionH = pxBottom - pxTop;
+      const sliceW = pxRight - pxLeft;
+      const sliceH = pxBottom - pxTop;
 
-      if (regionW <= 0 || regionH <= 0) return null;
+      if (sliceW <= 0 || sliceH <= 0) return null;
 
-      // Cap the read size to avoid blowing up memory on large datasets.
-      // For a 40k×40k image at low zoom, a tile could map to the whole image.
-      // Limit to 1M pixels per read — h5chunk handles the chunk selection.
-      // At high zoom the region is already small; at low zoom we read a
-      // strided subset and the GPU stretches it to fill the tile.
-      const MAX_PIXELS = 1024 * 1024;
-      let readX = pxLeft, readY = pxTop, readW = regionW, readH = regionH;
+      let tileData;
 
-      if (regionW * regionH > MAX_PIXELS) {
-        // Subsample: pick a stride that fits within the pixel budget
-        const scale = Math.sqrt((regionW * regionH) / MAX_PIXELS);
-        readW = Math.max(tileSize, Math.floor(regionW / scale));
-        readH = Math.max(tileSize, Math.floor(regionH / scale));
-        // Center the read and use stride (h5chunk readRegion reads contiguous,
-        // so just read a smaller contiguous block from the center for preview)
-        readX = pxLeft + Math.floor((regionW - readW) / 2);
-        readY = pxTop + Math.floor((regionH - readH) / 2);
+      // Small regions: read directly with readRegion (contiguous, fast)
+      const MAX_DIRECT_PIXELS = 1024 * 1024;
+      if (sliceW * sliceH <= MAX_DIRECT_PIXELS) {
+        const result = await streamReader.readRegion(
+          selectedDatasetId, pxTop, pxLeft, sliceH, sliceW
+        );
+        if (!result) return null;
+        tileData = result.data || result;
+
+        // Resample to tileSize if region is larger than tile
+        if (sliceW > tileSize || sliceH > tileSize) {
+          const resampled = new Float32Array(tileSize * tileSize);
+          const scaleX = sliceW / tileSize;
+          const scaleY = sliceH / tileSize;
+          for (let ty = 0; ty < tileSize; ty++) {
+            const srcY = Math.min(Math.floor(ty * scaleY), sliceH - 1);
+            for (let tx = 0; tx < tileSize; tx++) {
+              const srcX = Math.min(Math.floor(tx * scaleX), sliceW - 1);
+              resampled[ty * tileSize + tx] = tileData[srcY * sliceW + srcX];
+            }
+          }
+          tileData = resampled;
+          return { data: tileData, width: tileSize, height: tileSize };
+        }
+
+        return { data: tileData, width: sliceW, height: sliceH };
       }
 
-      const result = await streamReader.readRegion(
-        selectedDatasetId, readY, readX, readH, readW
-      );
-      if (!result) return null;
+      // Large regions: sample by reading individual chunks (streaming-friendly)
+      const stepX = sliceW / tileSize;
+      const stepY = sliceH / tileSize;
+      tileData = new Float32Array(tileSize * tileSize);
 
-      return {
-        data: result.data || result,
-        width: readW,
-        height: readH,
-      };
+      for (let ty = 0; ty < tileSize; ty++) {
+        const srcY = pxTop + Math.floor((ty + 0.5) * stepY);
+        if (srcY < 0 || srcY >= height) continue;
+        const cr = Math.floor(srcY / chunkH);
+
+        for (let tx = 0; tx < tileSize; tx++) {
+          const srcX = pxLeft + Math.floor((tx + 0.5) * stepX);
+          if (srcX < 0 || srcX >= width) continue;
+          const cc = Math.floor(srcX / chunkW);
+
+          const chunk = await getStreamChunk(cr, cc);
+          if (chunk) {
+            const localY = srcY - cr * chunkH;
+            const localX = srcX - cc * chunkW;
+            const idx = localY * chunkW + localX;
+            if (idx >= 0 && idx < chunk.length) {
+              const v = chunk[idx];
+              if (!isNaN(v) && v > 0) {
+                tileData[ty * tileSize + tx] = v;
+              }
+            }
+          }
+        }
+      }
+
+      return { data: tileData, width: tileSize, height: tileSize };
     } catch (e) {
       console.warn(`[NISAR URL] Tile error (${x},${y},${z}):`, e.message);
       return null;
