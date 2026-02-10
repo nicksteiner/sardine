@@ -4,7 +4,7 @@ import { SARImageLayer } from './layers/SARImageLayer';
 import type { SARdineOptions, ViewState, SARImageLayerOptions } from './types';
 
 /**
- * SARdine - A lightweight SAR imagery viewer
+ * SARdine - SAR Data INspection and Exploration
  * 
  * Built on deck.gl and geotiff.js for high-performance
  * visualization of SAR (Synthetic Aperture Radar) imagery.

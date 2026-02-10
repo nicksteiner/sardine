@@ -1,19 +1,16 @@
 <div align="center">
 
-```
-                                  ███████╗ █████╗ ██████╗      ██╗██╗███╗   ██╗███████╗
-                                  ██╔════╝██╔══██╗██╔══██╗ ██████║██║████╗  ██║██╔════╝
-                                  ███████╗███████║██████╔╝██╔══██║██║██╔██╗ ██║█████╗
-                                  ╚════██║██╔══██║██╔══██╗██║  ██║██║██║╚██╗██║██╔══╝
-                                  ███████║██║  ██║██║  ██║╚█████╔╝██║██║ ╚████║███████╗
-                                  ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚════╝ ╚═╝╚═╝  ╚═══╝╚══════╝
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/sardine-logo.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/sardine-logo-light.svg">
+  <img src="docs/sardine-logo-light.svg" alt="SARdine" width="480">
+</picture>
 
-**Browser-native NISAR HDF5 viewer**
+<br>
 
-*Stream cloud-optimized SAR data straight to GPU — javascript-native chunking*
+*Cloud-optimized HDF5 and COG streaming to GPU — client-side JavaScript*
 
-`v1.0` · `MIT` · `Feb 2026`
+`v1.0.0-beta.1` · `MIT` · `Feb 2026`
 
 </div>
 
@@ -129,10 +126,10 @@ The **Multi-look** toggle switches between two downsampling strategies:
 | **Resample** | Box-filter — sums every source pixel in each output footprint | Nearest-neighbour — one sample per output pixel |
 | **Chunk path** | `nSub = 4–8` (reads more samples per chunk) | `nSub = 1` (one sample per chunk) |
 | **Speckle** | Reduced ~1/√N | Full speckle |
-| **Speed** | Slower (10–50× more samples) | Blazing fast |
+| **Speed** | Slower (10–50× more samples) | Fast |
 | **Cache** | Separate key (`ml` suffix) | Separate key (`nn` suffix) |
 
-Box-filter area averaging in linear power is equivalent to **spatial multi-looking** — the standard SAR technique for speckle suppression. Both tile sets coexist in cache, so toggling is instant for already-fetched tiles.
+Box-filter area averaging in linear power is equivalent to spatial multi-looking. Both tile sets coexist in cache; toggling reuses already-fetched tiles.
 
 > **`08` ARCHITECTURE**
 
@@ -228,7 +225,7 @@ node test-h5-images.mjs       # → Read chunks, write PGM images to test_output
 
 > **`12` DESIGN SYSTEM**
 
-SARdine uses a dark-first design system built for operational SAR monitoring.
+Dark-first design system. CSS custom properties defined in `sardine-theme.css`.
 
 | Token | Value | Role |
 |:---|:---|:---|

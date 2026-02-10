@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="100" viewBox="0 0 480 100">
+  <!-- Background — white, Nous Research-inspired -->
+  <rect width="480" height="100" rx="8" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="479" height="99" rx="7.5" fill="none" stroke="#ABABC3" stroke-width="1"/>
+
+  <!-- Main title: SAR in blue (#0171A9), dine in dark (#32373C) -->
+  <text x="240" y="52" text-anchor="middle"
+        font-family="'Geist Mono','JetBrains Mono','Cascadia Code','Fira Code','SF Mono',Consolas,'Liberation Mono',Menlo,monospace"
+        font-size="40" font-weight="700" letter-spacing="-1">
+    <tspan fill="#0171A9">SAR</tspan><tspan fill="#32373C">dine</tspan>
+  </text>
+
+  <!-- Subtitle -->
+  <text x="240" y="78" text-anchor="middle"
+        font-family="'Geist Mono','JetBrains Mono','Cascadia Code','Fira Code','SF Mono',Consolas,'Liberation Mono',Menlo,monospace"
+        font-size="10.5" fill="#ABABC3" letter-spacing="2.5">
+    SAR DATA INSPECTION AND EXPLORATION
+  </text>
+</svg>

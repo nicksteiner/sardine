@@ -4,7 +4,7 @@ Context for Claude Code (or any AI coding assistant) to understand the SARdine p
 
 ## What SARdine Is
 
-**SARdine** is a browser-native SAR imagery viewer and analysis tool. It loads NISAR HDF5 GCOV products and Cloud Optimized GeoTIFFs directly in the browser — no server, no Python, no GDAL. GPU-accelerated rendering with GLSL shaders. Client-side GeoTIFF export.
+**SARdine** (**SAR** **D**ata **IN**spection and **E**xploration) is a browser-native SAR analysis tool. It loads NISAR HDF5 GCOV products and Cloud Optimized GeoTIFFs directly in the browser using client-side JavaScript. Rendering runs on the GPU via WebGL2 GLSL shaders. GeoTIFF export is computed client-side.
 
 **Core capabilities today:**
 - Stream NISAR L2 GCOV HDF5 files via chunked range reads (h5chunk.js)
@@ -38,7 +38,7 @@ Context for Claude Code (or any AI coding assistant) to understand the SARdine p
 - **h5chunk for streaming** — Pure JS HDF5 chunk reader. Parses superblock, object headers, B-trees to build a chunk index. Fetches only viewport-intersecting chunks via File.slice() or HTTP Range. No need to load entire file into memory.
 - **GPU-first rendering** — dB conversion, colormap application, and contrast stretching all run in GLSL fragment shaders. CPU fallback exists but GPU path is default.
 - **No server required** — Everything runs client-side. h5chunk streams from local File objects. geotiff.js streams from URLs.
-- **Minimal dependencies** — No GDAL, no Python, no tile server.
+- **Minimal dependencies** — Pure JS/WASM stack. No GDAL, no Python, no tile server.
 
 ## Project Structure
 
@@ -258,14 +258,10 @@ downloadBuffer(buffer, 'export.tif');
 - Server mode for Docker deployment (sardine-launch)
 - Processing backend hook (Nextflow / Python pipeline)
 
-## Success Criteria
-
-A scientist should be able to:
+## Target Workflow
 
 1. Drop a NISAR GCOV file into SARdine
-2. See sensible defaults immediately (dB, grayscale, auto-contrast)
+2. Sensible defaults applied automatically (dB, grayscale, auto-contrast)
 3. Switch polarizations, enable RGB composite
 4. Adjust contrast, colormap, stretch
-5. Export a publication-ready GeoTIFF or figure
-
-**Without writing code. Without opening QGIS. Without installing Python.**
+5. Export georeferenced GeoTIFF or annotated figure PNG

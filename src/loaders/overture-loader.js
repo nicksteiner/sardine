@@ -2,10 +2,12 @@
  * Overture Maps Data Loader
  *
  * Streams Overture Maps Foundation data (buildings, roads, places, etc.)
- * from cloud-hosted GeoParquet files via HTTP range requests.
+ * from cloud-hosted GeoParquet files via HTTP range requests, and provides
+ * vector tile access via PMTiles for map overlays and mini-map context.
  *
  * Overture data lives at:
- *   s3://overturemaps-us-west-2/release/{version}/theme={theme}/type={type}/
+ *   Parquet: s3://overturemaps-us-west-2/release/{version}/theme={theme}/type={type}/
+ *   PMTiles: s3://overturemaps-tiles-us-west-2-beta/{release_date}/{theme}.pmtiles
  *
  * Each theme is partitioned into GeoParquet files spatially, enabling
  * efficient viewport-based fetching — the same streaming pattern
@@ -15,14 +17,17 @@
  *   - buildings/building
  *   - transportation/segment
  *   - places/place
- *   - base/water
- *   - base/land_use
- *   - admins/locality
+ *   - base/water, base/land, base/land_use, base/infrastructure
+ *   - divisions/division
  */
 
-// Overture S3 bucket (public, us-west-2)
+import { PMTiles } from 'pmtiles';
+
+// ── Overture S3 endpoints ──
 const OVERTURE_BASE_URL = 'https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com';
+const OVERTURE_TILES_URL = 'https://overturemaps-tiles-us-west-2-beta.s3.amazonaws.com';
 const DEFAULT_RELEASE = '2024-12-18.0';
+const DEFAULT_TILES_RELEASE = '2024-12-18';  // PMTiles use date without minor version
 
 /**
  * Available Overture themes and their types.
@@ -298,5 +303,537 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
  */
 export function clearOvertureCache() {
   featureCache.clear();
+  pmtilesGeoJSONCache.clear();
   console.log('[Overture] Cache cleared');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PMTiles Vector Tile Reader — for mini-map and scene context
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * PMTiles instances cache (one per theme).
+ * @type {Map<string, PMTiles>}
+ */
+const pmtilesInstances = new Map();
+
+/**
+ * Get or create a PMTiles instance for a theme.
+ * @param {string} theme - e.g. 'base', 'buildings', 'transportation'
+ * @param {string} release - e.g. '2024-12-18'
+ * @returns {PMTiles}
+ */
+function getPMTiles(theme, release = DEFAULT_TILES_RELEASE) {
+  const key = `${release}/${theme}`;
+  if (!pmtilesInstances.has(key)) {
+    const url = `${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`;
+    console.log(`[Overture PMTiles] Opening: ${url}`);
+    pmtilesInstances.set(key, new PMTiles(url));
+  }
+  return pmtilesInstances.get(key);
+}
+
+/**
+ * Cache for decoded GeoJSON from PMTiles vector tiles.
+ * @type {Map<string, Object>}
+ */
+const pmtilesGeoJSONCache = new Map();
+
+/**
+ * Decode an MVT (Mapbox Vector Tile) protobuf buffer into GeoJSON features.
+ *
+ * MVT is a compact binary format (protobuf) encoding vector geometries
+ * in tile-local coordinates (0–4096). We decode the protobuf manually
+ * to avoid adding a full MVT library dependency.
+ *
+ * Simplified decoder — handles Polygon, MultiPolygon, LineString, Point
+ * geometries which is all we need for coastlines and context layers.
+ *
+ * @param {ArrayBuffer} buffer — raw MVT protobuf bytes
+ * @param {number} tileX — tile X coordinate
+ * @param {number} tileY — tile Y coordinate
+ * @param {number} tileZ — tile zoom level
+ * @returns {{ layers: Object<string, GeoJSON.Feature[]> }}
+ */
+function decodeMVT(buffer, tileX, tileY, tileZ) {
+  const extent = 4096;
+  const size = extent * Math.pow(2, tileZ);
+  const x0 = extent * tileX;
+  const y0 = extent * tileY;
+
+  // Convert tile-local coordinates to WGS84
+  function toWGS84(cx, cy) {
+    const lon = ((cx + x0) / size) * 360 - 180;
+    const latRad = Math.atan(Math.sinh(Math.PI * (1 - (2 * (cy + y0)) / size)));
+    const lat = (latRad * 180) / Math.PI;
+    return [lon, lat];
+  }
+
+  // Minimal protobuf varint decoder
+  const bytes = new Uint8Array(buffer);
+  let pos = 0;
+
+  function readVarint() {
+    let result = 0, shift = 0;
+    while (pos < bytes.length) {
+      const b = bytes[pos++];
+      result |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) return result;
+      shift += 7;
+    }
+    return result;
+  }
+
+  function readSVarint() {
+    const n = readVarint();
+    return (n >>> 1) ^ -(n & 1);
+  }
+
+  function readBytes() {
+    const len = readVarint();
+    const data = bytes.subarray(pos, pos + len);
+    pos += len;
+    return data;
+  }
+
+  function skipField(wireType) {
+    if (wireType === 0) readVarint();
+    else if (wireType === 1) pos += 8;
+    else if (wireType === 2) { const len = readVarint(); pos += len; }
+    else if (wireType === 5) pos += 4;
+  }
+
+  const result = { layers: {} };
+
+  // Parse top-level: repeated Layer messages (field 3)
+  while (pos < bytes.length) {
+    const tag = readVarint();
+    const fieldNum = tag >>> 3;
+    const wireType = tag & 0x7;
+
+    if (fieldNum === 3 && wireType === 2) {
+      const layerBytes = readBytes();
+      const layer = parseLayer(layerBytes);
+      if (layer) {
+        result.layers[layer.name] = layer.features;
+      }
+    } else {
+      skipField(wireType);
+    }
+  }
+
+  function parseLayer(data) {
+    const savedPos = pos;
+    pos = 0;
+    const layerBytes = data;
+    let lPos = 0;
+    let name = '';
+    const keys = [];
+    const values = [];
+    const rawFeatures = [];
+    let layerExtent = 4096;
+
+    while (lPos < layerBytes.length) {
+      const tag = readVarintFrom(layerBytes, lPos);
+      lPos = tag.newPos;
+      const fieldNum = tag.value >>> 3;
+      const wireType = tag.value & 0x7;
+
+      if (fieldNum === 1 && wireType === 2) {
+        // name
+        const len = readVarintFrom(layerBytes, lPos);
+        lPos = len.newPos;
+        name = new TextDecoder().decode(layerBytes.subarray(lPos, lPos + len.value));
+        lPos += len.value;
+      } else if (fieldNum === 2 && wireType === 2) {
+        // feature
+        const len = readVarintFrom(layerBytes, lPos);
+        lPos = len.newPos;
+        rawFeatures.push(layerBytes.subarray(lPos, lPos + len.value));
+        lPos += len.value;
+      } else if (fieldNum === 3 && wireType === 2) {
+        // key
+        const len = readVarintFrom(layerBytes, lPos);
+        lPos = len.newPos;
+        keys.push(new TextDecoder().decode(layerBytes.subarray(lPos, lPos + len.value)));
+        lPos += len.value;
+      } else if (fieldNum === 4 && wireType === 2) {
+        // value
+        const len = readVarintFrom(layerBytes, lPos);
+        lPos = len.newPos;
+        values.push(parseValue(layerBytes.subarray(lPos, lPos + len.value)));
+        lPos += len.value;
+      } else if (fieldNum === 5 && wireType === 0) {
+        // extent
+        const v = readVarintFrom(layerBytes, lPos);
+        lPos = v.newPos;
+        layerExtent = v.value;
+      } else {
+        lPos = skipFieldFrom(layerBytes, lPos, wireType);
+      }
+    }
+
+    const features = [];
+    for (const fBytes of rawFeatures) {
+      const feat = parseFeature(fBytes, keys, values, layerExtent);
+      if (feat) features.push(feat);
+    }
+
+    pos = savedPos;
+    return { name, features };
+  }
+
+  function parseFeature(data, keys, values, ext) {
+    let fPos = 0;
+    let geomType = 0;
+    let geomData = null;
+    const tags = [];
+
+    while (fPos < data.length) {
+      const tag = readVarintFrom(data, fPos);
+      fPos = tag.newPos;
+      const fieldNum = tag.value >>> 3;
+      const wireType = tag.value & 0x7;
+
+      if (fieldNum === 2 && wireType === 2) {
+        // tags
+        const len = readVarintFrom(data, fPos);
+        fPos = len.newPos;
+        let tPos = fPos;
+        const tEnd = fPos + len.value;
+        while (tPos < tEnd) {
+          const ki = readVarintFrom(data, tPos); tPos = ki.newPos;
+          const vi = readVarintFrom(data, tPos); tPos = vi.newPos;
+          tags.push([ki.value, vi.value]);
+        }
+        fPos = tEnd;
+      } else if (fieldNum === 3 && wireType === 0) {
+        // type
+        const v = readVarintFrom(data, fPos);
+        fPos = v.newPos;
+        geomType = v.value;
+      } else if (fieldNum === 4 && wireType === 2) {
+        // geometry
+        const len = readVarintFrom(data, fPos);
+        fPos = len.newPos;
+        geomData = data.subarray(fPos, fPos + len.value);
+        fPos += len.value;
+      } else {
+        fPos = skipFieldFrom(data, fPos, wireType);
+      }
+    }
+
+    if (!geomData) return null;
+
+    // Decode geometry commands
+    const coords = decodeGeometry(geomData, geomType, ext);
+    if (!coords) return null;
+
+    const props = {};
+    for (const [ki, vi] of tags) {
+      if (ki < keys.length && vi < values.length) {
+        props[keys[ki]] = values[vi];
+      }
+    }
+
+    const typeNames = { 1: 'Point', 2: 'LineString', 3: 'Polygon' };
+    return {
+      type: 'Feature',
+      geometry: coords,
+      properties: props,
+    };
+  }
+
+  function decodeGeometry(data, geomType, ext) {
+    let gPos = 0;
+    const commands = [];
+    while (gPos < data.length) {
+      const v = readVarintFrom(data, gPos);
+      gPos = v.newPos;
+      commands.push(v.value);
+    }
+
+    let cx = 0, cy = 0;
+    let i = 0;
+    const rings = [];
+    let ring = [];
+
+    while (i < commands.length) {
+      const cmdId = commands[i] & 0x7;
+      const count = commands[i] >> 3;
+      i++;
+
+      if (cmdId === 1) {
+        // MoveTo
+        for (let j = 0; j < count; j++) {
+          const dx = (commands[i] >> 1) ^ -(commands[i] & 1); i++;
+          const dy = (commands[i] >> 1) ^ -(commands[i] & 1); i++;
+          cx += dx;
+          cy += dy;
+          if (ring.length > 0) rings.push(ring);
+          ring = [toWGS84(cx * extent / ext, cy * extent / ext)];
+        }
+      } else if (cmdId === 2) {
+        // LineTo
+        for (let j = 0; j < count; j++) {
+          const dx = (commands[i] >> 1) ^ -(commands[i] & 1); i++;
+          const dy = (commands[i] >> 1) ^ -(commands[i] & 1); i++;
+          cx += dx;
+          cy += dy;
+          ring.push(toWGS84(cx * extent / ext, cy * extent / ext));
+        }
+      } else if (cmdId === 7) {
+        // ClosePath
+        if (ring.length > 0) {
+          ring.push(ring[0]);
+          rings.push(ring);
+          ring = [];
+        }
+      }
+    }
+    if (ring.length > 0) rings.push(ring);
+
+    if (rings.length === 0) return null;
+
+    if (geomType === 1) {
+      // Point
+      return rings.length === 1 && rings[0].length === 1
+        ? { type: 'Point', coordinates: rings[0][0] }
+        : { type: 'MultiPoint', coordinates: rings.map(r => r[0]) };
+    } else if (geomType === 2) {
+      // LineString
+      return rings.length === 1
+        ? { type: 'LineString', coordinates: rings[0] }
+        : { type: 'MultiLineString', coordinates: rings };
+    } else if (geomType === 3) {
+      // Polygon / MultiPolygon
+      // Each ring is a polygon ring; outer rings are CW, inner CCW in MVT
+      return rings.length === 1
+        ? { type: 'Polygon', coordinates: [rings[0]] }
+        : { type: 'MultiPolygon', coordinates: rings.map(r => [r]) };
+    }
+    return null;
+  }
+
+  function parseValue(data) {
+    let vPos = 0;
+    while (vPos < data.length) {
+      const tag = readVarintFrom(data, vPos);
+      vPos = tag.newPos;
+      const fieldNum = tag.value >>> 3;
+      const wireType = tag.value & 0x7;
+
+      if (fieldNum === 1 && wireType === 2) {
+        const len = readVarintFrom(data, vPos); vPos = len.newPos;
+        return new TextDecoder().decode(data.subarray(vPos, vPos + len.value));
+      } else if (fieldNum === 2 && wireType === 5) {
+        const dv = new DataView(data.buffer, data.byteOffset + vPos, 4);
+        return dv.getFloat32(0, true);
+      } else if (fieldNum === 3 && wireType === 1) {
+        const dv = new DataView(data.buffer, data.byteOffset + vPos, 8);
+        return dv.getFloat64(0, true);
+      } else if (fieldNum === 4 && wireType === 0) {
+        const v = readVarintFrom(data, vPos);
+        return Number(BigInt(v.value));
+      } else if (fieldNum === 5 && wireType === 0) {
+        const v = readVarintFrom(data, vPos);
+        return Number(v.value);
+      } else if (fieldNum === 6 && wireType === 0) {
+        const v = readVarintFrom(data, vPos);
+        return (v.value >> 1) ^ -(v.value & 1);
+      } else if (fieldNum === 7 && wireType === 0) {
+        const v = readVarintFrom(data, vPos);
+        return Boolean(v.value);
+      } else {
+        vPos = skipFieldFrom(data, vPos, wireType);
+      }
+    }
+    return null;
+  }
+
+  function readVarintFrom(data, p) {
+    let result = 0, shift = 0;
+    while (p < data.length) {
+      const b = data[p++];
+      result |= (b & 0x7f) << shift;
+      if ((b & 0x80) === 0) return { value: result, newPos: p };
+      shift += 7;
+    }
+    return { value: result, newPos: p };
+  }
+
+  function skipFieldFrom(data, p, wireType) {
+    if (wireType === 0) { const v = readVarintFrom(data, p); return v.newPos; }
+    if (wireType === 1) return p + 8;
+    if (wireType === 2) { const len = readVarintFrom(data, p); return len.newPos + len.value; }
+    if (wireType === 5) return p + 4;
+    return data.length; // unknown — skip rest
+  }
+
+  return result;
+}
+
+
+/**
+ * Fetch Overture vector tile data for a specific tile coordinate.
+ *
+ * @param {string} theme - PMTiles theme name: 'base', 'buildings', 'transportation', etc.
+ * @param {number} z - Zoom level
+ * @param {number} x - Tile X
+ * @param {number} y - Tile Y
+ * @param {string} release - Tiles release date
+ * @returns {Promise<Object>} Decoded MVT layers → GeoJSON features
+ */
+export async function fetchOvertureTile(theme, z, x, y, release = DEFAULT_TILES_RELEASE) {
+  const cacheKey = `tile:${theme}/${z}/${x}/${y}`;
+  if (pmtilesGeoJSONCache.has(cacheKey)) {
+    return pmtilesGeoJSONCache.get(cacheKey);
+  }
+
+  try {
+    const pm = getPMTiles(theme, release);
+    const tileData = await pm.getZxy(z, x, y);
+
+    if (!tileData || !tileData.data) {
+      console.log(`[Overture PMTiles] No data for ${theme}/${z}/${x}/${y}`);
+      return { layers: {} };
+    }
+
+    const decoded = decodeMVT(tileData.data, x, y, z);
+    pmtilesGeoJSONCache.set(cacheKey, decoded);
+    return decoded;
+  } catch (e) {
+    console.warn(`[Overture PMTiles] Failed to read ${theme}/${z}/${x}/${y}:`, e.message);
+    return { layers: {} };
+  }
+}
+
+
+/**
+ * Fetch world overview coastline polygons from Overture base theme.
+ *
+ * Returns land and water polygons at low zoom (0-1) — sufficient for
+ * a mini-map world overview. Fetches only a few KB of tile data.
+ *
+ * @param {Object} options
+ * @param {number} options.zoom - Zoom level for world overview (default 1)
+ * @param {string} options.release - Tiles release date
+ * @returns {Promise<{ land: GeoJSON.Feature[], water: GeoJSON.Feature[] }>}
+ */
+export async function fetchWorldCoastlines(options = {}) {
+  const { zoom = 1, release = DEFAULT_TILES_RELEASE } = options;
+
+  const cacheKey = `coastlines:z${zoom}`;
+  if (pmtilesGeoJSONCache.has(cacheKey)) {
+    return pmtilesGeoJSONCache.get(cacheKey);
+  }
+
+  console.log(`[Overture] Fetching world coastlines at z${zoom}...`);
+
+  const land = [];
+  const water = [];
+
+  // At z=1 there are 4 tiles (2x2); at z=0 just 1 tile
+  const numTiles = Math.pow(2, zoom);
+
+  const fetches = [];
+  for (let x = 0; x < numTiles; x++) {
+    for (let y = 0; y < numTiles; y++) {
+      fetches.push(
+        fetchOvertureTile('base', zoom, x, y, release).then(decoded => {
+          // Collect land and water features from all layer names
+          for (const [layerName, features] of Object.entries(decoded.layers)) {
+            for (const f of features) {
+              const subtype = f.properties?.subtype || f.properties?.class || layerName;
+              if (layerName === 'water' || subtype === 'ocean' || subtype === 'sea' || subtype === 'lake') {
+                water.push(f);
+              } else if (layerName === 'land' || subtype === 'continent' || subtype === 'island') {
+                land.push(f);
+              } else {
+                // Other base features (infrastructure, etc.) — include as land context
+                land.push(f);
+              }
+            }
+          }
+        })
+      );
+    }
+  }
+
+  await Promise.all(fetches);
+
+  const result = { land, water };
+  pmtilesGeoJSONCache.set(cacheKey, result);
+
+  console.log(`[Overture] Coastlines loaded: ${land.length} land, ${water.length} water features`);
+  return result;
+}
+
+
+/**
+ * Fetch Overture context features near a scene footprint.
+ *
+ * Gets buildings, roads, and admin boundaries from Overture PMTiles
+ * at an appropriate zoom level for the scene extent.
+ *
+ * @param {Object} wgs84Bounds - { minLon, minLat, maxLon, maxLat }
+ * @param {Object} options
+ * @param {string[]} options.themes - Themes to fetch (default: ['base', 'buildings', 'transportation'])
+ * @param {string} options.release - Tiles release date
+ * @returns {Promise<Object>} { theme: { layers: { layerName: Feature[] } } }
+ */
+export async function fetchSceneContext(wgs84Bounds, options = {}) {
+  const {
+    themes = ['base'],
+    release = DEFAULT_TILES_RELEASE,
+  } = options;
+
+  if (!wgs84Bounds) return {};
+
+  // Choose zoom level based on scene extent
+  const spanLon = wgs84Bounds.maxLon - wgs84Bounds.minLon;
+  const spanLat = wgs84Bounds.maxLat - wgs84Bounds.minLat;
+  const maxSpan = Math.max(spanLon, spanLat);
+
+  // Pick zoom: ~2° span → z6, ~0.5° → z8, ~0.1° → z10
+  const zoom = Math.max(2, Math.min(10, Math.round(Math.log2(360 / maxSpan) - 1)));
+
+  console.log(`[Overture] Fetching scene context at z${zoom} for [${wgs84Bounds.minLon.toFixed(2)}, ${wgs84Bounds.minLat.toFixed(2)}, ${wgs84Bounds.maxLon.toFixed(2)}, ${wgs84Bounds.maxLat.toFixed(2)}]`);
+
+  // Convert bbox to tile coordinates
+  const n = Math.pow(2, zoom);
+  const xMin = Math.floor(((wgs84Bounds.minLon + 180) / 360) * n);
+  const xMax = Math.floor(((wgs84Bounds.maxLon + 180) / 360) * n);
+  const yMin = Math.floor((1 - Math.log(Math.tan(wgs84Bounds.maxLat * Math.PI / 180) + 1 / Math.cos(wgs84Bounds.maxLat * Math.PI / 180)) / Math.PI) / 2 * n);
+  const yMax = Math.floor((1 - Math.log(Math.tan(wgs84Bounds.minLat * Math.PI / 180) + 1 / Math.cos(wgs84Bounds.minLat * Math.PI / 180)) / Math.PI) / 2 * n);
+
+  const result = {};
+
+  for (const theme of themes) {
+    const allLayers = {};
+    const fetches = [];
+
+    for (let x = Math.max(0, xMin); x <= Math.min(n - 1, xMax); x++) {
+      for (let y = Math.max(0, yMin); y <= Math.min(n - 1, yMax); y++) {
+        fetches.push(
+          fetchOvertureTile(theme, zoom, x, y, release).then(decoded => {
+            for (const [layerName, features] of Object.entries(decoded.layers)) {
+              if (!allLayers[layerName]) allLayers[layerName] = [];
+              allLayers[layerName].push(...features);
+            }
+          })
+        );
+      }
+    }
+
+    await Promise.all(fetches);
+    result[theme] = { layers: allLayers };
+  }
+
+  const totalFeatures = Object.values(result).reduce(
+    (sum, r) => sum + Object.values(r.layers).reduce((s, fs) => s + fs.length, 0), 0
+  );
+  console.log(`[Overture] Scene context: ${totalFeatures} features across ${themes.join(', ')}`);
+
+  return result;
 }

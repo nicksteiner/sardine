@@ -108,6 +108,70 @@ vec3 grayscale(float t) {
   return vec3(t, t, t);
 }
 
+// SARdine brand colormap — navy → teal → cyan → near-white
+vec3 sardineMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  // Stops: #0a1628 (0.039,0.086,0.157)  #2a8a93 (0.165,0.541,0.576)
+  //        #4ec9d4 (0.306,0.788,0.824)  #e8edf5 (0.910,0.929,0.961)
+  vec3 c;
+  if (t < 0.33) {
+    float s = t / 0.33;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.165, 0.541, 0.576), s);
+  } else if (t < 0.67) {
+    float s = (t - 0.33) / 0.34;
+    c = mix(vec3(0.165, 0.541, 0.576), vec3(0.306, 0.788, 0.824), s);
+  } else {
+    float s = (t - 0.67) / 0.33;
+    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.910, 0.929, 0.961), s);
+  }
+  return c;
+}
+
+// Flood alert colormap — navy → deep orange → bright orange → red
+vec3 floodMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.33) {
+    float s = t / 0.33;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.710, 0.392, 0.165), s);
+  } else if (t < 0.67) {
+    float s = (t - 0.33) / 0.34;
+    c = mix(vec3(0.710, 0.392, 0.165), vec3(0.910, 0.514, 0.227), s);
+  } else {
+    float s = (t - 0.67) / 0.33;
+    c = mix(vec3(0.910, 0.514, 0.227), vec3(1.0, 0.361, 0.361), s);
+  }
+  return c;
+}
+
+// Diverging colormap — cyan → navy → orange (zero-centered)
+vec3 divergingMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.5) {
+    float s = t / 0.5;
+    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.039, 0.086, 0.157), s);
+  } else {
+    float s = (t - 0.5) / 0.5;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.910, 0.514, 0.227), s);
+  }
+  return c;
+}
+
+// Polarimetric colormap — magenta → navy → green
+vec3 polarimetricMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.5) {
+    float s = t / 0.5;
+    c = mix(vec3(0.831, 0.361, 1.0), vec3(0.039, 0.086, 0.157), s);
+  } else {
+    float s = (t - 0.5) / 0.5;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.239, 0.863, 0.518), s);
+  }
+  return c;
+}
+
 void main(void) {
   vec4 texel = texture(uTexture, vTexCoord);
   float amplitude = texel.r;
@@ -152,6 +216,14 @@ void main(void) {
     color = plasma(value);
   } else if (uColormap == 4) {
     color = phaseColormap(value);
+  } else if (uColormap == 5) {
+    color = sardineMap(value);
+  } else if (uColormap == 6) {
+    color = floodMap(value);
+  } else if (uColormap == 7) {
+    color = divergingMap(value);
+  } else if (uColormap == 8) {
+    color = polarimetricMap(value);
   } else {
     color = grayscale(value);
   }
@@ -174,6 +246,10 @@ export const COLORMAP_IDS = {
   inferno: 2,
   plasma: 3,
   phase: 4,
+  sardine: 5,
+  flood: 6,
+  diverging: 7,
+  polarimetric: 8,
 };
 
 /**

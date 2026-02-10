@@ -1,8 +1,6 @@
 /**
- * SARdine - A lightweight SAR imagery viewer library
- * Built on deck.gl and geotiff.js
- * 
- * (SAR + sardine — small, lightweight, packed tight)
+ * SARdine - SAR Data INspection and Exploration
+ * Browser-native SAR viewer built on deck.gl, geotiff.js, and h5chunk
  */
 
 export { SARdine } from './SARdine';

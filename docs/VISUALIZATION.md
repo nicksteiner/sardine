@@ -1,17 +1,14 @@
-# SARdine SAR Visualization
+# SARdine — SAR Data INspection and Exploration: Visualization
 
 ## Design Philosophy
 
-A SAR scientist opens SARdine, points it at a NISAR product (or any supported SAR vendor), and immediately sees their data on a map with sensible defaults. No format conversion, no command-line preprocessing, no downloading. Every interaction a scientist would normally do in SNAP, QGIS, or a Jupyter notebook should be one click or one slider in SARdine.
+SARdine applies sensible SAR defaults on load — dB scaling, grayscale colormap, auto-contrast. Standard interactive operations (band selection, stretch, colormap, export) are exposed as direct UI controls. Data streams from local files or URLs; the full file is never loaded into memory.
 
 ---
 
 ## 1. Data Ingestion
 
-### What the scientist does
-Drags in a local file, pastes a COG URL, or browses a server data directory.
-
-### What SARdine does
+### Supported inputs
 
 | Input | Behavior | Status |
 | :---- | :------- | :----- |
@@ -35,17 +32,17 @@ When loading a NISAR GCOV HDF5 file, SARdine automatically:
 
 ## 2. Default Rendering
 
-When a product loads, SARdine applies sensible SAR defaults immediately — no blank canvas, no "select a band" dialogs.
+On load, SARdine applies these defaults automatically:
 
 ### Backscatter (GCOV, GRD, GEC) — Shipped
 
 | Setting | Default | Why |
 | :------ | :------ | :-- |
-| Scale | dB (10·log₁₀) | Nobody looks at linear power |
+| Scale | dB (10·log₁₀) | Standard for backscatter display |
 | Range | -25 to 0 dB | Reasonable for most land cover |
 | Colormap | Grayscale | Standard SAR convention |
 | Nodata | Transparent | NaN and 0 masked out |
-| Stretch | Linear | Clean starting point, user can switch |
+| Stretch | Linear | User can switch to sqrt/gamma/sigmoid |
 | Multilook | 4× (on-screen adaptive) | Balance resolution vs speckle |
 
 ### Interferometry (GUNW) — Planned
@@ -63,13 +60,13 @@ When a product loads, SARdine applies sensible SAR defaults immediately — no b
 | Range/Azimuth offset | Diverging colormap (blue-white-red) | Show direction of motion |
 | Magnitude | Viridis | Highlight fast-moving areas |
 
-All of these are the starting point. The scientist tweaks from here, not from zero.
+These are starting defaults; all are adjustable.
 
 ---
 
 ## 3. Interactive Controls
 
-Everything a SAR scientist reaches for constantly, surfaced as immediate UI elements.
+Controls for common SAR visualization operations.
 
 ### Stretch / Colormap Panel — Shipped
 
@@ -101,7 +98,7 @@ What's implemented:
 - **Interactive histogram** — with percentile markers and bin counts
 - **Per-channel contrast** — independent min/max for R, G, B in composite mode
 
-All of this runs on the GPU. Changing the stretch or colormap is instant.
+All rendering parameters update on the GPU; no data re-fetch required.
 
 ### Polarization Selector — Shipped
 
@@ -136,7 +133,7 @@ Product metadata is parsed and displayed in the status window when a file is loa
 
 ### Cursor Inspector — Planned
 
-Hover over any pixel and see lat/lon, per-pol dB values, incidence angle. Should update at 60fps.
+Hover readout: lat/lon, per-pol dB values, incidence angle at cursor position.
 
 ---
 

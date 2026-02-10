@@ -45,11 +45,26 @@ const FILTER_SCALEOFFSET = 6;
  * DataView wrapper with position tracking
  */
 class BufferReader {
-  constructor(buffer, littleEndian = true) {
+  /**
+   * @param {ArrayBuffer} buffer
+   * @param {boolean} littleEndian
+   * @param {number} baseOffset — logical file position that buffer[0] maps to.
+   *   When 0 (default), pos == buffer index (backward compatible).
+   *   When >0, all seek/read operations use absolute file positions while
+   *   internal buffer access is adjusted by subtracting baseOffset.
+   */
+  constructor(buffer, littleEndian = true, baseOffset = 0) {
     this.view = new DataView(buffer);
-    this.pos = 0;
+    this.pos = baseOffset;
     this.le = littleEndian;
+    this._base = baseOffset;
   }
+
+  /** Buffer-relative offset (for internal DataView access). */
+  get _off() { return this.pos - this._base; }
+
+  /** Check if n bytes are available from current position. */
+  canRead(n) { return this._off >= 0 && this._off + n <= this.view.byteLength; }
 
   seek(pos) {
     this.pos = pos;
@@ -60,31 +75,31 @@ class BufferReader {
   }
 
   readUint8() {
-    const v = this.view.getUint8(this.pos);
+    const v = this.view.getUint8(this._off);
     this.pos += 1;
     return v;
   }
 
   readUint16() {
-    const v = this.view.getUint16(this.pos, this.le);
+    const v = this.view.getUint16(this._off, this.le);
     this.pos += 2;
     return v;
   }
 
   readUint32() {
-    const v = this.view.getUint32(this.pos, this.le);
+    const v = this.view.getUint32(this._off, this.le);
     this.pos += 4;
     return v;
   }
 
   readUint64() {
-    const v = this.view.getBigUint64(this.pos, this.le);
+    const v = this.view.getBigUint64(this._off, this.le);
     this.pos += 8;
     return Number(v);
   }
 
   readBytes(n) {
-    const arr = new Uint8Array(this.view.buffer, this.pos, n);
+    const arr = new Uint8Array(this.view.buffer, this._off, n);
     this.pos += n;
     return arr;
   }
@@ -454,13 +469,13 @@ function parseObjectHeader(reader, superblock, address) {
     const version = reader.readUint8();
     const flags = reader.readUint8();
 
-    // Optional timestamps
-    if (flags & 0x10) {
+    // Optional timestamps (bit 5 per HDF5 spec §III.C)
+    if (flags & 0x20) {
       reader.skip(16); // access, modification, change, birth times
     }
 
-    // Optional max compact/min dense
-    if (flags & 0x04) {
+    // Optional non-default attribute storage phase change values (bit 4)
+    if (flags & 0x10) {
       reader.skip(4);
     }
 
@@ -644,7 +659,7 @@ function parseDatatypeMessage(reader, offset) {
  * Supports attribute message versions 1, 2, and 3.
  * See HDF5 spec: IV.A.2.m "Attribute Message"
  */
-function parseAttributeMessage(reader, offset, metadataBuffer) {
+function parseAttributeMessage(reader, offset, _metadataBuffer) {
   try {
     reader.seek(offset);
     const version = reader.readUint8();
@@ -704,16 +719,16 @@ function parseAttributeMessage(reader, offset, metadataBuffer) {
       reader.seek(dspaceOffset + dspaceSize);
     }
 
-    // Read raw data
+    // Read raw data via reader (works with both local metadata buffer
+    // and remote buffers that have a non-zero baseOffset)
     const totalElements = dataspace.dims.reduce((a, b) => a * b, 1) || 1;
     const dataBytes = totalElements * datatype.size;
-    const dataOffset = reader.pos;
 
-    if (dataOffset + dataBytes > metadataBuffer.byteLength) return null;
+    if (!reader.canRead(dataBytes)) return null;
 
     // Decode the attribute value
     if (datatype.dtype === 'string') {
-      const view = new Uint8Array(metadataBuffer, dataOffset, dataBytes);
+      const view = reader.readBytes(dataBytes);
       let str = '';
       for (let i = 0; i < view.length; i++) {
         if (view[i] === 0) break;
@@ -722,7 +737,8 @@ function parseAttributeMessage(reader, offset, metadataBuffer) {
       return { name, value: str.trim() };
     }
 
-    const slice = metadataBuffer.slice(dataOffset, dataOffset + dataBytes);
+    const rawBytes = reader.readBytes(dataBytes);
+    const slice = rawBytes.buffer.slice(rawBytes.byteOffset, rawBytes.byteOffset + rawBytes.byteLength);
     let value;
     if (datatype.dtype === 'float64') {
       value = new Float64Array(slice);
@@ -764,7 +780,16 @@ function parseDataLayoutMessage(reader, offset, superblock) {
     const layoutClass = reader.readUint8();
     reader.skip(5); // reserved
 
-    if (layoutClass === LAYOUT_CONTIGUOUS) {
+    if (layoutClass === LAYOUT_COMPACT) {
+      const dataSize = reader.readUint16();
+      const dataOffset = reader.pos; // data follows inline
+      return {
+        type: 'compact',
+        address: dataOffset,
+        size: dataSize,
+        _reader: reader, // keep reference to read inline data
+      };
+    } else if (layoutClass === LAYOUT_CONTIGUOUS) {
       const dataAddress = reader.readOffset(superblock.offsetSize);
       const dataSize = reader.readLength(superblock.lengthSize);
       return {
@@ -789,7 +814,16 @@ function parseDataLayoutMessage(reader, offset, superblock) {
     // Version 3 or 4
     const layoutClass = reader.readUint8();
 
-    if (layoutClass === LAYOUT_CONTIGUOUS) {
+    if (layoutClass === LAYOUT_COMPACT) {
+      const dataSize = reader.readUint16();
+      const dataOffset = reader.pos;
+      return {
+        type: 'compact',
+        address: dataOffset,
+        size: dataSize,
+        _reader: reader,
+      };
+    } else if (layoutClass === LAYOUT_CONTIGUOUS) {
       const dataAddress = reader.readOffset(superblock.offsetSize);
       const dataSize = reader.readLength(superblock.lengthSize);
       return {
@@ -1240,11 +1274,27 @@ export class H5Chunk {
    * messages live beyond the initial header allocation.
    */
   async _parseObjectAtAddress(reader, address, path) {
-    if (address >= this.metadataBuffer.byteLength) {
-      return; // Beyond our metadata buffer
+    // Determine which reader to use: the metadata reader or a remote one
+    let activeReader = reader;
+    const isRemote = address >= this.metadataBuffer.byteLength;
+
+    if (isRemote) {
+      // Fetch a generous chunk at the remote address — 8KB covers any
+      // small dataset's object header + inline data (identification fields
+      // are scalar strings/ints, well under 1KB each).
+      const fetchSize = 8192;
+      console.log(`[h5chunk] Fetching remote object header at 0x${address.toString(16)} for ${path}`);
+      const buf = await this._fetchBytes(address, fetchSize);
+      activeReader = new BufferReader(buf, true, address);
     }
 
-    const messages = parseObjectHeader(reader, this.superblock, address);
+    const messages = parseObjectHeader(activeReader, this.superblock, address);
+    if (isRemote) {
+      console.log(`[h5chunk] Remote object ${path}: ${messages.length} messages found`);
+      for (const m of messages) {
+        console.log(`[h5chunk]   msg type=${m.type} size=${m.size} offset=0x${m.offset.toString(16)}`);
+      }
+    }
 
     let dataspace = null;
     let datatype = null;
@@ -1258,32 +1308,32 @@ export class H5Chunk {
 
     for (const msg of messages) {
       try {
-        if (msg.type === MSG_DATASPACE && msg.offset < this.metadataBuffer.byteLength) {
-          dataspace = parseDataspaceMessage(reader, msg.offset);
-        } else if (msg.type === MSG_DATATYPE && msg.offset < this.metadataBuffer.byteLength) {
-          datatype = parseDatatypeMessage(reader, msg.offset);
-        } else if (msg.type === MSG_DATA_LAYOUT && msg.offset < this.metadataBuffer.byteLength) {
-          layout = parseDataLayoutMessage(reader, msg.offset, this.superblock);
-        } else if (msg.type === MSG_FILTER_PIPELINE && msg.offset < this.metadataBuffer.byteLength) {
-          filters = parseFilterPipelineMessage(reader, msg.offset);
-        } else if (msg.type === MSG_ATTRIBUTE && msg.offset < this.metadataBuffer.byteLength) {
-          const attr = parseAttributeMessage(reader, msg.offset, this.metadataBuffer);
+        if (msg.type === MSG_DATASPACE) {
+          dataspace = parseDataspaceMessage(activeReader, msg.offset);
+        } else if (msg.type === MSG_DATATYPE) {
+          datatype = parseDatatypeMessage(activeReader, msg.offset);
+        } else if (msg.type === MSG_DATA_LAYOUT) {
+          layout = parseDataLayoutMessage(activeReader, msg.offset, this.superblock);
+        } else if (msg.type === MSG_FILTER_PIPELINE) {
+          filters = parseFilterPipelineMessage(activeReader, msg.offset);
+        } else if (msg.type === MSG_ATTRIBUTE) {
+          const attr = parseAttributeMessage(activeReader, msg.offset, null);
           if (attr && attr.name) {
             attributes.set(attr.name, attr.value);
           }
-        } else if (msg.type === MSG_LINK && msg.offset < this.metadataBuffer.byteLength) {
-          const link = parseLinkMessage(reader, msg.offset, this.superblock);
+        } else if (msg.type === MSG_LINK) {
+          const link = parseLinkMessage(activeReader, msg.offset, this.superblock);
           if (link && link.address != null) {
             childLinks.push(link);
           }
-        } else if (msg.type === MSG_SYMBOL_TABLE && msg.offset < this.metadataBuffer.byteLength) {
-          reader.seek(msg.offset);
-          symbolTableBTree = reader.readOffset(this.superblock.offsetSize);
-          symbolTableHeap = reader.readOffset(this.superblock.offsetSize);
+        } else if (msg.type === MSG_SYMBOL_TABLE) {
+          activeReader.seek(msg.offset);
+          symbolTableBTree = activeReader.readOffset(this.superblock.offsetSize);
+          symbolTableHeap = activeReader.readOffset(this.superblock.offsetSize);
         } else if (msg.type === MSG_OBJ_HEADER_CONTINUATION) {
-          reader.seek(msg.offset);
-          const contOffset = reader.readOffset(this.superblock.offsetSize);
-          const contLength = reader.readLength(this.superblock.lengthSize);
+          activeReader.seek(msg.offset);
+          const contOffset = activeReader.readOffset(this.superblock.offsetSize);
+          const contLength = activeReader.readLength(this.superblock.lengthSize);
           if (contOffset > 0 && contLength > 0 && contLength < 64 * 1024) {
             continuationBlocks.push({ offset: contOffset, length: contLength });
           }
@@ -1341,13 +1391,26 @@ export class H5Chunk {
 
     // ── Handle v1 groups via Symbol Table traversal ─────────────────────
     if (symbolTableBTree != null && symbolTableHeap != null) {
-      const children = enumerateGroupChildren(
-        reader, symbolTableBTree, symbolTableHeap, this.superblock
-      );
+      let children;
+      if (symbolTableBTree < this.metadataBuffer.byteLength &&
+          symbolTableHeap < this.metadataBuffer.byteLength) {
+        children = enumerateGroupChildren(
+          reader, symbolTableBTree, symbolTableHeap, this.superblock
+        );
+      } else {
+        // Symbol table B-tree/heap are beyond metadata buffer — fetch remotely
+        try {
+          children = await this._enumerateRemoteGroup(symbolTableBTree, symbolTableHeap);
+        } catch (e) {
+          console.warn(`[h5chunk] Failed to enumerate remote group ${path}:`, e.message);
+          children = [];
+        }
+      }
       console.log(`[h5chunk] Group ${path}: ${children.length} children via Symbol Table`);
 
       for (const child of children) {
         const childPath = path === '/' ? `/${child.name}` : `${path}/${child.name}`;
+        console.log(`[h5chunk]   child "${child.name}": objAddr=0x${child.objAddr.toString(16)} cacheType=${child.cacheType} btree=${child.btreeAddr != null ? '0x'+child.btreeAddr.toString(16) : 'null'} heap=${child.heapAddr != null ? '0x'+child.heapAddr.toString(16) : 'null'}`);
 
         if (child.cacheType === 1 && child.btreeAddr != null && child.heapAddr != null) {
           // Cached group — use scratch-pad B-tree/heap directly
@@ -1366,13 +1429,34 @@ export class H5Chunk {
                 // Skip children we can't parse
               }
             }
+          } else {
+            // Cached group but B-tree/heap beyond metadata buffer —
+            // fetch the needed regions and enumerate children remotely.
+            try {
+              const grandChildren = await this._enumerateRemoteGroup(
+                child.btreeAddr, child.heapAddr
+              );
+              console.log(`[h5chunk] Group ${childPath}: ${grandChildren.length} children (fetched remote)`);
+
+              for (const gc of grandChildren) {
+                const gcPath = `${childPath}/${gc.name}`;
+                try {
+                  await this._parseObjectAtAddress(reader, gc.objAddr, gcPath);
+                } catch (e) {
+                  // Skip children we can't parse
+                }
+              }
+            } catch (e) {
+              console.warn(`[h5chunk] Failed to enumerate remote group ${childPath}:`, e.message);
+            }
           }
         } else {
           // Non-cached entry — parse the object header to determine type
           try {
+            console.log(`[h5chunk] Parsing non-cached child ${childPath} at 0x${child.objAddr.toString(16)}`);
             await this._parseObjectAtAddress(reader, child.objAddr, childPath);
           } catch (e) {
-            // Skip children we can't parse
+            console.warn(`[h5chunk] Failed to parse ${childPath}:`, e.message);
           }
         }
       }
@@ -1445,6 +1529,122 @@ export class H5Chunk {
    * Scan for chunked data layout messages directly in the buffer
    * This catches datasets we might have missed by signature scanning
    */
+  /**
+   * Enumerate children of a remote group whose B-tree and local heap are
+   * beyond the metadata buffer. Fetches just the needed bytes.
+   *
+   * @param {number} btreeAddr — Group B-tree v1 address
+   * @param {number} heapAddr — Local heap address
+   * @returns {Promise<Array<{name, objAddr, cacheType, btreeAddr, heapAddr}>>}
+   */
+  async _enumerateRemoteGroup(btreeAddr, heapAddr) {
+    const oSize = this.superblock.offsetSize;
+    const lSize = this.superblock.lengthSize;
+
+    // ── 1. Parse the local heap to get the name data segment ──
+    const heapHeaderSize = 4 + 1 + 3 + lSize + lSize + oSize; // sig+ver+res+dataSize+freeOfs+dataAddr
+    const heapHeader = await this._fetchBytes(heapAddr, heapHeaderSize + 16); // +16 padding
+    const hv = new DataView(heapHeader);
+    const heapSig = String.fromCharCode(hv.getUint8(0), hv.getUint8(1), hv.getUint8(2), hv.getUint8(3));
+    if (heapSig !== 'HEAP') throw new Error(`Bad heap signature: ${heapSig}`);
+    // version at offset 4, skip reserved (3 bytes)
+    let ho = 8; // past sig + version + reserved
+    const dataSize = lSize === 8 ? Number(hv.getBigUint64(ho, true)) : hv.getUint32(ho, true);
+    ho += lSize;
+    ho += lSize; // skip free list offset
+    const dataAddr = oSize === 8 ? Number(hv.getBigUint64(ho, true)) : hv.getUint32(ho, true);
+
+    // Fetch the heap data segment (contains names)
+    const heapData = new Uint8Array(await this._fetchBytes(dataAddr, dataSize));
+
+    // Helper: read null-terminated string from heap
+    const readName = (offset) => {
+      if (offset >= heapData.length) return '';
+      let end = offset;
+      while (end < heapData.length && heapData[end] !== 0) end++;
+      return String.fromCharCode(...heapData.slice(offset, end));
+    };
+
+    // ── 2. Walk the B-tree to find SNOD addresses ──
+    const snodAddrs = [];
+
+    const walkTree = async (addr) => {
+      const headerSize = 4 + 1 + 1 + 2 + oSize + oSize; // sig+type+level+entries+left+right
+      const hdrBuf = await this._fetchBytes(addr, headerSize);
+      const tv = new DataView(hdrBuf);
+      const sig = String.fromCharCode(tv.getUint8(0), tv.getUint8(1), tv.getUint8(2), tv.getUint8(3));
+      if (sig !== 'TREE') return;
+
+      const nodeType = tv.getUint8(4);
+      if (nodeType !== 0) return; // group B-tree only
+      const nodeLevel = tv.getUint8(5);
+      const entriesUsed = tv.getUint16(6, true);
+
+      // Entries start after header. Each entry: key (oSize) + childAddr (oSize).
+      // Plus one final key at the end.
+      const entrySize = oSize * 2;
+      const entriesBuf = await this._fetchBytes(
+        addr + headerSize,
+        (entriesUsed + 1) * entrySize
+      );
+      const ev = new DataView(entriesBuf);
+
+      for (let i = 0; i < entriesUsed; i++) {
+        const childAddr = oSize === 8
+          ? Number(ev.getBigUint64(i * entrySize + oSize, true))
+          : ev.getUint32(i * entrySize + oSize, true);
+
+        if (nodeLevel === 0) {
+          snodAddrs.push(childAddr);
+        } else {
+          await walkTree(childAddr);
+        }
+      }
+    };
+
+    await walkTree(btreeAddr);
+
+    // ── 3. Parse each SNOD to get children ──
+    const results = [];
+    const snodEntrySize = oSize + oSize + 4 + 4 + 16; // nameOfs+objAddr+cacheType+reserved+scratch
+
+    for (const snodAddr of snodAddrs) {
+      const snodHeader = await this._fetchBytes(snodAddr, 8); // sig+ver+reserved+numSymbols
+      const sv = new DataView(snodHeader);
+      const sig = String.fromCharCode(sv.getUint8(0), sv.getUint8(1), sv.getUint8(2), sv.getUint8(3));
+      if (sig !== 'SNOD') continue;
+
+      const numSymbols = sv.getUint16(6, true);
+      const entriesBuf = await this._fetchBytes(snodAddr + 8, numSymbols * snodEntrySize);
+      const nv = new DataView(entriesBuf);
+
+      for (let i = 0; i < numSymbols; i++) {
+        let eo = i * snodEntrySize;
+        const nameOffset = oSize === 8 ? Number(nv.getBigUint64(eo, true)) : nv.getUint32(eo, true);
+        eo += oSize;
+        const objAddr = oSize === 8 ? Number(nv.getBigUint64(eo, true)) : nv.getUint32(eo, true);
+        eo += oSize;
+        const cacheType = nv.getUint32(eo, true);
+        eo += 4 + 4; // cacheType + reserved
+        const scratch = new Uint8Array(entriesBuf, eo, 16);
+
+        const name = readName(nameOffset);
+        let childBtree = null, childHeap = null;
+        if (cacheType === 1) {
+          const scv = new DataView(scratch.buffer, scratch.byteOffset, 16);
+          childBtree = Number(scv.getBigUint64(0, true));
+          childHeap = Number(scv.getBigUint64(8, true));
+        }
+
+        if (name) {
+          results.push({ name, objAddr, cacheType, btreeAddr: childBtree, heapAddr: childHeap });
+        }
+      }
+    }
+
+    return results;
+  }
+
   async _scanForChunkedLayouts(reader, buffer) {
     // Look for Data Layout message version 3 or 4 with chunked class (0x02)
     // Layout v3: [version=3][class=2][rank][btree_addr][chunk_dims...]
@@ -1885,6 +2085,36 @@ export class H5Chunk {
 
     const { layout, dtype, shape, bytesPerElement } = dataset;
     if (!layout) return null;
+
+    // Compact datasets — data is inline in the object header
+    if (layout.type === 'compact') {
+      const totalElements = shape.reduce((a, b) => a * b, 1);
+      const totalBytes = layout.size || totalElements * bytesPerElement;
+
+      // Try reading from metadata buffer first (fast path)
+      if (layout.address + totalBytes <= this.metadataBuffer.byteLength) {
+        if (dtype === 'string') {
+          return this._readStringDatasetFromBuffer(this.metadataBuffer, layout.address, totalElements, bytesPerElement, shape);
+        }
+        const slice = this.metadataBuffer.slice(layout.address, layout.address + totalBytes);
+        const data = this._decodeData(slice, dtype);
+        return { data, shape, dtype };
+      }
+
+      // Compact data beyond metadata buffer — fetch it
+      try {
+        const remoteBuffer = await this._fetchBytes(layout.address, totalBytes);
+        if (!remoteBuffer) return null;
+        if (dtype === 'string') {
+          return this._readStringDatasetFromBuffer(remoteBuffer, 0, totalElements, bytesPerElement, shape);
+        }
+        const data = this._decodeData(remoteBuffer, dtype);
+        return { data, shape, dtype };
+      } catch (e) {
+        console.warn(`[h5chunk] Failed to fetch compact dataset ${datasetId}:`, e.message);
+        return null;
+      }
+    }
 
     // Contiguous datasets
     if (layout.type === 'contiguous') {

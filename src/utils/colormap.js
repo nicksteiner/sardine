@@ -6,7 +6,10 @@
 /**
  * Available colormap names
  */
-export const COLORMAP_NAMES = ['grayscale', 'viridis', 'inferno', 'plasma', 'phase'];
+export const COLORMAP_NAMES = [
+  'grayscale', 'viridis', 'inferno', 'plasma', 'phase',
+  'sardine', 'flood', 'diverging', 'polarimetric',
+];
 
 /**
  * Grayscale colormap
@@ -114,6 +117,118 @@ export function phase(t) {
   return [r, g, b];
 }
 
+// ── SARdine brand colorramps ─────────────────────────────────────────────────
+
+/**
+ * SARdine colormap — navy → teal → cyan → near-white.
+ * Default single-band dB ramp using the SARdine accent palette.
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function sardine(t) {
+  t = Math.max(0, Math.min(1, t));
+  // 4-stop gradient: #0a1628 → #2a8a93 → #4ec9d4 → #e8edf5
+  let r, g, b;
+  if (t < 0.33) {
+    const s = t / 0.33;
+    r = 10  + s * (42 - 10);
+    g = 22  + s * (138 - 22);
+    b = 40  + s * (147 - 40);
+  } else if (t < 0.67) {
+    const s = (t - 0.33) / 0.34;
+    r = 42  + s * (78 - 42);
+    g = 138 + s * (201 - 138);
+    b = 147 + s * (212 - 147);
+  } else {
+    const s = (t - 0.67) / 0.33;
+    r = 78  + s * (232 - 78);
+    g = 201 + s * (237 - 201);
+    b = 212 + s * (245 - 212);
+  }
+  return [Math.round(r), Math.round(g), Math.round(b)];
+}
+
+/**
+ * Flood alert colormap — navy → deep orange → bright orange → red.
+ * Purpose-built for flood threshold visualization.
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function flood(t) {
+  t = Math.max(0, Math.min(1, t));
+  // 4-stop gradient: #0a1628 → #b5642a → #e8833a → #ff5c5c
+  let r, g, b;
+  if (t < 0.33) {
+    const s = t / 0.33;
+    r = 10  + s * (181 - 10);
+    g = 22  + s * (100 - 22);
+    b = 40  + s * (42 - 40);
+  } else if (t < 0.67) {
+    const s = (t - 0.33) / 0.34;
+    r = 181 + s * (232 - 181);
+    g = 100 + s * (131 - 100);
+    b = 42  + s * (58 - 42);
+  } else {
+    const s = (t - 0.67) / 0.33;
+    r = 232 + s * (255 - 232);
+    g = 131 + s * (92 - 131);
+    b = 58  + s * (92 - 58);
+  }
+  return [Math.round(r), Math.round(g), Math.round(b)];
+}
+
+/**
+ * Diverging colormap — cyan → navy → orange.
+ * Zero-centered for change detection (delta-sigma-nought).
+ * t=0 → cyan, t=0.5 → navy, t=1 → orange.
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function diverging(t) {
+  t = Math.max(0, Math.min(1, t));
+  let r, g, b;
+  if (t < 0.5) {
+    // cyan → navy
+    const s = t / 0.5;
+    r = 78  + s * (10 - 78);
+    g = 201 + s * (22 - 201);
+    b = 212 + s * (40 - 212);
+  } else {
+    // navy → orange
+    const s = (t - 0.5) / 0.5;
+    r = 10  + s * (232 - 10);
+    g = 22  + s * (131 - 22);
+    b = 40  + s * (58 - 40);
+  }
+  return [Math.round(r), Math.round(g), Math.round(b)];
+}
+
+/**
+ * Polarimetric colormap — magenta → navy → green.
+ * For HH vs VV backscatter ratio visualization.
+ * t=0 → magenta (HH), t=0.5 → navy, t=1 → green (VV).
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function polarimetric(t) {
+  t = Math.max(0, Math.min(1, t));
+  let r, g, b;
+  if (t < 0.5) {
+    // magenta → navy
+    const s = t / 0.5;
+    r = 212 + s * (10 - 212);
+    g = 92  + s * (22 - 92);
+    b = 255 + s * (40 - 255);
+  } else {
+    // navy → green
+    const s = (t - 0.5) / 0.5;
+    r = 10  + s * (61 - 10);
+    g = 22  + s * (220 - 22);
+    b = 40  + s * (132 - 40);
+  }
+  return [Math.round(r), Math.round(g), Math.round(b)];
+}
+
 /**
  * Get colormap function by name
  * @param {string} name - Colormap name
@@ -126,6 +241,10 @@ export function getColormap(name) {
     inferno,
     plasma,
     phase,
+    sardine,
+    flood,
+    diverging,
+    polarimetric,
   };
 
   return colormaps[name] || colormaps.grayscale;
@@ -218,6 +337,10 @@ export default {
   inferno,
   plasma,
   phase,
+  sardine,
+  flood,
+  diverging,
+  polarimetric,
   getColormap,
   generateColorbar,
   createColorbarCanvas,

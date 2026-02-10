@@ -1,10 +1,10 @@
-# SARdine Data Workflow — NISAR On-Demand System
+# SARdine — SAR Data INspection and Exploration: NISAR On-Demand Workflow
 
 ## Context
 
 The NISAR On-Demand system is a private JupyterLab environment that gives science and operational teams early access to NISAR data products before public availability. Users have direct filesystem access to L0B through L2 products on shared storage.
 
-SARdine is designed to run inside this environment — either as a local dev server or as a Docker container with a volume mount to the data directory. The goal: a scientist working in the on-demand JupyterLab can open SARdine in a browser tab and immediately visualize any GCOV product on the filesystem without downloading, converting, or running Python scripts.
+SARdine runs inside this environment as a local dev server or Docker container with a volume mount to the data directory. It provides browser-based visualization of GCOV products on the shared filesystem.
 
 ---
 
@@ -119,46 +119,25 @@ Key details:
 
 ## 3. Scientist Workflow
 
-### Quick-look (90% of use)
-
-The most common workflow in the on-demand system: a new GCOV product lands, the scientist wants to see it immediately.
+### Quick-look
 
 ```
 1. Navigate to L2_GCOV/ directory
 2. Open SARdine in browser
 3. Drag the .h5 file onto SARdine (or click in file browser)
-4. SARdine auto-detects:
+4. Auto-detection:
    - Frequency bands (frequencyA = L-band)
    - Available polarizations (HHHH, HVHV)
    - Geographic bounds (from coordinate arrays)
    - Best RGB composite (dual-pol-h: R=HH, G=HV, B=HH/HV)
-5. Renders with sensible defaults:
+5. Default rendering:
    - dB scale, grayscale, -25 to 0 dB
    - Auto-contrast from sampled tiles
-6. Scientist adjusts: switch to RGB composite, change stretch, zoom
-7. Export: GeoTIFF (for GIS) or figure PNG (for reports/Slack)
+6. Adjust: switch to RGB composite, change stretch, zoom
+7. Export: GeoTIFF (for GIS) or figure PNG (for reports)
 ```
 
-Total time from file drop to export: **< 30 seconds**.
-
-Compare with the current Python workflow:
-```python
-# Current approach in the on-demand JupyterLab
-import h5py
-import numpy as np
-import matplotlib.pyplot as plt
-
-f = h5py.File('NISAR_L2_GCOV_...h5', 'r')
-hh = f['science/LSAR/GCOV/grids/frequencyA/HHHH'][:]  # loads entire array into RAM
-db = 10 * np.log10(np.clip(hh, 1e-10, None))
-plt.figure(figsize=(12, 12))
-plt.imshow(db, vmin=-25, vmax=0, cmap='gray')
-plt.colorbar()
-plt.savefig('quicklook.png', dpi=150)
-# Takes 30-60 seconds, loads 2GB into RAM, no interactivity
-```
-
-SARdine streams only the chunks needed for the current viewport. Full-res data is never loaded into memory. Pan and zoom are instant.
+SARdine streams only the chunks intersecting the current viewport. The full file is never loaded into memory.
 
 ### Calibration/Validation
 
@@ -263,7 +242,7 @@ Browser (SARdine)                Server (Express)              Filesystem
     │   via more Range requests)    │                            │
 ```
 
-This enables the file browser UI — no drag-and-drop needed. Scientists can navigate the data directory structure and click to load.
+The file browser UI lets users navigate the data directory and click to load.
 
 ### Future: S3 Direct Access
 
@@ -330,7 +309,7 @@ Tab 3: Terminal — sardine-launch server, file management
 
 ### Jupyter → SARdine handoff
 
-A scientist discovers something in their Python analysis and wants to visualize it:
+Open a specific file with preset visualization parameters from a notebook:
 
 ```python
 # In Jupyter notebook
@@ -343,7 +322,7 @@ This requires the planned URL deep-linking feature.
 
 ### SARdine → Jupyter handoff
 
-Scientist identifies a region of interest in SARdine, exports a GeoTIFF, then processes it in Python:
+Export from SARdine and continue in Python:
 
 ```python
 # In Jupyter notebook — after SARdine export
@@ -353,7 +332,7 @@ with rasterio.open('/home/user/exports/gcov_hh_ml4.tif') as src:
     # Continue with custom analysis...
 ```
 
-The raw GeoTIFF export preserves the original Float32 power values with proper georeferencing — ready for any GIS or Python analysis.
+Raw GeoTIFF exports contain Float32 power values with CRS and tiepoint tags.
 
 ---
 
@@ -368,7 +347,7 @@ The raw GeoTIFF export preserves the original Float32 power values with proper g
 | L2 GUNW | 1–3 GB | ~40 MB (planned) |
 | L1 RSLC | 5–15 GB | ~100 MB (future) |
 
-SARdine never loads the full file. At overview zoom, it reads ~1% of the chunks. At full zoom into a small region, it reads only the chunks intersecting the viewport.
+At overview zoom, approximately 1% of chunks are read. At full zoom, only chunks intersecting the viewport are fetched.
 
 ### Disk I/O on shared storage
 

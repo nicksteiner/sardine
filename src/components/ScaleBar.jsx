@@ -58,11 +58,12 @@ export function ScaleBar({ viewState, bounds }) {
     <div
       style={{
         position: 'absolute',
-        bottom: '10px',
+        bottom: 'var(--bottom-dock, 40px)',
         left: '10px',
         zIndex: 10000,
         pointerEvents: 'none',
         padding: '8px',
+        transition: 'bottom 0.3s ease',
         backgroundColor: 'var(--sardine-bg-raised, #0f1f38)',
         border: '1px solid var(--sardine-border, #1e3a5f)',
         borderRadius: 'var(--radius-sm, 4px)',

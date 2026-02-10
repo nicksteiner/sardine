@@ -27,7 +27,7 @@
  */
 
 import h5wasm from 'h5wasm';
-import { openH5ChunkFile } from './h5chunk.js';
+import { openH5ChunkFile, openH5ChunkUrl } from './h5chunk.js';
 
 // ─── NISAR GCOV Product Specification (JPL D-102274 Rev E) ──────────────
 // All paths below are derived from Tables 5-1 through 5-8 of the spec.
@@ -85,19 +85,50 @@ function nisarPaths(band = 'LSAR', productType = 'GCOV') {
     xCoordinateSpacing: (f) => `${base}/grids/frequency${f}/xCoordinateSpacing`,
     yCoordinateSpacing: (f) => `${base}/grids/frequency${f}/yCoordinateSpacing`,
     rtcFactor:       (f) => `${base}/grids/frequency${f}/rtcGammaToSigmaFactor`,
-    // Identification-level metadata
+    // Identification-level metadata (Table 5-2, JPL D-102274 Rev E §5.2)
     listOfFrequencies: `/science/${band}/identification/listOfFrequencies`,
     productType:     `/science/${band}/identification/productType`,
     absoluteOrbitNumber: `/science/${band}/identification/absoluteOrbitNumber`,
     trackNumber:     `/science/${band}/identification/trackNumber`,
     frameNumber:     `/science/${band}/identification/frameNumber`,
+    missionId:       `/science/${band}/identification/missionId`,
+    processingCenter: `/science/${band}/identification/processingCenter`,
+    granuleId:       `/science/${band}/identification/granuleId`,
+    productDoi:      `/science/${band}/identification/productDoi`,
+    productVersion:  `/science/${band}/identification/productVersion`,
+    productSpecificationVersion: `/science/${band}/identification/productSpecificationVersion`,
     lookDirection:   `/science/${band}/identification/lookDirection`,
     orbitPassDirection: `/science/${band}/identification/orbitPassDirection`,
     zeroDopplerStartTime: `/science/${band}/identification/zeroDopplerStartTime`,
     zeroDopplerEndTime: `/science/${band}/identification/zeroDopplerEndTime`,
-    // Processing flags
+    processingDateTime: `/science/${band}/identification/processingDateTime`,
+    radarBand:       `/science/${band}/identification/radarBand`,
+    platformName:    `/science/${band}/identification/platformName`,
+    instrumentName:  `/science/${band}/identification/instrumentName`,
+    processingType:  `/science/${band}/identification/processingType`,
+    productLevel:    `/science/${band}/identification/productLevel`,
+    isGeocoded:      `/science/${band}/identification/isGeocoded`,
+    isUrgentObservation: `/science/${band}/identification/isUrgentObservation`,
+    isDithered:      `/science/${band}/identification/isDithered`,
+    isMixedMode:     `/science/${band}/identification/isMixedMode`,
+    isFullFrame:     `/science/${band}/identification/isFullFrame`,
+    isJointObservation: `/science/${band}/identification/isJointObservation`,
+    compositeReleaseId: `/science/${band}/identification/compositeReleaseId`,
+    boundingPolygon: `/science/${band}/identification/boundingPolygon`,
+    diagnosticModeFlag: `/science/${band}/identification/diagnosticModeFlag`,
+    // Processing flags (§5.6)
     isFullCovariance: `${base}/metadata/processingInformation/parameters/isFullCovariance`,
     polSymApplied: `${base}/metadata/processingInformation/parameters/polarimetricSymmetrizationApplied`,
+    rtcApplied:    `${base}/metadata/processingInformation/parameters/radiometricTerrainCorrectionApplied`,
+    rfiApplied:    `${base}/metadata/processingInformation/parameters/rfiCorrectionApplied`,
+    ionoRangeApplied: `${base}/metadata/processingInformation/parameters/rangeIonosphericGeolocationCorrectionApplied`,
+    ionoAzApplied: `${base}/metadata/processingInformation/parameters/azimuthIonosphericGeolocationCorrectionApplied`,
+    dryTropoApplied: `${base}/metadata/processingInformation/parameters/dryTroposphericGeolocationCorrectionApplied`,
+    wetTropoApplied: `${base}/metadata/processingInformation/parameters/wetTroposphericGeolocationCorrectionApplied`,
+    backscatterConvention: `${base}/metadata/processingInformation/parameters/outputBackscatterExpressionConvention`,
+    softwareVersion: `${base}/metadata/processingInformation/algorithms/softwareVersion`,
+    // Orbit metadata (§5.7)
+    orbitType:       `${base}/metadata/orbit/orbitType`,
   };
 }
 
@@ -125,60 +156,156 @@ const POLARIZATIONS = ALL_COV_TERMS;
 async function readProductIdentification(reader, paths, freq = 'A', mode = 'streaming') {
   const id = {};
 
+  console.log(`[NISAR Loader] Reading product identification (mode=${mode})...`);
+
   if (mode === 'streaming') {
-    // h5chunk streaming reader
-    const stringFields = [
+    // h5chunk streaming reader — use same proven pattern as detectFrequencies.
+    // Read a small dataset by path, returning { data, shape, dtype } or null.
+    const readDs = async (path) => {
+      try {
+        const dsId = reader.findDatasetByPath(path);
+        if (dsId == null) return null;
+        return await reader.readSmallDataset(dsId);
+      } catch (e) {
+        console.warn(`[NISAR Loader] Failed to read ${path}:`, e.message);
+        return null;
+      }
+    };
+
+    // Extract string value from readSmallDataset result
+    const asString = (result) => {
+      if (!result || !result.data) return undefined;
+      const d = result.data;
+      // readSmallDataset returns { data: ['string'], dtype: 'string' } for string datasets
+      if (d.length > 0 && typeof d[0] === 'string') return d[0].trim() || undefined;
+      // For non-string dtypes, try decoding raw bytes as text
+      if (d.length > 0 && typeof d[0] === 'number') {
+        try {
+          const bytes = new Uint8Array(d.buffer ? d.buffer : d);
+          let str = '';
+          for (let i = 0; i < bytes.length; i++) {
+            if (bytes[i] === 0) break;
+            str += String.fromCharCode(bytes[i]);
+          }
+          return str.trim() || undefined;
+        } catch { return undefined; }
+      }
+      return undefined;
+    };
+
+    // Extract numeric value
+    const asNumber = (result) => {
+      if (!result || !result.data || result.data.length === 0) return undefined;
+      const v = result.data[0];
+      if (typeof v === 'string') { const n = Number(v); return isNaN(n) ? undefined : n; }
+      if (typeof v === 'number' && !isNaN(v)) return v;
+      return undefined;
+    };
+
+    // Extract boolean value
+    const asBool = (result) => {
+      if (!result || !result.data || result.data.length === 0) return undefined;
+      const v = result.data[0];
+      if (typeof v === 'string') return v.trim().toLowerCase() === 'true';
+      if (typeof v === 'number') return v !== 0;
+      if (typeof v === 'boolean') return v;
+      return undefined;
+    };
+
+    // ── Identification string fields (§5.2, Table 5-2) ──
+    const stringFieldPaths = [
       ['productType', paths.productType],
       ['lookDirection', paths.lookDirection],
       ['orbitPassDirection', paths.orbitPassDirection],
       ['zeroDopplerStartTime', paths.zeroDopplerStartTime],
       ['zeroDopplerEndTime', paths.zeroDopplerEndTime],
+      ['missionId', paths.missionId],
+      ['processingCenter', paths.processingCenter],
+      ['granuleId', paths.granuleId],
+      ['productDoi', paths.productDoi],
+      ['productVersion', paths.productVersion],
+      ['productSpecificationVersion', paths.productSpecificationVersion],
+      ['processingDateTime', paths.processingDateTime],
+      ['radarBand', paths.radarBand],
+      ['platformName', paths.platformName],
+      ['instrumentName', paths.instrumentName],
+      ['processingType', paths.processingType],
+      ['productLevel', paths.productLevel],
+      ['compositeReleaseId', paths.compositeReleaseId],
+      ['boundingPolygon', paths.boundingPolygon],
     ];
-    const numericFields = [
+    for (const [key, path] of stringFieldPaths) {
+      const v = asString(await readDs(path));
+      if (v) id[key] = v;
+    }
+
+    // ── Identification numeric fields ──
+    const numericFieldPaths = [
       ['absoluteOrbitNumber', paths.absoluteOrbitNumber],
       ['trackNumber', paths.trackNumber],
       ['frameNumber', paths.frameNumber],
+      ['diagnosticModeFlag', paths.diagnosticModeFlag],
     ];
-
-    for (const [key, path] of stringFields) {
-      try {
-        const dsId = reader.findDatasetByPath(path);
-        if (dsId != null) {
-          const result = await reader.readSmallDataset(dsId);
-          if (result?.data?.length > 0) {
-            id[key] = typeof result.data[0] === 'string'
-              ? result.data[0].trim()
-              : String.fromCharCode(...new Uint8Array(result.data.buffer || result.data)).replace(/\0/g, '').trim();
-          }
-        }
-      } catch (e) { /* skip */ }
+    for (const [key, path] of numericFieldPaths) {
+      const v = asNumber(await readDs(path));
+      if (v != null) id[key] = v;
     }
 
-    for (const [key, path] of numericFields) {
-      try {
-        const dsId = reader.findDatasetByPath(path);
-        if (dsId != null) {
-          const result = await reader.readSmallDataset(dsId);
-          if (result?.data?.length > 0) {
-            id[key] = Number(result.data[0]);
-          }
-        }
-      } catch (e) { /* skip */ }
+    // ── Identification boolean fields ──
+    const boolFieldPaths = [
+      ['isGeocoded', paths.isGeocoded],
+      ['isUrgentObservation', paths.isUrgentObservation],
+      ['isDithered', paths.isDithered],
+      ['isMixedMode', paths.isMixedMode],
+      ['isFullFrame', paths.isFullFrame],
+      ['isJointObservation', paths.isJointObservation],
+    ];
+    for (const [key, path] of boolFieldPaths) {
+      const v = asBool(await readDs(path));
+      if (v != null) id[key] = v;
     }
 
-    // Processing flags
-    try {
-      const fcId = reader.findDatasetByPath(paths.isFullCovariance);
-      if (fcId != null) {
-        const result = await reader.readSmallDataset(fcId);
-        if (result?.data?.length > 0) {
-          id.isFullCovariance = Boolean(result.data[0]);
+    // ── Processing parameters (§5.6) ──
+    const procStringPaths = [
+      ['softwareVersion', paths.softwareVersion],
+      ['backscatterConvention', paths.backscatterConvention],
+      ['orbitType', paths.orbitType],
+    ];
+    for (const [key, path] of procStringPaths) {
+      const v = asString(await readDs(path));
+      if (v) id[key] = v;
+    }
+
+    const procBoolPaths = [
+      ['isFullCovariance', paths.isFullCovariance],
+      ['polSymApplied', paths.polSymApplied],
+      ['rtcApplied', paths.rtcApplied],
+      ['rfiApplied', paths.rfiApplied],
+      ['ionoRangeApplied', paths.ionoRangeApplied],
+      ['ionoAzApplied', paths.ionoAzApplied],
+      ['dryTropoApplied', paths.dryTropoApplied],
+      ['wetTropoApplied', paths.wetTropoApplied],
+    ];
+    for (const [key, path] of procBoolPaths) {
+      const v = asBool(await readDs(path));
+      if (v != null) id[key] = v;
+    }
+
+    // ── Fallback: try h5chunk attributes on the identification group ──
+    // Some HDF5 files store metadata as group attributes rather than datasets.
+    if (Object.keys(id).length === 0) {
+      console.warn('[NISAR Loader] No identification datasets found, trying group attributes...');
+      const attrs = reader.getAttributes?.(paths.identification);
+      if (attrs) {
+        console.log('[NISAR Loader] Found identification group attributes:', Object.keys(attrs));
+        for (const [key, val] of Object.entries(attrs)) {
+          if (val != null && val !== '') id[key] = val;
         }
       }
-    } catch (e) { /* skip */ }
+    }
 
   } else {
-    // h5wasm reader
+    // h5wasm reader — use safeGet-like pattern
     const tryRead = (path) => {
       try {
         const ds = reader.get(path);
@@ -188,23 +315,80 @@ async function readProductIdentification(reader, paths, freq = 'A', mode = 'stre
       } catch { return undefined; }
     };
 
-    id.productType = tryRead(paths.productType)?.toString().trim();
-    id.absoluteOrbitNumber = tryRead(paths.absoluteOrbitNumber);
-    id.trackNumber = tryRead(paths.trackNumber);
-    id.frameNumber = tryRead(paths.frameNumber);
-    id.lookDirection = tryRead(paths.lookDirection)?.toString().trim();
-    id.orbitPassDirection = tryRead(paths.orbitPassDirection)?.toString().trim();
-    id.zeroDopplerStartTime = tryRead(paths.zeroDopplerStartTime)?.toString().trim();
-    id.zeroDopplerEndTime = tryRead(paths.zeroDopplerEndTime)?.toString().trim();
-    id.isFullCovariance = Boolean(tryRead(paths.isFullCovariance));
+    // String fields
+    const stringKeys = [
+      ['productType', paths.productType],
+      ['lookDirection', paths.lookDirection],
+      ['orbitPassDirection', paths.orbitPassDirection],
+      ['zeroDopplerStartTime', paths.zeroDopplerStartTime],
+      ['zeroDopplerEndTime', paths.zeroDopplerEndTime],
+      ['missionId', paths.missionId],
+      ['processingCenter', paths.processingCenter],
+      ['granuleId', paths.granuleId],
+      ['productDoi', paths.productDoi],
+      ['productVersion', paths.productVersion],
+      ['productSpecificationVersion', paths.productSpecificationVersion],
+      ['processingDateTime', paths.processingDateTime],
+      ['radarBand', paths.radarBand],
+      ['platformName', paths.platformName],
+      ['instrumentName', paths.instrumentName],
+      ['processingType', paths.processingType],
+      ['productLevel', paths.productLevel],
+      ['compositeReleaseId', paths.compositeReleaseId],
+      ['boundingPolygon', paths.boundingPolygon],
+      ['softwareVersion', paths.softwareVersion],
+      ['backscatterConvention', paths.backscatterConvention],
+      ['orbitType', paths.orbitType],
+    ];
+    for (const [key, path] of stringKeys) {
+      const v = tryRead(path);
+      if (v != null) id[key] = v.toString().trim();
+    }
+
+    // Numeric fields
+    const numKeys = [
+      ['absoluteOrbitNumber', paths.absoluteOrbitNumber],
+      ['trackNumber', paths.trackNumber],
+      ['frameNumber', paths.frameNumber],
+      ['diagnosticModeFlag', paths.diagnosticModeFlag],
+    ];
+    for (const [key, path] of numKeys) {
+      const v = tryRead(path);
+      if (v != null) id[key] = Number(v);
+    }
+
+    // Boolean fields (identification + processing)
+    const boolKeys = [
+      ['isGeocoded', paths.isGeocoded],
+      ['isUrgentObservation', paths.isUrgentObservation],
+      ['isDithered', paths.isDithered],
+      ['isMixedMode', paths.isMixedMode],
+      ['isFullFrame', paths.isFullFrame],
+      ['isJointObservation', paths.isJointObservation],
+      ['isFullCovariance', paths.isFullCovariance],
+      ['polSymApplied', paths.polSymApplied],
+      ['rtcApplied', paths.rtcApplied],
+      ['rfiApplied', paths.rfiApplied],
+      ['ionoRangeApplied', paths.ionoRangeApplied],
+      ['ionoAzApplied', paths.ionoAzApplied],
+      ['dryTropoApplied', paths.dryTropoApplied],
+      ['wetTropoApplied', paths.wetTropoApplied],
+    ];
+    for (const [key, path] of boolKeys) {
+      const v = tryRead(path);
+      if (v != null) {
+        id[key] = typeof v === 'string' ? v.trim().toLowerCase() === 'true' : Boolean(v);
+      }
+    }
   }
 
-  // Clean undefined values
+  // Clean undefined/null/empty values
   for (const k of Object.keys(id)) {
-    if (id[k] === undefined || id[k] === null) delete id[k];
+    if (id[k] === undefined || id[k] === null || id[k] === '') delete id[k];
   }
 
-  console.log('[NISAR Loader] Product identification:', id);
+  const count = Object.keys(id).length;
+  console.log(`[NISAR Loader] Product identification: ${count} fields`, count > 0 ? id : '(empty — datasets may not be in h5chunk catalog)');
   return id;
 }
 
@@ -849,7 +1033,7 @@ function getDatasetStats(dataset) {
  * Resample source data to a fixed tile size.
  *
  * Two modes controlled by `multiLook`:
- *   false → nearest-neighbour (blazing fast preview, raw speckle)
+ *   false → nearest-neighbour (fast preview, raw speckle)
  *   true  → box-filter area average (spatial multi-looking, suppresses
  *           speckle by ~1/√N where N = source pixels per output pixel)
  *
@@ -1301,6 +1485,8 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   let worldBounds = null;
   let pixelSizeX = 1;
   let pixelSizeY = 1;
+  let xCoords = null;
+  let yCoords = null;
 
   const xCoordId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
   const yCoordId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
@@ -1308,14 +1494,16 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   // Tier 1: Try reading full coordinate arrays
   try {
     if (xCoordId != null && yCoordId != null) {
-      const xCoords = await streamReader.readSmallDataset(xCoordId);
-      const yCoords = await streamReader.readSmallDataset(yCoordId);
+      const xCoordsResult = await streamReader.readSmallDataset(xCoordId);
+      const yCoordsResult = await streamReader.readSmallDataset(yCoordId);
 
-      if (xCoords?.data?.length > 0 && yCoords?.data?.length > 0) {
-        const minX = Math.min(xCoords.data[0], xCoords.data[xCoords.data.length - 1]);
-        const maxX = Math.max(xCoords.data[0], xCoords.data[xCoords.data.length - 1]);
-        const minY = Math.min(yCoords.data[0], yCoords.data[yCoords.data.length - 1]);
-        const maxY = Math.max(yCoords.data[0], yCoords.data[yCoords.data.length - 1]);
+      if (xCoordsResult?.data?.length > 0 && yCoordsResult?.data?.length > 0) {
+        xCoords = xCoordsResult.data;
+        yCoords = yCoordsResult.data;
+        const minX = Math.min(xCoords[0], xCoords[xCoords.length - 1]);
+        const maxX = Math.max(xCoords[0], xCoords[xCoords.length - 1]);
+        const minY = Math.min(yCoords[0], yCoords[yCoords.length - 1]);
+        const maxY = Math.max(yCoords[0], yCoords[yCoords.length - 1]);
         worldBounds = [minX, minY, maxX, maxY];
         pixelSizeX = (maxX - minX) / (width - 1 || 1);
         pixelSizeY = (maxY - minY) / (height - 1 || 1);
@@ -1700,7 +1888,11 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     band,
     identification,
     availableDatasets,
-    requiredPols: [polarization],
+    /** Full-resolution easting coordinates (Float64Array, length = width). */
+    xCoords,
+
+    /** Full-resolution northing coordinates (Float64Array, length = height). */
+    yCoords,
     _streaming: true,
     _h5chunk: streamReader,
   };
@@ -2088,6 +2280,11 @@ export async function loadNISARGCOV(file, options = {}) {
     band,
     identification,
     availableDatasets,
+    /** Full-resolution easting coordinates (Float64Array, length = width). */
+    xCoords,
+
+    /** Full-resolution northing coordinates (Float64Array, length = height). */
+    yCoords,
     _fullLoaded: fullLoaded,
     _h5file: h5file,
   };
@@ -2314,6 +2511,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
   // ── Extract bounds using 3-tier fallback (same as single-band) ──
   let bounds = [0, 0, width, height];
   let worldBounds = null;
+  let xCoords = null;
+  let yCoords = null;
 
   const xCoordId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
   const yCoordId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
@@ -2321,13 +2520,15 @@ export async function loadNISARRGBComposite(file, options = {}) {
   // Tier 1: Full coordinate arrays
   try {
     if (xCoordId != null && yCoordId != null) {
-      const xCoords = await streamReader.readSmallDataset(xCoordId);
-      const yCoords = await streamReader.readSmallDataset(yCoordId);
-      if (xCoords?.data?.length > 0 && yCoords?.data?.length > 0) {
-        const minX = Math.min(xCoords.data[0], xCoords.data[xCoords.data.length - 1]);
-        const maxX = Math.max(xCoords.data[0], xCoords.data[xCoords.data.length - 1]);
-        const minY = Math.min(yCoords.data[0], yCoords.data[yCoords.data.length - 1]);
-        const maxY = Math.max(yCoords.data[0], yCoords.data[yCoords.data.length - 1]);
+      const xCoordsResult = await streamReader.readSmallDataset(xCoordId);
+      const yCoordsResult = await streamReader.readSmallDataset(yCoordId);
+      if (xCoordsResult?.data?.length > 0 && yCoordsResult?.data?.length > 0) {
+        xCoords = xCoordsResult.data;
+        yCoords = yCoordsResult.data;
+        const minX = Math.min(xCoords[0], xCoords[xCoords.length - 1]);
+        const maxX = Math.max(xCoords[0], xCoords[xCoords.length - 1]);
+        const minY = Math.min(yCoords[0], yCoords[yCoords.length - 1]);
+        const maxY = Math.max(yCoords[0], yCoords[yCoords.length - 1]);
         worldBounds = [minX, minY, maxX, maxY];
         console.log(`[NISAR Loader] RGB bounds from full arrays: [${worldBounds.join(', ')}]`);
       }
@@ -2514,8 +2715,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
             left = Math.max(0, Math.floor(pixelLeft));
             right = Math.min(width, Math.ceil(pixelRight));
-            top = Math.max(0, Math.floor(pixelTop));
-            bottom = Math.min(height, Math.ceil(pixelBottom));
+            top = Math.max(0, height - Math.ceil(bbox.bottom));
+            bottom = Math.min(height, height - Math.floor(bbox.top));
           } else {
             // Pixel coordinates (histogram sampling)
             // Handle Y coordinates in either orientation
@@ -2535,9 +2736,9 @@ export async function loadNISARRGBComposite(file, options = {}) {
           const pixelBottom = (maxY - bbox.south) / pixelSizeY;
 
           left = Math.max(0, Math.floor(pixelLeft));
-          right = Math.min(width, Math.ceil(pixelRight));
           top = Math.max(0, Math.floor(pixelTop));
-          bottom = Math.min(height, Math.ceil(pixelBottom));
+          right = Math.min(width, Math.ceil(pixelLeft + pixelWidth));
+          bottom = Math.min(height, Math.ceil(pixelBottom + pixelHeight));
         }
       } else {
         const scale = Math.pow(2, z);
@@ -2560,7 +2761,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
       const stepX = sliceW / tileSize;
       const stepY = sliceH / tileSize;
 
-      // multiLook=false → 1 sample (nearest); true → 4–8 sub-samples (area avg)
+      // multiLook=false → 1 sample (nearest-neighbour, instant preview)
+      // multiLook=true  → 4–8 sub-samples per axis (16–64 look area average)
       const nSub = multiLook
         ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
         : 1;
@@ -2895,5 +3097,211 @@ async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A'
 
   return polMap;
 }
+
+// ─── URL-based Remote Loading ────────────────────────────────────────────
+
+/**
+ * List NISAR datasets from a remote URL (HTTP Range-request streaming).
+ * Same as listNISARDatasets but works with a URL instead of a File.
+ *
+ * @param {string} url — HTTPS URL to a NISAR HDF5 file
+ * @returns {Promise<Array<{frequency: string, polarization: string, band: string}>>}
+ */
+export async function listNISARDatasetsFromUrl(url) {
+  console.log(`[NISAR Loader] Listing datasets from URL: ${url}`);
+
+  try {
+    const streamReader = await openH5ChunkUrl(url, 32 * 1024 * 1024);
+    const h5Datasets = streamReader.getDatasets();
+
+    console.log(`[h5chunk] Found ${h5Datasets.length} datasets from URL`);
+    h5Datasets.forEach(d => {
+      console.log(`[h5chunk]   - ${d.path || d.id}: ${d.shape?.join('x')} ${d.dtype}, ${d.numChunks} chunks`);
+    });
+
+    const band = detectBand(h5Datasets);
+    const paths = nisarPaths(band, 'GCOV');
+    const frequencies = await detectFrequencies(streamReader, h5Datasets, paths);
+
+    const datasets = [];
+    for (const freq of frequencies) {
+      const terms = await detectCovarianceTerms(streamReader, h5Datasets, paths, freq);
+      for (const term of terms) {
+        datasets.push({ frequency: freq, polarization: term, band });
+      }
+    }
+
+    console.log(`[NISAR Loader] Detected ${datasets.length} datasets from URL (${band}, freq ${frequencies.join('+')})`);
+    return datasets;
+  } catch (e) {
+    console.error('[NISAR Loader] URL streaming failed:', e);
+    throw new Error(`Failed to read remote NISAR file: ${e.message}`);
+  }
+}
+
+
+/**
+ * Load a NISAR GCOV dataset from a remote URL via h5chunk streaming.
+ *
+ * @param {string} url — HTTPS URL to a NISAR HDF5 file
+ * @param {Object} options
+ * @param {string} [options.frequency='A']
+ * @param {string} [options.polarization='HHHH']
+ * @returns {Promise<Object>} Same format as loadNISARGCOV
+ */
+export async function loadNISARGCOVFromUrl(url, options = {}) {
+  const {
+    frequency = 'A',
+    polarization = 'HHHH',
+  } = options;
+
+  console.log(`[NISAR Loader] Loading from URL: ${url}`);
+  console.log(`[NISAR Loader] Dataset: frequency${frequency}/${polarization}`);
+
+  // Create a pseudo-file object that the streaming loader can work with
+  // The streaming path uses openH5ChunkFile, but we need openH5ChunkUrl
+  const streamReader = await openH5ChunkUrl(url, 32 * 1024 * 1024);
+  const h5Datasets = streamReader.getDatasets();
+
+  console.log(`[NISAR Loader] h5chunk discovered ${h5Datasets.length} datasets from URL`);
+
+  const band = detectBand(h5Datasets);
+  const paths = nisarPaths(band, 'GCOV');
+  const frequencies = await detectFrequencies(streamReader, h5Datasets, paths);
+  const activeFreq = frequencies.includes(frequency) ? frequency : frequencies[0];
+
+  // Find the requested dataset
+  let selectedDataset = null;
+  let selectedDatasetId = null;
+
+  const targetPath = paths.dataset(activeFreq, polarization);
+  selectedDatasetId = streamReader.findDatasetByPath(targetPath);
+  if (selectedDatasetId != null) {
+    const ds = h5Datasets.find(d => d.id === selectedDatasetId);
+    if (ds && ds.shape?.length === 2) {
+      selectedDataset = ds;
+    }
+  }
+
+  if (!selectedDataset) {
+    for (const ds of h5Datasets) {
+      if (ds.shape?.length === 2 && ds.path) {
+        const tail = ds.path.split('/').pop();
+        if (tail === polarization) {
+          selectedDataset = ds;
+          selectedDatasetId = ds.id;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!selectedDataset) {
+    throw new Error(`Dataset frequency${activeFreq}/${polarization} not found in remote file`);
+  }
+
+  const [height, width] = selectedDataset.shape;
+  console.log(`[NISAR Loader] Selected: ${selectedDataset.path || selectedDatasetId} [${height}×${width}]`);
+
+  // Read coordinate arrays
+  let xCoords = null, yCoords = null;
+  const xId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
+  const yId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
+  if (xId != null) {
+    try {
+      const xResult = await streamReader.readSmallDataset(xId);
+      if (xResult?.data) xCoords = xResult.data;
+    } catch { /* ignore */ }
+  }
+  if (yId != null) {
+    try {
+      const yResult = await streamReader.readSmallDataset(yId);
+      if (yResult?.data) yCoords = yResult.data;
+    } catch { /* ignore */ }
+  }
+
+  // Compute bounds
+  let bounds, worldBounds, crs = 'EPSG:4326';
+  let epsgCode = null;
+  const projId = streamReader.findDatasetByPath(paths.projection(activeFreq));
+  if (projId != null) {
+    try {
+      const projResult = await streamReader.readSmallDataset(projId);
+      if (projResult?.data?.[0] > 1000) epsgCode = projResult.data[0];
+    } catch { /* ignore */ }
+  }
+  if (epsgCode) crs = `EPSG:${epsgCode}`;
+
+  if (xCoords && yCoords) {
+    const minX = Math.min(xCoords[0], xCoords[xCoords.length - 1]);
+    const maxX = Math.max(xCoords[0], xCoords[xCoords.length - 1]);
+    const minY = Math.min(yCoords[0], yCoords[yCoords.length - 1]);
+    const maxY = Math.max(yCoords[0], yCoords[yCoords.length - 1]);
+    bounds = [minX, minY, maxX, maxY];
+    worldBounds = bounds;
+  } else {
+    bounds = [0, 0, width, height];
+    worldBounds = bounds;
+  }
+
+  // Build getTile function for on-demand chunk reading
+  const getTile = async ({ x, y, z, bbox }) => {
+    const tileSize = 256;
+    try {
+      // Map tile bbox to pixel region
+      const pxLeft = Math.max(0, Math.round(((bbox.left - bounds[0]) / (bounds[2] - bounds[0])) * width));
+      const pxRight = Math.min(width, Math.round(((bbox.right - bounds[0]) / (bounds[2] - bounds[0])) * width));
+      const pxTop = Math.max(0, Math.round(((bounds[3] - bbox.bottom) / (bounds[3] - bounds[1])) * height));
+      const pxBottom = Math.min(height, Math.round(((bounds[3] - bbox.top) / (bounds[3] - bounds[1])) * height));
+
+      const region = {
+        x: pxLeft,
+        y: pxTop,
+        width: pxRight - pxLeft,
+        height: pxBottom - pxTop,
+      };
+
+      if (region.width <= 0 || region.height <= 0) return null;
+
+      const data = await streamReader.readRegion(selectedDatasetId, region);
+      if (!data) return null;
+
+      return {
+        data: data.data || data,
+        width: region.width,
+        height: region.height,
+      };
+    } catch (e) {
+      console.warn(`[NISAR URL] Tile error (${x},${y},${z}):`, e.message);
+      return null;
+    }
+  };
+
+  // Read identification metadata
+  let identification = {};
+  try {
+    identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
+  } catch { /* ignore */ }
+
+  return {
+    width,
+    height,
+    bounds,
+    worldBounds,
+    crs,
+    epsgCode,
+    getTile,
+    mode: 'streaming',
+    source: 'url',
+    sourceUrl: url,
+    band,
+    frequency: activeFreq,
+    polarization,
+    xCoords,
+    yCoords,
+    identification,
+  };
+}
+
 
 export default loadNISARGCOV;

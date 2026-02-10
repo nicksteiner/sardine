@@ -1,6 +1,6 @@
 /**
- * SARdine - SAR Imagery Viewer Library
- * A SAR imagery viewer built on deck.gl and geotiff.js
+ * SARdine - SAR Data INspection and Exploration
+ * Browser-native SAR viewer built on deck.gl, geotiff.js, and h5chunk
  *
  * @module sardine
  */
@@ -49,6 +49,10 @@ export {
   inferno,
   plasma,
   phase,
+  sardine,
+  flood,
+  diverging,
+  polarimetric,
   getColormap,
   generateColorbar,
   createColorbarCanvas,
@@ -69,6 +73,28 @@ export { writeRGBAGeoTIFF, writeRGBGeoTIFF, downloadBuffer } from './utils/geoti
 export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
 export { STRETCH_MODES, applyStretch } from './utils/stretch.js';
+
+// Overture Maps integration
+export {
+  fetchOvertureFeatures,
+  fetchAllOvertureThemes,
+  fetchOvertureTile,
+  fetchWorldCoastlines,
+  fetchSceneContext,
+  clearOvertureCache,
+  getOvertureUrl,
+  OVERTURE_THEMES,
+} from './loaders/overture-loader.js';
+
+export { createOvertureLayers } from './layers/OvertureLayer.js';
+
+// Metadata Cube
+export { MetadataCube, loadMetadataCube } from './utils/metadata-cube.js';
+
+// Components
+export { MetadataPanel } from './components/MetadataPanel.jsx';
+export { OverviewMap } from './components/OverviewMap.jsx';
+export { StatusWindow } from './components/StatusWindow.jsx';
 
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';

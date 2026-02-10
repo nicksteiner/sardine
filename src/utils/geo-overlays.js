@@ -8,32 +8,20 @@
  *   Combined with canvas dimensions → full affine transform.
  */
 
-// ── Theme tokens as hex for canvas drawing ──────────────────────────────────
+import {
+  DARK as _DARK,
+  LIGHT as _LIGHT,
+  CHANNEL_COLORS as _CH,
+  FONTS,
+  getTheme as _getTheme,
+} from './theme-tokens.js';
 
-export const THEME = {
-  bg:          '#0a1628',
-  bgRaised:    '#0f1f38',
-  bgPanel:     '#122240',
-  border:      '#1e3a5f',
-  borderSubtle:'#162d4a',
-  cyan:        '#4ec9d4',
-  orange:      '#e8833a',
-  magenta:     '#d45cff',
-  green:       '#3ddc84',
-  textPrimary: '#e8edf5',
-  textSecondary:'#8fa4c4',
-  textMuted:   '#5a7099',
-  textDisabled:'#3a5070',
-  radiusSm:    4,
-  radiusMd:    8,
-};
+// ── Theme tokens for canvas drawing (re-exported from theme-tokens.js) ──────
 
-// Semantic polarization colors for RGB channel swatches
-export const CHANNEL_COLORS = {
-  R: THEME.magenta,   // #d45cff
-  G: THEME.green,     // #3ddc84
-  B: THEME.cyan,      // #4ec9d4
-};
+export const THEME = _DARK;
+export const THEME_LIGHT = _LIGHT;
+export const CHANNEL_COLORS = _CH;
+export { FONTS, _getTheme as getTheme };
 
 // ── Coordinate helpers ──────────────────────────────────────────────────────
 

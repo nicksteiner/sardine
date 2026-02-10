@@ -91,6 +91,50 @@ export class SARGPUBitmapLayer extends BitmapLayer {
             t = clamp(t, 0.0, 1.0);
             return vec3(t, t, t);
           }
+
+          // SARdine brand colormap: navy → teal → cyan → white
+          vec3 sardineMap(float t) {
+            t = clamp(t, 0.0, 1.0);
+            vec3 c0 = vec3(0.039, 0.086, 0.157);  // #0a1628
+            vec3 c1 = vec3(0.165, 0.541, 0.576);  // #2a8a93
+            vec3 c2 = vec3(0.306, 0.788, 0.831);  // #4ec9d4
+            vec3 c3 = vec3(0.910, 0.929, 0.961);  // #e8edf5
+            if (t < 0.333) return mix(c0, c1, t * 3.0);
+            if (t < 0.667) return mix(c1, c2, (t - 0.333) * 3.0);
+            return mix(c2, c3, (t - 0.667) * 3.0);
+          }
+
+          // Flood alert colormap: navy → orange → red
+          vec3 floodMap(float t) {
+            t = clamp(t, 0.0, 1.0);
+            vec3 c0 = vec3(0.039, 0.086, 0.157);  // #0a1628
+            vec3 c1 = vec3(0.710, 0.392, 0.165);  // #b5642a
+            vec3 c2 = vec3(0.910, 0.514, 0.227);  // #e8833a
+            vec3 c3 = vec3(1.000, 0.361, 0.361);  // #ff5c5c
+            if (t < 0.333) return mix(c0, c1, t * 3.0);
+            if (t < 0.667) return mix(c1, c2, (t - 0.333) * 3.0);
+            return mix(c2, c3, (t - 0.667) * 3.0);
+          }
+
+          // Diverging colormap: cyan → navy → orange
+          vec3 divergingMap(float t) {
+            t = clamp(t, 0.0, 1.0);
+            vec3 cCyan = vec3(0.306, 0.788, 0.831);  // #4ec9d4
+            vec3 cMid  = vec3(0.039, 0.086, 0.157);  // #0a1628
+            vec3 cWarm = vec3(0.910, 0.514, 0.227);  // #e8833a
+            if (t < 0.5) return mix(cCyan, cMid, t * 2.0);
+            return mix(cMid, cWarm, (t - 0.5) * 2.0);
+          }
+
+          // Polarimetric colormap: magenta → navy → green
+          vec3 polarimetricMap(float t) {
+            t = clamp(t, 0.0, 1.0);
+            vec3 cMag   = vec3(0.831, 0.361, 1.000);  // #d45cff
+            vec3 cMid   = vec3(0.039, 0.086, 0.157);  // #0a1628
+            vec3 cGreen = vec3(0.239, 0.863, 0.518);  // #3ddc84
+            if (t < 0.5) return mix(cMag, cMid, t * 2.0);
+            return mix(cMid, cGreen, (t - 0.5) * 2.0);
+          }
         `,
         'fs:DECKGL_FILTER_COLOR': `
           // Read raw float amplitude from R channel
@@ -134,6 +178,14 @@ export class SARGPUBitmapLayer extends BitmapLayer {
             rgb = plasma(value);
           } else if (colormapId == 4) {
             rgb = phaseColormap(value);
+          } else if (colormapId == 5) {
+            rgb = sardineMap(value);
+          } else if (colormapId == 6) {
+            rgb = floodMap(value);
+          } else if (colormapId == 7) {
+            rgb = divergingMap(value);
+          } else if (colormapId == 8) {
+            rgb = polarimetricMap(value);
           } else {
             rgb = grayscale(value);
           }

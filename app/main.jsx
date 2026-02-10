@@ -2,12 +2,15 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { createRoot } from 'react-dom/client';
 import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
-import { loadNISARRGBComposite } from '../src/loaders/nisar-loader.js';
+import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
+import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
+import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
+import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { exportFigure, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
 import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
@@ -180,16 +183,20 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
 }
 
 /**
- * SARdine - SAR Imagery Viewer Application
+ * SARdine - SAR Data INspection and Exploration
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
   // Core state
-  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar'
+  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar' | 'remote'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  // Remote source state
+  const [remoteUrl, setRemoteUrl] = useState(null);
+  const [remoteName, setRemoteName] = useState(null);
 
   // NISAR-specific state
   const [nisarFile, setNisarFile] = useState(null);
@@ -248,6 +255,20 @@ function App() {
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
   const [statusCollapsed, setStatusCollapsed] = useState(false);
+
+  // Overview map state
+  const [overviewMapVisible, setOverviewMapVisible] = useState(false);
+
+  // Compute WGS84 bounds for overview map and context layers
+  const wgs84Bounds = useMemo(() => {
+    if (!imageData) return null;
+    const bounds = imageData.worldBounds || imageData.bounds;
+    const crs = imageData.crs || 'EPSG:4326';
+    if (!bounds || !crs) return null;
+    const arr = projectedToWGS84(bounds, crs);
+    if (!arr || arr.length < 4) return null;
+    return { minLon: arr[0], minLat: arr[1], maxLon: arr[2], maxLat: arr[3] };
+  }, [imageData]);
 
   // Helper to add status log
   const addStatusLog = useCallback((type, message, details = null) => {
@@ -646,6 +667,88 @@ function App() {
     }
   }, [addStatusLog]);
 
+  // Handle remote file selection from DataDiscovery browser
+  const handleRemoteFileSelect = useCallback(async (fileInfo) => {
+    const { url, name, size, type } = fileInfo;
+    addStatusLog('info', `Remote file selected: ${name}`);
+
+    if (type === 'cog') {
+      // Load as COG directly
+      setCogUrl(url);
+      setFileType('cog');
+      addStatusLog('info', `Loading COG from: ${url}`);
+      return;
+    }
+
+    // NISAR HDF5 — stream from URL
+    setRemoteUrl(url);
+    setRemoteName(name);
+    setNisarDatasets([]);
+    setLoading(true);
+    setError(null);
+
+    try {
+      addStatusLog('info', `Streaming NISAR metadata from: ${name}`);
+      const datasets = await listNISARDatasetsFromUrl(url);
+      setNisarDatasets(datasets);
+
+      if (datasets.length > 0) {
+        setSelectedFrequency(datasets[0].frequency);
+        setSelectedPolarization(datasets[0].polarization);
+      }
+
+      const composites = getAvailableComposites(datasets);
+      setAvailableComposites(composites);
+      const autoComp = autoSelectComposite(datasets);
+      setCompositeId(autoComp);
+      setDisplayMode('single');
+
+      addStatusLog('success', `Found ${datasets.length} remote datasets`,
+        datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
+    } catch (e) {
+      setError(`Failed to read remote NISAR file: ${e.message}`);
+      addStatusLog('error', 'Remote metadata read failed', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog]);
+
+  // Load remote NISAR dataset by URL
+  const handleLoadRemoteNISAR = useCallback(async () => {
+    if (!remoteUrl) return;
+
+    setLoading(true);
+    setError(null);
+    addStatusLog('info', `Loading remote NISAR: ${selectedFrequency}/${selectedPolarization}`);
+
+    try {
+      const data = await loadNISARGCOVFromUrl(remoteUrl, {
+        frequency: selectedFrequency,
+        polarization: selectedPolarization,
+      });
+
+      setImageData(data);
+
+      // Auto-fit view
+      const bounds = data.worldBounds || data.bounds;
+      if (bounds) {
+        const cx = (bounds[0] + bounds[2]) / 2;
+        const cy = (bounds[1] + bounds[3]) / 2;
+        setViewCenter([cx, cy]);
+        const span = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
+        setViewZoom(Math.log2(360 / span) - 1);
+      }
+
+      addStatusLog('success', `Remote NISAR loaded: ${data.width}×${data.height}`,
+        `URL: ${remoteUrl}`);
+    } catch (e) {
+      setError(`Failed to load remote NISAR: ${e.message}`);
+      addStatusLog('error', 'Remote load failed', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [remoteUrl, selectedFrequency, selectedPolarization, addStatusLog]);
+
   // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
     if (!nisarFile) {
@@ -895,6 +998,32 @@ function App() {
           }
         }
       }
+
+      // --- Append metadata cube fields as extra bands ---
+      if (imageData.metadataCube && imageData.xCoords && imageData.yCoords) {
+        addStatusLog('info', 'Evaluating metadata cube fields on export grid...');
+        try {
+          const cubeFields = imageData.metadataCube.evaluateAllFields(
+            imageData.xCoords,
+            imageData.yCoords,
+            exportWidth,
+            exportHeight,
+            effectiveMl,
+            null, // ground layer (no DEM)
+          );
+
+          const cubeFieldNames = Object.keys(cubeFields);
+          for (const name of cubeFieldNames) {
+            bands[name] = cubeFields[name];
+            bandNames.push(name);
+          }
+          addStatusLog('success', `Added ${cubeFieldNames.length} metadata bands: ${cubeFieldNames.join(', ')}`);
+        } catch (e) {
+          addStatusLog('warning', 'Failed to evaluate metadata cube for export', e.message);
+        }
+      }
+
+      // --- Existing export code continues (writeFloat32GeoTIFF / writeRGBAGeoTIFF) ---
 
       // Pixel-edge bounds correction: NISAR coords are pixel-CENTER,
       // GeoTIFF PixelIsArea expects pixel-EDGE
@@ -1204,7 +1333,7 @@ function App() {
       {/* Header */}
       <div className="header">
         <h1><span className="sar">SAR</span>dine</h1>
-        <span className="subtitle">SAR Imagery Viewer</span>
+        <span className="subtitle">SAR Data INspection and Exploration</span>
       </div>
 
       {/* Main Layout */}
@@ -1218,6 +1347,7 @@ function App() {
               <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
                 <option value="cog">Cloud Optimized GeoTIFF (URL)</option>
                 <option value="nisar">NISAR GCOV HDF5 (Local File)</option>
+                <option value="remote">Remote Bucket / S3</option>
               </select>
             </div>
           </CollapsibleSection>
@@ -1345,6 +1475,61 @@ function App() {
 
                   <button onClick={handleLoadNISAR} disabled={loading}>
                     {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
+                  </button>
+                </>
+              )}
+            </CollapsibleSection>
+          )}
+
+          {/* Remote Bucket Browser */}
+          {fileType === 'remote' && (
+            <CollapsibleSection title="Browse Remote Data">
+              <DataDiscovery
+                onSelectFile={handleRemoteFileSelect}
+                onStatus={addStatusLog}
+              />
+
+              {/* Show dataset selectors when remote NISAR metadata is loaded */}
+              {remoteUrl && nisarDatasets.length > 0 && (
+                <>
+                  <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                    🛰️ {remoteName}
+                  </div>
+
+                  <div className="control-group">
+                    <label>Frequency</label>
+                    <select
+                      value={selectedFrequency}
+                      onChange={(e) => {
+                        setSelectedFrequency(e.target.value);
+                        const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
+                        if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
+                      }}
+                    >
+                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
+                        <option key={f} value={f}>Frequency {f}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="control-group">
+                    <label>Polarization</label>
+                    <select
+                      value={selectedPolarization}
+                      onChange={(e) => setSelectedPolarization(e.target.value)}
+                    >
+                      {nisarDatasets
+                        .filter(d => d.frequency === selectedFrequency)
+                        .map(d => (
+                          <option key={d.polarization} value={d.polarization}>
+                            {d.polarization}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <button onClick={handleLoadRemoteNISAR} disabled={loading}>
+                    {loading ? 'Loading...' : 'Load Remote Dataset'}
                   </button>
                 </>
               )}
@@ -1510,10 +1695,14 @@ function App() {
                 <label>Colormap</label>
                 <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
                   <option value="grayscale">Grayscale</option>
+                  <option value="sardine">SARdine</option>
                   <option value="viridis">Viridis</option>
                   <option value="inferno">Inferno</option>
                   <option value="plasma">Plasma</option>
                   <option value="phase">Phase</option>
+                  <option value="flood">Flood Alert</option>
+                  <option value="diverging">Diverging</option>
+                  <option value="polarimetric">Polarimetric</option>
                 </select>
               </div>
             )}
@@ -1760,7 +1949,7 @@ function App() {
         </div>
 
         {/* Viewer Container */}
-        <div className="viewer-container">
+        <div className="viewer-container" style={{ '--bottom-dock': statusCollapsed ? '32px' : '310px' }}>
           {loading && <div className="loading">Loading COG...</div>}
 
           {error && <div className="error">{error}</div>}
@@ -1796,6 +1985,20 @@ function App() {
               extraLayers={overtureLayers}
             />
           )}
+
+          {/* Overview Map — toggleable overlay, bottom-left */}
+          <OverviewMap
+            wgs84Bounds={wgs84Bounds}
+            visible={overviewMapVisible}
+            onToggle={() => setOverviewMapVisible(v => !v)}
+          />
+
+          {/* Metadata Panel — overlaid on viewer, top-right */}
+          <MetadataPanel
+            imageData={imageData}
+            fileType={fileType}
+            fileName={nisarFile?.name || cogUrl || null}
+          />
         </div>
       </div>
 
@@ -1814,7 +2017,7 @@ function App() {
         right: 0,
         height: '24px',
         background: 'var(--sardine-bg, #0a1628)',
-        borderTop: '1px solid rgba(78, 201, 212, 0.15)',
+        borderTop: '1px dashed rgba(78, 201, 212, 0.15)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',

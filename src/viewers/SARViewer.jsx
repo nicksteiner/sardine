@@ -9,7 +9,6 @@ import { SAR_COMPOSITES } from '../utils/sar-composites.js';
 import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
 import { ScaleBar } from '../components/ScaleBar.jsx';
 import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
-import { CornerCoordinates } from '../components/CornerCoordinates.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -233,7 +232,6 @@ export const SARViewer = forwardRef(function SARViewer({
         glOptions={{ preserveDrawingBuffer: true }}
       />
       {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} />}
-      {showGrid && <CornerCoordinates viewState={viewState} bounds={bounds} />}
       <LoadingIndicator
         tilesLoading={loadingStatus.tilesLoading}
         tilesLoaded={loadingStatus.tilesLoaded}

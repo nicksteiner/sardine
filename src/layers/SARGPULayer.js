@@ -142,6 +142,64 @@ vec3 grayscale(float t) {
   return vec3(t, t, t);
 }
 
+vec3 sardineMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.33) {
+    float s = t / 0.33;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.165, 0.541, 0.576), s);
+  } else if (t < 0.67) {
+    float s = (t - 0.33) / 0.34;
+    c = mix(vec3(0.165, 0.541, 0.576), vec3(0.306, 0.788, 0.824), s);
+  } else {
+    float s = (t - 0.67) / 0.33;
+    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.910, 0.929, 0.961), s);
+  }
+  return c;
+}
+
+vec3 floodMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.33) {
+    float s = t / 0.33;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.710, 0.392, 0.165), s);
+  } else if (t < 0.67) {
+    float s = (t - 0.33) / 0.34;
+    c = mix(vec3(0.710, 0.392, 0.165), vec3(0.910, 0.514, 0.227), s);
+  } else {
+    float s = (t - 0.67) / 0.33;
+    c = mix(vec3(0.910, 0.514, 0.227), vec3(1.0, 0.361, 0.361), s);
+  }
+  return c;
+}
+
+vec3 divergingMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.5) {
+    float s = t / 0.5;
+    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.039, 0.086, 0.157), s);
+  } else {
+    float s = (t - 0.5) / 0.5;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.910, 0.514, 0.227), s);
+  }
+  return c;
+}
+
+vec3 polarimetricMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.5) {
+    float s = t / 0.5;
+    c = mix(vec3(0.831, 0.361, 1.0), vec3(0.039, 0.086, 0.157), s);
+  } else {
+    float s = (t - 0.5) / 0.5;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.239, 0.863, 0.518), s);
+  }
+  return c;
+}
+
 // ─── Main ────────────────────────────────────────────────────────────
 
 void main() {
@@ -181,6 +239,14 @@ void main() {
       rgb = plasma(value);
     } else if (colormapId == 4) {
       rgb = phaseColormap(value);
+    } else if (colormapId == 5) {
+      rgb = sardineMap(value);
+    } else if (colormapId == 6) {
+      rgb = floodMap(value);
+    } else if (colormapId == 7) {
+      rgb = divergingMap(value);
+    } else if (colormapId == 8) {
+      rgb = polarimetricMap(value);
     } else {
       rgb = grayscale(value);
     }

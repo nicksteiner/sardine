@@ -29,9 +29,12 @@ import {
   roundRect,
 } from './geo-overlays.js';
 
-// ── Font helper ─────────────────────────────────────────────────────────────
+// ── Font helpers ────────────────────────────────────────────────────────────
 
-const FONT_MONO = "'JetBrains Mono', 'Fira Code', 'Consolas', monospace";
+import { FONTS } from './theme-tokens.js';
+
+const FONT_MONO  = FONTS.mono;
+const FONT_SERIF = FONTS.serif;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -116,7 +119,9 @@ export async function exportFigure(glCanvas, options = {}) {
 function drawBorder(ctx, W, H, s) {
   ctx.strokeStyle = THEME.border;
   ctx.lineWidth = s(2);
+  ctx.setLineDash([s(8), s(4)]);
   ctx.strokeRect(s(1), s(1), W - s(2), H - s(2));
+  ctx.setLineDash([]);
 }
 
 // ── 2. Coordinate grid ─────────────────────────────────────────────────────
@@ -134,10 +139,10 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
   const dx = niceInterval(extent.width, 5);
   const dy = niceInterval(extent.height, 5);
 
-  // Gridlines
+  // Gridlines — dashed to match style guide
   ctx.strokeStyle = 'rgba(30, 58, 95, 0.35)';
   ctx.lineWidth = s(1);
-  ctx.setLineDash([s(4), s(4)]);
+  ctx.setLineDash([s(6), s(4)]);
 
   const tickFontSize = s(10);
   const tickPad = s(5);
@@ -402,7 +407,7 @@ function drawMetadata(ctx, W, H, meta, s) {
   const entries = [];
 
   if (filename) {
-    entries.push({ label: 'SOURCE', value: filename, color: THEME.textPrimary });
+    entries.push({ label: 'SOURCE', value: filename, color: THEME.textPrimary, serif: true });
   }
   if (compositeId) {
     const preset = SAR_COMPOSITES[compositeId];
@@ -460,8 +465,9 @@ function drawMetadata(ctx, W, H, meta, s) {
     ctx.textBaseline = 'top';
     ctx.fillText(e.label, boxX + pad, y);
 
-    // Value — semantic color
-    ctx.font = `${valueFontSize}px ${FONT_MONO}`;
+    // Value — semantic color, serif for descriptive values
+    const valueFont = e.serif ? FONT_SERIF : FONT_MONO;
+    ctx.font = `${valueFontSize}px ${valueFont}`;
     ctx.fillStyle = e.color;
     ctx.fillText(e.value, boxX + pad + labelWidth, y);
   }

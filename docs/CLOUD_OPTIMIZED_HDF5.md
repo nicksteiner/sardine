@@ -26,18 +26,14 @@ A client can read the consolidated metadata page in one or two HTTP range reques
 
 ---
 
-## Capitalizing on This in JavaScript
+## JavaScript Implementation
 
-This is where it gets exciting for SARdine. The cloud-optimization essentially gives you a predictable byte-level map of the file.
-
-### The Key Insight
-
-Because NISAR's metadata is consolidated at the front of the file, you can:
+The cloud-optimization provides a predictable byte-level map of the file. Because NISAR's metadata is consolidated at the front, a client can:
 
 1. **Fetch the first ~8MB** (one page) via a single HTTP range request → you now know every dataset, its shape, dtype, chunk layout, and the byte offset of every chunk in the file
 2. **Fetch only the chunks you need** for the current viewport via targeted range requests
 
-This is exactly how **Cloud Optimized GeoTIFF (COG)** works, and it's why COG has such great browser support. NISAR's cloud-optimized HDF5 enables the same pattern.
+This is the same access pattern used by Cloud Optimized GeoTIFF (COG).
 
 ---
 
@@ -79,7 +75,7 @@ A lightweight JS library that:
    readRegion(dataset, startRow, startCol, numRows, numCols) → Float32Array
    ```
 
-This is dramatically simpler than a full HDF5 library because you only need to parse the paged-aggregated metadata — not handle arbitrary HDF5 features. NISAR's cloud optimization constrains the problem space.
+This is simpler than a full HDF5 library because it only parses paged-aggregated metadata. NISAR's cloud optimization constrains the problem space to a subset of HDF5 features.
 
 ---
 
@@ -140,14 +136,9 @@ This is dramatically simpler than a full HDF5 library because you only need to p
 
 ---
 
-## Why This Matters
+## Significance
 
-**Zero server. Zero Python. Pure client-side streaming from S3 to GPU.**
-
-That would be a first in the earth science community and a huge differentiator for SARdine. It's also the kind of open-source contribution (a JS cloud-optimized HDF5 reader) that would get serious attention from:
-- NASA
-- The HDF Group
-- The broader geospatial-JS community
+h5chunk enables client-side HDF5 streaming from S3 to GPU with no server or Python dependency. There is currently no comparable JavaScript library for cloud-optimized HDF5 range-read access. Potential users include anyone working with NISAR, ICESat-2, or similarly structured HDF5 products in the browser.
 
 ---
 

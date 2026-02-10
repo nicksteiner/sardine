@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SARdine — Style Guide</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Serif:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
     /* ─── PRIMARY PALETTE ─── */
@@ -53,6 +53,7 @@
     --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
     --font-display: 'Space Grotesk', sans-serif;
     --font-body:    'IBM Plex Sans', sans-serif;
+    --font-serif:   'IBM Plex Serif', Georgia, serif;
 
     /* ─── SPACING ─── */
     --space-xs: 4px;
@@ -64,9 +65,9 @@
     --space-3xl: 64px;
 
     /* ─── RADII ─── */
-    --radius-sm: 4px;
-    --radius-md: 8px;
-    --radius-lg: 12px;
+    --radius-sm: 2px;
+    --radius-md: 3px;
+    --radius-lg: 4px;
 
     /* ─── TRANSITIONS ─── */
     --transition-fast: 150ms ease;
@@ -111,7 +112,7 @@
     text-align: center;
     padding: var(--space-3xl) 0;
     position: relative;
-    border-bottom: 1px solid var(--sardine-border);
+    border-bottom: 2px dashed var(--sardine-border);
     margin-bottom: var(--space-3xl);
   }
 
@@ -169,7 +170,7 @@
     gap: var(--space-md);
     margin-bottom: var(--space-xl);
     padding-bottom: var(--space-md);
-    border-bottom: 1px solid var(--sardine-border-subtle);
+    border-bottom: 2px dashed var(--sardine-border);
   }
 
   .section-number {
@@ -1247,11 +1248,271 @@
     color: var(--text-muted);
   }
 
+  /* ─── DASHED RULE ─── */
+  .dashed-rule {
+    border: none;
+    border-top: 1px dashed var(--sardine-border);
+    margin: var(--space-xl) 0;
+  }
+
+  .dashed-rule.accent {
+    border-color: var(--sardine-cyan-dim);
+  }
+
+  .dashed-rule.orange {
+    border-color: var(--sardine-orange-dim);
+  }
+
+  /* ─── TAB FILTER ─── */
+  .tab-filter {
+    display: flex;
+    gap: 2px;
+    background: var(--sardine-bg);
+    border: 1px solid var(--sardine-border);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    width: fit-content;
+  }
+
+  .tab-filter-item {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.5px;
+    padding: 6px 16px;
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    border: none;
+    background: transparent;
+  }
+
+  .tab-filter-item:hover {
+    color: var(--text-secondary);
+    background: var(--sardine-bg-hover);
+  }
+
+  .tab-filter-item.active {
+    color: var(--sardine-cyan);
+    background: var(--sardine-cyan-bg);
+  }
+
+  /* ─── ORNAMENTAL BOX ─── */
+  .ornamental-box {
+    position: relative;
+    background: var(--sardine-bg-raised);
+    border: 1px solid var(--sardine-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-lg);
+    margin-bottom: var(--space-md);
+  }
+
+  .ornamental-box::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 3px;
+    height: 100%;
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+    background: var(--sardine-cyan);
+  }
+
+  .ornamental-box.orange::before {
+    background: var(--sardine-orange);
+  }
+
+  .ornamental-box.green::before {
+    background: var(--sardine-green);
+  }
+
+  .ornamental-box.magenta::before {
+    background: var(--sardine-magenta);
+  }
+
+  .ornamental-box-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--sardine-cyan);
+    margin-bottom: var(--space-sm);
+  }
+
+  .ornamental-box.orange .ornamental-box-label { color: var(--sardine-orange); }
+  .ornamental-box.green .ornamental-box-label { color: var(--sardine-green); }
+  .ornamental-box.magenta .ornamental-box-label { color: var(--sardine-magenta); }
+
+  .ornamental-box-content {
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  /* ─── METRIC ROW ─── */
+  .metric-row {
+    display: flex;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+  }
+
+  .metric-box {
+    flex: 1;
+    min-width: 140px;
+    background: var(--sardine-bg-raised);
+    border: 1px solid var(--sardine-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    text-align: center;
+    transition: border-color var(--transition-med);
+  }
+
+  .metric-box:hover {
+    border-color: var(--sardine-cyan-dim);
+  }
+
+  .metric-value {
+    font-family: var(--font-mono);
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--sardine-cyan);
+    line-height: 1;
+    margin-bottom: var(--space-xs);
+  }
+
+  .metric-value.orange { color: var(--sardine-orange); }
+  .metric-value.green { color: var(--sardine-green); }
+  .metric-value.magenta { color: var(--sardine-magenta); }
+
+  .metric-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .metric-delta {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    margin-top: var(--space-xs);
+  }
+
+  .metric-delta.up { color: var(--sardine-green); }
+  .metric-delta.down { color: var(--status-flood); }
+
+  /* ─── LIGHT THEME ─── */
+  .light-theme-preview {
+    --lt-bg:          #f5f3ef;
+    --lt-bg-raised:   #ffffff;
+    --lt-border:      #d8dde6;
+    --lt-border-subtle: #e8ecf2;
+    --lt-text-primary: #1a2233;
+    --lt-text-secondary: #4a5568;
+    --lt-text-muted:  #8895a7;
+    --lt-cyan:        #0e94a0;
+    --lt-cyan-bg:     rgba(14, 148, 160, 0.08);
+    --lt-orange:      #c96a25;
+    --lt-orange-bg:   rgba(201, 106, 37, 0.08);
+    --lt-green:       #1a8a4a;
+    --lt-magenta:     #9b3dbb;
+
+    background: var(--lt-bg);
+    color: var(--lt-text-primary);
+    border: 1px solid var(--lt-border);
+    border-radius: var(--radius-md);
+    padding: var(--space-xl);
+  }
+
+  .light-theme-preview .lt-card {
+    background: var(--lt-bg-raised);
+    border: 1px solid var(--lt-border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-md);
+    margin-bottom: var(--space-sm);
+  }
+
+  .light-theme-preview .lt-title {
+    font-family: var(--font-mono);
+    font-weight: 700;
+    color: var(--lt-text-primary);
+  }
+
+  .light-theme-preview .lt-title .sar { color: var(--lt-cyan); }
+
+  .light-theme-preview .lt-text {
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    color: var(--lt-text-secondary);
+  }
+
+  .light-theme-preview .lt-muted {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--lt-text-muted);
+  }
+
+  .light-theme-preview .lt-btn {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--lt-cyan);
+    background: var(--lt-cyan);
+    color: #ffffff;
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+
+  .light-theme-preview .lt-btn-ghost {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    padding: 8px 16px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--lt-border);
+    background: transparent;
+    color: var(--lt-text-secondary);
+    cursor: pointer;
+    text-transform: uppercase;
+  }
+
+  .light-theme-preview .lt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.5px;
+    padding: 4px 12px;
+    border-radius: var(--radius-sm);
+    text-transform: uppercase;
+    background: var(--lt-cyan-bg);
+    color: var(--lt-cyan);
+    border: 1px solid var(--lt-border);
+  }
+
+  .light-theme-preview .lt-swatch-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-sm);
+  }
+
+  .light-theme-preview .lt-swatch {
+    height: 40px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--lt-border);
+  }
+
   /* ─── FOOTER ─── */
   .guide-footer {
     margin-top: var(--space-3xl);
     padding-top: var(--space-xl);
-    border-top: 1px solid var(--sardine-border);
+    border-top: 2px dashed var(--sardine-border);
     text-align: center;
     font-family: var(--font-mono);
     font-size: 0.7rem;
@@ -1259,14 +1520,263 @@
     letter-spacing: 1px;
   }
 
+  /* ─── TOGGLEABLE LIGHT THEME ─── */
+  [data-theme="light"] {
+    --sardine-bg:        #f5f3ef;
+    --sardine-bg-raised: #ffffff;
+    --sardine-bg-panel:  #faf9f6;
+    --sardine-bg-hover:  #edeae4;
+    --sardine-border:    #d4cdb8;
+    --sardine-border-subtle: #e2ddd0;
+
+    --sardine-cyan:       #0e8a96;
+    --sardine-cyan-dim:   #0a6e78;
+    --sardine-cyan-glow:  rgba(14, 138, 150, 0.15);
+    --sardine-cyan-bg:    rgba(14, 138, 150, 0.06);
+
+    --sardine-orange:     #c96a25;
+    --sardine-orange-dim: #a0541d;
+    --sardine-orange-glow: rgba(201, 106, 37, 0.15);
+    --sardine-orange-bg:  rgba(201, 106, 37, 0.06);
+
+    --sardine-green:      #1a8a4a;
+    --sardine-green-dim:  #146b3a;
+    --sardine-green-glow: rgba(26, 138, 74, 0.15);
+
+    --sardine-magenta:    #9b3dbb;
+    --sardine-magenta-dim:#7a2f94;
+    --sardine-magenta-glow: rgba(155, 61, 187, 0.15);
+
+    --text-primary:   #1a2233;
+    --text-secondary: #4a5568;
+    --text-muted:     #7a8599;
+    --text-disabled:  #b0b8c4;
+
+    --status-flood:   #cc3333;
+    --status-water:   #2a7acc;
+    --status-dry:     #9a8030;
+    --status-success: #1a8a4a;
+  }
+
+  [data-theme="light"] body::after {
+    background: none;
+  }
+
+  [data-theme="light"] .crt-title::after {
+    background: none;
+  }
+
+  [data-theme="light"] .hero-logo {
+    text-shadow: none;
+  }
+
+  [data-theme="light"] .crt-title {
+    text-shadow: none;
+  }
+
+  /* ─── THEME TOGGLE ─── */
+  .theme-toggle {
+    position: fixed;
+    top: var(--space-md);
+    right: var(--space-md);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 6px 14px;
+    border: 1px solid var(--sardine-border);
+    background: var(--sardine-bg-raised);
+    color: var(--text-secondary);
+    cursor: pointer;
+    z-index: 10000;
+    transition: all var(--transition-fast);
+  }
+
+  .theme-toggle:hover {
+    border-color: var(--sardine-cyan);
+    color: var(--sardine-cyan);
+  }
+
+  /* ─── HORIZONTAL NAV BAR ─── */
+  .nav-horizontal {
+    display: flex;
+    gap: var(--space-xl);
+    justify-content: center;
+    flex-wrap: wrap;
+    padding-bottom: var(--space-md);
+    border-bottom: 2px dashed var(--sardine-border);
+    margin-bottom: var(--space-xl);
+  }
+
+  .nav-horizontal a {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    text-decoration: none;
+    transition: color var(--transition-fast);
+    cursor: pointer;
+  }
+
+  .nav-horizontal a:hover,
+  .nav-horizontal a.active {
+    color: var(--sardine-cyan);
+  }
+
+  /* ─── DUOTONE IMAGE TREATMENT ─── */
+  .duotone-container {
+    position: relative;
+    overflow: hidden;
+    background: var(--sardine-cyan);
+  }
+
+  .duotone-container img {
+    display: block;
+    width: 100%;
+    height: auto;
+    filter: grayscale(100%) contrast(1.1);
+    mix-blend-mode: multiply;
+    opacity: 0.85;
+  }
+
+  .duotone-container.orange {
+    background: var(--sardine-orange);
+  }
+
+  .duotone-container.magenta {
+    background: var(--sardine-magenta);
+  }
+
+  /* ─── DUOTONE PLACEHOLDER (no real image) ─── */
+  .duotone-demo {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: var(--space-md);
+    margin-bottom: var(--space-xl);
+  }
+
+  .duotone-demo-item {
+    position: relative;
+    height: 160px;
+    overflow: hidden;
+  }
+
+  .duotone-demo-item .duotone-overlay {
+    position: absolute;
+    inset: 0;
+    opacity: 0.7;
+  }
+
+  .duotone-demo-item .duotone-pattern {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at 30% 40%, rgba(255,255,255,0.15) 0%, transparent 60%),
+      radial-gradient(ellipse at 70% 70%, rgba(0,0,0,0.2) 0%, transparent 60%),
+      repeating-linear-gradient(45deg, transparent, transparent 3px, rgba(255,255,255,0.03) 3px, rgba(255,255,255,0.03) 6px);
+    mix-blend-mode: overlay;
+  }
+
+  .duotone-demo-label {
+    position: absolute;
+    bottom: var(--space-sm);
+    left: var(--space-sm);
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #fff;
+    opacity: 0.8;
+  }
+
+  /* ─── ASCII ART HERO ─── */
+  .ascii-hero {
+    background: var(--sardine-bg);
+    border: 1px solid var(--sardine-border);
+    padding: var(--space-lg);
+    margin-bottom: var(--space-md);
+    text-align: center;
+    overflow: hidden;
+  }
+
+  .ascii-hero pre {
+    font-family: var(--font-mono);
+    font-size: 6px;
+    line-height: 7px;
+    letter-spacing: 1px;
+    color: var(--sardine-cyan);
+    opacity: 0.7;
+    display: inline-block;
+    text-align: left;
+  }
+
+  .ascii-hero-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-top: var(--space-md);
+  }
+
+  /* ─── FILLED TABLE HEADER VARIANT ─── */
+  .data-table-filled thead th {
+    background: var(--sardine-orange);
+    color: var(--sardine-bg);
+    font-weight: 600;
+    border-bottom: none;
+  }
+
+  [data-theme="light"] .data-table-filled thead th {
+    background: var(--sardine-orange);
+    color: #ffffff;
+  }
+
+  /* ─── DASHED SECTION HEADERS ─── */
+  .section-header-dashed {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    margin-bottom: var(--space-xl);
+    padding-bottom: var(--space-md);
+    border-bottom: 2px dashed var(--sardine-border);
+  }
+
+  /* ─── SERIF SPECIMEN ─── */
+  .type-sample-serif {
+    font-family: var(--font-serif);
+    font-size: 1.1rem;
+    font-weight: 400;
+    color: var(--text-secondary);
+    line-height: 1.7;
+  }
+
   @media (max-width: 768px) {
     .form-grid { grid-template-columns: 1fr; }
     .do-dont-grid { grid-template-columns: 1fr; }
     .panel-grid { grid-template-columns: 1fr; }
+    .nav-horizontal { gap: var(--space-md); }
+    .duotone-demo { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
+
+<button class="theme-toggle" onclick="document.documentElement.toggleAttribute('data-theme') || (document.documentElement.getAttribute('data-theme') ? document.documentElement.removeAttribute('data-theme') : document.documentElement.setAttribute('data-theme','light')); this.textContent = document.documentElement.getAttribute('data-theme') === 'light' ? '☀ Light' : '☾ Dark';" id="themeBtn">☾ Dark</button>
+<script>
+  document.getElementById('themeBtn').onclick = function() {
+    const html = document.documentElement;
+    if (html.getAttribute('data-theme') === 'light') {
+      html.removeAttribute('data-theme');
+      this.textContent = '☾ Dark';
+    } else {
+      html.setAttribute('data-theme', 'light');
+      this.textContent = '☀ Light';
+    }
+  };
+</script>
 
 <div class="guide">
 
@@ -1274,7 +1784,7 @@
   <header class="hero">
     <div class="hero-logo"><span class="sar">SAR</span><span class="dine">dine</span></div>
     <div class="hero-sub">Style Guide</div>
-    <div class="hero-tagline">Design system for operational SAR flood monitoring. Dark-first, data-dense, mission-critical.</div>
+    <div class="hero-tagline">SAR Data INspection and Exploration — Dark-first, data-dense, mission-critical.</div>
     <div class="version-badge">v1.0 — Feb 2026</div>
   </header>
 
@@ -1305,6 +1815,70 @@
         <div class="principle-name">Monospace Precision</div>
         <div class="principle-desc">Coordinates, timestamps, and metrics use monospace fonts for alignment and scanability. Body text uses a clean sans-serif.</div>
       </div>
+    </div>
+  </section>
+
+  <!-- ═══ HORIZONTAL NAV DEMO ═══ -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-number">01b</span>
+      <h2 class="section-title">Horizontal Navigation</h2>
+    </div>
+    <p class="section-desc">Top navigation bar with dashed underline separator. All-caps monospace links with generous letter-spacing. Matches the Nous Research horizontal nav pattern.</p>
+
+    <nav class="nav-horizontal">
+      <a class="active">Dashboard</a>
+      <a>Map Viewer</a>
+      <a>Scene Queue</a>
+      <a>Analytics</a>
+      <a>Pipeline</a>
+      <a>Settings</a>
+    </nav>
+  </section>
+
+  <!-- ═══ ASCII ART HERO ═══ -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-number">01c</span>
+      <h2 class="section-title">ASCII Art Hero</h2>
+    </div>
+    <p class="section-desc">Generative ASCII graphic for hero sections. Terminal/CRT aesthetic matching the mining pool dashboard pattern — monospace characters forming a satellite dish / radar sweep.</p>
+
+    <div class="ascii-hero">
+<pre>
+                                    .  :  .
+                              .  :  :  :  :  :  .
+                          .  :  :  :  :  :  :  :  :  .
+                      .  :  :  :  :  :  :  :  :  :  :  :  .
+                  .  :  :  :  :  :  :  :  :  :  :  :  :  :  :  .
+              .  :  :  :  :  :  :  . . . . . . .  :  :  :  :  :  :  .
+          .  :  :  :  :  :  . .                     . .  :  :  :  :  :  :  .
+      .  :  :  :  :  . .             . : : : .             . .  :  :  :  :  .
+      :  :  :  :  . .           . : : : : : : : : .           . .  :  :  :  :
+      :  :  :  . .         . : : : : : : : : : : : : .         . .  :  :  :
+      :  :  . .         . : : : : : : : : : : : : : : : .         . .  :  :
+      :  . .         : : : : : : : : : : : : : : : : : : :         . .  :
+      . .         : : : : : : : : : : : : : : : : : : : : :         . .
+      .         : : : : : : : : : : : : : : : : : : : : : : :         .
+              : : : : : : : : : : : : : : : : : : : : : : : : :
+              : : : : : : : : : : : S A R : : : : : : : : : : :
+              : : : : : : : : : : : : : : : : : : : : : : : : :
+      .         : : : : : : : : : : : : : : : : : : : : : : :         .
+      . .         : : : : : : : : : : : : : : : : : : : : :         . .
+      :  . .         : : : : : : : : : : : : : : : : : : :         . .  :
+      :  :  . .         . : : : : : : : : : : : : : : : .         . .  :  :
+      :  :  :  . .         . : : : : : : : : : : : : .         . .  :  :  :
+      :  :  :  :  . .           . : : : : : : : : .           . .  :  :  :  :
+      .  :  :  :  :  . .             . : : : .             . .  :  :  :  :  .
+          .  :  :  :  :  :  . .                     . .  :  :  :  :  :  :  .
+              .  :  :  :  :  :  :  . . . . . . .  :  :  :  :  :  :  .
+                  .  :  :  :  :  :  :  :  :  :  :  :  :  :  :  .
+                      .  :  :  :  :  :  :  :  :  :  :  :  .
+                          .  :  :  :  :  :  :  :  :  .
+                              .  :  :  :  :  :  .
+                                    .  :  .
+</pre>
+      <div class="ascii-hero-label">Synthetic Aperture Radar — Generative Display</div>
     </div>
   </section>
 
@@ -1496,6 +2070,12 @@
       <div class="type-label">Body — IBM Plex Sans</div>
       <div class="type-sample-body">Flood extent analysis detected 342 km² of newly inundated area in the Zambezi River Basin, representing a 47% increase from the previous acquisition. ICEYE X-band imagery acquired at 06:14 UTC shows significant backscatter reduction in VV polarization across the floodplain.</div>
       <div class="type-meta">Use for: descriptions, tooltips, paragraphs, form help text, notifications</div>
+    </div>
+
+    <div class="type-specimen">
+      <div class="type-label">Editorial — IBM Plex Serif</div>
+      <div class="type-sample-serif">Our mission is to advance open SAR data analysis by creating accessible, browser-native tools for flood monitoring. SARdine enables unrestricted inspection and exploration of synthetic aperture radar products — no server, no install, no friction.</div>
+      <div class="type-meta">Use for: editorial body text, long-form descriptions, documentation prose, light-theme contexts. Pairs with monospace for data inline within serif paragraphs.</div>
     </div>
 
     <div class="font-scale">
@@ -1701,6 +2281,87 @@
         </tbody>
       </table>
     </div>
+
+    <!-- Filled Table Header Variant -->
+    <p class="section-desc" style="margin-bottom: var(--space-md); margin-top: var(--space-xl);"><strong style="color:var(--text-primary)">Filled Header Table</strong> — Solid colored header row inspired by the mining pool leaderboard. Orange accent for emphasis.</p>
+    <div style="overflow-x: auto; border: 1px solid var(--sardine-border); margin-bottom: var(--space-xl);">
+      <table class="data-table data-table-filled">
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Scene ID</th>
+            <th>Vendor</th>
+            <th>Polarization</th>
+            <th>Contribution</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>01</td>
+            <td class="val-cyan">NISAR_L2_GCOV_20260205_freqA</td>
+            <td>NISAR</td>
+            <td>HHHH</td>
+            <td class="val-orange">16.565%</td>
+          </tr>
+          <tr>
+            <td>02</td>
+            <td class="val-cyan">ICEYE_X7_SLC_20260204</td>
+            <td>ICEYE</td>
+            <td>VV</td>
+            <td class="val-orange">11.814%</td>
+          </tr>
+          <tr>
+            <td>03</td>
+            <td class="val-cyan">CAP_SAR_20260203_1832</td>
+            <td>Capella</td>
+            <td>HH</td>
+            <td class="val-orange">5.63%</td>
+          </tr>
+          <tr>
+            <td>04</td>
+            <td>UMB_SPOT_20260202</td>
+            <td>Umbra</td>
+            <td>VV</td>
+            <td>3.96%</td>
+          </tr>
+          <tr>
+            <td>05</td>
+            <td>NISAR_L2_GCOV_20260201_freqB</td>
+            <td>NISAR</td>
+            <td>VVVV</td>
+            <td>2.831%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══ DUOTONE IMAGE TREATMENT ═══ -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-number">05b</span>
+      <h2 class="section-title">Duotone Image Treatment</h2>
+    </div>
+    <p class="section-desc">Monochrome photos with color overlay, matching the Nous Research homepage image style. Apply to SAR scene thumbnails, documentation hero images, or team photos. Three accent variants.</p>
+    <p class="section-desc" style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); margin-bottom: var(--space-md);">CSS: <code style="color: var(--sardine-cyan);">.duotone-container</code> wraps an <code style="color: var(--sardine-cyan);">&lt;img&gt;</code> — container background sets the tint color, image uses <code style="color: var(--sardine-cyan);">filter: grayscale(100%); mix-blend-mode: multiply;</code></p>
+
+    <div class="duotone-demo">
+      <div class="duotone-demo-item" style="background: var(--sardine-cyan);">
+        <div class="duotone-overlay" style="background: linear-gradient(135deg, rgba(78,201,212,0.3), rgba(10,22,40,0.6));"></div>
+        <div class="duotone-pattern"></div>
+        <div class="duotone-demo-label">Cyan — Default</div>
+      </div>
+      <div class="duotone-demo-item" style="background: var(--sardine-orange);">
+        <div class="duotone-overlay" style="background: linear-gradient(135deg, rgba(232,131,58,0.3), rgba(10,22,40,0.6));"></div>
+        <div class="duotone-pattern"></div>
+        <div class="duotone-demo-label">Orange — Alert</div>
+      </div>
+      <div class="duotone-demo-item" style="background: var(--sardine-magenta);">
+        <div class="duotone-overlay" style="background: linear-gradient(135deg, rgba(212,92,255,0.3), rgba(10,22,40,0.6));"></div>
+        <div class="duotone-pattern"></div>
+        <div class="duotone-demo-label">Magenta — HH-pol</div>
+      </div>
+    </div>
   </section>
 
   <!-- ═══ 06 SIDEBAR NAV ═══ -->
@@ -1778,19 +2439,20 @@
         <div class="do-label">✓ Do</div>
         <p>Use cyan for primary actions and interactive elements</p>
         <p>Use monospace for ALL numeric data and coordinates</p>
-        <p>Keep status indicators visible with glow effects</p>
-        <p>Use the segmented progress bar for batch operations</p>
+        <p>Use dashed borders for section dividers and nav separators</p>
+        <p>Keep corners sharp (2-4px max) for a utilitarian feel</p>
         <p>Reserve red exclusively for flood alerts and destructive actions</p>
-        <p>Use subtle scanline overlays for the radar-display feel</p>
+        <p>Use duotone treatment on photographs and thumbnails</p>
+        <p>Use serif font for editorial/documentation prose</p>
       </div>
       <div class="dont-card">
         <div class="dont-label">✗ Don't</div>
-        <p>Use white or light backgrounds — dark-first always</p>
         <p>Mix sans-serif fonts for data — monospace only</p>
         <p>Use color alone for status — always pair with text/icon</p>
-        <p>Use rounded corners larger than 12px — keep it technical</p>
+        <p>Use rounded corners larger than 4px — keep it brutalist</p>
         <p>Add decorative gradients or shadows without purpose</p>
-        <p>Use light-mode toggles unless explicitly requested</p>
+        <p>Use full-color photos — always apply duotone filter</p>
+        <p>Nest more than 2 levels of dashed + solid borders</p>
       </div>
     </div>
   </section>
@@ -1921,6 +2583,97 @@
 
     <div style="height: var(--space-xl)"></div>
 
+    <!-- Dashed Rules -->
+    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Dashed Rules</strong> — Section dividers inspired by Psyche's sparse, technical aesthetic. Three variants: default (border color), cyan accent, and orange accent.</p>
+    <div style="background: var(--sardine-bg-raised); padding: var(--space-lg); border: 1px solid var(--sardine-border); border-radius: var(--radius-md); margin-bottom: var(--space-xl);">
+      <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin-bottom: var(--space-sm);">DEFAULT</div>
+      <hr class="dashed-rule">
+      <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin-bottom: var(--space-sm);">ACCENT (CYAN)</div>
+      <hr class="dashed-rule accent">
+      <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin-bottom: var(--space-sm);">ALERT (ORANGE)</div>
+      <hr class="dashed-rule orange">
+    </div>
+
+    <!-- Tab Filters -->
+    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Tab Filters</strong> — Segmented filter bar for switching between views. Inspired by Psyche run-status tabs. Monospace labels, pill-group container.</p>
+    <div style="margin-bottom: var(--space-xl);">
+      <div class="tab-filter" style="margin-bottom: var(--space-md);">
+        <span class="tab-filter-item active">All Runs</span>
+        <span class="tab-filter-item">Active</span>
+        <span class="tab-filter-item">Completed</span>
+        <span class="tab-filter-item">Queued</span>
+      </div>
+      <div class="tab-filter">
+        <span class="tab-filter-item active">HHHH</span>
+        <span class="tab-filter-item">HVHV</span>
+        <span class="tab-filter-item">VVVV</span>
+        <span class="tab-filter-item">RGB</span>
+      </div>
+    </div>
+
+    <!-- Ornamental Boxes -->
+    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Ornamental Boxes</strong> — Left-accent callout cards inspired by Psyche's TLDR component. Colored left border indicates semantic category. Four variants: cyan (info), orange (warning), green (success), magenta (technical).</p>
+    <div style="margin-bottom: var(--space-xl);">
+      <div class="ornamental-box">
+        <div class="ornamental-box-label">Info</div>
+        <div class="ornamental-box-content">NISAR L2 GCOV products use EPSG:4326 with coordinate arrays stored as separate HDF5 datasets. Bounds are extracted from the coordinate arrays at file-open time.</div>
+      </div>
+      <div class="ornamental-box orange">
+        <div class="ornamental-box-label">Caution</div>
+        <div class="ornamental-box-content">Export at low multilook factors will produce noisier output than the on-screen display. A 3x3 spatial smooth is applied to rendered exports to compensate.</div>
+      </div>
+      <div class="ornamental-box green">
+        <div class="ornamental-box-label">Result</div>
+        <div class="ornamental-box-content">Flood extent analysis complete. 342 km² of newly inundated area detected in the Zambezi River Basin, +47% from baseline.</div>
+      </div>
+      <div class="ornamental-box magenta">
+        <div class="ornamental-box-label">Technical</div>
+        <div class="ornamental-box-content">h5chunk parses the superblock and paged-aggregated metadata in a single range read (~8 MB). Chunk index maps each dataset to byte offset and size for targeted fetches.</div>
+      </div>
+    </div>
+
+    <!-- Metric Boxes -->
+    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Metric Boxes</strong> — Compact inline metric displays inspired by Psyche's training run stats (tokens/s, loss, participants). Each box shows value, label, and optional delta indicator.</p>
+    <div class="metric-row" style="margin-bottom: var(--space-md);">
+      <div class="metric-box">
+        <div class="metric-value">16,704</div>
+        <div class="metric-label">Rows</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-value">16,272</div>
+        <div class="metric-label">Columns</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-value orange">4x</div>
+        <div class="metric-label">Multilook</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-value green">1.08 GB</div>
+        <div class="metric-label">File Size</div>
+      </div>
+    </div>
+    <div class="metric-row" style="margin-bottom: var(--space-xl);">
+      <div class="metric-box">
+        <div class="metric-value">342</div>
+        <div class="metric-label">Flood km²</div>
+        <div class="metric-delta up">+47%</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-value orange">-6.2 dB</div>
+        <div class="metric-label">Mean Δσ° (VV)</div>
+        <div class="metric-delta down">-3.1 dB</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-value green">24</div>
+        <div class="metric-label">Chunks Loaded</div>
+        <div class="metric-delta up">of 128 total</div>
+      </div>
+      <div class="metric-box">
+        <div class="metric-value magenta">60 fps</div>
+        <div class="metric-label">Render Rate</div>
+      </div>
+    </div>
+
     <!-- Network Map Concept -->
     <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Live Status Map</strong> — Global node/sensor status display inspired by DisTrO's live training map. Use dark basemap with orange node markers and connection lines.</p>
     <div class="network-map">
@@ -1967,9 +2720,130 @@
     </div>
   </section>
 
+  <!-- ═══ 12 LIGHT THEME ═══ -->
+  <section class="section">
+    <div class="section-header">
+      <span class="section-number">12</span>
+      <h2 class="section-title">Light Theme</h2>
+    </div>
+    <p class="section-desc">Light theme variant toggled via the ☾/☀ button (top-right). Warm cream palette inspired by the Nous Research / Psyche aesthetic. All CSS custom properties swap automatically via <code style="font-family: var(--font-mono); color: var(--sardine-cyan);">[data-theme="light"]</code>. Use for documentation, printable reports, and light-context embeds.</p>
+
+    <!-- Light palette swatches -->
+    <div class="light-theme-preview" style="margin-bottom: var(--space-xl);">
+      <div style="font-family: var(--font-mono); font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--lt-text-muted); margin-bottom: var(--space-md);">Light Palette</div>
+      <div class="lt-swatch-grid" style="margin-bottom: var(--space-lg);">
+        <div>
+          <div class="lt-swatch" style="background: #f5f7fa;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">bg #f5f7fa</div>
+        </div>
+        <div>
+          <div class="lt-swatch" style="background: #ffffff;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">raised #ffffff</div>
+        </div>
+        <div>
+          <div class="lt-swatch" style="background: #d8dde6;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">border #d8dde6</div>
+        </div>
+        <div>
+          <div class="lt-swatch" style="background: #1a2233;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">text #1a2233</div>
+        </div>
+      </div>
+
+      <div class="lt-swatch-grid" style="margin-bottom: var(--space-lg);">
+        <div>
+          <div class="lt-swatch" style="background: #0e94a0;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">cyan #0e94a0</div>
+        </div>
+        <div>
+          <div class="lt-swatch" style="background: #c96a25;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">orange #c96a25</div>
+        </div>
+        <div>
+          <div class="lt-swatch" style="background: #1a8a4a;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">green #1a8a4a</div>
+        </div>
+        <div>
+          <div class="lt-swatch" style="background: #9b3dbb;"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">magenta #9b3dbb</div>
+        </div>
+      </div>
+
+      <hr style="border: none; border-top: 1px dashed var(--lt-border); margin: var(--space-lg) 0;">
+
+      <!-- Light theme component preview -->
+      <div style="font-family: var(--font-mono); font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--lt-text-muted); margin-bottom: var(--space-md);">Component Preview</div>
+
+      <div class="lt-card" style="margin-bottom: var(--space-md);">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-sm);">
+          <span class="lt-title" style="font-size: 1.2rem;"><span class="sar">SAR</span>dine</span>
+          <span class="lt-chip">Processing</span>
+        </div>
+        <div class="lt-text" style="margin-bottom: var(--space-md);">NISAR L2 GCOV — frequencyA HHHH — 16,704 x 16,272 px — EPSG:4326</div>
+        <div style="display: flex; gap: var(--space-sm);">
+          <button class="lt-btn">Export GeoTIFF</button>
+          <button class="lt-btn-ghost">Cancel</button>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-sm); margin-bottom: var(--space-md);">
+        <div class="lt-card" style="text-align: center;">
+          <div style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: var(--lt-cyan);">-12.4 dB</div>
+          <div class="lt-muted">Mean σ°</div>
+        </div>
+        <div class="lt-card" style="text-align: center;">
+          <div style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: var(--lt-orange);">4x</div>
+          <div class="lt-muted">Multilook</div>
+        </div>
+        <div class="lt-card" style="text-align: center;">
+          <div style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: var(--lt-green);">1.08 GB</div>
+          <div class="lt-muted">File Size</div>
+        </div>
+      </div>
+
+      <div class="lt-muted" style="text-align: right;">Light theme — for docs, reports, and print export only</div>
+    </div>
+
+    <!-- Psyche warm palette variant -->
+    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Psyche Warm Variant</strong> — Alternate warm-cream palette based on Nous Research/Psyche blog aesthetic. Cream background with forest green text and gold accents.</p>
+
+    <div style="background: #f5f2e9; color: #253d26; border: 1px solid #d4cdb8; border-radius: var(--radius-md); padding: var(--space-xl); margin-bottom: var(--space-xl);">
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-sm); margin-bottom: var(--space-lg);">
+        <div>
+          <div style="height: 40px; background: #f5f2e9; border: 1px solid #d4cdb8; border-radius: var(--radius-sm);"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">cream #f5f2e9</div>
+        </div>
+        <div>
+          <div style="height: 40px; background: #253d26; border-radius: var(--radius-sm);"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">green #253d26</div>
+        </div>
+        <div>
+          <div style="height: 40px; background: #c9b75c; border-radius: var(--radius-sm);"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">gold #c9b75c</div>
+        </div>
+        <div>
+          <div style="height: 40px; background: #2f3a30; border-radius: var(--radius-sm);"></div>
+          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">dark #2f3a30</div>
+        </div>
+      </div>
+
+      <div style="background: #ffffff; border: 1px solid #d4cdb8; border-radius: var(--radius-sm); padding: var(--space-md); margin-bottom: var(--space-md);">
+        <div style="font-family: var(--font-mono); font-size: 1rem; font-weight: 700; color: #253d26; margin-bottom: var(--space-xs);">Scene Metadata</div>
+        <div style="font-family: var(--font-body); font-size: 0.85rem; color: #4a5c4b; line-height: 1.6;">Flood extent analysis detected 342 km² of newly inundated area. GCOV product acquired 2026-02-05 at 06:14 UTC.</div>
+        <div style="font-family: var(--font-mono); font-size: 0.7rem; color: #7a7560; margin-top: var(--space-sm); padding-top: var(--space-sm); border-top: 1px dashed #d4cdb8; display: flex; gap: var(--space-lg);">
+          <span>SCENE <span style="color: #253d26; font-weight: 600;">NISAR_L2_GCOV</span></span>
+          <span>BAND <span style="color: #c9b75c; font-weight: 600;">L-SAR</span></span>
+          <span>POL <span style="color: #253d26; font-weight: 600;">HHHH</span></span>
+        </div>
+      </div>
+
+      <div style="font-family: var(--font-mono); font-size: 0.65rem; color: #7a7560; letter-spacing: 1px; text-align: right;">Psyche warm palette — reference only</div>
+    </div>
+  </section>
+
   <footer class="guide-footer">
-    SARdine Style Guide v1.0 — Designed for operational SAR flood monitoring<br>
-    steinerlab - ccny
+    SARdine Style Guide v1.0.0-beta.1 — SAR Data INspection and Exploration<br>
+    steinerlab - ccny — Feb 2026
   </footer>
 
 </div>
