@@ -221,7 +221,7 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
  */
 function App() {
   // Core state
-  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar' | 'remote'
+  const [fileType, setFileType] = useState('remote'); // 'cog' | 'nisar' | 'remote'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -836,7 +836,12 @@ function App() {
 
     try {
       addStatusLog('info', `Streaming NISAR metadata from: ${name}`);
-      const datasets = await listNISARDatasetsFromUrl(url);
+      const result = await listNISARDatasetsFromUrl(url);
+      const datasets = result.datasets || result;
+      // Store the stream reader to reuse when loading (avoids re-downloading metadata)
+      if (result._streamReader) {
+        handleRemoteFileSelect._cachedReader = result._streamReader;
+      }
       setNisarDatasets(datasets);
 
       if (datasets.length > 0) {
@@ -872,6 +877,7 @@ function App() {
       const data = await loadNISARGCOVFromUrl(remoteUrl, {
         frequency: selectedFrequency,
         polarization: selectedPolarization,
+        _streamReader: handleRemoteFileSelect._cachedReader || null,
       });
 
       setImageData(data);
