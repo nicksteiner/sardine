@@ -49,3 +49,13 @@ coverage/
 
 test_data/
 test_output/
+
+# Test SAR imagery (large binaries)
+test_sar_*.tif
+*.tif.aux.xml
+
+# Backup files
+*.bak
+
+# Python virtual env
+.venv/
