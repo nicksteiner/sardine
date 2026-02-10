@@ -26,7 +26,8 @@ const MSG_FILTER_PIPELINE = 0x000B;
 const MSG_ATTRIBUTE = 0x000C;
 const MSG_OBJ_HEADER_CONTINUATION = 0x0010;
 const MSG_SYMBOL_TABLE = 0x0011;
-const MSG_LINK_INFO = 0x002A;  // not used yet, but defined for completeness
+const MSG_LINK_INFO = 0x0002;
+const MSG_GROUP_INFO = 0x000A;
 
 // Data layout classes
 const LAYOUT_COMPACT = 0;
@@ -129,7 +130,7 @@ function parseSuperblock(reader) {
   }
 
   const version = reader.readUint8();
-  console.log(`[h5chunk] Superblock version: ${version}`);
+  // Superblock version parsed
 
   let superblock = { version };
 
@@ -174,8 +175,6 @@ function parseSuperblock(reader) {
     reader.skip(4);
   }
 
-  console.log(`[h5chunk] Offset size: ${superblock.offsetSize}, Length size: ${superblock.lengthSize}`);
-  console.log(`[h5chunk] Root group address: 0x${superblock.rootGroupAddress.toString(16)}`);
 
   return superblock;
 }
@@ -950,7 +949,6 @@ function parseBTreeV1(reader, address, superblock, rank, chunkSize) {
     const sigStr = String.fromCharCode(...sig);
 
     if (sigStr !== 'TREE') {
-      console.warn(`[h5chunk] Expected TREE signature at 0x${nodeAddress.toString(16)}, got ${sigStr}`);
       return;
     }
 
@@ -1183,7 +1181,6 @@ export class H5Chunk {
     // Parse superblock
     this.superblock = parseSuperblock(reader);
 
-    console.log(`[h5chunk] Superblock parsed, root at 0x${this.superblock.rootGroupAddress.toString(16)}`);
 
     // Parse root group and traverse structure
     // This is where we build the dataset index
@@ -1220,13 +1217,11 @@ export class H5Chunk {
    * 4. Look for Data Layout messages that indicate chunked datasets
    */
   async _scanForDatasets(reader) {
-    console.log('[h5chunk] Scanning for datasets...');
 
     const buffer = new Uint8Array(this.metadataBuffer);
 
     // Strategy 1: Parse from root group (v2 superblock points to object header)
     try {
-      console.log(`[h5chunk] Parsing root group at 0x${this.superblock.rootGroupAddress.toString(16)}`);
       await this._parseObjectAtAddress(reader, this.superblock.rootGroupAddress, '/');
     } catch (e) {
       console.warn('[h5chunk] Failed to parse root group:', e.message);
@@ -1240,7 +1235,6 @@ export class H5Chunk {
         ohdrs.push(i);
       }
     }
-    console.log(`[h5chunk] Found ${ohdrs.length} OHDR signatures`);
 
     for (const addr of ohdrs) {
       try {
@@ -1258,7 +1252,6 @@ export class H5Chunk {
         frhps.push(i);
       }
     }
-    console.log(`[h5chunk] Found ${frhps.length} FRHP (fractal heap) signatures`);
 
     // Strategy 4: Look for chunked data layout patterns
     // Scan for Data Layout message patterns (version 3 or 4 with chunked class)
@@ -1283,19 +1276,11 @@ export class H5Chunk {
       // small dataset's object header + inline data (identification fields
       // are scalar strings/ints, well under 1KB each).
       const fetchSize = 8192;
-      console.log(`[h5chunk] Fetching remote object header at 0x${address.toString(16)} for ${path}`);
       const buf = await this._fetchBytes(address, fetchSize);
       activeReader = new BufferReader(buf, true, address);
     }
 
     const messages = parseObjectHeader(activeReader, this.superblock, address);
-    if (isRemote) {
-      console.log(`[h5chunk] Remote object ${path}: ${messages.length} messages found`);
-      for (const m of messages) {
-        console.log(`[h5chunk]   msg type=${m.type} size=${m.size} offset=0x${m.offset.toString(16)}`);
-      }
-    }
-
     let dataspace = null;
     let datatype = null;
     let layout = null;
@@ -1303,6 +1288,7 @@ export class H5Chunk {
     const childLinks = []; // Collect Link messages (v2 groups)
     let symbolTableBTree = null;
     let symbolTableHeap = null;
+    let linkInfoFheapAddr = null; // Fractal heap address from Link Info (v2 groups)
     const continuationBlocks = []; // {offset, length} for v1 continuation
     const attributes = new Map(); // Collect attribute messages
 
@@ -1326,6 +1312,15 @@ export class H5Chunk {
           if (link && link.address != null) {
             childLinks.push(link);
           }
+        } else if (msg.type === MSG_LINK_INFO) {
+          // v2 group: Link Info message → fractal heap + B-tree v2
+          activeReader.seek(msg.offset);
+          const liVersion = activeReader.readUint8();
+          const liFlags = activeReader.readUint8();
+          if (liFlags & 0x01) activeReader.skip(8); // max creation index
+          linkInfoFheapAddr = activeReader.readOffset(this.superblock.offsetSize);
+          // name index B-tree v2 address (skip — we parse the heap directly)
+          activeReader.readOffset(this.superblock.offsetSize);
         } else if (msg.type === MSG_SYMBOL_TABLE) {
           activeReader.seek(msg.offset);
           symbolTableBTree = activeReader.readOffset(this.superblock.offsetSize);
@@ -1353,7 +1348,6 @@ export class H5Chunk {
           contBuffer = this.metadataBuffer.slice(cont.offset, cont.offset + cont.length);
         } else {
           // Need to fetch from file
-          console.log(`[h5chunk] Fetching continuation block at 0x${cont.offset.toString(16)} (${cont.length} bytes)`);
           contBuffer = await this._fetchBytes(cont.offset, cont.length);
         }
 
@@ -1365,7 +1359,6 @@ export class H5Chunk {
               cr.seek(cmsg.offset);
               symbolTableBTree = cr.readOffset(this.superblock.offsetSize);
               symbolTableHeap = cr.readOffset(this.superblock.offsetSize);
-              console.log(`[h5chunk] Found Symbol Table in continuation: B-tree=0x${symbolTableBTree.toString(16)}, Heap=0x${symbolTableHeap.toString(16)}`);
             } else if (cmsg.type === MSG_DATASPACE) {
               dataspace = parseDataspaceMessage(cr, cmsg.offset);
             } else if (cmsg.type === MSG_DATATYPE) {
@@ -1406,11 +1399,8 @@ export class H5Chunk {
           children = [];
         }
       }
-      console.log(`[h5chunk] Group ${path}: ${children.length} children via Symbol Table`);
-
       for (const child of children) {
         const childPath = path === '/' ? `/${child.name}` : `${path}/${child.name}`;
-        console.log(`[h5chunk]   child "${child.name}": objAddr=0x${child.objAddr.toString(16)} cacheType=${child.cacheType} btree=${child.btreeAddr != null ? '0x'+child.btreeAddr.toString(16) : 'null'} heap=${child.heapAddr != null ? '0x'+child.heapAddr.toString(16) : 'null'}`);
 
         if (child.cacheType === 1 && child.btreeAddr != null && child.heapAddr != null) {
           // Cached group — use scratch-pad B-tree/heap directly
@@ -1419,8 +1409,6 @@ export class H5Chunk {
             const grandChildren = enumerateGroupChildren(
               reader, child.btreeAddr, child.heapAddr, this.superblock
             );
-            console.log(`[h5chunk] Group ${childPath}: ${grandChildren.length} children (cached)`);
-
             for (const gc of grandChildren) {
               const gcPath = `${childPath}/${gc.name}`;
               try {
@@ -1436,8 +1424,6 @@ export class H5Chunk {
               const grandChildren = await this._enumerateRemoteGroup(
                 child.btreeAddr, child.heapAddr
               );
-              console.log(`[h5chunk] Group ${childPath}: ${grandChildren.length} children (fetched remote)`);
-
               for (const gc of grandChildren) {
                 const gcPath = `${childPath}/${gc.name}`;
                 try {
@@ -1453,12 +1439,28 @@ export class H5Chunk {
         } else {
           // Non-cached entry — parse the object header to determine type
           try {
-            console.log(`[h5chunk] Parsing non-cached child ${childPath} at 0x${child.objAddr.toString(16)}`);
             await this._parseObjectAtAddress(reader, child.objAddr, childPath);
           } catch (e) {
             console.warn(`[h5chunk] Failed to parse ${childPath}:`, e.message);
           }
         }
+      }
+    }
+
+    // ── Handle v2 groups via Link Info / fractal heap ───────────────────
+    if (linkInfoFheapAddr != null && linkInfoFheapAddr !== 0xffffffffffffffff) {
+      try {
+        const v2Links = await this._enumerateV2GroupLinks(linkInfoFheapAddr);
+        for (const link of v2Links) {
+          const childPath = path === '/' ? `/${link.name}` : `${path}/${link.name}`;
+          try {
+            await this._parseObjectAtAddress(reader, link.address, childPath);
+          } catch (e) {
+            // Skip children we can't parse
+          }
+        }
+      } catch (e) {
+        console.warn(`[h5chunk] Failed to enumerate v2 group ${path}:`, e.message);
       }
     }
 
@@ -1504,9 +1506,6 @@ export class H5Chunk {
 
       this.datasets.set(datasetId, datasetInfo);
 
-      if (dataspace.rank === 2) {
-        console.log(`[h5chunk] Found 2D dataset: ${dataspace.dims.join('x')} ${datatype.dtype} at 0x${address.toString(16)} path=${path}`);
-      }
     }
 
     // Store attributes for any object (dataset or group) that has them
@@ -1526,9 +1525,168 @@ export class H5Chunk {
   }
 
   /**
-   * Scan for chunked data layout messages directly in the buffer
-   * This catches datasets we might have missed by signature scanning
+   * Enumerate children of a v2-style group by parsing its fractal heap.
+   * v2 groups store links in a fractal heap referenced by a Link Info message.
+   * This method fetches the FRHP header, walks indirect/direct blocks, and
+   * extracts HDF5 Link messages containing child names and target addresses.
+   *
+   * @param {number} fheapAddr — Fractal heap (FRHP) address from Link Info msg
+   * @returns {Promise<Array<{name: string, address: number}>>}
    */
+  async _enumerateV2GroupLinks(fheapAddr) {
+    const oSize = this.superblock.offsetSize;
+
+    // ── 1. Parse FRHP header ──
+    // sig(4) + ver(1) + heapIdLen(2) + ioFilterLen(2) + flags(1) + maxManaged(4)
+    // + 12 × length/offset fields (8 bytes each) + tableWidth(2) + startBlock(8)
+    // + maxDirect(8) + maxHeapSize(2) + startRows(2) + rootAddr(oSize) + curRows(2)
+    // + checksum(4) ≈ 150 bytes. Fetch 256 to be safe.
+    const frhpBuf = await this._fetchBytes(fheapAddr, 256);
+    const fv = new DataView(frhpBuf);
+
+    const sig = String.fromCharCode(fv.getUint8(0), fv.getUint8(1), fv.getUint8(2), fv.getUint8(3));
+    if (sig !== 'FRHP') throw new Error(`Bad fractal heap signature: ${sig}`);
+
+    let fo = 4;
+    fo += 1; // version
+    const heapIdLen = fv.getUint16(fo, true); fo += 2;
+    const ioFilterLen = fv.getUint16(fo, true); fo += 2;
+    fo += 1; // flags
+    fo += 4; // max managed object size
+    fo += 8; // next huge ID
+    fo += 8; // huge objects B-tree v2 addr
+    fo += 8; // free space in managed blocks
+    fo += 8; // managed objects address
+    fo += 8; // managed space
+    fo += 8; // managed alloc
+    fo += 8; // managed iteration offset
+    const managedNobjs = Number(fv.getBigUint64(fo, true)); fo += 8;
+    fo += 8; // huge space
+    fo += 8; // huge nobjs
+    fo += 8; // tiny space
+    fo += 8; // tiny nobjs
+
+    const tableWidth = fv.getUint16(fo, true); fo += 2;
+    const startingBlockSize = Number(fv.getBigUint64(fo, true)); fo += 8;
+    fo += 8; // max direct block size
+    const maxHeapSize = fv.getUint16(fo, true); fo += 2;
+    fo += 2; // starting num rows
+    const rootBlockAddr = oSize === 8
+      ? Number(fv.getBigUint64(fo, true)) : fv.getUint32(fo, true);
+    fo += oSize;
+    const curNumRows = fv.getUint16(fo, true);
+
+    const blockOffsetBytes = Math.ceil(maxHeapSize / 8);
+
+    // ── 2. Collect direct block addresses ──
+    const directBlocks = []; // {addr, size}
+
+    if (curNumRows === 0) {
+      // Root IS a direct block
+      directBlocks.push({ addr: rootBlockAddr, size: startingBlockSize });
+    } else {
+      // Root is an indirect block — parse it to find direct blocks
+      const ibHeaderSize = 4 + 1 + oSize + blockOffsetBytes;
+      // Row 0 has tableWidth entries of startingBlockSize
+      const maxEntries = tableWidth * (curNumRows + 1); // conservative
+      const ibBufSize = ibHeaderSize + maxEntries * oSize + 32;
+      const ibBuf = await this._fetchBytes(rootBlockAddr, ibBufSize);
+      const iv = new DataView(ibBuf);
+
+      const ibSig = String.fromCharCode(iv.getUint8(0), iv.getUint8(1), iv.getUint8(2), iv.getUint8(3));
+      if (ibSig !== 'FHIB') throw new Error(`Bad indirect block sig: ${ibSig}`);
+
+      let io = 4 + 1 + oSize + blockOffsetBytes; // skip header
+      // Row 0: tableWidth direct blocks of startingBlockSize
+      for (let i = 0; i < tableWidth; i++) {
+        const addr = oSize === 8
+          ? Number(iv.getBigUint64(io, true)) : iv.getUint32(io, true);
+        io += oSize;
+        if (addr !== 0 && addr !== 0xffffffffffffffff) {
+          directBlocks.push({ addr, size: startingBlockSize });
+        }
+      }
+      // Row 1+: larger blocks (2×, 4×, etc.) — only if curNumRows > 1
+      let blockSize = startingBlockSize * 2;
+      for (let row = 1; row < curNumRows; row++) {
+        for (let i = 0; i < tableWidth; i++) {
+          if (io + oSize > ibBuf.byteLength) break;
+          const addr = oSize === 8
+            ? Number(iv.getBigUint64(io, true)) : iv.getUint32(io, true);
+          io += oSize;
+          if (addr !== 0 && addr !== 0xffffffffffffffff) {
+            directBlocks.push({ addr, size: blockSize });
+          }
+        }
+        blockSize *= 2;
+      }
+    }
+
+    // ── 3. Parse link messages from each direct block ──
+    const results = [];
+    const dbHeaderSize = 4 + 1 + oSize + blockOffsetBytes; // FHDB sig+ver+heapAddr+blockOffset
+
+    for (const db of directBlocks) {
+      const dbBuf = await this._fetchBytes(db.addr, db.size);
+      const dbSig = String.fromCharCode(
+        new Uint8Array(dbBuf)[0], new Uint8Array(dbBuf)[1],
+        new Uint8Array(dbBuf)[2], new Uint8Array(dbBuf)[3]
+      );
+      if (dbSig !== 'FHDB') continue;
+
+      const data = new Uint8Array(dbBuf);
+      // Link messages start after the header + 4 bytes (observed padding)
+      let off = dbHeaderSize + 4;
+
+      while (off < data.length - 12 && results.length < managedNobjs) {
+        // Parse HDF5 Link message (same format as MSG_LINK = 0x06)
+        const ver = data[off]; off += 1;
+        if (ver !== 1) break;
+        const flags = data[off]; off += 1;
+
+        if (flags & 0x08) off += 1; // link type (skip, assume hard=0)
+        if (flags & 0x04) off += 8; // creation order
+        if (flags & 0x10) off += 1; // charset
+
+        const nameLenSize = 1 << (flags & 0x03);
+        let nameLen;
+        if (nameLenSize === 1) {
+          nameLen = data[off]; off += 1;
+        } else if (nameLenSize === 2) {
+          nameLen = data[off] | (data[off+1] << 8); off += 2;
+        } else if (nameLenSize === 4) {
+          nameLen = data[off] | (data[off+1] << 8) | (data[off+2] << 16) | (data[off+3] << 24);
+          off += 4;
+        } else {
+          break; // 8-byte name length — unlikely for group members
+        }
+
+        if (nameLen <= 0 || nameLen > 1024 || off + nameLen + oSize > data.length) break;
+
+        let name = '';
+        for (let i = 0; i < nameLen; i++) name += String.fromCharCode(data[off + i]);
+        off += nameLen;
+
+        // Hard link: object header address
+        let address;
+        if (oSize === 8) {
+          const dv = new DataView(data.buffer, data.byteOffset + off, 8);
+          address = Number(dv.getBigUint64(0, true));
+        } else {
+          const dv = new DataView(data.buffer, data.byteOffset + off, 4);
+          address = dv.getUint32(0, true);
+        }
+        off += oSize;
+
+        if (name && address > 0) {
+          results.push({ name, address });
+        }
+      }
+    }
+
+    return results;
+  }
+
   /**
    * Enumerate children of a remote group whose B-tree and local heap are
    * beyond the metadata buffer. Fetches just the needed bytes.
@@ -1673,7 +1831,6 @@ export class H5Chunk {
       }
     }
 
-    console.log(`[h5chunk] Found ${candidates.length} potential chunked layout messages`);
 
     // For each candidate, try to parse the layout directly and search for nearby dataspace/datatype
     for (const cand of candidates) {
@@ -1687,7 +1844,6 @@ export class H5Chunk {
                                layout.btreeAddress < this.file?.size || layout.btreeAddress < 2e9;
 
           if (!isValidBtree) {
-            console.log(`[h5chunk] Skipping layout at 0x${cand.offset.toString(16)}: invalid btree addr 0x${layout.btreeAddress?.toString(16)}`);
             continue;
           }
           // Now search nearby for Dataspace and Datatype messages
@@ -1789,7 +1945,6 @@ export class H5Chunk {
 
               // Try to parse B-tree if within metadata
               if (layout.btreeAddress && layout.btreeAddress < this.metadataBuffer.byteLength) {
-                console.log(`[h5chunk] Parsing B-tree at 0x${layout.btreeAddress.toString(16)} for dataset at 0x${cand.offset.toString(16)}`);
                 try {
                   datasetInfo.chunks = parseBTreeV1(
                     reader,
@@ -1798,19 +1953,13 @@ export class H5Chunk {
                     dataspace.rank + 1,
                     layout.chunkDims
                   );
-                  console.log(`[h5chunk] B-tree parsed: ${datasetInfo.chunks?.size || 0} chunks found`);
                 } catch (e) {
                   console.warn(`[h5chunk] B-tree parse failed:`, e.message);
                 }
-              } else if (layout.btreeAddress) {
-                console.log(`[h5chunk] B-tree at 0x${layout.btreeAddress.toString(16)} is beyond metadata buffer (${this.metadataBuffer.byteLength} bytes)`);
               }
 
               this.datasets.set(datasetId, datasetInfo);
 
-              if (dataspace.rank === 2) {
-                console.log(`[h5chunk] Found 2D chunked dataset: ${dataspace.dims.join('x')} ${datatype.dtype} (chunks: ${layout.chunkDims?.join('x') || 'unknown'})`);
-              }
             }
           }
         }
@@ -1904,9 +2053,6 @@ export class H5Chunk {
 
         this.datasets.set(datasetId, datasetInfo);
 
-        if (dataspace.rank === 2) {
-          console.log(`[h5chunk] Found v1 2D dataset: ${dataspace.dims.join('x')} ${datatype.dtype}`);
-        }
       }
     }
   }
