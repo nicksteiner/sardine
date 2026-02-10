@@ -1100,6 +1100,57 @@ Bytes 8 MB–~1.9 GB: Data pages
 
 When an address falls outside the metadata buffer, h5chunk uses targeted byte-range fetches.
 
+### 17.0 Local File Serving (On-Demand Server)
+
+When running SARdine on an on-demand server (e.g., SMCE ODS, JupyterHub, cloud VM) accessed through JupyterLab, local HDF5 files can be served to the browser via a lightweight Range-request file server.
+
+**Start the server in a JupyterLab terminal:**
+
+```bash
+# Serve files from your home directory
+node server/local-file-server.mjs ~
+
+# Serve files from a specific data directory
+node server/local-file-server.mjs ~/ods
+
+# Custom port
+PORT=9000 node server/local-file-server.mjs ~/ods
+```
+
+**Accessing through JupyterLab's proxy:**
+
+Since the browser connects to the ODS through JupyterLab (not directly), `localhost:8081` won't work in the browser. Instead, use JupyterLab's built-in proxy. If your JupyterLab URL looks like:
+
+```
+https://ods.example.com/user/nsteiner/lab
+```
+
+Then access the file server at:
+
+```
+https://ods.example.com/user/nsteiner/proxy/8081/path/to/file.h5
+```
+
+Or use `jupyter-server-proxy` if installed:
+
+```
+https://ods.example.com/user/nsteiner/proxy/absolute/8081/path/to/file.h5
+```
+
+**Alternatively**, avoid the proxy entirely by using the file server from Node.js scripts running in the same terminal (no browser needed):
+
+```bash
+# Test with the debug script — reads the file directly, no server needed
+node test/debug-h5chunk-datasets.mjs ~/ods/NISAR_L2_GCOV.h5
+```
+
+The file server features:
+- Lists `.h5` / `.hdf5` / `.he5` / `.nc` files as JSON at directory paths
+- Supports HTTP `Range` requests for on-demand chunk fetching
+- Adds CORS headers so the SARdine browser app can fetch from it
+
+This is functionally identical to fetching from S3 — h5chunk's `_fetchBytes` issues Range requests against the local server instead of a remote URL.
+
 ### 17.1 BufferReader with baseOffset
 
 The `BufferReader` class supports a `baseOffset` parameter that maps absolute file addresses to buffer-relative positions:
