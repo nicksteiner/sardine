@@ -13,7 +13,7 @@
 
 import { readFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 
-const FILE_PATH = 'test_data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
+const FILE_PATH = 'test/data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
 const METADATA_SIZES = [8, 32, 64, 128]; // MB to test
 
 // ─── HDF5 Constants ──────────────────────────────────────────────────

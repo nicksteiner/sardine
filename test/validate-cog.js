@@ -4,7 +4,7 @@
 
 import fs from 'fs';
 
-const filename = 'test_output_cog.tif';
+const filename = 'test/output/test_output_cog.tif';
 console.log(`Validating: ${filename}\n`);
 
 const buffer = fs.readFileSync(filename);

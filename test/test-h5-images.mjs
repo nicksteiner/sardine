@@ -11,8 +11,8 @@ import { openSync, readSync, closeSync, statSync, writeFileSync, mkdirSync } fro
 // We can't import h5chunk directly (it uses browser File API),
 // so we import the class and shim the File interface for Node.js.
 
-const FILE_PATH = 'test_data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
-const OUTPUT_DIR = 'test_output';
+const FILE_PATH = 'test/data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
+const OUTPUT_DIR = 'test/output';
 const METADATA_SIZE = 32 * 1024 * 1024;
 
 // ─── Node.js File Shim ──────────────────────────────────────────────
@@ -44,7 +44,7 @@ class NodeFile {
 
 // ─── Import h5chunk ─────────────────────────────────────────────────
 // Dynamic import since it's ES module
-const { H5Chunk } = await import('./src/loaders/h5chunk.js');
+const { H5Chunk } = await import('../src/loaders/h5chunk.js');
 
 // ─── Utilities ──────────────────────────────────────────────────────
 

@@ -17,7 +17,7 @@ Steps:
   7. Verify against HDF5 source truth
 
 Usage:
-    python3 scripts/test-sardine-pipeline.py [path-to-h5]
+    python3 test/scripts/test-sardine-pipeline.py [path-to-h5]
 """
 
 import sys
@@ -59,9 +59,9 @@ TYPE_DOUBLE = 12
 TILE_SIZE = 512
 
 H5_FILES = [
-    'test_data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5',
-    'test_data/NISAR_L2_PR_GCOV_013_120_D_075_2005_QPDH_A_20251224T125029_20251224T125103_P05006_N_F_J_001.h5',
-    'test_data/NISAR_L2_PR_GCOV_014_120_D_074_2005_QPDH_A_20260105T124956_20260105T125030_P05006_N_F_J_001.h5',
+    'test/data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5',
+    'test/data/NISAR_L2_PR_GCOV_013_120_D_075_2005_QPDH_A_20251224T125029_20251224T125103_P05006_N_F_J_001.h5',
+    'test/data/NISAR_L2_PR_GCOV_014_120_D_074_2005_QPDH_A_20260105T124956_20260105T125030_P05006_N_F_J_001.h5',
 ]
 
 
@@ -385,7 +385,7 @@ def test_nisar_pipeline(h5_path, ml=4):
     print(f"\n  Subset bounds: {[f'{b:.2f}' for b in subset_bounds]}")
 
     # Step 4: Write with JS-style writer
-    js_path = f'test_data/pipeline_{basename.split(".")[0]}_js.tif'
+    js_path = f'test/data/pipeline_{basename.split(".")[0]}_js.tif'
     print(f"\n  Writing JS-style: {js_path}")
     ps_x, ps_y = write_float32_geotiff_js_style(
         js_path, bands, band_names, test_width, test_height,
@@ -394,7 +394,7 @@ def test_nisar_pipeline(h5_path, ml=4):
     print(f"    Pixel scale written: {ps_x:.6f} x {ps_y:.6f}")
 
     # Step 5: Write with rasterio
-    ref_path = f'test_data/pipeline_{basename.split(".")[0]}_ref.tif'
+    ref_path = f'test/data/pipeline_{basename.split(".")[0]}_ref.tif'
     print(f"\n  Writing reference: {ref_path}")
     transform = from_bounds(
         subset_bounds[0], subset_bounds[1],
@@ -570,7 +570,7 @@ def test_nisar_pipeline(h5_path, ml=4):
 
 
 def main():
-    os.makedirs('test_data', exist_ok=True)
+    os.makedirs('test/data', exist_ok=True)
 
     h5_path = sys.argv[1] if len(sys.argv) > 1 else None
     if h5_path:
@@ -579,7 +579,7 @@ def main():
         files = [f for f in H5_FILES if os.path.exists(f)]
 
     if not files:
-        print("No HDF5 files found. Provide a path or place files in test_data/")
+        print("No HDF5 files found. Provide a path or place files in test/data/")
         sys.exit(1)
 
     results = {}

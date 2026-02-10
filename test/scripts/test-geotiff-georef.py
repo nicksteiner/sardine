@@ -10,7 +10,7 @@ Simulates exactly what our geotiff-writer.js produces:
 5. Verifies with rasterio that corners and CRS are correct
 
 Usage:
-    python3 scripts/test-geotiff-georef.py [path-to-h5-file]
+    python3 test/scripts/test-geotiff-georef.py [path-to-h5-file]
 """
 
 import sys
@@ -29,7 +29,7 @@ except ImportError:
 
 H5_PATH = (
     sys.argv[1] if len(sys.argv) > 1
-    else 'test_data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5'
+    else 'test/data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5'
 )
 
 # ---- TIFF constants (matching geotiff-writer.js) ----
@@ -261,7 +261,7 @@ def main():
         test_rgba[i * 4 + 2] = 0    # B
         test_rgba[i * 4 + 3] = 255  # A
 
-    out_path = 'test_data/test_georef_jswriter.tif'
+    out_path = 'test/data/test_georef_jswriter.tif'
     ps_x, ps_y = write_minimal_geotiff(out_path, test_w, test_h, export_bounds, epsg, test_rgba)
 
     print(f"\nWrote: {out_path}")

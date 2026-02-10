@@ -7,7 +7,7 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 
 // We need to load h5chunk in a Node-compatible way
-const filePath = process.argv[2] || 'test_data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
+const filePath = process.argv[2] || 'test/data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
 
 console.log(`\nReading: ${filePath}\n`);
 
@@ -18,7 +18,7 @@ const arrayBuffer = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLe
 console.log(`File size: ${(buf.length / 1e6).toFixed(1)} MB`);
 
 // Import h5chunk
-const h5chunkPath = resolve('src/loaders/h5chunk.js');
+const h5chunkPath = resolve('src/loaders/h5chunk.js');  // run from project root
 const { H5Chunk } = await import(h5chunkPath);
 
 // Create a mock File object

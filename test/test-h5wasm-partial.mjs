@@ -8,7 +8,7 @@
 import h5wasm from 'h5wasm';
 import fs from 'fs';
 
-const filePath = 'test_data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
+const filePath = 'test/data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
 const fullSize = fs.statSync(filePath).size;
 
 // Read only the first 32MB (same as h5chunk metadata read)

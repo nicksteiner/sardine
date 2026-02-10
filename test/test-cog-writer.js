@@ -3,7 +3,7 @@
  * Tests that the new writeRGBAGeoTIFF function produces valid output
  */
 
-import { writeRGBAGeoTIFF } from './src/utils/geotiff-writer.js';
+import { writeRGBAGeoTIFF } from '../src/utils/geotiff-writer.js';
 import fs from 'fs';
 
 console.log('Testing COG Writer...\n');
@@ -51,7 +51,7 @@ try {
   console.log(`  File size: ${(buffer.byteLength / 1024 / 1024).toFixed(2)} MB`);
 
   // Write to file
-  const filename = 'test_output_cog.tif';
+  const filename = 'test/output/test_output_cog.tif';
   fs.writeFileSync(filename, Buffer.from(buffer));
   console.log(`  Saved to: ${filename}\n`);
 

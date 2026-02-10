@@ -38,19 +38,11 @@ coverage/
 # Temp files
 *.tmp
 *.temp
-node_modules/
-dist/
-*.log
-.DS_Store
-coverage/
-.env
-.env.local
 *.tgz
 
-test_data/
-test_output/
-
-# Test SAR imagery (large binaries)
+# Test data and output (large binaries)
+test/data/
+test/output/
 test_sar_*.tif
 *.tif.aux.xml
 

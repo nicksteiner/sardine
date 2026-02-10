@@ -268,11 +268,11 @@ function App() {
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
 
-  // Tone mapping settings
-  const [toneMapEnabled, setToneMapEnabled] = useState(false);
-  const [toneMapMethod, setToneMapMethod] = useState('auto');
-  const [toneMapGamma, setToneMapGamma] = useState(0.5);
-  const [toneMapStrength, setToneMapStrength] = useState(0.3);
+  // Tone mapping settings — hidden, see tone mapping NOTE in JSX below
+  // const [toneMapEnabled, setToneMapEnabled] = useState(false);
+  // const [toneMapMethod, setToneMapMethod] = useState('auto');
+  // const [toneMapGamma, setToneMapGamma] = useState(0.5);
+  // const [toneMapStrength, setToneMapStrength] = useState(0.3);
 
   // Markdown state
   const [markdownState, setMarkdownState] = useState('');
@@ -475,15 +475,15 @@ function App() {
     }
   }, [useDecibels, imageData, displayMode, handleRecomputeHistogram]);
 
-  // Memoize tone mapping config
-  const toneMapping = useMemo(() => ({
-    enabled: toneMapEnabled,
-    method: toneMapMethod === 'auto' ? undefined : toneMapMethod,
-    params: {
-      gamma: toneMapGamma,
-      strength: toneMapStrength,
-    },
-  }), [toneMapEnabled, toneMapMethod, toneMapGamma, toneMapStrength]);
+  // Tone mapping config — hidden, see tone mapping NOTE in JSX below
+  // const toneMapping = useMemo(() => ({
+  //   enabled: toneMapEnabled,
+  //   method: toneMapMethod === 'auto' ? undefined : toneMapMethod,
+  //   params: {
+  //     gamma: toneMapGamma,
+  //     strength: toneMapStrength,
+  //   },
+  // }), [toneMapEnabled, toneMapMethod, toneMapGamma, toneMapStrength]);
 
   // Generate markdown from current state
   const currentState = useMemo(() => ({
@@ -496,12 +496,9 @@ function App() {
     contrastMax,
     colormap,
     useDecibels,
-    toneMapEnabled,
-    toneMapMethod,
-    toneMapGamma,
-    toneMapStrength,
+    // toneMapEnabled, toneMapMethod, toneMapGamma, toneMapStrength,  // hidden
     view: { center: viewCenter, zoom: viewZoom },
-  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, contrastMin, contrastMax, colormap, useDecibels, toneMapEnabled, toneMapMethod, toneMapGamma, toneMapStrength, viewCenter, viewZoom]);
+  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
 
   // Update markdown when state changes (unless edited)
   useEffect(() => {
@@ -546,10 +543,10 @@ function App() {
     setContrastMax(parsed.contrastMax);
     setColormap(parsed.colormap);
     setUseDecibels(parsed.useDecibels);
-    setToneMapEnabled(parsed.toneMapEnabled);
-    setToneMapMethod(parsed.toneMapMethod);
-    setToneMapGamma(parsed.toneMapGamma);
-    setToneMapStrength(parsed.toneMapStrength);
+    // setToneMapEnabled(parsed.toneMapEnabled);  // hidden
+    // setToneMapMethod(parsed.toneMapMethod);
+    // setToneMapGamma(parsed.toneMapGamma);
+    // setToneMapStrength(parsed.toneMapStrength);
     setViewCenter(parsed.view.center);
     setViewZoom(parsed.view.zoom);
 
@@ -2097,65 +2094,12 @@ function App() {
             </div>
           </CollapsibleSection>
 
-          {/* Tone Mapping Settings */}
-          <CollapsibleSection title="Tone Mapping" defaultOpen={false}>
-            <div className="control-group">
-              <div className="control-row">
-                <input
-                  type="checkbox"
-                  id="toneMapEnabled"
-                  checked={toneMapEnabled}
-                  onChange={(e) => setToneMapEnabled(e.target.checked)}
-                />
-                <label htmlFor="toneMapEnabled">Enable Adaptive Tone Mapping</label>
-              </div>
-            </div>
-
-            {toneMapEnabled && (
-              <>
-                <div className="control-group">
-                  <label>Method</label>
-                  <select value={toneMapMethod} onChange={(e) => setToneMapMethod(e.target.value)}>
-                    <option value="auto">Auto (Scene Analysis)</option>
-                    <option value="adaptiveLog">Adaptive Log</option>
-                    <option value="percentileGamma">Percentile + Gamma</option>
-                    <option value="localContrast">Local Contrast</option>
-                    <option value="hybrid">Hybrid</option>
-                  </select>
-                </div>
-
-                <div className="control-group">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <label>Gamma</label>
-                    <span className="value-display">{toneMapGamma.toFixed(2)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.1}
-                    max={2}
-                    step={0.05}
-                    value={toneMapGamma}
-                    onChange={(e) => setToneMapGamma(Number(e.target.value))}
-                  />
-                </div>
-
-                <div className="control-group">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <label>Strength</label>
-                    <span className="value-display">{toneMapStrength.toFixed(2)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={toneMapStrength}
-                    onChange={(e) => setToneMapStrength(Number(e.target.value))}
-                  />
-                </div>
-              </>
-            )}
-          </CollapsibleSection>
+          {/* NOTE: Tone Mapping UI hidden — feature only wired for SARTiledCOGLayer,
+             not for HDF5/BitmapLayer/GPULayer paths. The implementation lives in
+             src/utils/tone-mapping.js (adaptive log, percentile gamma, local contrast,
+             scene analysis). Re-enable here once wired end-to-end for all render paths.
+             See also: toneMapping state vars + useMemo below, SARTiledCOGLayer.renderTile(),
+             and src/index.js tone-mapping exports. */}
         </div>
 
         {/* Viewer Container */}
@@ -2188,7 +2132,7 @@ function App() {
               multiLook={multiLook}
               showGrid={showGrid}
               opacity={1}
-              toneMapping={toneMapping}
+              // toneMapping={toneMapping}  // hidden — see tone mapping NOTE above
               width="100%"
               height="100%"
               onViewStateChange={handleViewStateChange}

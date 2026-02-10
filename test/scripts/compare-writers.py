@@ -9,7 +9,7 @@ Reads real NISAR GCOV data, writes two TIFs with identical data:
 Both should open identically in QGIS. Run and inspect.
 
 Usage:
-    python3 scripts/compare-writers.py [path-to-h5] [--ml 8]
+    python3 test/scripts/compare-writers.py [path-to-h5] [--ml 8]
 """
 
 import sys
@@ -312,7 +312,7 @@ def main():
     parser.add_argument('--ml', type=int, default=16, help='Multilook factor (default 16)')
     parser.add_argument('--rows', type=int, default=None,
                         help='Max output rows (default: all)')
-    parser.add_argument('--outdir', default='test_data', help='Output directory')
+    parser.add_argument('--outdir', default='test/data', help='Output directory')
     args = parser.parse_args()
 
     # Find an H5 file
@@ -320,8 +320,8 @@ def main():
         h5 = args.h5_path
     else:
         candidates = [
-            'test_data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5',
-            'test_data/NISAR_L2_PR_GCOV_013_120_D_075_2005_QPDH_A_20251224T125029_20251224T125103_P05006_N_F_J_001.h5',
+            'test/data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5',
+            'test/data/NISAR_L2_PR_GCOV_013_120_D_075_2005_QPDH_A_20251224T125029_20251224T125103_P05006_N_F_J_001.h5',
         ]
         h5 = next((f for f in candidates if os.path.exists(f)), None)
         if not h5:

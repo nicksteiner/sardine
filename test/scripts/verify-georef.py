@@ -6,7 +6,7 @@ Reads a GeoTIFF and prints all georeferencing information
 so we can compare against the expected values from the HDF5 source.
 
 Usage:
-    python3 scripts/verify-georef.py test_data/test_georef.tif
+    python3 test/scripts/verify-georef.py test/data/test_georef.tif
     python3 scripts/verify-georef.py path/to/exported.tif
 """
 
@@ -131,7 +131,7 @@ def verify_geotiff(filepath):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("Usage: python3 scripts/verify-georef.py <geotiff-file>")
+        print("Usage: python3 test/scripts/verify-georef.py <geotiff-file>")
         sys.exit(1)
 
     verify_geotiff(sys.argv[1])

@@ -14,7 +14,7 @@ Then reads both back with rasterio to check:
   - Identifies any structural issues
 
 Usage:
-    python3 scripts/test-float32-geotiff.py
+    python3 test/scripts/test-float32-geotiff.py
 """
 
 import sys
@@ -80,7 +80,7 @@ BOUNDS = [434160.0, 9275760.0, 448160.0, 9287760.0]
 # minX, minY, maxX, maxY
 # pixel scale: (14000/700, 12000/600) = (20.0, 20.0)
 
-OUT_DIR = 'test_data'
+OUT_DIR = 'test/data'
 
 
 def create_test_bands(width, height, band_names):

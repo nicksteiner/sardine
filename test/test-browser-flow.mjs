@@ -6,8 +6,8 @@
 
 import { openSync, readSync, closeSync, statSync, writeFileSync, mkdirSync } from 'fs';
 
-const FILE_PATH = 'test_data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
-const OUTPUT_DIR = 'test_output';
+const FILE_PATH = 'test/data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
+const OUTPUT_DIR = 'test/output';
 
 // ─── Node.js File Shim (same as browser File API) ───────────────
 class NodeFile {
@@ -33,7 +33,7 @@ class NodeFile {
 }
 
 // ─── Import the same functions the browser uses ─────────────────
-const { openH5ChunkFile } = await import('./src/loaders/h5chunk.js');
+const { openH5ChunkFile } = await import('../src/loaders/h5chunk.js');
 
 try { mkdirSync(OUTPUT_DIR, { recursive: true }); } catch {}
 
@@ -306,5 +306,5 @@ if (tile_5) {
 }
 
 console.log('═══════════════════════════════════════════════════════════');
-console.log('  DONE - Check test_output/ for tile images');
+console.log('  DONE - Check test/output/ for tile images');
 console.log('═══════════════════════════════════════════════════════════');

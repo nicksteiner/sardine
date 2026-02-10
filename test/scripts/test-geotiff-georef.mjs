@@ -6,7 +6,7 @@
  * for verification with GDAL (see verify-georef.py).
  *
  * Usage:
- *   node scripts/test-geotiff-georef.mjs [path-to-h5-file]
+ *   node test/scripts/test-geotiff-georef.mjs [path-to-h5-file]
  */
 
 import { readFileSync, writeFileSync } from 'fs';
@@ -69,7 +69,7 @@ function safeGet(h5file, path) {
 
 async function main() {
   const h5Path = process.argv[2] ||
-    'test_data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5';
+    'test/data/NISAR_L2_PR_GCOV_013_155_D_091_2005_DHDH_A_20251226T231525_20251226T231556_P05006_N_F_J_001.h5';
 
   console.log(`\n=== GeoTIFF Georeferencing Test ===`);
   console.log(`HDF5 file: ${h5Path}\n`);
@@ -178,7 +178,7 @@ async function main() {
   }
 
   // Write a minimal (non-COG) GeoTIFF for testing
-  const outPath = 'test_data/test_georef.tif';
+  const outPath = 'test/data/test_georef.tif';
   const buffer = writeMinimalGeoTIFF(testData, testWidth, testHeight, bounds, epsgCode);
   writeFileSync(outPath, Buffer.from(buffer));
 
@@ -187,7 +187,7 @@ async function main() {
   console.log(`  Bounds: [${bounds.join(', ')}]`);
   console.log(`  EPSG: ${epsgCode}`);
   console.log(`  Pixel scale: ${((maxX - minX) / testWidth).toFixed(2)} x ${((maxY - minY) / testHeight).toFixed(2)}`);
-  console.log(`\nRun: python scripts/verify-georef.py ${outPath}`);
+  console.log(`\nRun: python test/scripts/verify-georef.py ${outPath}`);
 
   h5file.close();
 }

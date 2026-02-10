@@ -2,7 +2,7 @@
  * Test inverse-dB multilook for SAR data
  */
 
-import { writeRGBAGeoTIFF } from './src/utils/geotiff-writer.js';
+import { writeRGBAGeoTIFF } from '../src/utils/geotiff-writer.js';
 import fs from 'fs';
 
 console.log('Testing Inverse-dB Multilook for SAR Data...\n');
@@ -80,7 +80,7 @@ try {
     }
   });
 
-  const filename1 = 'test_sar_inverse_db.tif';
+  const filename1 = 'test/output/test_sar_inverse_db.tif';
   fs.writeFileSync(filename1, Buffer.from(buffer1));
   console.log(`✓ Saved: ${filename1}`);
   console.log(`  Size: ${(buffer1.byteLength / 1024 / 1024).toFixed(2)} MB\n`);
@@ -103,7 +103,7 @@ try {
     }
   });
 
-  const filename2 = 'test_sar_simple_avg.tif';
+  const filename2 = 'test/output/test_sar_simple_avg.tif';
   fs.writeFileSync(filename2, Buffer.from(buffer2));
   console.log(`✓ Saved: ${filename2}`);
   console.log(`  Size: ${(buffer2.byteLength / 1024 / 1024).toFixed(2)} MB\n`);
@@ -114,7 +114,7 @@ try {
 
 console.log('=== Comparison ===');
 console.log('Open both files in QGIS and compare the overview quality:');
-console.log('  1. test_sar_inverse_db.tif - Should have smooth, low-noise overviews');
-console.log('  2. test_sar_simple_avg.tif - Overviews may look noisier');
+console.log('  1. test/output/test_sar_inverse_db.tif - Should have smooth, low-noise overviews');
+console.log('  2. test/output/test_sar_simple_avg.tif - Overviews may look noisier');
 console.log('\nThe inverse-dB method properly averages in linear power space,');
 console.log('equivalent to spatial multi-looking in SAR processing.\n');
