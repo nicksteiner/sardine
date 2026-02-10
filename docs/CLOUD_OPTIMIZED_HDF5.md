@@ -124,15 +124,135 @@ This is simpler than a full HDF5 library because it only parses paged-aggregated
 - [x] Tile-based streaming for deck.gl
 
 ### In Progress
-- [ ] Testing with real NISAR files
-- [ ] HDF5 link/group traversal for dataset names
-- [ ] Coordinate array extraction from metadata
+- [x] Testing with real NISAR files (confirmed working on ODS, Feb 2026)
+- [x] HDF5 link/group traversal for dataset names (v1 + v2 groups)
+- [x] Coordinate array extraction from metadata
+- [x] HTTP range request support (openUrl with Range headers)
+
+### TODO: Lazy Tree-Walking (replace 8 MB bulk read)
+
+**Problem:** h5chunk reads 8–32 MB upfront (the paged aggregation page), then
+brute-force scans the buffer for OHDR/FRHP signatures. The actual structural
+metadata is ~2–3 MB; the rest is zero-padding. For remote URLs, this wastes
+bandwidth and adds latency. For non-NISAR files without paged aggregation, the
+fixed buffer size is a guess that may miss structures or waste memory.
+
+**Insight:** `_parseObjectAtAddress` already IS a tree walker — it follows
+pointers, handles v1 Symbol Tables, v2 fractal heaps, continuation blocks,
+and recurses into children. The `_fetchBytes` fallback handles any address
+beyond the metadata buffer. The infrastructure is 90% built.
+
+**Plan:**
+
+1. **Superblock-only initial read** (~64 bytes)
+   - `openUrl()` fetches just the superblock, parses offsetSize/lengthSize/rootGroupAddress
+   - No large `metadataBuffer` — set it to the 64-byte superblock for compatibility
+   - Everything goes through `_fetchBytes` from here
+
+2. **Replace `_scanForDatasets` with pure tree walk**
+   - Delete Strategy 2: OHDR signature byte-scan (~15 lines)
+   - Delete Strategy 3: FRHP signature byte-scan (~8 lines)
+   - Delete Strategy 4: `_scanForChunkedLayouts` brute-force (~150 lines)
+   - Keep Strategy 1: `_parseObjectAtAddress(rootGroupAddress)` — this is the tree walk
+   - All objects discovered via pointer-following, no scanning
+
+3. **Make `_parseObjectAtAddress` always fetch on demand**
+   - Remove `if (address < this.metadataBuffer.byteLength)` fast paths
+   - Every object header fetched with targeted 8 KB `_fetchBytes` call
+   - BufferReader with baseOffset already handles this transparently
+
+4. **Lazy B-tree fetch**
+   - Don't parse all datasets' B-trees at open time
+   - Store `lazyBtreeAddress` on the dataset info
+   - Fetch and parse B-tree on first `readChunk()` / `readRegion()` for that dataset
+   - User picks one polarization → fetch that B-tree (~130 KB)
+   - Switch polarization → fetch that B-tree then
+
+5. **Lazy coordinate array fetch**
+   - Don't read xCoordinates/yCoordinates at open time
+   - Fetch on demand when bounds are needed (first tile render or export)
+   - ~260 KB instead of pulling them from the 8 MB buffer
+
+6. **Fetch coalescing (optimization, optional)**
+   - Batch nearby `_fetchBytes` calls into merged range requests
+   - Sort by offset, merge overlapping/adjacent ranges
+   - Useful for HTTP/2 where fewer larger requests beat many small ones
+
+**Expected result:**
+- Open time: ~450 KB fetched (superblock + group walk + one B-tree + coords)
+- vs current: 8–32 MB fetched
+- Parsing: only structures that are actually needed, not brute-force scan of buffer
+- Non-NISAR files: works regardless of paged aggregation
+
+**What stays the same:**
+- All existing parsing functions (parseObjectHeader, parseBTreeV1, etc.)
+- `_fetchBytes` implementation
+- BufferReader with baseOffset
+- readChunk / readRegion / readSmallDataset APIs
+- All nisar-loader.js call sites
+
+**Fallback:** For local files where File.slice() is free, could still do
+the 8 MB bulk read as an optimization — bulk read is faster than 30 sequential
+slices on local disk. Gate on `this.file` vs `this.url`.
+
+### TODO: Connect Metadata Cube (incidence angle, slant range)
+
+**Problem:** `loadMetadataCube()` in `metadata-cube.js` is fully implemented
+and exported. It reads 3D datasets from `/science/{band}/GCOV/metadata/radarGrid/`:
+- incidenceAngle [nHeight × nY × nX]
+- elevationAngle [nHeight × nY × nX]
+- slantRange [nHeight × nY × nX]
+- losUnitVectorX/Y, alongTrackUnitVectorX/Y
+
+The consumers are wired up:
+- `MetadataPanel.jsx:371` reads `imageData.metadataCube` for display
+- `main.jsx:1177` appends cube fields to GeoTIFF export
+
+But **nothing calls `loadMetadataCube()`**. The producer is missing.
+
+**Plan:**
+1. In `nisar-loader.js` streaming path (`loadNISARGCOVStreaming`), after
+   opening the h5chunk reader, call `loadMetadataCube(streamReader, band)`
+2. Attach the result to the returned imageData: `metadataCube: cube`
+3. The radarGrid group is a v2 group (fractal heap) — h5chunk must discover
+   its datasets during the tree walk. With lazy tree-walking, these would be
+   fetched on demand when `loadMetadataCube` calls `reader.getDataset(path)`
+4. The 3D datasets are chunked — `readSmallDataset` won't work for large
+   cubes. May need to read via `readChunk` or add a `readFullDataset` method
+   that reassembles all chunks. The cubes are small (~50×50×3 = 7500 values),
+   so a single-chunk read should suffice.
+
+### TODO: Kerchunk Sidecar Support (optional fast path)
+
+**Problem:** Runtime HDF5 metadata parsing takes ~29 seconds on NISAR GCOV files.
+Kerchunk/VirtualiZarr pre-computes the chunk index offline as JSON or Parquet.
+
+**Plan:**
+1. Check for `<filename>.kerchunk.json` sidecar before parsing HDF5
+2. If found, load the JSON → build chunk map directly (skip all HDF5 parsing)
+3. If not found, fall back to tree-walking (current behavior)
+4. Sidecar generation happens in Nextflow pipeline, not in SARdine
+
+**Format:** Kerchunk JSON maps Zarr-style keys to `[url, offset, length]`:
+```json
+{
+  "version": 1,
+  "refs": {
+    ".zattrs": "{}",
+    "HHHH/.zarray": "{\"shape\":[16704,16272],\"chunks\":[256,256],\"dtype\":\"<f4\"}",
+    "HHHH/0.0": ["s3://bucket/file.h5", 8388608, 65536],
+    "HHHH/0.1": ["s3://bucket/file.h5", 8454144, 64200],
+    ...
+  }
+}
+```
+h5chunk would consume this directly — same chunk map, zero parse time.
 
 ### Future
-- [ ] B-tree v2 parsing (for newer HDF5 files)
-- [ ] HTTP range request support (currently File.slice() only)
-- [ ] Worker thread for parsing/decompression
-- [ ] LRU chunk cache with memory limits
+- [ ] B-tree v2 parsing (for newer HDF5 files / extensible arrays)
+- [ ] Worker thread for parsing/decompression (move h5chunk to Web Worker)
+- [ ] LRU chunk cache with memory limits (current cache is unbounded)
+- [ ] Adaptive metadata read for local files (read 8 MB page if paged, tree-walk if not)
 
 ---
 
