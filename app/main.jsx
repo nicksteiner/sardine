@@ -224,6 +224,7 @@ function App() {
   const [fileType, setFileType] = useState('remote'); // 'cog' | 'nisar' | 'remote'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
+  const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -879,6 +880,12 @@ function App() {
         polarization: selectedPolarization,
         _streamReader: handleRemoteFileSelect._cachedReader || null,
       });
+
+      // Progressive refinement: when background Phase 2 completes, bump version
+      // so SARViewer re-creates its TileLayer and fetches the refined tiles.
+      if (data.mode === 'streaming') {
+        data.onRefine = () => setTileVersion(v => v + 1);
+      }
 
       setImageData(data);
 
@@ -2127,6 +2134,7 @@ function App() {
               ref={viewerRef}
               cogUrl={imageData.cogUrl}
               getTile={imageData.getTile}
+              tileVersion={tileVersion}
               imageData={imageData.data ? imageData : null}
               bounds={imageData.bounds}
               contrastLimits={effectiveContrastLimits}

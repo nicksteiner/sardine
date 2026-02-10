@@ -3271,6 +3271,90 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     }
   }
 
+  // Progressive refinement: coarse tiles are shown first, refined tiles replace them
+  const refinedTiles = new Map();
+  let _onRefine = null;
+
+  // Helper: build a 256×256 tile from a sparse chunk grid via mosaic + bilinear
+  function buildMosaicTile(grid, rows, cols, pxTop, pxLeft, sliceH, sliceW, tileSize) {
+    const gR = rows.length, gC = cols.length;
+    if (gR === 0 || gC === 0) return new Float32Array(tileSize * tileSize);
+
+    const subN = Math.min(16, Math.max(4,
+      Math.ceil(tileSize / Math.max(gR, gC))));
+    const bH = Math.floor(chunkH / subN);
+    const bW = Math.floor(chunkW / subN);
+    const mH = gR * subN, mW = gC * subN;
+    const mosaic = new Float32Array(mH * mW);
+    const mY = new Float64Array(mH);
+    const mX = new Float64Array(mW);
+
+    for (let ri = 0; ri < gR; ri++) {
+      const cr = rows[ri];
+      for (let si = 0; si < subN; si++)
+        mY[ri * subN + si] = cr * chunkH + (si + 0.5) * bH;
+    }
+    for (let ci = 0; ci < gC; ci++) {
+      const cc = cols[ci];
+      for (let sj = 0; sj < subN; sj++)
+        mX[ci * subN + sj] = cc * chunkW + (sj + 0.5) * bW;
+    }
+
+    for (let ri = 0; ri < gR; ri++) {
+      for (let ci = 0; ci < gC; ci++) {
+        const chunk = grid.get(`${rows[ri]},${cols[ci]}`);
+        if (!chunk) continue;
+        for (let si = 0; si < subN; si++) {
+          const y0 = si * bH, y1 = y0 + bH;
+          for (let sj = 0; sj < subN; sj++) {
+            const x0 = sj * bW, x1 = x0 + bW;
+            let sum = 0, cnt = 0;
+            for (let yy = y0; yy < y1; yy++) {
+              const row = yy * chunkW;
+              for (let xx = x0; xx < x1; xx++) {
+                const v = chunk[row + xx];
+                if (v > 0 && v === v) { sum += v; cnt++; }
+              }
+            }
+            mosaic[(ri * subN + si) * mW + (ci * subN + sj)] =
+              cnt > 0 ? sum / cnt : 0;
+          }
+        }
+      }
+    }
+
+    const out = new Float32Array(tileSize * tileSize);
+    let yi0 = 0;
+    for (let ty = 0; ty < tileSize; ty++) {
+      const srcY = pxTop + (ty + 0.5) * sliceH / tileSize;
+      while (yi0 < mH - 2 && mY[yi0 + 1] <= srcY) yi0++;
+      const yi1 = Math.min(yi0 + 1, mH - 1);
+      const fy = yi0 === yi1 ? 0 :
+        Math.max(0, Math.min(1, (srcY - mY[yi0]) / (mY[yi1] - mY[yi0])));
+      let xi0 = 0;
+      for (let tx = 0; tx < tileSize; tx++) {
+        const srcX = pxLeft + (tx + 0.5) * sliceW / tileSize;
+        while (xi0 < mW - 2 && mX[xi0 + 1] <= srcX) xi0++;
+        const xi1 = Math.min(xi0 + 1, mW - 1);
+        const fx = xi0 === xi1 ? 0 :
+          Math.max(0, Math.min(1, (srcX - mX[xi0]) / (mX[xi1] - mX[xi0])));
+        const v00 = mosaic[yi0 * mW + xi0];
+        const v01 = mosaic[yi0 * mW + xi1];
+        const v10 = mosaic[yi1 * mW + xi0];
+        const v11 = mosaic[yi1 * mW + xi1];
+        const w00 = (1 - fx) * (1 - fy), w01 = fx * (1 - fy);
+        const w10 = (1 - fx) * fy, w11 = fx * fy;
+        let wS = 0, vS = 0;
+        if (v00 > 0) { vS += v00 * w00; wS += w00; }
+        if (v01 > 0) { vS += v01 * w01; wS += w01; }
+        if (v10 > 0) { vS += v10 * w10; wS += w10; }
+        if (v11 > 0) { vS += v11 * w11; wS += w11; }
+        out[ty * tileSize + tx] = wS > 0 ? vS / wS : 0;
+      }
+    }
+    return out;
+  }
+
   // Build getTile function for on-demand chunk reading
   const getTile = async ({ x, y, z, bbox }) => {
     const tileSize = 256;
@@ -3316,12 +3400,16 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         return { data: tileData, width: sliceW, height: sliceH };
       }
 
-      // Large regions: chunk-average mosaic + bilinear interpolation.
-      // Strategy:
-      //   1. Fetch sparse grid of chunks (every stride-th row/col)
-      //   2. Sub-divide each chunk into subN×subN blocks, average each block
-      //   3. Build mosaic with known dataset-space coordinates
-      //   4. Bilinearly interpolate from mosaic to output tile
+      // Large regions: progressive mosaic + bilinear.
+      // Phase 1: coarse grid (8×8 max) → show fast.
+      // Phase 2: full grid (24×24 max) → refine in background.
+      const tileKey = `${x},${y},${z}`;
+
+      // Return refined data if Phase 2 already completed
+      if (refinedTiles.has(tileKey)) {
+        return refinedTiles.get(tileKey);
+      }
+
       const startCR = Math.floor(pxTop / chunkH);
       const endCR = Math.floor((pxBottom - 1) / chunkH);
       const startCC = Math.floor(pxLeft / chunkW);
@@ -3329,122 +3417,66 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const totalCR = endCR - startCR + 1;
       const totalCC = endCC - startCC + 1;
 
-      const MAX_CHUNKS_PER_AXIS = 24;
-      const strideR = Math.max(1, Math.ceil(totalCR / MAX_CHUNKS_PER_AXIS));
-      const strideC = Math.max(1, Math.ceil(totalCC / MAX_CHUNKS_PER_AXIS));
+      // Phase 1: coarse grid (max 8×8 = 64 chunks)
+      const COARSE_MAX = 8;
+      const coarseStrideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
+      const coarseStrideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
+      const coarseRows = [];
+      for (let cr = startCR; cr <= endCR; cr += coarseStrideR) coarseRows.push(cr);
+      const coarseCols = [];
+      for (let cc = startCC; cc <= endCC; cc += coarseStrideC) coarseCols.push(cc);
 
-      // Collect fetched chunk indices
-      const fetchedRows = [];
-      for (let cr = startCR; cr <= endCR; cr += strideR) fetchedRows.push(cr);
-      const fetchedCols = [];
-      for (let cc = startCC; cc <= endCC; cc += strideC) fetchedCols.push(cc);
-
-      // Fetch sparse grid in parallel
-      const chunkGrid = new Map();
-      const fetchPromises = [];
-      for (const cr of fetchedRows) {
-        for (const cc of fetchedCols) {
-          fetchPromises.push(
+      const coarseGrid = new Map();
+      const coarsePromises = [];
+      for (const cr of coarseRows) {
+        for (const cc of coarseCols) {
+          coarsePromises.push(
             getStreamChunk(cr, cc).then(data => {
-              if (data) chunkGrid.set(`${cr},${cc}`, data);
+              if (data) coarseGrid.set(`${cr},${cc}`, data);
             })
           );
         }
       }
-      await Promise.all(fetchPromises);
+      await Promise.all(coarsePromises);
 
-      const gridRows = fetchedRows.length;
-      const gridCols = fetchedCols.length;
+      tileData = buildMosaicTile(coarseGrid, coarseRows, coarseCols,
+        pxTop, pxLeft, sliceH, sliceW, tileSize);
 
-      // Adaptive sub-sampling: target mosaic resolution ≈ tileSize
-      const subN = Math.min(16, Math.max(4,
-        Math.ceil(tileSize / Math.max(gridRows, gridCols))));
-      const blockH = Math.floor(chunkH / subN);
-      const blockW = Math.floor(chunkW / subN);
+      // Schedule Phase 2 refinement if coarse was significantly sub-sampled
+      const FINE_MAX = 24;
+      const fineStrideR = Math.max(1, Math.ceil(totalCR / FINE_MAX));
+      const fineStrideC = Math.max(1, Math.ceil(totalCC / FINE_MAX));
 
-      // Build mosaic and dataset-space coordinate arrays
-      const mH = gridRows * subN;
-      const mW = gridCols * subN;
-      const mosaic = new Float32Array(mH * mW);
-      const mY = new Float64Array(mH);
-      const mX = new Float64Array(mW);
+      if (coarseStrideR > fineStrideR || coarseStrideC > fineStrideC) {
+        // Fire-and-forget background refinement
+        (async () => {
+          try {
+            const fineRows = [];
+            for (let cr = startCR; cr <= endCR; cr += fineStrideR) fineRows.push(cr);
+            const fineCols = [];
+            for (let cc = startCC; cc <= endCC; cc += fineStrideC) fineCols.push(cc);
 
-      for (let ri = 0; ri < gridRows; ri++) {
-        const cr = fetchedRows[ri];
-        for (let si = 0; si < subN; si++) {
-          mY[ri * subN + si] = cr * chunkH + (si + 0.5) * blockH;
-        }
-      }
-      for (let ci = 0; ci < gridCols; ci++) {
-        const cc = fetchedCols[ci];
-        for (let sj = 0; sj < subN; sj++) {
-          mX[ci * subN + sj] = cc * chunkW + (sj + 0.5) * blockW;
-        }
-      }
-
-      // Fill mosaic with block averages from each fetched chunk
-      for (let ri = 0; ri < gridRows; ri++) {
-        for (let ci = 0; ci < gridCols; ci++) {
-          const chunk = chunkGrid.get(`${fetchedRows[ri]},${fetchedCols[ci]}`);
-          if (!chunk) continue;
-          for (let si = 0; si < subN; si++) {
-            const y0 = si * blockH;
-            const y1 = y0 + blockH;
-            for (let sj = 0; sj < subN; sj++) {
-              const x0 = sj * blockW;
-              const x1 = x0 + blockW;
-              let sum = 0, cnt = 0;
-              for (let yy = y0; yy < y1; yy++) {
-                const row = yy * chunkW;
-                for (let xx = x0; xx < x1; xx++) {
-                  const v = chunk[row + xx];
-                  if (v > 0 && v === v) { sum += v; cnt++; }
-                }
+            const fineGrid = new Map();
+            const finePromises = [];
+            for (const cr of fineRows) {
+              for (const cc of fineCols) {
+                finePromises.push(
+                  getStreamChunk(cr, cc).then(data => {
+                    if (data) fineGrid.set(`${cr},${cc}`, data);
+                  })
+                );
               }
-              mosaic[(ri * subN + si) * mW + (ci * subN + sj)] =
-                cnt > 0 ? sum / cnt : 0;
             }
+            await Promise.all(finePromises);
+
+            const fineData = buildMosaicTile(fineGrid, fineRows, fineCols,
+              pxTop, pxLeft, sliceH, sliceW, tileSize);
+            refinedTiles.set(tileKey, { data: fineData, width: tileSize, height: tileSize });
+            if (_onRefine) _onRefine(tileKey);
+          } catch (e) {
+            console.warn('[NISAR URL] Tile refinement error:', e.message);
           }
-        }
-      }
-
-      // Bilinear interpolation from mosaic to output tile
-      tileData = new Float32Array(tileSize * tileSize);
-      let yi0 = 0;
-      for (let ty = 0; ty < tileSize; ty++) {
-        const srcY = pxTop + (ty + 0.5) * sliceH / tileSize;
-        // Advance Y bracket (srcY increases monotonically)
-        while (yi0 < mH - 2 && mY[yi0 + 1] <= srcY) yi0++;
-        const yi1 = Math.min(yi0 + 1, mH - 1);
-        const fy = yi0 === yi1 ? 0 :
-          Math.max(0, Math.min(1, (srcY - mY[yi0]) / (mY[yi1] - mY[yi0])));
-
-        let xi0 = 0;
-        for (let tx = 0; tx < tileSize; tx++) {
-          const srcX = pxLeft + (tx + 0.5) * sliceW / tileSize;
-          // Advance X bracket (srcX increases monotonically)
-          while (xi0 < mW - 2 && mX[xi0 + 1] <= srcX) xi0++;
-          const xi1 = Math.min(xi0 + 1, mW - 1);
-          const fx = xi0 === xi1 ? 0 :
-            Math.max(0, Math.min(1, (srcX - mX[xi0]) / (mX[xi1] - mX[xi0])));
-
-          // Data-aware bilinear: skip zero (no-data) neighbors
-          const v00 = mosaic[yi0 * mW + xi0];
-          const v01 = mosaic[yi0 * mW + xi1];
-          const v10 = mosaic[yi1 * mW + xi0];
-          const v11 = mosaic[yi1 * mW + xi1];
-          const w00 = (1 - fx) * (1 - fy);
-          const w01 = fx * (1 - fy);
-          const w10 = (1 - fx) * fy;
-          const w11 = fx * fy;
-
-          let wSum = 0, vSum = 0;
-          if (v00 > 0) { vSum += v00 * w00; wSum += w00; }
-          if (v01 > 0) { vSum += v01 * w01; wSum += w01; }
-          if (v10 > 0) { vSum += v10 * w10; wSum += w10; }
-          if (v11 > 0) { vSum += v11 * w11; wSum += w11; }
-          tileData[ty * tileSize + tx] = wSum > 0 ? vSum / wSum : 0;
-        }
+        })();
       }
 
       return { data: tileData, width: tileSize, height: tileSize };
@@ -3460,7 +3492,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
   } catch { /* ignore */ }
 
-  return {
+  const result = {
     width,
     height,
     bounds,
@@ -3477,7 +3509,11 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     xCoords,
     yCoords,
     identification,
+    /** Set a callback to be notified when a tile's refined data is ready. */
+    set onRefine(fn) { _onRefine = fn; },
+    get onRefine() { return _onRefine; },
   };
+  return result;
 }
 
 

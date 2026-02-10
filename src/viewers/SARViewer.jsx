@@ -18,6 +18,7 @@ import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
  */
 export const SARViewer = forwardRef(function SARViewer({
   getTile,
+  tileVersion = 0, // Bumped when progressive tile refinement is ready
   imageData, // Full image data for BitmapLayer approach
   cogUrl, // COG URL for SARTiledCOGLayer approach
   bounds,
@@ -194,7 +195,7 @@ export const SARViewer = forwardRef(function SARViewer({
 
     return [];
   // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
-  }, [cogUrl, getTile, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, toneMapping, handleLoadingChange, redrawTick]);
+  }, [cogUrl, getTile, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, toneMapping, handleLoadingChange, redrawTick]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;
