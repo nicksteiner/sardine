@@ -3263,7 +3263,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
       if (region.width <= 0 || region.height <= 0) return null;
 
-      const data = await streamReader.readRegion(selectedDatasetId, region);
+      const data = await streamReader.readRegion(
+        selectedDatasetId, region.y, region.x, region.height, region.width
+      );
       if (!data) return null;
 
       return {

@@ -416,13 +416,37 @@ export function extractFilterOptions(parsedFiles) {
 
 
 /**
+ * Detect the sardine-launch server base URL.
+ * Uses the current page origin when served from sardine-launch (ODS/JupyterHub proxy).
+ * Falls back to relative URL so it works behind any reverse proxy.
+ */
+function autoDetectServerUrl() {
+  // Use a relative URL so the browser resolves it through whatever proxy
+  // is serving the page (JupyterHub, reverse proxy, or direct).
+  // document.baseURI respects <base href="./"> from Vite's base: './' config.
+  try {
+    const base = new URL(document.baseURI || window.location.href);
+    // Ensure trailing slash on the directory path
+    const dir = base.pathname.replace(/\/?$/, '/');
+    return `${base.origin}${dir}api/files`;
+  } catch {
+    return './api/files';
+  }
+}
+
+/**
  * Predefined bucket endpoints that are commonly used with NISAR data.
  */
 export const PRESET_BUCKETS = [
   {
-    label: 'SARdine Server (local)',
+    label: 'SARdine Server (auto-detect)',
+    url: '__AUTO__',
+    description: 'sardine-launch — auto-detects URL through proxy',
+  },
+  {
+    label: 'SARdine Server (localhost:8050)',
     url: 'http://localhost:8050/api/files',
-    description: 'sardine-launch — browse local filesystem',
+    description: 'sardine-launch — direct localhost connection',
   },
   {
     label: 'ASF DAAC (Earthdata)',
@@ -431,3 +455,10 @@ export const PRESET_BUCKETS = [
     requiresAuth: true,
   },
 ];
+
+/**
+ * Resolve a preset URL — replaces __AUTO__ with the auto-detected server URL.
+ */
+export function resolvePresetUrl(url) {
+  return url === '__AUTO__' ? autoDetectServerUrl() : url;
+}

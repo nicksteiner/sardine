@@ -381,6 +381,15 @@ export class SARGPULayer extends Layer {
     const { gl } = this.context;
 
     try {
+      const expected = width * height;
+      let texData = data;
+
+      // Pad undersized data (edge tiles may have fewer pixels than width×height)
+      if (data.length < expected) {
+        texData = new Float32Array(expected);
+        texData.set(data);
+      }
+
       // Create R32F texture using raw WebGL2 API
       // luma.gl Texture2D wrapper doesn't support R32F well in v8.5
       const texture = gl.createTexture();
@@ -396,7 +405,7 @@ export class SARGPULayer extends Layer {
         0,              // border (must be 0)
         gl.RED,         // format
         gl.FLOAT,       // type
-        data            // Float32Array
+        texData         // Float32Array
       );
 
       // Set texture parameters

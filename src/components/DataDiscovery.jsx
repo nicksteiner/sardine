@@ -15,6 +15,7 @@ import {
   parseNISARFilename,
   extractFilterOptions,
   PRESET_BUCKETS,
+  resolvePresetUrl,
 } from '../utils/bucket-browser.js';
 
 /**
@@ -195,7 +196,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
 
   // ── Apply a preset ──
   const handlePreset = useCallback((preset) => {
-    setBucketUrl(preset.url);
+    setBucketUrl(resolvePresetUrl(preset.url));
     setConnected(false);
     setDirectories([]);
     setFiles([]);

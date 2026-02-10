@@ -48,6 +48,33 @@ export class SARBitmapLayer extends BitmapLayer {
       ...otherProps,
     });
   }
+
+  _createR32FTexture(gl, data, width, height) {
+    const expectedSize = width * height;
+    let texData;
+
+    // Pad undersized arrays for edge tiles at dataset boundary
+    if (!data || data.length === 0) {
+      texData = new Float32Array(expectedSize);
+      texData.fill(NaN);
+    } else if (data.length < expectedSize) {
+      texData = new Float32Array(expectedSize);
+      texData.fill(NaN);
+      texData.set(data);
+    } else {
+      texData = data.length > expectedSize ? data.subarray(0, expectedSize) : data;
+    }
+
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(
+      gl.TEXTURE_2D, 0, gl.R32F,
+      width, height, 0,
+      gl.RED, gl.FLOAT, texData
+    );
+
+    return texture;
+  }
 }
 
 /**
@@ -63,10 +90,14 @@ export class SARBitmapLayer extends BitmapLayer {
 function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear') {
   const [min, max] = contrastLimits;
   const colormapFunc = getColormap(colormap);
-  const rgba = new Uint8ClampedArray(width * height * 4);
+  const expectedSize = width * height;
+  const rgba = new Uint8ClampedArray(expectedSize * 4);
   const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
 
-  for (let i = 0; i < data.length; i++) {
+  // Only iterate over actual data; remaining pixels stay [0,0,0,0] (transparent)
+  const pixelCount = Math.min(data.length, expectedSize);
+
+  for (let i = 0; i < pixelCount; i++) {
     const amplitude = data[i];
     let value;
 

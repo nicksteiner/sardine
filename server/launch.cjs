@@ -205,13 +205,18 @@ function handleDataFile(dataDir, filePath, req, res) {
         return;
       }
 
-      var start = parseInt(match[1]);
-      var end = match[2] ? parseInt(match[2]) : fileSize - 1;
+      const start = parseInt(match[1], 10);
+      let end = match[2] ? parseInt(match[2], 10) : fileSize - 1;
 
-      if (start >= fileSize || end >= fileSize) {
-        res.writeHead(416, { 'Content-Range': 'bytes */' + fileSize });
+      if (start >= fileSize) {
+        res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
         res.end();
         return;
+      }
+
+      // Clamp end to file size — browsers and h5chunk may request beyond EOF
+      if (end >= fileSize) {
+        end = fileSize - 1;
       }
 
       res.writeHead(206, {
@@ -337,19 +342,39 @@ function main() {
   });
 
   var displayHost = opts.host === '0.0.0.0' ? 'localhost' : opts.host;
+  var localUrl = 'http://' + displayHost + ':' + opts.port;
+
+  // Detect JupyterHub environment for useful proxy URL
+  var jupyterUser = process.env.JUPYTERHUB_USER;
+  var jupyterBase = process.env.JUPYTERHUB_BASE_URL || '';
+  var jupyterHost = process.env.JUPYTERHUB_HOST || process.env.JUPYTERHUB_URL || '';
+  var proxyUrl = null;
+  if (jupyterUser) {
+    // JupyterHub proxy URL: {host}{base}user/{user}/proxy/{port}/
+    var base = jupyterBase.replace(/\/+$/, '');
+    proxyUrl = jupyterHost + base + '/user/' + jupyterUser + '/proxy/' + opts.port + '/';
+  }
+
   server.listen(opts.port, opts.host, function () {
     console.log('');
     console.log('  SARdine server running');
     console.log('  ─────────────────────────────────────────');
-    console.log('  URL:       http://' + displayHost + ':' + opts.port);
+    console.log('  Local:     ' + localUrl);
+    if (proxyUrl) {
+      console.log('  Proxy:     ' + proxyUrl);
+    }
     console.log('  Data dir:  ' + opts.dataDir);
-    console.log('  Dist dir:  ' + DIST_DIR);
     console.log('');
     console.log('  Routes:');
     console.log('    /              SARdine UI');
     console.log('    /api/files     directory listing API');
     console.log('    /data/<path>   file serving (Range OK)');
     console.log('');
+    if (proxyUrl) {
+      console.log('  Open in browser: ' + proxyUrl);
+    } else {
+      console.log('  Open in browser: ' + localUrl);
+    }
     console.log('  Press Ctrl+C to stop');
     console.log('');
   });

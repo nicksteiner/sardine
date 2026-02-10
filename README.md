@@ -47,6 +47,31 @@ npm run dev
 → Open `http://localhost:5173`
 → Drag a NISAR `.h5` file onto the file picker, or paste a COG URL
 
+#### On-Demand Server (NISAR ODS / JupyterHub)
+
+From a JupyterLab terminal:
+
+```bash
+cd ~/sardine
+git pull && npm install --legacy-peer-deps && npm run build
+node server/launch.cjs --data-dir /home/jovyan
+```
+
+Then open SARdine via the JupyterLab proxy:
+
+```
+https://nisar.jpl.nasa.gov/ondemand/user/<username>/proxy/8050/
+```
+
+The `/api/files` endpoint lists files relative to `--data-dir`, so:
+- `https://nisar.jpl.nasa.gov/ondemand/user/nsteiner/proxy/8050/api/files` → lists `/home/jovyan/`
+- `https://nisar.jpl.nasa.gov/ondemand/user/nsteiner/proxy/8050/data/ods/myfile.h5` → serves `/home/jovyan/ods/myfile.h5`
+
+To browse a subfolder:
+```
+https://nisar.jpl.nasa.gov/ondemand/user/nsteiner/proxy/8050/api/files?path=ods
+```
+
 ---
 
 > **`04` LOADING NISAR HDF5**
@@ -212,14 +237,14 @@ node test-h5-images.mjs       # → Read chunks, write PGM images to test_output
 | Per-channel histogram + contrast | ✅ Complete |
 | GeoTIFF RGB export | ✅ Complete |
 | State-as-markdown editing | ✅ Complete |
-| HTTP range-request streaming (S3/HTTPS) | 🔜 Next |
+| HTTP range-request streaming (S3/HTTPS/ODS) | ✅ Complete |
+| Overture Maps vector overlay | ✅ Complete |
 | B-tree v2 parsing | 🔜 Next |
 | Worker thread decompression | 🔜 Next |
 | Chat-driven state control | 🔜 Next |
 | Basemap annotations + drawing | 🔜 Next |
 | GUNW / InSAR phase visualization | 🔜 Planned |
 | ASF catalog search integration | 🔜 Planned |
-| Overture Maps vector overlay | ✅ Complete |
 
 ---
 

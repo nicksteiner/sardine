@@ -86,9 +86,20 @@ async function handleFile(req, res, filePath) {
       return;
     }
     const start = parseInt(match[1], 10);
-    const end = match[2] ? parseInt(match[2], 10) : total - 1;
+    let end = match[2] ? parseInt(match[2], 10) : total - 1;
 
-    if (start >= total || end >= total || start > end) {
+    if (start >= total) {
+      res.writeHead(416, { 'Content-Range': `bytes */${total}` });
+      res.end();
+      return;
+    }
+
+    // Clamp end to file size — don't reject oversized ranges
+    if (end >= total) {
+      end = total - 1;
+    }
+
+    if (start > end) {
       res.writeHead(416, { 'Content-Range': `bytes */${total}` });
       res.end();
       return;
