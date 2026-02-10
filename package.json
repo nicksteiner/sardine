@@ -1,15 +1,21 @@
 {
   "name": "sardine",
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
   "type": "module",
-  "description": "SARdine - Prompt-driven SAR imagery analysis tool built on deck.gl and geotiff.js",
+  "description": "SARdine - Browser-native SAR imagery viewer with GPU-accelerated rendering",
   "main": "src/index.js",
   "module": "src/index.js",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "example": "vite --config vite.example.config.js"
+    "example": "vite --config vite.example.config.js",
+    "test": "node test/run-tests.js",
+    "test:layer": "vite --config vite.test.config.js --open /test/layer-test.html",
+    "test:quick": "node test/quick-validation.js",
+    "test:watch": "nodemon -w src -x 'npm run test:quick'",
+    "debug:gpu": "vite --config vite.test.config.js --open /test/gpu-debug.html --force",
+    "benchmark": "vite --config vite.test.config.js --open /test/benchmarks/gpu-vs-cpu.html --force"
   },
   "keywords": [
     "sar",
@@ -31,13 +37,18 @@
     "@deck.gl/react": "^8.9.0",
     "@luma.gl/core": "^8.5.21",
     "geotiff": "^2.1.0",
+    "h5wasm": "^0.8.11",
     "maplibre-gl": "^4.0.0",
+    "pako": "^2.1.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "parquet-wasm": "^0.6.1",
+    "@loaders.gl/parquet": "^4.3.0",
+    "@loaders.gl/core": "^4.3.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",
-    "vite": "^4.5.0"
+    "vite": "^4.5.14"
   },
   "peerDependencies": {
     "react": "^18.2.0",

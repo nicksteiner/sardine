@@ -1,0 +1,1260 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SARdine GPU vs CPU Benchmark</title>
+  <link rel="stylesheet" href="../../src/theme/sardine-theme.css">
+  <style>
+    body {
+      padding: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+      font-family: var(--font-body);
+    }
+    body::after { display: none; } /* disable scanlines for readability */
+
+    h1 {
+      font-family: var(--font-mono);
+      color: var(--sardine-cyan);
+      margin-bottom: 8px;
+    }
+    .subtitle {
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      margin-bottom: 24px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+    .controls button {
+      padding: 8px 16px;
+      font-size: 0.75rem;
+    }
+    .controls select, .controls input {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 8px 12px;
+      background: var(--sardine-bg);
+      color: var(--text-primary);
+      border: 1px solid var(--sardine-border);
+      border-radius: var(--radius-sm);
+    }
+    .controls label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    #data-status {
+      background: var(--sardine-bg-panel);
+      border: 1px solid var(--sardine-border);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      margin-bottom: 16px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      display: none;
+    }
+    #data-status.visible { display: block; }
+    #data-status .label { color: var(--sardine-cyan); font-weight: 600; }
+    #data-status .stat { color: var(--sardine-orange); }
+
+    #log {
+      background: var(--sardine-bg);
+      border: 1px solid var(--sardine-border);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      max-height: 600px;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      line-height: 1.8;
+      white-space: pre-wrap;
+    }
+    .log-header {
+      color: var(--sardine-cyan);
+      font-weight: 600;
+      display: block;
+      margin-top: 12px;
+    }
+    .log-pass { color: var(--sardine-green); }
+    .log-fail { color: var(--status-flood); }
+    .log-info { color: var(--text-secondary); }
+    .log-metric { color: var(--sardine-orange); }
+    .log-winner { color: var(--sardine-cyan); font-weight: 600; }
+    .log-dim { color: var(--text-muted); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      background: var(--sardine-bg-panel);
+      color: var(--sardine-cyan);
+      border-bottom: 2px solid var(--sardine-border);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-size: 0.65rem;
+    }
+    td {
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--sardine-border-subtle);
+      color: var(--text-primary);
+    }
+    tr.winner td { background: rgba(78, 201, 212, 0.05); }
+
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+  <h1>GPU vs CPU Benchmark</h1>
+  <div class="subtitle">SARdine rendering pipeline performance comparison</div>
+
+  <div class="controls">
+    <label>
+      Data source:
+      <select id="dataSource">
+        <option value="synthetic">Synthetic (random)</option>
+        <option value="nisar">NISAR HDF5 (real SAR)</option>
+        <option value="cog">COG GeoTIFF (real SAR)</option>
+      </select>
+    </label>
+    <label>
+      Tile size:
+      <select id="tileSize">
+        <option value="128">128x128</option>
+        <option value="256" selected>256x256</option>
+        <option value="512">512x512</option>
+        <option value="1024">1024x1024</option>
+      </select>
+    </label>
+    <label>
+      Iterations:
+      <input type="number" id="iterations" value="100" min="10" max="1000" style="width:80px">
+    </label>
+    <button onclick="runAllBenchmarks()">Run All Benchmarks</button>
+    <button class="btn-secondary" onclick="clearLog()">Clear</button>
+  </div>
+
+  <div id="data-status"></div>
+  <div id="log"></div>
+  <div id="results-table"></div>
+  <canvas id="canvas" width="1" height="1"></canvas>
+
+  <script type="module">
+    import { getColormap } from '../../src/utils/colormap.js';
+    import { applyStretch } from '../../src/utils/stretch.js';
+    import { getColormapId, getStretchModeId } from '../../src/layers/shaders.js';
+    import { H5Chunk } from '../../src/loaders/h5chunk.js';
+    import { fromUrl } from 'geotiff';
+
+    const logEl = document.getElementById('log');
+    const resultsEl = document.getElementById('results-table');
+    const statusEl = document.getElementById('data-status');
+    const allResults = [];
+
+    // ─── NISAR test file path ──────────────────────────────────────────
+    const NISAR_PATH = '/test_data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5';
+    const COG_PATH = '/test_sar_inverse_db.tif';
+
+    function log(text, cls = 'info') {
+      const span = document.createElement('span');
+      span.className = `log-${cls}`;
+      span.textContent = text + '\n';
+      logEl.appendChild(span);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function header(text) {
+      const span = document.createElement('span');
+      span.className = 'log-header';
+      span.textContent = '\n' + text + '\n';
+      logEl.appendChild(span);
+    }
+
+    function showStatus(html) {
+      statusEl.innerHTML = html;
+      statusEl.classList.add('visible');
+    }
+
+    function hideStatus() {
+      statusEl.classList.remove('visible');
+    }
+
+    window.clearLog = () => {
+      logEl.innerHTML = '';
+      resultsEl.innerHTML = '';
+      allResults.length = 0;
+      hideStatus();
+    };
+
+    // ─── Data statistics ───────────────────────────────────────────────
+
+    function dataStats(data) {
+      let min = Infinity, max = -Infinity, sum = 0, validCount = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i];
+        if (v === 0 || isNaN(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
+        sum += v;
+        validCount++;
+      }
+      const mean = validCount > 0 ? sum / validCount : 0;
+      const meanDb = mean > 0 ? (10 * Math.log10(mean)).toFixed(1) : 'N/A';
+      const minDb = min > 0 && min < Infinity ? (10 * Math.log10(min)).toFixed(1) : 'N/A';
+      const maxDb = max > -Infinity ? (10 * Math.log10(max)).toFixed(1) : 'N/A';
+      return { min, max, mean, validCount, zeros: data.length - validCount, minDb, maxDb, meanDb };
+    }
+
+    // ─── Data loaders ──────────────────────────────────────────────────
+
+    function generateSyntheticData(size) {
+      const data = new Float32Array(size * size);
+      for (let i = 0; i < data.length; i++) {
+        // Realistic SAR power values (log-normal distribution approximation)
+        data[i] = Math.exp(Math.random() * 6 - 3) * 0.01;
+      }
+      return data;
+    }
+
+    async function loadNISARData(size) {
+      log('Loading NISAR HDF5 via h5chunk (Range requests)...', 'dim');
+      const t0 = performance.now();
+
+      const reader = new H5Chunk();
+      await reader.openUrl(NISAR_PATH, 32 * 1024 * 1024);
+
+      const datasets = reader.getDatasets();
+      log(`  Found ${datasets.length} datasets`, 'dim');
+
+      // Find a suitable chunked Float32 dataset (prefer HHHH or VVVV)
+      const preferred = ['HHHH', 'HVHV', 'VVVV'];
+      let target = null;
+      for (const pref of preferred) {
+        target = datasets.find(d => d.chunked && d.path && d.path.includes(pref));
+        if (target) break;
+      }
+      if (!target) {
+        target = datasets.find(d => d.chunked && d.numChunks > 0);
+      }
+      if (!target) {
+        throw new Error('No chunked datasets found in NISAR file');
+      }
+
+      log(`  Using dataset: ${target.path || target.id}`, 'info');
+      log(`  Shape: [${target.shape}]  Chunks: ${target.numChunks}  Chunk dims: [${target.chunkDims}]`, 'dim');
+
+      // Read from the CENTER of the dataset — the corners are often
+      // outside the satellite swath and filled with zeros/NaN.
+      const [totalRows, totalCols] = target.shape;
+      const centerRow = Math.floor(totalRows / 2) - Math.floor(size / 2);
+      const centerCol = Math.floor(totalCols / 2) - Math.floor(size / 2);
+
+      // Try center first, then scan other locations if all zeros
+      const candidates = [
+        [centerRow, centerCol, 'center'],
+        [Math.floor(totalRows * 0.25), Math.floor(totalCols * 0.5), '25%/50%'],
+        [Math.floor(totalRows * 0.75), Math.floor(totalCols * 0.5), '75%/50%'],
+        [Math.floor(totalRows * 0.5), Math.floor(totalCols * 0.25), '50%/25%'],
+        [Math.floor(totalRows * 0.5), Math.floor(totalCols * 0.75), '50%/75%'],
+      ];
+
+      let data = null;
+      for (const [row, col, label] of candidates) {
+        // Clamp to valid range
+        const r = Math.max(0, Math.min(row, totalRows - size));
+        const c = Math.max(0, Math.min(col, totalCols - size));
+        log(`  Trying region at (${r}, ${c}) [${label}]...`, 'dim');
+
+        const region = await reader.readRegion(target.id, r, c, size, size);
+        const validCount = region.data.filter(v => v !== 0 && !isNaN(v)).length;
+        const validPct = ((validCount / region.data.length) * 100).toFixed(1);
+        log(`    → ${validPct}% valid pixels (${validCount}/${region.data.length})`, 'dim');
+
+        if (validCount > region.data.length * 0.1) {
+          data = region.data;
+          log(`  ✓ Using ${label} region with ${validPct}% valid data`, 'pass');
+          break;
+        }
+      }
+
+      if (!data) {
+        log(`  ⚠ All candidate regions had <10% valid pixels, using center anyway`, 'warn');
+        const region = await reader.readRegion(target.id, centerRow, centerCol, size, size);
+        data = region.data;
+      }
+
+      const loadTime = performance.now() - t0;
+      log(`  Loaded ${size}x${size} region in ${(loadTime / 1000).toFixed(2)}s`, 'pass');
+      return data;
+    }
+
+    async function loadCOGData(size) {
+      log('Loading COG via geotiff.js...', 'dim');
+      const t0 = performance.now();
+
+      const tiff = await fromUrl(COG_PATH);
+      const image = await tiff.getImage();
+      const imgWidth = image.getWidth();
+      const imgHeight = image.getHeight();
+      const samplesPerPixel = image.getSamplesPerPixel();
+
+      log(`  Image: ${imgWidth}x${imgHeight}, ${samplesPerPixel} band(s)`, 'dim');
+
+      // Read a tile-sized window
+      const readSize = Math.min(size, imgWidth, imgHeight);
+      const rasters = await image.readRasters({
+        window: [0, 0, readSize, readSize],
+        width: size,
+        height: size,
+      });
+
+      // Use first band
+      let rawBand = rasters[0];
+      const data = new Float32Array(size * size);
+
+      // If data is uint8 (0-255), convert back to approximate SAR amplitude
+      // Original encoding: db = 10*log10(amp) -> normalized = (db - (-25)) / (0 - (-25)) -> uint8 = norm * 255
+      // Inverse: norm = uint8/255 -> db = norm * 25 - 25 -> amp = 10^(db/10)
+      const isUint8 = rawBand instanceof Uint8Array || rawBand instanceof Uint8ClampedArray;
+
+      if (isUint8) {
+        log(`  Converting uint8 -> Float32 SAR amplitude (inverse dB mapping)`, 'dim');
+        for (let i = 0; i < data.length; i++) {
+          const norm = rawBand[i] / 255;
+          const db = norm * 25 - 25; // map [0,255] -> [-25, 0] dB
+          data[i] = Math.pow(10, db / 10);
+        }
+      } else {
+        for (let i = 0; i < data.length; i++) {
+          data[i] = rawBand[i];
+        }
+      }
+
+      const loadTime = performance.now() - t0;
+      log(`  Loaded ${size}x${size} tile in ${(loadTime / 1000).toFixed(2)}s (${isUint8 ? 'uint8->float32' : 'native float32'})`, 'pass');
+      return data;
+    }
+
+    async function loadBenchmarkData(source, size) {
+      if (source === 'nisar') {
+        return await loadNISARData(size);
+      } else if (source === 'cog') {
+        return await loadCOGData(size);
+      } else {
+        log('Generating synthetic SAR data...', 'dim');
+        return generateSyntheticData(size);
+      }
+    }
+
+    // ─── CPU rendering (mirrors SARBitmapLayer.createSARTexture) ───────
+
+    function cpuRender(data, width, height, contrastLimits, useDecibels, colormapName, gamma, stretchMode) {
+      const [min, max] = contrastLimits;
+      const colormapFunc = getColormap(colormapName);
+      const rgba = new Uint8ClampedArray(width * height * 4);
+      const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+
+      for (let i = 0; i < data.length; i++) {
+        const amplitude = data[i];
+        let value;
+
+        if (useDecibels) {
+          const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
+          value = (db - min) / (max - min);
+        } else {
+          value = (amplitude - min) / (max - min);
+        }
+
+        value = Math.max(0, Math.min(1, value));
+        if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+
+        const [r, g, b] = colormapFunc(value);
+        const idx = i * 4;
+        rgba[idx] = r;
+        rgba[idx + 1] = g;
+        rgba[idx + 2] = b;
+        rgba[idx + 3] = amplitude === 0 || isNaN(amplitude) ? 0 : 255;
+      }
+
+      return rgba;
+    }
+
+    // ─── CPU RGB composite (mirrors sar-composites.createRGBTexture) ───
+
+    function cpuRenderRGB(bandsR, bandsG, bandsB, width, height, contrastLimits, useDecibels, gamma, stretchMode) {
+      const [min, max] = contrastLimits;
+      const rgba = new Uint8ClampedArray(width * height * 4);
+      const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+
+      for (let i = 0; i < width * height; i++) {
+        const idx = i * 4;
+        let anyValid = false;
+
+        const channels = [bandsR, bandsG, bandsB];
+        for (let c = 0; c < 3; c++) {
+          const raw = channels[c][i];
+          if (isNaN(raw) || raw === 0) {
+            rgba[idx + c] = 0;
+            continue;
+          }
+          anyValid = true;
+
+          let value;
+          if (useDecibels) {
+            const db = 10 * Math.log10(Math.max(raw, 1e-10));
+            value = (db - min) / (max - min);
+          } else {
+            value = (raw - min) / (max - min);
+          }
+
+          value = Math.max(0, Math.min(1, value));
+          if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+          rgba[idx + c] = Math.round(value * 255);
+        }
+
+        rgba[idx + 3] = anyValid ? 255 : 0;
+      }
+
+      return rgba;
+    }
+
+    // ─── GPU setup ─────────────────────────────────────────────────────
+
+    function setupGPU() {
+      const canvas = document.getElementById('canvas');
+      const gl = canvas.getContext('webgl2');
+      if (!gl) throw new Error('WebGL2 not available');
+
+      const floatExt = gl.getExtension('EXT_color_buffer_float');
+      const floatLinearExt = gl.getExtension('OES_texture_float_linear');
+      if (!floatExt || !floatLinearExt) throw new Error('Float texture extensions not available');
+
+      return gl;
+    }
+
+    // ─── GPU texture upload benchmark ──────────────────────────────────
+
+    function benchGPUTextureUpload(gl, data, width, height) {
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.finish(); // Force GPU completion for accurate timing
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      gl.deleteTexture(texture);
+    }
+
+    // ─── GPU full render benchmark (texture + shader) ──────────────────
+
+    function setupGPURenderPipeline(gl, width, height) {
+      // Compile vertex shader
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, `#version 300 es
+        in vec2 aPosition;
+        in vec2 aTexCoord;
+        out vec2 vTexCoord;
+        void main() {
+          gl_Position = vec4(aPosition, 0.0, 1.0);
+          vTexCoord = aTexCoord;
+        }
+      `);
+      gl.compileShader(vs);
+      if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        throw new Error('VS: ' + gl.getShaderInfoLog(vs));
+      }
+
+      // Compile fragment shader (same as SARGPULayer — supports single-band + RGB)
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, `#version 300 es
+        precision highp float;
+        uniform sampler2D uTexture;
+        uniform sampler2D uTextureG;
+        uniform sampler2D uTextureB;
+        uniform float uMin;
+        uniform float uMax;
+        uniform float uUseDecibels;
+        uniform float uColormap;
+        uniform float uGamma;
+        uniform float uStretchMode;
+        uniform float uMode;  // 0 = single-band, 1 = RGB
+        in vec2 vTexCoord;
+        out vec4 fragColor;
+
+        float processChannel(float amplitude) {
+          float value;
+          if (uUseDecibels > 0.5) {
+            float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+            value = (db - uMin) / (uMax - uMin);
+          } else {
+            value = (amplitude - uMin) / (uMax - uMin);
+          }
+          value = clamp(value, 0.0, 1.0);
+          int sm = int(uStretchMode + 0.5);
+          if (sm == 1) { value = sqrt(value); }
+          else if (sm == 2) { value = pow(value, uGamma); }
+          else if (sm == 3) {
+            float gain = uGamma * 8.0;
+            float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
+            float lo = 1.0 / (1.0 + exp(gain * 0.5));
+            float hi = 1.0 / (1.0 + exp(-gain * 0.5));
+            value = (raw - lo) / (hi - lo);
+          }
+          return value;
+        }
+
+        vec3 viridis(float t) {
+          const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+          const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
+          const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
+          const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+          const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
+          const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+          const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+          t = clamp(t, 0.0, 1.0);
+          return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+        }
+        vec3 inferno(float t) {
+          const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
+          const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
+          const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
+          const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
+          const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
+          const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
+          const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
+          t = clamp(t, 0.0, 1.0);
+          return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+        }
+        vec3 plasma(float t) {
+          const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
+          const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
+          const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
+          const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
+          const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
+          const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
+          const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
+          t = clamp(t, 0.0, 1.0);
+          return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+        }
+        vec3 phaseColormap(float t) {
+          t = clamp(t, 0.0, 1.0);
+          float angle = t * 6.28318530718;
+          return vec3(
+            0.5 + 0.5 * cos(angle),
+            0.5 + 0.5 * cos(angle + 2.09439510239),
+            0.5 + 0.5 * cos(angle + 4.18879020479)
+          );
+        }
+        vec3 grayscale(float t) {
+          t = clamp(t, 0.0, 1.0);
+          return vec3(t, t, t);
+        }
+
+        void main() {
+          if (uMode > 0.5) {
+            // RGB composite mode
+            float ampR = texture(uTexture, vTexCoord).r;
+            float ampG = texture(uTextureG, vTexCoord).r;
+            float ampB = texture(uTextureB, vTexCoord).r;
+            vec3 rgb = vec3(processChannel(ampR), processChannel(ampG), processChannel(ampB));
+            bool anyValid = (ampR != 0.0 && !isnan(ampR)) ||
+                            (ampG != 0.0 && !isnan(ampG)) ||
+                            (ampB != 0.0 && !isnan(ampB));
+            fragColor = vec4(rgb, anyValid ? 1.0 : 0.0);
+          } else {
+            // Single-band mode
+            float amplitude = texture(uTexture, vTexCoord).r;
+            float value = processChannel(amplitude);
+
+            vec3 rgb;
+            int colormapId = int(uColormap + 0.5);
+            if (colormapId == 0) rgb = grayscale(value);
+            else if (colormapId == 1) rgb = viridis(value);
+            else if (colormapId == 2) rgb = inferno(value);
+            else if (colormapId == 3) rgb = plasma(value);
+            else if (colormapId == 4) rgb = phaseColormap(value);
+            else rgb = grayscale(value);
+
+            float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
+            fragColor = vec4(rgb, alpha);
+          }
+        }
+      `);
+      gl.compileShader(fs);
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        throw new Error('FS: ' + gl.getShaderInfoLog(fs));
+      }
+
+      const program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error('Link: ' + gl.getProgramInfoLog(program));
+      }
+
+      // Fullscreen quad
+      const quadVerts = new Float32Array([
+        -1, -1, 0, 0,
+         1, -1, 1, 0,
+         1,  1, 1, 1,
+        -1, -1, 0, 0,
+         1,  1, 1, 1,
+        -1,  1, 0, 1,
+      ]);
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+      const posLoc = gl.getAttribLocation(program, 'aPosition');
+      const texLoc = gl.getAttribLocation(program, 'aTexCoord');
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(texLoc);
+      gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 16, 8);
+      gl.bindVertexArray(null);
+
+      // Create framebuffer for offscreen rendering
+      const fb = gl.createFramebuffer();
+      const renderTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, renderTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, renderTex, 0);
+
+      return { program, vao, fb, renderTex, vs: vs, fsShader: fs, buf };
+    }
+
+    function gpuRender(gl, pipeline, texture, params) {
+      const { program, vao, fb } = pipeline;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.viewport(0, 0, params.width, params.height);
+      gl.useProgram(program);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.uniform1i(gl.getUniformLocation(program, 'uTexture'), 0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMin'), params.contrastLimits[0]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMax'), params.contrastLimits[1]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uUseDecibels'), params.useDecibels ? 1.0 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uColormap'), getColormapId(params.colormap));
+      gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), params.gamma);
+      gl.uniform1f(gl.getUniformLocation(program, 'uStretchMode'), getStretchModeId(params.stretchMode));
+      gl.uniform1f(gl.getUniformLocation(program, 'uMode'), 0.0);
+
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.finish(); // Force GPU completion for accurate timing
+      gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function gpuUniformOnlyUpdate(gl, pipeline, texture, params) {
+      // This simulates what happens when you change contrast/colormap/gamma:
+      // Only uniform updates + redraw, NO texture re-upload
+      const { program, vao, fb } = pipeline;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.viewport(0, 0, params.width, params.height);
+      gl.useProgram(program);
+
+      // Texture already bound from previous call — just update uniforms
+      gl.uniform1f(gl.getUniformLocation(program, 'uMin'), params.contrastLimits[0]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMax'), params.contrastLimits[1]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uUseDecibels'), params.useDecibels ? 1.0 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uColormap'), getColormapId(params.colormap));
+      gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), params.gamma);
+      gl.uniform1f(gl.getUniformLocation(program, 'uStretchMode'), getStretchModeId(params.stretchMode));
+      gl.uniform1f(gl.getUniformLocation(program, 'uMode'), 0.0);
+
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.finish();
+      gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    // ─── GPU RGB render (3 textures, uMode=1) ────────────────────────
+
+    function gpuRenderRGB(gl, pipeline, texR, texG, texB, params) {
+      const { program, vao, fb } = pipeline;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.viewport(0, 0, params.width, params.height);
+      gl.useProgram(program);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texR);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, texG);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, texB);
+
+      gl.uniform1i(gl.getUniformLocation(program, 'uTexture'), 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uTextureG'), 1);
+      gl.uniform1i(gl.getUniformLocation(program, 'uTextureB'), 2);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMode'), 1.0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMin'), params.contrastLimits[0]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMax'), params.contrastLimits[1]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uUseDecibels'), params.useDecibels ? 1.0 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), params.gamma);
+      gl.uniform1f(gl.getUniformLocation(program, 'uStretchMode'), getStretchModeId(params.stretchMode));
+
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.finish();
+      gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function gpuRGBUniformOnly(gl, pipeline, texR, texG, texB, params) {
+      const { program, vao, fb } = pipeline;
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.viewport(0, 0, params.width, params.height);
+      gl.useProgram(program);
+
+      // Textures already bound — just update uniforms
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texR);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, texG);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, texB);
+
+      gl.uniform1i(gl.getUniformLocation(program, 'uTexture'), 0);
+      gl.uniform1i(gl.getUniformLocation(program, 'uTextureG'), 1);
+      gl.uniform1i(gl.getUniformLocation(program, 'uTextureB'), 2);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMode'), 1.0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMin'), params.contrastLimits[0]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMax'), params.contrastLimits[1]);
+      gl.uniform1f(gl.getUniformLocation(program, 'uUseDecibels'), params.useDecibels ? 1.0 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), params.gamma);
+      gl.uniform1f(gl.getUniformLocation(program, 'uStretchMode'), getStretchModeId(params.stretchMode));
+
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.finish();
+      gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function cleanupGPUPipeline(gl, pipeline) {
+      gl.deleteProgram(pipeline.program);
+      gl.deleteShader(pipeline.vs);
+      gl.deleteShader(pipeline.fsShader);
+      gl.deleteBuffer(pipeline.buf);
+      gl.deleteVertexArray(pipeline.vao);
+      gl.deleteFramebuffer(pipeline.fb);
+      gl.deleteTexture(pipeline.renderTex);
+    }
+
+    // ─── Benchmarking harness ──────────────────────────────────────────
+
+    function runBench(name, fn, iterations) {
+      // Warmup
+      for (let i = 0; i < Math.min(10, iterations); i++) fn();
+
+      const times = [];
+      for (let i = 0; i < iterations; i++) {
+        const t0 = performance.now();
+        fn();
+        times.push(performance.now() - t0);
+      }
+
+      times.sort((a, b) => a - b);
+      const avg = times.reduce((a, b) => a + b) / times.length;
+      const median = times[Math.floor(times.length / 2)];
+      const p95 = times[Math.floor(times.length * 0.95)];
+      const min = times[0];
+      const max = times[times.length - 1];
+
+      return { name, avg, median, p95, min, max, iterations };
+    }
+
+    function formatMs(ms) {
+      if (ms < 0.01) return ms.toFixed(4) + ' ms';
+      if (ms < 1) return ms.toFixed(3) + ' ms';
+      return ms.toFixed(2) + ' ms';
+    }
+
+    function recordResult(category, cpuResult, gpuResult) {
+      const speedup = cpuResult.avg / gpuResult.avg;
+      allResults.push({ category, cpu: cpuResult, gpu: gpuResult, speedup });
+
+      log(`  CPU  avg=${formatMs(cpuResult.avg)}  med=${formatMs(cpuResult.median)}  p95=${formatMs(cpuResult.p95)}`, 'info');
+      log(`  GPU  avg=${formatMs(gpuResult.avg)}  med=${formatMs(gpuResult.median)}  p95=${formatMs(gpuResult.p95)}`, 'info');
+
+      if (speedup > 1) {
+        log(`  >>> GPU is ${speedup.toFixed(1)}x faster`, 'winner');
+      } else {
+        log(`  >>> CPU is ${(1/speedup).toFixed(1)}x faster`, 'metric');
+      }
+    }
+
+    // ─── Main benchmark suite ──────────────────────────────────────────
+
+    window.runAllBenchmarks = async () => {
+      clearLog();
+      allResults.length = 0;
+
+      const source = document.getElementById('dataSource').value;
+      const size = parseInt(document.getElementById('tileSize').value);
+      const iterations = parseInt(document.getElementById('iterations').value);
+      const pixels = size * size;
+
+      log('SARdine GPU vs CPU Performance Benchmark', 'pass');
+      log(`Tile: ${size}x${size} (${(pixels).toLocaleString()} pixels)  Iterations: ${iterations}`, 'dim');
+      log(`Data source: ${source === 'nisar' ? 'NISAR HDF5 (real SAR)' : source === 'cog' ? 'COG GeoTIFF (real SAR)' : 'Synthetic (random)'}`, 'dim');
+
+      // ── Load data ────────────────────────────────────────────────────
+
+      header('DATA LOADING');
+      let data;
+      try {
+        data = await loadBenchmarkData(source, size);
+      } catch (err) {
+        log(`Failed to load data: ${err.message}`, 'fail');
+        if (source !== 'synthetic') {
+          log('Falling back to synthetic data...', 'dim');
+          data = generateSyntheticData(size);
+        } else {
+          return;
+        }
+      }
+
+      // Show data statistics
+      const stats = dataStats(data);
+      log(`  Pixels: ${data.length.toLocaleString()}  Valid: ${stats.validCount.toLocaleString()}  Zeros/NaN: ${stats.zeros}`, 'info');
+      log(`  Amplitude range: ${stats.min.toExponential(3)} to ${stats.max.toExponential(3)}`, 'info');
+      log(`  dB range: ${stats.minDb} to ${stats.maxDb} dB  (mean: ${stats.meanDb} dB)`, 'metric');
+
+      showStatus(
+        `<span class="label">Data:</span> ${source === 'nisar' ? 'NISAR HDF5' : source === 'cog' ? 'COG GeoTIFF' : 'Synthetic'} ` +
+        `<span class="stat">${size}x${size}</span> | ` +
+        `<span class="label">Range:</span> <span class="stat">${stats.minDb} to ${stats.maxDb} dB</span> | ` +
+        `<span class="label">Valid:</span> <span class="stat">${((stats.validCount / data.length) * 100).toFixed(1)}%</span>`
+      );
+
+      // ── GPU setup ──────────────────────────────────────────────────────
+
+      let gl;
+      try {
+        gl = setupGPU();
+        log(`WebGL2: ${gl.getParameter(gl.VERSION)}`, 'dim');
+        log(`GPU: ${gl.getParameter(gl.getExtension('WEBGL_debug_renderer_info')?.UNMASKED_RENDERER_WEBGL) || 'unknown'}`, 'dim');
+      } catch (err) {
+        log(`WebGL2 setup failed: ${err.message}`, 'fail');
+        return;
+      }
+
+      // Resize canvas for the benchmark
+      const canvas = document.getElementById('canvas');
+      canvas.width = size;
+      canvas.height = size;
+
+      const params = {
+        width: size,
+        height: size,
+        contrastLimits: [-25, 0],
+        useDecibels: true,
+        colormap: 'viridis',
+        gamma: 1.0,
+        stretchMode: 'linear',
+      };
+
+      // ── Benchmark 1: Initial render (full pipeline) ──────────────────
+
+      header('1. INITIAL RENDER (data -> pixels)');
+      log(`  What: Full pipeline from raw Float32 data to RGBA output`, 'dim');
+      log(`  CPU: dB + colormap + stretch per-pixel loop`, 'dim');
+      log(`  GPU: R32F texture upload + shader draw + gl.finish()`, 'dim');
+
+      const cpuInitial = runBench('CPU initial render', () => {
+        cpuRender(data, size, size, params.contrastLimits, params.useDecibels, params.colormap, params.gamma, params.stretchMode);
+      }, iterations);
+
+      // GPU: upload texture + render
+      let pipeline = setupGPURenderPipeline(gl, size, size);
+      const gpuInitial = runBench('GPU initial render', () => {
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, data);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gpuRender(gl, pipeline, texture, params);
+        gl.deleteTexture(texture);
+      }, iterations);
+
+      recordResult('Initial render', cpuInitial, gpuInitial);
+
+      // ── Benchmark 2: Parameter change (contrast slider drag) ─────────
+
+      header('2. PARAMETER CHANGE (contrast slider drag)');
+      log(`  What: Change contrast limits, re-render same data`, 'dim');
+      log(`  CPU: Full per-pixel loop again (must recompute everything)`, 'dim');
+      log(`  GPU: Update 2 uniforms + redraw (texture already cached)`, 'dim');
+
+      // Pre-upload texture for GPU
+      const cachedTexture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, cachedTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      let contrastIdx = 0;
+      const cpuContrast = runBench('CPU contrast change', () => {
+        const min = -30 + (contrastIdx % 20);
+        const max = -5 + (contrastIdx % 10) * 0.5;
+        cpuRender(data, size, size, [min, max], true, 'viridis', 1.0, 'linear');
+        contrastIdx++;
+      }, iterations);
+
+      contrastIdx = 0;
+      const gpuContrast = runBench('GPU contrast change', () => {
+        const min = -30 + (contrastIdx % 20);
+        const max = -5 + (contrastIdx % 10) * 0.5;
+        gpuUniformOnlyUpdate(gl, pipeline, cachedTexture, {
+          ...params, contrastLimits: [min, max]
+        });
+        contrastIdx++;
+      }, iterations);
+
+      recordResult('Contrast change', cpuContrast, gpuContrast);
+
+      // ── Benchmark 3: Colormap change ─────────────────────────────────
+
+      header('3. COLORMAP CHANGE');
+      log(`  What: Cycle through all 5 colormaps`, 'dim');
+      log(`  CPU: Full per-pixel loop with different colormap function`, 'dim');
+      log(`  GPU: Update 1 uniform (uColormap) + redraw`, 'dim');
+
+      const colormaps = ['grayscale', 'viridis', 'inferno', 'plasma', 'phase'];
+      let cmIdx = 0;
+
+      const cpuColormap = runBench('CPU colormap change', () => {
+        const cm = colormaps[cmIdx % colormaps.length];
+        cpuRender(data, size, size, params.contrastLimits, true, cm, 1.0, 'linear');
+        cmIdx++;
+      }, iterations);
+
+      cmIdx = 0;
+      const gpuColormap = runBench('GPU colormap change', () => {
+        const cm = colormaps[cmIdx % colormaps.length];
+        gpuUniformOnlyUpdate(gl, pipeline, cachedTexture, { ...params, colormap: cm });
+        cmIdx++;
+      }, iterations);
+
+      recordResult('Colormap change', cpuColormap, gpuColormap);
+
+      // ── Benchmark 4: Gamma/stretch change ────────────────────────────
+
+      header('4. GAMMA / STRETCH CHANGE');
+      log(`  What: Adjust gamma from 0.5 to 2.0`, 'dim');
+      log(`  CPU: Full per-pixel loop with pow()`, 'dim');
+      log(`  GPU: Update 2 uniforms (uGamma, uStretchMode) + redraw`, 'dim');
+
+      let gammaIdx = 0;
+      const cpuGamma = runBench('CPU gamma change', () => {
+        const g = 0.5 + (gammaIdx % 30) * 0.05;
+        cpuRender(data, size, size, params.contrastLimits, true, 'viridis', g, 'gamma');
+        gammaIdx++;
+      }, iterations);
+
+      gammaIdx = 0;
+      const gpuGamma = runBench('GPU gamma change', () => {
+        const g = 0.5 + (gammaIdx % 30) * 0.05;
+        gpuUniformOnlyUpdate(gl, pipeline, cachedTexture, {
+          ...params, gamma: g, stretchMode: 'gamma'
+        });
+        gammaIdx++;
+      }, iterations);
+
+      recordResult('Gamma change', cpuGamma, gpuGamma);
+
+      // ── Benchmark 5: dB toggle ───────────────────────────────────────
+
+      header('5. dB TOGGLE');
+      log(`  What: Toggle between dB and linear mode`, 'dim');
+
+      let dbIdx = 0;
+      const cpuDb = runBench('CPU dB toggle', () => {
+        cpuRender(data, size, size, params.contrastLimits, dbIdx % 2 === 0, 'viridis', 1.0, 'linear');
+        dbIdx++;
+      }, iterations);
+
+      dbIdx = 0;
+      const gpuDb = runBench('GPU dB toggle', () => {
+        gpuUniformOnlyUpdate(gl, pipeline, cachedTexture, {
+          ...params, useDecibels: dbIdx % 2 === 0
+        });
+        dbIdx++;
+      }, iterations);
+
+      recordResult('dB toggle', cpuDb, gpuDb);
+
+      // ── Benchmark 6: RGB composite (CPU vs GPU) ──────────────────────
+
+      header('6. RGB COMPOSITE (3 bands)');
+      log(`  What: 3-band composite render (Pauli-style)`, 'dim');
+      log(`  CPU: Per-pixel loop over 3 channels → RGBA ImageData`, 'dim');
+      log(`  GPU: 3x R32F texture upload + shader (per-channel dB+stretch)`, 'dim');
+
+      // For RGB, use real data as all 3 bands (shifted copies simulate different pols)
+      const bandR = data;
+      const bandG = new Float32Array(data.length);
+      const bandB = new Float32Array(data.length);
+      for (let i = 0; i < data.length; i++) {
+        bandG[i] = data[Math.min(i + 17, data.length - 1)] * 0.8;
+        bandB[i] = data[Math.max(i - 13, 0)] * 0.6;
+      }
+
+      const cpuRGB = runBench('CPU RGB composite', () => {
+        cpuRenderRGB(bandR, bandG, bandB, size, size, [-25, 0], true, 1.0, 'linear');
+      }, iterations);
+
+      // GPU RGB: upload 3 textures + render with mode=1
+      const gpuRGB = runBench('GPU RGB composite', () => {
+        // Upload 3 R32F textures
+        const texR = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texR);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, bandR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const texG = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texG);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, bandG);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const texB = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texB);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, bandB);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        // Bind all 3 and render with uMode=1
+        gpuRenderRGB(gl, pipeline, texR, texG, texB, params);
+
+        gl.deleteTexture(texR);
+        gl.deleteTexture(texG);
+        gl.deleteTexture(texB);
+      }, iterations);
+
+      recordResult('RGB composite', cpuRGB, gpuRGB);
+
+      // ── Benchmark 6b: RGB parameter change (textures cached) ──────
+
+      header('6b. RGB PARAMETER CHANGE (cached textures)');
+      log(`  What: Change contrast on cached RGB textures`, 'dim');
+      log(`  CPU: Full 3-channel per-pixel loop again`, 'dim');
+      log(`  GPU: Update uniforms + redraw (3 textures already on GPU)`, 'dim');
+
+      // Pre-upload 3 textures
+      const cachedTexR = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, cachedTexR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, bandR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      const cachedTexG = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, cachedTexG);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, bandG);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      const cachedTexB = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, cachedTexB);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, bandB);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      let rgbContrastIdx = 0;
+      const cpuRGBParam = runBench('CPU RGB param change', () => {
+        const min = -30 + (rgbContrastIdx % 20);
+        const max = -5 + (rgbContrastIdx % 10) * 0.5;
+        cpuRenderRGB(bandR, bandG, bandB, size, size, [min, max], true, 1.0, 'linear');
+        rgbContrastIdx++;
+      }, iterations);
+
+      rgbContrastIdx = 0;
+      const gpuRGBParam = runBench('GPU RGB param change', () => {
+        const min = -30 + (rgbContrastIdx % 20);
+        const max = -5 + (rgbContrastIdx % 10) * 0.5;
+        gpuRGBUniformOnly(gl, pipeline, cachedTexR, cachedTexG, cachedTexB, {
+          ...params, contrastLimits: [min, max]
+        });
+        rgbContrastIdx++;
+      }, iterations);
+
+      recordResult('RGB param change', cpuRGBParam, gpuRGBParam);
+
+      gl.deleteTexture(cachedTexR);
+      gl.deleteTexture(cachedTexG);
+      gl.deleteTexture(cachedTexB);
+
+      // ── Benchmark 7: Texture upload only ─────────────────────────────
+
+      header('7. TEXTURE UPLOAD (R32F)');
+      log(`  What: Upload Float32Array to GPU as R32F texture`, 'dim');
+      log(`  This is the fixed cost per tile load (GPU path only)`, 'dim');
+
+      const gpuUpload = runBench('GPU R32F upload', () => {
+        benchGPUTextureUpload(gl, data, size, size);
+      }, iterations);
+
+      log(`  GPU  avg=${formatMs(gpuUpload.avg)}  med=${formatMs(gpuUpload.median)}  p95=${formatMs(gpuUpload.p95)}`, 'metric');
+      allResults.push({ category: 'R32F texture upload', cpu: null, gpu: gpuUpload, speedup: null });
+
+      // ── Cleanup ──────────────────────────────────────────────────────
+
+      gl.deleteTexture(cachedTexture);
+      cleanupGPUPipeline(gl, pipeline);
+
+      // ── Results table ────────────────────────────────────────────────
+
+      header('SUMMARY');
+      renderResultsTable();
+    };
+
+    function renderResultsTable() {
+      let html = `<table>
+        <tr>
+          <th>Operation</th>
+          <th>CPU avg</th>
+          <th>GPU avg</th>
+          <th>Speedup</th>
+          <th>CPU FPS</th>
+          <th>GPU FPS</th>
+        </tr>`;
+
+      for (const r of allResults) {
+        const cpuMs = r.cpu ? formatMs(r.cpu.avg) : '—';
+        const gpuMs = r.gpu ? formatMs(r.gpu.avg) : '—';
+        const cpuFPS = r.cpu ? Math.round(1000 / r.cpu.avg) : '—';
+        const gpuFPS = r.gpu ? Math.round(1000 / r.gpu.avg) : '—';
+        const speedup = r.speedup ? `${r.speedup.toFixed(1)}x` : '—';
+        const winner = r.speedup && r.speedup > 1 ? 'winner' : '';
+
+        html += `<tr class="${winner}">
+          <td>${r.category}</td>
+          <td>${cpuMs}</td>
+          <td>${gpuMs}</td>
+          <td>${speedup}</td>
+          <td>${cpuFPS}</td>
+          <td>${gpuFPS}</td>
+        </tr>`;
+      }
+
+      html += '</table>';
+      resultsEl.innerHTML = html;
+
+      // Log the summary
+      const paramChanges = allResults.filter(r => r.speedup && r.speedup > 1);
+      if (paramChanges.length > 0) {
+        const avgSpeedup = paramChanges.reduce((a, r) => a + r.speedup, 0) / paramChanges.length;
+        log(`\nAverage GPU speedup for parameter changes: ${avgSpeedup.toFixed(0)}x`, 'winner');
+      }
+
+      const rgbResult = allResults.find(r => r.category === 'RGB composite');
+      if (rgbResult) {
+        const fpsAt256 = Math.round(1000 / rgbResult.cpu.avg);
+        log(`RGB composite (CPU): ${fpsAt256} FPS — ${fpsAt256 >= 30 ? 'adequate' : 'needs GPU path'}`, 'metric');
+      }
+    }
+
+    // ─── Check which data sources are available ────────────────────────
+
+    async function checkDataSources() {
+      const select = document.getElementById('dataSource');
+
+      // Check NISAR file
+      try {
+        const resp = await fetch(NISAR_PATH, { method: 'HEAD' });
+        if (!resp.ok) throw new Error();
+        const fileSize = resp.headers.get('content-length');
+        const sizeMB = fileSize ? ` (${(parseInt(fileSize) / 1e6).toFixed(0)} MB)` : '';
+        for (const opt of select.options) {
+          if (opt.value === 'nisar') opt.textContent = `NISAR HDF5 (real SAR)${sizeMB}`;
+        }
+      } catch {
+        for (const opt of select.options) {
+          if (opt.value === 'nisar') {
+            opt.textContent = 'NISAR HDF5 (not found)';
+            opt.disabled = true;
+          }
+        }
+      }
+
+      // Check COG file
+      try {
+        const resp = await fetch(COG_PATH, { method: 'HEAD' });
+        if (!resp.ok) throw new Error();
+        const fileSize = resp.headers.get('content-length');
+        const sizeMB = fileSize ? ` (${(parseInt(fileSize) / 1e6).toFixed(0)} MB)` : '';
+        for (const opt of select.options) {
+          if (opt.value === 'cog') opt.textContent = `COG GeoTIFF (real SAR)${sizeMB}`;
+        }
+      } catch {
+        for (const opt of select.options) {
+          if (opt.value === 'cog') {
+            opt.textContent = 'COG GeoTIFF (not found)';
+            opt.disabled = true;
+          }
+        }
+      }
+
+      // Auto-select best available real data source
+      for (const opt of select.options) {
+        if (!opt.disabled && opt.value !== 'synthetic') {
+          select.value = opt.value;
+          break;
+        }
+      }
+    }
+
+    checkDataSources();
+
+    // Auto-hint
+    log('Click "Run All Benchmarks" to start.', 'dim');
+    log('Select a data source: Synthetic generates random values, NISAR/COG loads real SAR data.', 'dim');
+  </script>
+</body>
+</html>

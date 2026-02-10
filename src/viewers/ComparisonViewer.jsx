@@ -71,7 +71,7 @@ export function ComparisonViewer({
       width,
       height,
       display: 'flex',
-      backgroundColor: '#1a1a1a',
+      backgroundColor: 'var(--sardine-bg, #0a1628)',
       ...style,
     }),
     [width, height, style]
@@ -81,25 +81,28 @@ export function ComparisonViewer({
     flex: 1,
     position: 'relative',
     overflow: 'hidden',
-    borderRight: '1px solid #333',
+    borderRight: '1px solid var(--sardine-border, #1e3a5f)',
   };
 
   const rightPanelStyle = {
     ...panelStyle,
     borderRight: 'none',
-    borderLeft: '1px solid #333',
+    borderLeft: '1px solid var(--sardine-border, #1e3a5f)',
   };
 
   const labelStyle = {
     position: 'absolute',
     top: '10px',
     left: '10px',
-    background: 'rgba(0, 0, 0, 0.7)',
-    color: 'white',
+    background: 'var(--sardine-bg-raised, #0f1f38)',
+    border: '1px solid var(--sardine-border, #1e3a5f)',
+    color: 'var(--text-primary, #e8edf5)',
     padding: '5px 10px',
-    borderRadius: '4px',
-    fontSize: '14px',
-    fontWeight: 'bold',
+    borderRadius: 'var(--radius-sm, 4px)',
+    fontSize: '0.75rem',
+    fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+    fontWeight: '600',
+    letterSpacing: '0.5px',
     zIndex: 1000,
   };
 
@@ -119,7 +122,7 @@ export function ComparisonViewer({
       <div
         style={{
           width: '4px',
-          backgroundColor: '#444',
+          backgroundColor: 'var(--sardine-border, #1e3a5f)',
           cursor: 'col-resize',
         }}
       />
@@ -175,7 +178,7 @@ function ViewerPanel({ image, viewState, onViewStateChange }) {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          color: '#666',
+          color: 'var(--text-muted, #5a7099)',
         }}
       >
         No image loaded
@@ -319,7 +322,7 @@ export function SwipeComparisonViewer({
       position: 'relative',
       width,
       height,
-      backgroundColor: '#1a1a1a',
+      backgroundColor: 'var(--sardine-bg, #0a1628)',
       overflow: 'hidden',
       ...style,
     }),

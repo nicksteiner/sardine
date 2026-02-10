@@ -1,0 +1,1 @@
+export { canUseGPURendering, probeGPU } from './src/utils/gpu-detect.js';

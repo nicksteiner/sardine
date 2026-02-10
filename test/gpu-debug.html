@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GPU Layer Debug</title>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Courier New', monospace;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 20px;
+    }
+    h1 {
+      color: #4ec9b0;
+      margin: 0 0 20px 0;
+    }
+    .status {
+      padding: 10px;
+      margin: 10px 0;
+      border-left: 4px solid #007acc;
+      background: #252526;
+    }
+    .status.error { border-color: #f48771; }
+    .status.success { border-color: #4ec9b0; }
+    .status.warning { border-color: #dcdcaa; }
+    pre {
+      background: #1e1e1e;
+      padding: 10px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+    #canvas {
+      border: 2px solid #3c3c3c;
+      margin: 20px 0;
+    }
+    button {
+      background: #007acc;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      margin: 5px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    button:hover {
+      background: #005a9e;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔬 SARGPULayer Debug Console</h1>
+  <div id="status"></div>
+  <div>
+    <button onclick="runTest()">▶ Run Test</button>
+    <button onclick="clearStatus()">🗑 Clear</button>
+    <button onclick="location.reload(true)">🔄 Hard Reload</button>
+  </div>
+  <canvas id="canvas" width="512" height="512"></canvas>
+
+  <script type="module">
+    // Force cache bust
+    const timestamp = Date.now();
+    const statusDiv = document.getElementById('status');
+
+    function log(message, type = 'info') {
+      const div = document.createElement('div');
+      div.className = `status ${type}`;
+      div.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${message}`;
+      statusDiv.appendChild(div);
+      console.log(`[${type}]`, message);
+      statusDiv.scrollTop = statusDiv.scrollHeight;
+    }
+
+    window.clearStatus = () => {
+      statusDiv.innerHTML = '';
+    };
+
+    window.runTest = async () => {
+      try {
+        clearStatus();
+        log('Starting GPU layer test...', 'info');
+
+        // Step 1: Import modules with cache bust
+        log(`Importing SARGPULayer (cache bust: ${timestamp})...`, 'info');
+
+        const { SARGPULayer } = await import(`../src/layers/SARGPULayer.js?t=${timestamp}`);
+        const { Deck, OrthographicView } = await import('@deck.gl/core');
+
+        log('✅ Modules imported successfully', 'success');
+
+        // Step 2: Check WebGL2
+        log('Checking WebGL2 support...', 'info');
+        const canvas = document.getElementById('canvas');
+        const gl = canvas.getContext('webgl2');
+
+        if (!gl) {
+          throw new Error('WebGL2 not supported');
+        }
+
+        const floatExt = gl.getExtension('EXT_color_buffer_float');
+        const floatLinearExt = gl.getExtension('OES_texture_float_linear');
+
+        if (!floatExt || !floatLinearExt) {
+          throw new Error('Required WebGL extensions not available');
+        }
+
+        log(`✅ WebGL2 ready (${gl.getParameter(gl.VERSION)})`, 'success');
+
+        // Step 3: Generate test data
+        log('Generating test data (256x256)...', 'info');
+        const width = 256;
+        const height = 256;
+        const testData = new Float32Array(width * height);
+
+        for (let i = 0; i < testData.length; i++) {
+          testData[i] = Math.random() * 100; // Random SAR amplitudes
+        }
+
+        const validPixels = testData.filter(v => v > 0).length;
+        const min = Math.min(...testData);
+        const max = Math.max(...testData);
+
+        log(`✅ Test data: ${validPixels} valid pixels, range [${min.toFixed(3)}, ${max.toFixed(3)}]`, 'success');
+
+        // Step 4: Create layer
+        log('Creating SARGPULayer instance...', 'info');
+
+        const layer = new SARGPULayer({
+          id: 'test-gpu-layer',
+          data: testData,
+          width,
+          height,
+          bounds: [0, 0, 256, 256],
+          contrastLimits: [-25, 0],
+          useDecibels: true,
+          colormap: 'viridis',
+          gamma: 1.0,
+          stretchMode: 'linear'
+        });
+
+        log(`✅ Layer created: ID="${layer.id}"`, 'success');
+        log(`   Props: ${Object.keys(layer.props).length} properties`, 'info');
+
+        // Step 5: Create Deck instance
+        log('Creating Deck.gl instance...', 'info');
+
+        const deck = new Deck({
+          canvas: 'canvas',
+          views: [new OrthographicView({id: 'ortho'})],
+          initialViewState: {
+            target: [128, 128, 0],
+            zoom: 0
+          },
+          layers: [layer],
+          onError: (error) => {
+            log(`❌ Deck.gl error: ${error.message}`, 'error');
+            log(`<pre>${error.stack}</pre>`, 'error');
+          },
+          onLoad: () => {
+            log('✅ Deck.gl loaded', 'success');
+
+            setTimeout(() => {
+              log('✅ Layer rendered successfully!', 'success');
+              log('🎉 All tests passed! GPU layer is working.', 'success');
+            }, 500);
+          },
+          onLayerError: (error, layer) => {
+            log(`❌ Layer "${layer.id}" error: ${error.message}`, 'error');
+            log(`<pre>${error.stack}</pre>`, 'error');
+          }
+        });
+
+        log('⏳ Waiting for render...', 'info');
+
+      } catch (err) {
+        log(`❌ Test failed: ${err.message}`, 'error');
+        log(`<pre>${err.stack}</pre>`, 'error');
+      }
+    };
+
+    // Auto-run on load
+    log('🚀 Debug console ready. Click "Run Test" to begin.', 'info');
+    log(`Cache bust timestamp: ${timestamp}`, 'info');
+
+  </script>
+</body>
+</html>

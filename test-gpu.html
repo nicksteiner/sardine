@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GPU Layer Test</title>
+  <style>
+    body { margin: 0; }
+    #canvas { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    // Quick test to verify R32F texture upload and shader processing
+    const canvas = document.getElementById('canvas');
+    const gl = canvas.getContext('webgl2');
+
+    if (!gl) {
+      alert('WebGL2 not supported!');
+    }
+
+    // Check for R32F support
+    const floatExt = gl.getExtension('EXT_color_buffer_float');
+    const floatLinearExt = gl.getExtension('OES_texture_float_linear');
+
+    console.log('WebGL2:', !!gl);
+    console.log('EXT_color_buffer_float:', !!floatExt);
+   console.log('OES_texture_float_linear:', !!floatLinearExt);
+
+    if (floatExt && floatLinearExt) {
+      console.log('✅ GPU pipeline supported!');
+
+      // Create test Float32 data
+      const testData = new Float32Array(256 * 256);
+      for (let i = 0; i < testData.length; i++) {
+        testData[i] = Math.random() * 100; // Random SAR amplitudes
+      }
+
+      // Create R32F texture
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, 256, 256, 0, gl.RED, gl.FLOAT, testData);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+      console.log('✅ R32F texture created successfully!');
+    } else {
+      console.error('❌ GPU pipeline NOT supported - float textures unavailable');
+    }
+  </script>
+</body>
+</html>

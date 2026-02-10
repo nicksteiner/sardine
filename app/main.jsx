@@ -1,7 +1,52 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits } from '../src/index.js';
+import '../src/theme/sardine-theme.css';
+import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets } from '../src/index.js';
+import { loadNISARRGBComposite } from '../src/loaders/nisar-loader.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
+import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
+import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
+import { HistogramPanel } from '../src/components/Histogram.jsx';
+import { exportFigure, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
+import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
+import { getColormap } from '../src/utils/colormap.js';
+import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
+import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+
+/**
+ * NxN box-filter smoothing for a Float32Array image band.
+ * Operates in linear power space (correct for SAR multiplicative speckle).
+ * NaN/zero values are excluded from the average to preserve no-data masks.
+ *
+ * Used in rendered exports to reduce residual speckle that's visible at the
+ * export multilook factor but not in the on-screen display (which implicitly
+ * averages many more pixels at overview zoom levels).
+ */
+function smoothBand(data, width, height, kernel) {
+  const half = Math.floor(kernel / 2);
+  const out = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const yMin = Math.max(0, y - half);
+    const yMax = Math.min(height - 1, y + half);
+    for (let x = 0; x < width; x++) {
+      const xMin = Math.max(0, x - half);
+      const xMax = Math.min(width - 1, x + half);
+      let sum = 0, count = 0;
+      for (let ky = yMin; ky <= yMax; ky++) {
+        const rowOff = ky * width;
+        for (let kx = xMin; kx <= xMax; kx++) {
+          const v = data[rowOff + kx];
+          if (v > 0 && !isNaN(v)) { sum += v; count++; }
+        }
+      }
+      const idx = y * width + x;
+      out[idx] = count > 0 ? sum / count : data[idx];
+    }
+  }
+  return out;
+}
 
 /**
  * Parse markdown state into object
@@ -10,7 +55,9 @@ import { StatusWindow } from '../src/components/StatusWindow.jsx';
  */
 function parseMarkdownState(markdown) {
   const state = {
+    source: 'cog',
     file: '',
+    dataset: null,
     contrastMin: -25,
     contrastMax: 0,
     colormap: 'grayscale',
@@ -21,13 +68,28 @@ function parseMarkdownState(markdown) {
   const lines = markdown.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
-    
+
+    // Parse source type
+    const sourceMatch = trimmed.match(/\*\*Source:\*\*\s*(\w+)/);
+    if (sourceMatch) {
+      state.source = sourceMatch[1].toLowerCase();
+    }
+
     // Parse file
     const fileMatch = trimmed.match(/\*\*File:\*\*\s*(.+)/);
     if (fileMatch) {
       state.file = fileMatch[1].trim();
     }
-    
+
+    // Parse dataset (for NISAR: A/HHHH)
+    const datasetMatch = trimmed.match(/\*\*Dataset:\*\*\s*([AB])\/(\w+)/);
+    if (datasetMatch) {
+      state.dataset = {
+        frequency: datasetMatch[1],
+        polarization: datasetMatch[2],
+      };
+    }
+
     // Parse contrast
     const contrastMatch = trimmed.match(/\*\*Contrast:\*\*\s*([-\d.]+)\s*to\s*([-\d.]+)\s*(dB)?/);
     if (contrastMatch) {
@@ -35,19 +97,19 @@ function parseMarkdownState(markdown) {
       state.contrastMax = parseFloat(contrastMatch[2]);
       state.useDecibels = contrastMatch[3] === 'dB';
     }
-    
+
     // Parse colormap
     const colormapMatch = trimmed.match(/\*\*Colormap:\*\*\s*(\w+)/);
     if (colormapMatch) {
       state.colormap = colormapMatch[1].toLowerCase();
     }
-    
+
     // Parse dB mode
     const dbMatch = trimmed.match(/\*\*dB Mode:\*\*\s*(on|off)/i);
     if (dbMatch) {
       state.useDecibels = dbMatch[1].toLowerCase() === 'on';
     }
-    
+
     // Parse view
     const viewMatch = trimmed.match(/\*\*View:\*\*\s*\[([-\d.]+),\s*([-\d.]+)\],?\s*zoom\s*([-\d.]+)/);
     if (viewMatch) {
@@ -57,7 +119,7 @@ function parseMarkdownState(markdown) {
       };
     }
   }
-  
+
   return state;
 }
 
@@ -70,14 +132,51 @@ function generateMarkdownState(state) {
   const lines = [
     '## State',
     '',
+    `- **Source:** ${state.source || 'cog'}`,
     `- **File:** ${state.file || '(none)'}`,
+  ];
+
+  // Add dataset/composite lines for NISAR files
+  if (state.source === 'nisar') {
+    if (state.displayMode === 'rgb' && state.composite) {
+      lines.push(`- **Composite:** ${state.composite}`);
+    } else if (state.dataset) {
+      lines.push(`- **Dataset:** ${state.dataset.frequency}/${state.dataset.polarization}`);
+    }
+  }
+
+  lines.push(
     `- **Contrast:** ${state.contrastMin} to ${state.contrastMax}${state.useDecibels ? ' dB' : ''}`,
-    `- **Colormap:** ${state.colormap}`,
+  );
+
+  if (state.displayMode !== 'rgb') {
+    lines.push(`- **Colormap:** ${state.colormap}`);
+  }
+
+  lines.push(
     `- **dB Mode:** ${state.useDecibels ? 'on' : 'off'}`,
     `- **View:** [${state.view.center[0].toFixed(4)}, ${state.view.center[1].toFixed(4)}], zoom ${state.view.zoom.toFixed(2)}`,
-  ];
-  
+  );
+
   return lines.join('\n');
+}
+
+/**
+ * CollapsibleSection - A control panel section with a clickable header to collapse/expand.
+ */
+function CollapsibleSection({ title, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="control-section">
+      <h3
+        className={`collapsible${open ? '' : ' collapsed'}`}
+        onClick={() => setOpen(o => !o)}
+      >{title}</h3>
+      <div className={`section-body${open ? '' : ' collapsed'}`}>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -86,22 +185,54 @@ function generateMarkdownState(state) {
  */
 function App() {
   // Core state
+  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // NISAR-specific state
+  const [nisarFile, setNisarFile] = useState(null);
+  const [nisarDatasets, setNisarDatasets] = useState([]);
+  const [selectedFrequency, setSelectedFrequency] = useState('A');
+  const [selectedPolarization, setSelectedPolarization] = useState('HHHH');
+
+  // RGB composite state
+  const [displayMode, setDisplayMode] = useState('single'); // 'single' | 'rgb'
+  const [compositeId, setCompositeId] = useState(null);
+  const [availableComposites, setAvailableComposites] = useState([]);
+
+  // Per-channel contrast for RGB mode (linear values)
+  const [rgbContrastLimits, setRgbContrastLimits] = useState(null);
+  // Histogram data: {single: stats} or {R: stats, G: stats, B: stats}
+  const [histogramData, setHistogramData] = useState(null);
+
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
+  const [showGrid, setShowGrid] = useState(true);
   const [contrastMin, setContrastMin] = useState(-25);
   const [contrastMax, setContrastMax] = useState(0);
+  const [gamma, setGamma] = useState(1.0);
+  const [stretchMode, setStretchMode] = useState('linear');
+  const [multiLook, setMultiLook] = useState(false);
+  const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
+  const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
+  const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
 
   // Markdown state
   const [markdownState, setMarkdownState] = useState('');
   const [isMarkdownEdited, setIsMarkdownEdited] = useState(false);
+
+  // Overture Maps overlay state
+  const [overtureEnabled, setOvertureEnabled] = useState(false);
+  const [overtureThemes, setOvertureThemes] = useState(['buildings']); // enabled themes
+  const [overtureData, setOvertureData] = useState(null);
+  const [overtureLoading, setOvertureLoading] = useState(false);
+  const [overtureOpacity, setOvertureOpacity] = useState(0.7);
+  const overtureDebounceRef = useRef(null);
 
   // Memoize initialViewState to prevent infinite re-renders
   const initialViewState = useMemo(
@@ -112,6 +243,7 @@ function App() {
     [viewCenter, viewZoom]
   );
   const markdownUpdateRef = useRef(false);
+  const viewerRef = useRef(null);
 
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
@@ -126,15 +258,171 @@ function App() {
   // Memoize arrays to prevent unnecessary re-renders
   const contrastLimits = useMemo(() => [contrastMin, contrastMax], [contrastMin, contrastMax]);
 
+  // For RGB mode, use per-channel limits; for single-band, use uniform limits
+  const effectiveContrastLimits = useMemo(() => {
+    if (displayMode === 'rgb' && rgbContrastLimits) {
+      return rgbContrastLimits;
+    }
+    return contrastLimits;
+  }, [displayMode, rgbContrastLimits, contrastLimits]);
+
+  // Auto-stretch: reset to 2-98% percentiles from cached histogram
+  const handleAutoStretch = useCallback(() => {
+    if (!histogramData) {
+      addStatusLog('warning', 'No histogram data — load a dataset first');
+      return;
+    }
+
+    if (displayMode === 'rgb') {
+      const newLimits = {};
+      for (const ch of ['R', 'G', 'B']) {
+        if (histogramData[ch]) {
+          newLimits[ch] = [histogramData[ch].p2, histogramData[ch].p98];
+        }
+      }
+      if (Object.keys(newLimits).length === 0) {
+        addStatusLog('warning', 'No per-channel statistics available');
+        return;
+      }
+      setRgbContrastLimits(newLimits);
+      addStatusLog('success', 'RGB contrast reset to 2–98% percentiles',
+        ['R', 'G', 'B'].map(ch => newLimits[ch] ? `${ch}: ${newLimits[ch][0].toExponential(2)}–${newLimits[ch][1].toExponential(2)}` : '').join(', '));
+    } else if (histogramData.single) {
+      // Keep decimal precision for dB values
+      const p2 = Number(histogramData.single.p2.toFixed(1));
+      const p98 = Number(histogramData.single.p98.toFixed(1));
+      setContrastMin(p2);
+      setContrastMax(p98);
+      addStatusLog('success', `Contrast reset to ${p2} – ${p98} dB`);
+    } else {
+      addStatusLog('warning', 'No histogram data for current mode');
+    }
+  }, [histogramData, displayMode, addStatusLog]);
+
+  // Recompute histogram (viewport-aware)
+  const handleRecomputeHistogram = useCallback(async () => {
+    if (!imageData || !imageData.getTile) {
+      addStatusLog('warning', 'No tile data available for histogram');
+      return;
+    }
+
+    addStatusLog('info', `Recomputing histogram (${histogramScope})...`);
+
+    try {
+      // Compute viewport region bounds (used for viewport scope)
+      const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
+      const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
+      const cx = viewCenter[0];
+      const cy = viewCenter[1];
+      const vpLeft = Math.max(0, cx - vpHalfW);
+      const vpRight = Math.min(imageData.width, cx + vpHalfW);
+      const vpTop = Math.max(0, cy - vpHalfH);
+      const vpBottom = Math.min(imageData.height, cy + vpHalfH);
+
+      const isViewport = histogramScope === 'viewport';
+      const regionX = isViewport ? vpLeft : 0;
+      const regionY = isViewport ? vpTop : 0;
+      const regionW = isViewport ? (vpRight - vpLeft) : imageData.width;
+      const regionH = isViewport ? (vpBottom - vpTop) : imageData.height;
+      const scopeLabel = isViewport ? 'Viewport' : 'Global';
+
+      if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
+        // RGB histogram — sample 3×3 tiles from the region
+        const tileSize = 256;
+        const rawValues = { R: [], G: [], B: [] };
+        const gridSize = 3;
+        const totalTiles = gridSize * gridSize;
+        const stepX = regionW / gridSize;
+        const stepY = regionH / gridSize;
+        let done = 0;
+
+        for (let ty = 0; ty < gridSize; ty++) {
+          for (let tx = 0; tx < gridSize; tx++) {
+            const left = regionX + tx * stepX;
+            const right = regionX + (tx + 1) * stepX;
+            const wBottom = imageData.height - (regionY + (ty + 1) * stepY);
+            const wTop = imageData.height - (regionY + ty * stepY);
+
+            const tileData = await imageData.getRGBTile({
+              x: tx, y: ty, z: 0,
+              bbox: { left, top: wBottom, right, bottom: wTop },
+            });
+
+            if (tileData && tileData.bands) {
+              const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
+              for (const ch of ['R', 'G', 'B']) {
+                const arr = rgbBands[ch];
+                // Subsample every 4th pixel for efficiency
+                for (let i = 0; i < arr.length; i += 4) {
+                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+                }
+              }
+            }
+
+            done++;
+            addStatusLog('info', `Histogram: sampling tile ${done}/${totalTiles}`);
+          }
+        }
+
+        addStatusLog('info', 'Histogram: computing statistics...');
+        const hists = {};
+        for (const ch of ['R', 'G', 'B']) {
+          hists[ch] = computeChannelStats(rawValues[ch], useDecibels);
+        }
+        setHistogramData(hists);
+        addStatusLog('success', `${scopeLabel} histogram updated (RGB)`);
+      } else {
+        // Single-band histogram — pass origin offset for correct viewport sampling
+        const stats = await sampleViewportStats(
+          imageData.getTile, regionW, regionH, useDecibels, 128,
+          regionX, regionY, imageData.height,
+          (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
+        );
+        if (stats) {
+          setHistogramData({ single: stats });
+          addStatusLog('success', `${scopeLabel} histogram: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)}`);
+        }
+      }
+    } catch (e) {
+      addStatusLog('warning', 'Histogram recompute failed', e.message);
+    }
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, addStatusLog]);
+
+  // Auto-recompute histogram when scope changes
+  const histogramScopeRef = useRef(histogramScope);
+  useEffect(() => {
+    if (histogramScope !== histogramScopeRef.current) {
+      histogramScopeRef.current = histogramScope;
+      if (imageData) handleRecomputeHistogram();
+    }
+  }, [histogramScope, imageData, handleRecomputeHistogram]);
+
+  // Recompute histogram when switching between dB and linear mode
+  const useDecibelsRef = useRef(useDecibels);
+  useEffect(() => {
+    if (useDecibels !== useDecibelsRef.current) {
+      useDecibelsRef.current = useDecibels;
+      // Recompute histogram in the new scale
+      if (imageData && displayMode === 'single') {
+        handleRecomputeHistogram();
+      }
+    }
+  }, [useDecibels, imageData, displayMode, handleRecomputeHistogram]);
+
+
   // Generate markdown from current state
   const currentState = useMemo(() => ({
-    file: cogUrl,
+    source: fileType,
+    file: fileType === 'cog' ? cogUrl : (nisarFile?.name || ''),
+    dataset: fileType === 'nisar' ? { frequency: selectedFrequency, polarization: selectedPolarization } : null,
+    displayMode,
+    composite: compositeId,
     contrastMin,
     contrastMax,
     colormap,
     useDecibels,
     view: { center: viewCenter, zoom: viewZoom },
-  }), [cogUrl, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
+  }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
 
   // Update markdown when state changes (unless edited)
   useEffect(() => {
@@ -314,49 +602,921 @@ function App() {
     }
   }, []);
 
+  // Handle NISAR file selection - read metadata to get available datasets
+  const handleNISARFileSelect = useCallback(async (file) => {
+    if (!file) return;
+
+    setNisarFile(file);
+    setNisarDatasets([]);
+    setLoading(true);
+    setError(null);
+    addStatusLog('info', `Reading NISAR GCOV metadata from: ${file.name}`);
+
+    try {
+      const datasets = await listNISARDatasets(file);
+      setNisarDatasets(datasets);
+
+      // Set defaults to first available dataset
+      if (datasets.length > 0) {
+        setSelectedFrequency(datasets[0].frequency);
+        setSelectedPolarization(datasets[0].polarization);
+      }
+
+      // Compute available composites and auto-select
+      const composites = getAvailableComposites(datasets);
+      setAvailableComposites(composites);
+
+      // Pre-select a composite for when the user switches to RGB mode,
+      // but always default to single-band display
+      const autoComposite = autoSelectComposite(datasets);
+      setCompositeId(autoComposite);
+      setDisplayMode('single');
+
+      if (autoComposite) {
+        addStatusLog('info', `RGB composite available: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
+      }
+
+      addStatusLog('success', `Found ${datasets.length} datasets`,
+        datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
+    } catch (e) {
+      setError(`Failed to read NISAR file: ${e.message}`);
+      addStatusLog('error', 'Failed to read NISAR metadata', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog]);
+
+  // Load selected NISAR dataset (single band or RGB composite)
+  const handleLoadNISAR = useCallback(async () => {
+    if (!nisarFile) {
+      setError('Please select a NISAR GCOV HDF5 file');
+      addStatusLog('error', 'No NISAR file selected');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      let data;
+
+      if (displayMode === 'rgb' && compositeId) {
+        // RGB composite mode
+        const requiredPols = getRequiredDatasets(compositeId);
+        addStatusLog('info', `Loading RGB composite: ${compositeId} (${requiredPols.join(', ')})`);
+
+        data = await loadNISARRGBComposite(nisarFile, {
+          frequency: selectedFrequency,
+          compositeId,
+          requiredPols,
+        });
+
+        // In RGB mode, pass getRGBTile as getTile
+        data.getTile = data.getRGBTile;
+
+        addStatusLog('success', 'RGB composite loaded',
+          `${data.width}x${data.height}, Composite: ${compositeId}`);
+      } else {
+        // Single band mode
+        addStatusLog('info', `Loading NISAR dataset: ${selectedFrequency}/${selectedPolarization}`);
+
+        data = await loadNISARGCOV(nisarFile, {
+          frequency: selectedFrequency,
+          polarization: selectedPolarization,
+        });
+
+        addStatusLog('success', 'NISAR dataset loaded',
+          `${data.width}x${data.height}, CRS: ${data.crs}`);
+
+        // Use embedded statistics for auto-contrast if available
+        if (data.stats && data.stats.mean_value !== undefined) {
+          const { mean_value, sample_stddev } = data.stats;
+          if (mean_value > 0 && sample_stddev > 0) {
+            const meanDb = 10 * Math.log10(mean_value);
+            const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+            setContrastMin(Math.round(meanDb - 2 * stdDb));
+            setContrastMax(Math.round(meanDb + 2 * stdDb));
+            addStatusLog('info', 'Auto-contrast from HDF5 statistics',
+              `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
+          }
+        }
+      }
+
+      setImageData(data);
+
+      // Update view to fit bounds
+      if (data.bounds) {
+        const [minX, minY, maxX, maxY] = data.bounds;
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        setViewCenter([centerX, centerY]);
+
+        const spanX = maxX - minX;
+        const spanY = maxY - minY;
+        const maxSpan = Math.max(spanX, spanY);
+        const viewportSize = 1000;
+        const zoom = Math.log2(viewportSize / maxSpan);
+
+        setViewZoom(zoom);
+        addStatusLog('info', 'View state updated',
+          `Center: [${centerX.toFixed(0)}, ${centerY.toFixed(0)}], Zoom: ${zoom.toFixed(2)}`);
+      }
+
+      // Compute histograms for per-channel contrast
+      try {
+        if (displayMode === 'rgb' && data.getRGBTile) {
+          addStatusLog('info', 'Computing per-channel histograms (linear)...');
+          const tileSize = 256;
+          const gridSize = 3;
+          const stepX = data.width / gridSize;
+          const stepY = data.height / gridSize;
+          const rawValues = { R: [], G: [], B: [] };
+
+          for (let ty = 0; ty < gridSize; ty++) {
+            for (let tx = 0; tx < gridSize; tx++) {
+              const left = tx * stepX;
+              const right = (tx + 1) * stepX;
+              const worldBottom = data.height - (ty + 1) * stepY;
+              const worldTop = data.height - ty * stepY;
+
+              const tileData = await data.getRGBTile({
+                x: tx, y: ty, z: 0,
+                bbox: { left, top: worldBottom, right, bottom: worldTop },
+              });
+
+              if (tileData && tileData.bands) {
+                const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
+                for (const ch of ['R', 'G', 'B']) {
+                  const arr = rgbBands[ch];
+                  // Subsample every 4th pixel for efficiency
+                  for (let i = 0; i < arr.length; i += 4) {
+                    if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+                  }
+                }
+              }
+            }
+          }
+
+          const hists = {};
+          const lims = {};
+          for (const ch of ['R', 'G', 'B']) {
+            const st = computeChannelStats(rawValues[ch], false);
+            hists[ch] = st;
+            lims[ch] = st ? [st.p2, st.p98] : [0, 1];
+          }
+
+          setHistogramData(hists);
+          setRgbContrastLimits(lims);
+          setUseDecibels(false); // Linear for RGB composites
+          addStatusLog('success', 'Per-channel contrast set (linear 2–98%)',
+            ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
+        } else if (data.getTile) {
+          addStatusLog('info', 'Computing histogram from tile samples...');
+          const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
+          if (stats) {
+            setHistogramData({ single: stats });
+            // Keep decimal precision for dB values (don't round)
+            setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
+            setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
+            const unit = useDecibels ? 'dB' : '';
+            addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
+          }
+        }
+      } catch (e) {
+        addStatusLog('warning', 'Could not compute histogram', e.message);
+      }
+
+      addStatusLog('success', 'NISAR GCOV loaded and ready to display');
+    } catch (e) {
+      setError(`Failed to load NISAR dataset: ${e.message}`);
+      setImageData(null);
+      addStatusLog('error', 'Failed to load NISAR dataset', e.message);
+      console.error('NISAR loading error:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, [nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog]);
+
+  // Export current view as GeoTIFF
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportGeoTIFF = useCallback(async () => {
+    if (!imageData) {
+      addStatusLog('error', 'No image data to export');
+      return;
+    }
+
+    if (!imageData.getExportStripe) {
+      addStatusLog('error', 'Export not available for this data source (requires NISAR streaming loader)');
+      return;
+    }
+
+    setExporting(true);
+    const exportStart = performance.now();
+    addStatusLog('info', '--- GeoTIFF Export Started ---');
+
+    try {
+      const sourceWidth = imageData.width;
+      const sourceHeight = imageData.height;
+
+      // Use the user's selected multilook factor directly
+      let effectiveMl = exportMultilookWindow || 1;
+      const exportWidth = Math.floor(sourceWidth / effectiveMl);
+      const exportHeight = Math.floor(sourceHeight / effectiveMl);
+
+      // Check per-band size — each Float32Array must fit in one JS ArrayBuffer (~2GB).
+      // Bands are separate allocations so total across bands is fine; the constraint
+      // is per-array, not aggregate.
+      const perBandBytes = exportWidth * exportHeight * 4;
+      const MAX_SINGLE_ARRAY = 1.8e9; // ~1.8GB per Float32Array (leave headroom below 2GB JS limit)
+      if (perBandBytes > MAX_SINGLE_ARRAY) {
+        const suggestedMl = effectiveMl * 2;
+        addStatusLog('error', `Single band too large (${(perBandBytes / 1e9).toFixed(1)}GB). Increase multilook to ${suggestedMl}x or higher.`);
+        setExporting(false);
+        return;
+      }
+
+      // Extract EPSG from CRS string
+      const epsgMatch = imageData.crs?.match(/EPSG:(\d+)/);
+      const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 32610;
+
+      // Band names from the loaded data's required polarizations
+      // Single-band: ['HHHH'], RGB composite: ['HHHH', 'HVHV', 'VVVV'], etc.
+      const bandNames = imageData.requiredPols || [imageData.polarization || 'HHHH'];
+
+      addStatusLog('info', `Source: ${sourceWidth} x ${sourceHeight}`);
+      addStatusLog('info', `Multilook: ${effectiveMl}x${effectiveMl} (integer)`);
+      addStatusLog('info', `Export: ${exportWidth} x ${exportHeight}`);
+      const isRendered = exportMode === 'rendered';
+      addStatusLog('info', `Bands: ${bandNames.join(', ')} (${isRendered ? 'RGBA rendered' : 'Float32, raw linear power'})`);
+      addStatusLog('info', `EPSG: ${epsgCode}`);
+      if (isRendered) {
+        if (displayMode === 'rgb' && compositeId && effectiveContrastLimits && !Array.isArray(effectiveContrastLimits)) {
+          const limStr = ['R', 'G', 'B'].map(ch => {
+            const lim = effectiveContrastLimits[ch];
+            return lim ? `${ch}:[${lim[0].toExponential(1)},${lim[1].toExponential(1)}]` : '';
+          }).filter(Boolean).join(' ');
+          addStatusLog('info', `Render: composite="${compositeId}", ${useDecibels ? 'dB' : 'linear'}, per-channel ${limStr}, ${stretchMode}, gamma=${gamma}`);
+        } else {
+          addStatusLog('info', `Render: ${useDecibels ? 'dB' : 'linear'}, contrast [${contrastMin}, ${contrastMax}], ${colormap}, ${stretchMode}, gamma=${gamma}`);
+        }
+        addStatusLog('info', `Format: GeoTIFF (RGBA uint8, 512x512 tiles, DEFLATE)`);
+      } else {
+        addStatusLog('info', `Format: GeoTIFF (Float32, 512x512 tiles, DEFLATE)`);
+      }
+
+      // Allocate output arrays for each band
+      const bands = {};
+      for (const name of bandNames) {
+        bands[name] = new Float32Array(exportWidth * exportHeight);
+      }
+
+      // Stripe-based reading: 256 output rows per stripe
+      const stripeRows = 256;
+      const numStripes = Math.ceil(exportHeight / stripeRows);
+
+      for (let s = 0; s < numStripes; s++) {
+        const startRow = s * stripeRows;
+        const numRows = Math.min(stripeRows, exportHeight - startRow);
+
+        addStatusLog('info', `Reading stripe ${s + 1}/${numStripes} (rows ${startRow}-${startRow + numRows - 1})...`);
+
+        const stripe = await imageData.getExportStripe({
+          startRow,
+          numRows,
+          ml: effectiveMl,
+          exportWidth,
+        });
+
+        // Copy stripe data into output arrays
+        for (const name of bandNames) {
+          if (stripe.bands[name]) {
+            bands[name].set(stripe.bands[name], startRow * exportWidth);
+          }
+        }
+      }
+
+      // Pixel-edge bounds correction: NISAR coords are pixel-CENTER,
+      // GeoTIFF PixelIsArea expects pixel-EDGE
+      // Use worldBounds (real-world coordinates) for georeferencing if available
+      if (!imageData.worldBounds) {
+        addStatusLog('warning', 'No world coordinates found in HDF5 — exported GeoTIFF will lack proper georeferencing');
+      }
+      const geoBounds = imageData.worldBounds || imageData.bounds;
+      // worldBounds are pixel-CENTER: span = (N-1) * spacing, so divide by (N-1)
+      const nativeSpacingX = imageData.pixelSpacing?.x || ((geoBounds[2] - geoBounds[0]) / (sourceWidth - 1));
+      const nativeSpacingY = imageData.pixelSpacing?.y || ((geoBounds[3] - geoBounds[1]) / (sourceHeight - 1));
+      // Pixel-edge bounds must match the pixels actually used by multilooking.
+      // getExportStripe reads source pixels 0..(exportWidth*ml - 1), truncating
+      // any remainder when sourceWidth isn't evenly divisible by ml.
+      // Posting = nativeSpacing * ml, guaranteed exact by construction.
+      const exportBounds = [
+        geoBounds[0] - nativeSpacingX / 2,                                             // minX edge
+        geoBounds[1] - nativeSpacingY / 2,                                             // minY edge
+        geoBounds[0] - nativeSpacingX / 2 + exportWidth * effectiveMl * nativeSpacingX,  // maxX edge
+        geoBounds[1] - nativeSpacingY / 2 + exportHeight * effectiveMl * nativeSpacingY, // maxY edge
+      ];
+
+      const exportPixelX = (exportBounds[2] - exportBounds[0]) / exportWidth;
+      const exportPixelY = (exportBounds[3] - exportBounds[1]) / exportHeight;
+
+      addStatusLog('info', `Pixel scale: ${exportPixelX.toFixed(1)}m x ${exportPixelY.toFixed(1)}m`);
+      addStatusLog('info', `Bounds (pixel-edge): [${exportBounds.map(b => b.toFixed(1)).join(', ')}]`);
+
+      let geotiff;
+      let filename;
+
+      if (isRendered) {
+        // --- Rendered export: apply same pipeline as GPU shader ---
+        // Spatial smoothing: the export at ml=N averages N×N source pixels per
+        // output pixel, but the on-screen display at overview zoom implicitly
+        // averages far more (hundreds at low zoom).  A 3×3 post-multilook
+        // box-filter bridges the gap, raising the effective look count by ~9×
+        // (e.g. ml=4 → 16 looks → ~144 effective looks after smoothing).
+        // This is especially important for ratio channels (HH/HV) where
+        // residual speckle is amplified by the division.
+        const smoothKernel = 3;
+        addStatusLog('info', `Smoothing bands: ${smoothKernel}×${smoothKernel} box filter (speckle reduction)...`);
+        for (const name of bandNames) {
+          bands[name] = smoothBand(bands[name], exportWidth, exportHeight, smoothKernel);
+        }
+
+        const numPixels = exportWidth * exportHeight;
+        let rgbaData;
+
+        if (displayMode === 'rgb' && compositeId) {
+          // RGB composite: apply computeRGBBands (same transform as GPU tile path)
+          // then per-channel dB/contrast/stretch via createRGBTexture
+          addStatusLog('info', `Applying RGB composite "${compositeId}" + per-channel contrast...`);
+          const rgbBands = computeRGBBands(bands, compositeId, exportWidth, exportWidth * exportHeight);
+          const rgbImageData = createRGBTexture(
+            rgbBands, exportWidth, exportHeight,
+            effectiveContrastLimits,  // per-channel {R:[min,max], G:[min,max], B:[min,max]}
+            useDecibels, gamma, stretchMode
+          );
+          rgbaData = new Uint8ClampedArray(rgbImageData.data);
+        } else {
+          // Single-band: apply colormap
+          addStatusLog('info', `Applying ${useDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
+          const colormapFunc = getColormap(colormap);
+          const cMin = contrastMin;
+          const cMax = contrastMax;
+          const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+          rgbaData = new Uint8ClampedArray(numPixels * 4);
+          const bandData = bands[bandNames[0]];
+
+          for (let i = 0; i < numPixels; i++) {
+            const amplitude = bandData[i];
+            let value;
+            if (useDecibels) {
+              const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
+              value = (db - cMin) / (cMax - cMin);
+            } else {
+              value = (amplitude - cMin) / (cMax - cMin);
+            }
+            value = Math.max(0, Math.min(1, value));
+            if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+            const [r, g, b] = colormapFunc(value);
+            rgbaData[i * 4] = r;
+            rgbaData[i * 4 + 1] = g;
+            rgbaData[i * 4 + 2] = b;
+            rgbaData[i * 4 + 3] = (amplitude === 0 || isNaN(amplitude)) ? 0 : 255;
+          }
+        }
+
+        addStatusLog('info', 'Writing RGBA GeoTIFF...');
+        geotiff = writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
+          generateOverviews: false,
+          onProgress: (pct) => {
+            if (pct % 20 === 0 && pct > 0 && pct < 100) {
+              addStatusLog('info', `Encoding: ${pct}%`);
+            }
+          }
+        });
+
+        filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+      } else {
+        // --- Raw export: Float32 linear power ---
+        addStatusLog('info', 'Writing Float32 GeoTIFF...');
+        geotiff = writeFloat32GeoTIFF(bands, bandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
+          onProgress: (pct) => {
+            if (pct % 20 === 0 && pct > 0 && pct < 100) {
+              addStatusLog('info', `Encoding: ${pct}%`);
+            }
+          }
+        });
+
+        filename = `sardine_${bandNames.join('-')}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+      }
+
+      // Georef verification logging
+      addStatusLog('info', '--- Georef Verification ---');
+      addStatusLog('info', `EPSG: ${epsgCode}`);
+      addStatusLog('info', `Pixel scale: ${exportPixelX.toFixed(6)} x ${exportPixelY.toFixed(6)}`);
+      addStatusLog('info', `Expected: ${(nativeSpacingX * effectiveMl).toFixed(1)}m (native ${nativeSpacingX.toFixed(1)}m x ${effectiveMl}ml)`);
+      addStatusLog('info', `UL corner: (${exportBounds[0].toFixed(2)}, ${exportBounds[3].toFixed(2)})`);
+      addStatusLog('info', `LR corner: (${exportBounds[2].toFixed(2)}, ${exportBounds[1].toFixed(2)})`);
+      addStatusLog('info', `Dimensions: ${exportWidth} x ${exportHeight} = ${sourceWidth}/${effectiveMl} x ${sourceHeight}/${effectiveMl}`);
+      const intCheck = (sourceWidth % effectiveMl === 0 && sourceHeight % effectiveMl === 0) ? 'exact' : 'truncated';
+      addStatusLog('info', `Integer multilook: ${intCheck}`);
+
+      const sizeMB = (geotiff.byteLength / 1e6).toFixed(1);
+      const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
+
+      downloadBuffer(geotiff, filename);
+      addStatusLog('success', `Exported: ${filename}`);
+      addStatusLog('success', `File size: ${sizeMB} MB, Time: ${elapsed}s`);
+      addStatusLog('info', '--- GeoTIFF Export Complete ---');
+    } catch (e) {
+      addStatusLog('error', 'Export failed', e.message);
+      console.error('GeoTIFF export error:', e);
+    } finally {
+      setExporting(false);
+    }
+  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, addStatusLog]);
+
+  // Save current view as PNG figure with overlays
+  const handleSaveFigure = useCallback(async () => {
+    if (!viewerRef.current) {
+      addStatusLog('error', 'Viewer not ready');
+      return;
+    }
+
+    const glCanvas = viewerRef.current.getCanvas();
+    if (!glCanvas) {
+      addStatusLog('error', 'Could not capture canvas');
+      return;
+    }
+
+    addStatusLog('info', 'Capturing figure...');
+
+    try {
+      const vs = viewerRef.current.getViewState();
+      const blob = await exportFigure(glCanvas, {
+        colormap,
+        contrastLimits: effectiveContrastLimits,
+        useDecibels,
+        compositeId: displayMode === 'rgb' ? compositeId : null,
+        viewState: vs,
+        bounds: imageData?.bounds,
+        filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
+        crs: imageData?.crs || '',
+      });
+
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const figName = `sardine_figure_${ts}.png`;
+      downloadBlob(blob, figName);
+      addStatusLog('success', `Figure saved: ${figName}`);
+
+      // Force deck.gl to re-render so the canvas doesn't stay blank
+      viewerRef.current.redraw();
+    } catch (e) {
+      addStatusLog('error', 'Figure export failed', e.message);
+      console.error('Figure export error:', e);
+    }
+  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog]);
+
+  const handleExportColorbar = useCallback(async () => {
+    if (displayMode !== 'rgb' || !compositeId) {
+      addStatusLog('error', 'Colorbar export requires RGB composite mode');
+      return;
+    }
+
+    try {
+      const blob = await exportRGBColorbar({
+        compositeId,
+        contrastLimits: effectiveContrastLimits,
+        useDecibels,
+        stretchMode,
+        gamma,
+      });
+
+      if (!blob) {
+        addStatusLog('error', 'Failed to generate colorbar');
+        return;
+      }
+
+      const filename = `colorbar_${compositeId}.png`;
+      downloadBlob(blob, filename);
+      addStatusLog('success', `Colorbar saved: ${filename}`);
+    } catch (e) {
+      addStatusLog('error', 'Colorbar export failed', e.message);
+      console.error('Colorbar export error:', e);
+    }
+  }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, displayMode, addStatusLog]);
+
+  // Reload/restart current rendering
+  const handleReload = useCallback(() => {
+    if (!imageData) {
+      addStatusLog('warning', 'No data loaded to reload');
+      return;
+    }
+
+    addStatusLog('info', 'Reloading current view...');
+
+    // Force re-render by clearing and re-loading
+    setImageData(null);
+    setHistogramData(null);
+
+    // Trigger re-load after a short delay
+    setTimeout(() => {
+      if (fileType === 'nisar' && nisarFile) {
+        // Re-trigger NISAR load by updating a dependency
+        setSelectedFrequency(prev => prev); // Force useEffect re-run
+      } else if (fileType === 'cog' && cogUrl) {
+        // Re-trigger COG load
+        setCogUrl(prev => prev);
+      }
+      addStatusLog('success', 'Reload triggered');
+    }, 100);
+  }, [imageData, fileType, nisarFile, cogUrl, addStatusLog]);
+
+  // Fetch Overture features when viewport changes (debounced)
+  useEffect(() => {
+    if (!overtureEnabled || overtureThemes.length === 0 || !imageData) return;
+
+    // Clear previous debounce
+    if (overtureDebounceRef.current) {
+      clearTimeout(overtureDebounceRef.current);
+    }
+
+    overtureDebounceRef.current = setTimeout(async () => {
+      try {
+        setOvertureLoading(true);
+
+        // Calculate viewport bbox in pixel/projected coordinates
+        const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
+        const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
+        const cx = viewCenter[0];
+        const cy = viewCenter[1];
+
+        const projBbox = [
+          cx - vpHalfW,
+          cy - vpHalfH,
+          cx + vpHalfW,
+          cy + vpHalfH,
+        ];
+
+        // Convert to WGS84 for Overture queries
+        const crs = imageData.crs || 'EPSG:4326';
+        const wgs84Bbox = projectedToWGS84(
+          imageData.worldBounds || projBbox,
+          crs
+        );
+
+        addStatusLog('info', `Fetching Overture data: [${wgs84Bbox.map(b => b.toFixed(4)).join(', ')}]`);
+
+        const data = await fetchAllOvertureThemes(overtureThemes, wgs84Bbox, {
+          onProgress: (pct) => {
+            if (pct === 100) addStatusLog('info', 'Overture fetch complete');
+          },
+        });
+
+        setOvertureData(data);
+
+        const totalFeatures = Object.values(data).reduce(
+          (sum, fc) => sum + (fc.features?.length || 0), 0
+        );
+        addStatusLog('success', `Overture: ${totalFeatures} features loaded`);
+      } catch (e) {
+        addStatusLog('warning', 'Overture fetch failed', e.message);
+      } finally {
+        setOvertureLoading(false);
+      }
+    }, 800); // 800ms debounce
+
+    return () => {
+      if (overtureDebounceRef.current) {
+        clearTimeout(overtureDebounceRef.current);
+      }
+    };
+  }, [overtureEnabled, overtureThemes, viewCenter, viewZoom, imageData, addStatusLog]);
+
+  // Build Overture overlay layers for deck.gl
+  const overtureLayers = useMemo(() => {
+    if (!overtureEnabled || !overtureData) return [];
+    return createOvertureLayers(overtureData, { opacity: overtureOpacity });
+  }, [overtureEnabled, overtureData, overtureOpacity]);
+
+  // NOTE: Duplicate block removed — all handlers defined above
   return (
     <div id="app">
       {/* Header */}
       <div className="header">
-        <h1>🐟 SARdine</h1>
-        <span className="subtitle">Prompt-driven SAR imagery analysis</span>
+        <h1><span className="sar">SAR</span>dine</h1>
+        <span className="subtitle">SAR Imagery Viewer</span>
       </div>
 
       {/* Main Layout */}
       <div className="main-layout">
         {/* Controls Panel */}
         <div className="controls-panel">
-          {/* Load Section */}
-          <div className="control-section">
-            <h3>Load Image</h3>
+          {/* Data Source Selection */}
+          <CollapsibleSection title="Data Source">
             <div className="control-group">
-              <label>COG URL</label>
-              <input
-                type="text"
-                value={cogUrl}
-                onChange={(e) => setCogUrl(e.target.value)}
-                placeholder="https://bucket.s3.amazonaws.com/image.tif"
-              />
-            </div>
-            <button onClick={handleLoadCOG} disabled={loading}>
-              {loading ? 'Loading...' : 'Load COG'}
-            </button>
-          </div>
-
-          {/* Display Settings */}
-          <div className="control-section">
-            <h3>Display</h3>
-            
-            <div className="control-group">
-              <label>Colormap</label>
-              <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
-                <option value="grayscale">Grayscale</option>
-                <option value="viridis">Viridis</option>
-                <option value="inferno">Inferno</option>
-                <option value="plasma">Plasma</option>
-                <option value="phase">Phase</option>
+              <label>File Type</label>
+              <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
+                <option value="cog">Cloud Optimized GeoTIFF (URL)</option>
+                <option value="nisar">NISAR GCOV HDF5 (Local File)</option>
               </select>
             </div>
+          </CollapsibleSection>
+
+          {/* COG URL Input */}
+          {fileType === 'cog' && (
+            <CollapsibleSection title="Load COG">
+              <div className="control-group">
+                <label>COG URL</label>
+                <input
+                  type="text"
+                  value={cogUrl}
+                  onChange={(e) => setCogUrl(e.target.value)}
+                  placeholder="https://bucket.s3.amazonaws.com/image.tif"
+                />
+              </div>
+              <button onClick={handleLoadCOG} disabled={loading}>
+                {loading ? 'Loading...' : 'Load COG'}
+              </button>
+            </CollapsibleSection>
+          )}
+
+          {/* NISAR HDF5 Input */}
+          {fileType === 'nisar' && (
+            <CollapsibleSection title="Load NISAR GCOV">
+              <div className="control-group">
+                <label>HDF5 File</label>
+                <input
+                  type="file"
+                  accept=".h5,.hdf5,.he5"
+                  id="nisar-file-input"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      handleNISARFileSelect(file);
+                    }
+                  }}
+                />
+                <button
+                  className="btn-secondary"
+                  onClick={() => document.getElementById('nisar-file-input').click()}
+                  style={{ width: '100%' }}
+                >
+                  {nisarFile ? 'Change File...' : 'Choose File...'}
+                </button>
+              </div>
+
+              {nisarFile && (
+                <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
+                </div>
+              )}
+
+              {nisarDatasets.length > 0 && (
+                <>
+                  <div className="control-group">
+                    <label>Frequency</label>
+                    <select
+                      value={selectedFrequency}
+                      onChange={(e) => {
+                        setSelectedFrequency(e.target.value);
+                        // Update polarization to first available for this frequency
+                        const freqDatasets = nisarDatasets.filter(d => d.frequency === e.target.value);
+                        if (freqDatasets.length > 0) {
+                          setSelectedPolarization(freqDatasets[0].polarization);
+                        }
+                      }}
+                    >
+                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
+                        <option key={f} value={f}>Frequency {f}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="control-group">
+                    <label>Polarization</label>
+                    <select
+                      value={selectedPolarization}
+                      onChange={(e) => setSelectedPolarization(e.target.value)}
+                    >
+                      {nisarDatasets
+                        .filter(d => d.frequency === selectedFrequency)
+                        .map(d => (
+                          <option key={d.polarization} value={d.polarization}>
+                            {d.polarization}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  {/* Display Mode */}
+                  <div className="control-group">
+                    <label>Display Mode</label>
+                    <select
+                      value={displayMode}
+                      onChange={(e) => setDisplayMode(e.target.value)}
+                    >
+                      <option value="single">Single Band</option>
+                      <option value="rgb" disabled={availableComposites.length === 0}>
+                        RGB Composite
+                      </option>
+                    </select>
+                  </div>
+
+                  {/* Composite preset selector (only in RGB mode) */}
+                  {displayMode === 'rgb' && availableComposites.length > 0 && (
+                    <div className="control-group">
+                      <label>Composite</label>
+                      <select
+                        value={compositeId || ''}
+                        onChange={(e) => setCompositeId(e.target.value)}
+                      >
+                        {availableComposites.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
+                      </div>
+                    </div>
+                  )}
+
+                  <button onClick={handleLoadNISAR} disabled={loading}>
+                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
+                  </button>
+                </>
+              )}
+            </CollapsibleSection>
+          )}
+
+          {/* Current Session Status */}
+          {imageData && (
+            <div style={{
+              background: 'var(--sardine-bg-raised)',
+              border: '1px solid var(--sardine-border)',
+              borderRadius: 'var(--radius-md)',
+              padding: 'var(--space-md)',
+              marginBottom: 'var(--space-md)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 'var(--space-md)',
+            }}>
+              <div style={{
+                width: '8px',
+                height: '8px',
+                borderRadius: '50%',
+                background: loading ? 'var(--sardine-cyan)' : 'var(--status-success)',
+                boxShadow: loading ? '0 0 6px var(--sardine-cyan)' : '0 0 6px var(--sardine-green-glow)',
+                animation: loading ? 'pulse 2s infinite' : 'none',
+                flexShrink: 0,
+              }} />
+              <div style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                letterSpacing: '1px',
+                textTransform: 'uppercase',
+                color: 'var(--text-secondary)',
+                flex: 1,
+              }}>
+                {loading ? 'Processing' : 'Data Loaded'}
+              </div>
+              <button
+                onClick={handleReload}
+                disabled={loading}
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.7rem',
+                  color: 'var(--sardine-cyan)',
+                  background: 'var(--sardine-cyan-bg)',
+                  border: '1px solid var(--sardine-cyan-dim)',
+                  padding: '4px 12px',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  transition: 'all var(--transition-fast)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  opacity: loading ? 0.5 : 1,
+                }}
+                onMouseEnter={(e) => {
+                  if (!loading) {
+                    e.target.style.background = 'var(--sardine-cyan)';
+                    e.target.style.color = 'var(--sardine-bg)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!loading) {
+                    e.target.style.background = 'var(--sardine-cyan-bg)';
+                    e.target.style.color = 'var(--sardine-cyan)';
+                  }
+                }}
+              >
+                {loading ? '⟳ Reloading...' : '⟳ Reload'}
+              </button>
+            </div>
+          )}
+
+          {/* Overture Maps Overlay */}
+          <CollapsibleSection title="Overture Maps" defaultOpen={false}>
+            <div className="control-group">
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="overtureEnabled"
+                  checked={overtureEnabled}
+                  onChange={(e) => {
+                    setOvertureEnabled(e.target.checked);
+                    if (!e.target.checked) setOvertureData(null);
+                    addStatusLog('info', e.target.checked
+                      ? 'Overture Maps overlay enabled'
+                      : 'Overture Maps overlay disabled');
+                  }}
+                />
+                <label htmlFor="overtureEnabled">
+                  Enable Overlay
+                  {overtureLoading && <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>⟳</span>}
+                </label>
+              </div>
+            </div>
+
+            {overtureEnabled && (
+              <>
+                <div className="control-group">
+                  <label>Themes</label>
+                  {Object.entries(OVERTURE_THEMES).map(([key, theme]) => (
+                    <div className="control-row" key={key}>
+                      <input
+                        type="checkbox"
+                        id={`overture-${key}`}
+                        checked={overtureThemes.includes(key)}
+                        onChange={(e) => {
+                          setOvertureThemes(prev =>
+                            e.target.checked
+                              ? [...prev, key]
+                              : prev.filter(t => t !== key)
+                          );
+                        }}
+                      />
+                      <label htmlFor={`overture-${key}`}>
+                        <span style={{
+                          display: 'inline-block',
+                          width: '10px',
+                          height: '10px',
+                          borderRadius: '2px',
+                          backgroundColor: `rgba(${theme.color.join(',')})`,
+                          marginRight: '6px',
+                          verticalAlign: 'middle',
+                        }} />
+                        {theme.label}
+                      </label>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="control-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <label>Opacity</label>
+                    <span className="value-display">{(overtureOpacity * 100).toFixed(0)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={overtureOpacity}
+                    onChange={(e) => setOvertureOpacity(Number(e.target.value))}
+                  />
+                </div>
+
+                {overtureData && (
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    {Object.entries(overtureData).map(([key, fc]) => (
+                      <div key={key}>{OVERTURE_THEMES[key]?.label}: {fc.features?.length || 0} features</div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </CollapsibleSection>
+
+          {/* Display Settings */}
+          <CollapsibleSection title="Display">
+            
+            {/* Colormap selector — hidden in RGB composite mode */}
+            {displayMode !== 'rgb' && (
+              <div className="control-group">
+                <label>Colormap</label>
+                <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
+                  <option value="grayscale">Grayscale</option>
+                  <option value="viridis">Viridis</option>
+                  <option value="inferno">Inferno</option>
+                  <option value="plasma">Plasma</option>
+                  <option value="phase">Phase</option>
+                </select>
+              </div>
+            )}
 
             <div className="control-group">
               <div className="control-row">
@@ -369,44 +1529,234 @@ function App() {
                 <label htmlFor="useDb">dB Scaling</label>
               </div>
             </div>
-          </div>
-
-          {/* Contrast Settings */}
-          <div className="control-section">
-            <h3>Contrast</h3>
-            
-            <div className="control-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <label>Min</label>
-                <span className="value-display">
-                  {contrastMin}{useDecibels ? ' dB' : ''}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={useDecibels ? -50 : 0}
-                max={useDecibels ? 0 : 100}
-                value={contrastMin}
-                onChange={(e) => setContrastMin(Number(e.target.value))}
-              />
-            </div>
 
             <div className="control-group">
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <label>Max</label>
-                <span className="value-display">
-                  {contrastMax}{useDecibels ? ' dB' : ''}
-                </span>
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="showGrid"
+                  checked={showGrid}
+                  onChange={(e) => setShowGrid(e.target.checked)}
+                />
+                <label htmlFor="showGrid">Coordinate Grid</label>
               </div>
-              <input
-                type="range"
-                min={useDecibels ? -50 : 0}
-                max={useDecibels ? 10 : 200}
-                value={contrastMax}
-                onChange={(e) => setContrastMax(Number(e.target.value))}
-              />
             </div>
-          </div>
+
+            {/* Export settings */}
+            {imageData && imageData.getExportStripe && (
+              <div className="control-group" style={{ marginTop: '8px' }}>
+                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+                  Multilook Window (Export)
+                </label>
+                <div style={{ display: 'flex', gap: '4px', marginBottom: '4px' }}>
+                  {[1, 2, 4, 8, 16].map(size => (
+                    <button
+                      key={size}
+                      className={exportMultilookWindow === size ? '' : 'btn-secondary'}
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      onClick={() => setExportMultilookWindow(size)}
+                      title={size === 1 ? 'No multilook (full resolution)' : `${size}×${size} averaging window`}
+                    >
+                      {size === 1 ? 'None' : `${size}×${size}`}
+                    </button>
+                  ))}
+                </div>
+                {imageData.pixelSpacing && (
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    Source: {imageData.pixelSpacing.x?.toFixed(1)}m × {imageData.pixelSpacing.y?.toFixed(1)}m posting
+                    {exportMultilookWindow > 1 && ` → ${(imageData.pixelSpacing.x * exportMultilookWindow).toFixed(1)}m export`}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Export mode toggle */}
+            {imageData && imageData.getExportStripe && (
+              <div className="control-group" style={{ marginTop: '8px' }}>
+                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+                  Export Data
+                </label>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {[
+                    { id: 'raw', label: 'Raw', desc: 'Float32 linear power — for analysis (QGIS, Python)' },
+                    { id: 'rendered', label: 'Displayed', desc: 'RGBA with current dB/contrast/colormap — as seen on screen' },
+                  ].map(mode => (
+                    <button
+                      key={mode.id}
+                      className={exportMode === mode.id ? '' : 'btn-secondary'}
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      onClick={() => setExportMode(mode.id)}
+                      title={mode.desc}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {exportMode === 'raw'
+                    ? 'Float32 linear power values — suitable for analysis'
+                    : `RGBA with ${useDecibels ? 'dB' : 'linear'} stretch, ${colormap} colormap`}
+                </div>
+              </div>
+            )}
+
+            {/* Export buttons */}
+            {imageData && (
+              <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+                {imageData?.getExportStripe && (
+                  <button
+                    onClick={handleExportGeoTIFF}
+                    disabled={exporting}
+                    style={{ flex: 1 }}
+                  >
+                    {exporting ? 'Exporting...' : exportMode === 'raw' ? 'Export GeoTIFF (Float32)' : 'Export GeoTIFF (Rendered)'}
+                  </button>
+                )}
+                <button
+                  onClick={handleSaveFigure}
+                  style={{ flex: 1 }}
+                >
+                  Save Figure (PNG)
+                </button>
+              </div>
+            )}
+            {displayMode === 'rgb' && compositeId && (
+              <div style={{ marginTop: '6px' }}>
+                <button
+                  onClick={handleExportColorbar}
+                  className="btn-secondary"
+                  style={{ width: '100%', fontSize: '0.7rem', padding: '4px 8px' }}
+                >
+                  Export Colorbar (PNG)
+                </button>
+              </div>
+            )}
+          </CollapsibleSection>
+
+          {/* Histogram & Contrast */}
+          <CollapsibleSection title="Contrast">
+            {/* Histogram scope toggle */}
+            {histogramData && (
+              <div className="control-group" style={{ marginBottom: '6px' }}>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {['global', 'viewport'].map(scope => (
+                    <button
+                      key={scope}
+                      className={histogramScope === scope ? '' : 'btn-secondary'}
+                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      onClick={() => setHistogramScope(scope)}
+                    >
+                      {scope === 'global' ? 'Global' : 'Viewport'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* RGB per-channel histograms */}
+            {displayMode === 'rgb' && histogramData && (
+              <HistogramPanel
+                histograms={histogramData}
+                mode="rgb"
+                contrastLimits={rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }}
+                useDecibels={useDecibels}
+                onContrastChange={setRgbContrastLimits}
+                onAutoStretch={handleAutoStretch}
+                showHeader={false}
+              />
+            )}
+
+            {/* Single-band histogram */}
+            {displayMode !== 'rgb' && histogramData?.single && (
+              <HistogramPanel
+                histograms={histogramData}
+                mode="single"
+                contrastLimits={contrastLimits}
+                useDecibels={useDecibels}
+                onContrastChange={([min, max]) => {
+                  setContrastMin(Math.round(min));
+                  setContrastMax(Math.round(max));
+                }}
+                onAutoStretch={handleAutoStretch}
+                showHeader={false}
+              />
+            )}
+
+            {/* Brightness (Window/Level) slider — shifts window center */}
+            {displayMode !== 'rgb' && (
+              <div className="control-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <label>Brightness</label>
+                  <span className="value-display">
+                    {Math.round((contrastMin + contrastMax) / 2)}{useDecibels ? ' dB' : ''}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={useDecibels ? -50 : 0}
+                  max={useDecibels ? 10 : 200}
+                  step={1}
+                  value={Math.round((contrastMin + contrastMax) / 2)}
+                  onChange={(e) => {
+                    const newCenter = Number(e.target.value);
+                    const halfWidth = (contrastMax - contrastMin) / 2;
+                    setContrastMin(Math.round(newCenter - halfWidth));
+                    setContrastMax(Math.round(newCenter + halfWidth));
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Stretch mode + Gamma */}
+            <div className="control-group">
+              <label>Stretch</label>
+              <select value={stretchMode} onChange={(e) => setStretchMode(e.target.value)}>
+                {Object.entries(STRETCH_MODES).map(([id, mode]) => (
+                  <option key={id} value={id}>{mode.name}</option>
+                ))}
+              </select>
+            </div>
+
+            {(stretchMode === 'gamma' || stretchMode === 'sigmoid') && (
+              <div className="control-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <label>Gamma</label>
+                  <span className="value-display">{gamma.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.1}
+                  max={5.0}
+                  step={0.05}
+                  value={gamma}
+                  onChange={(e) => setGamma(Number(e.target.value))}
+                />
+              </div>
+            )}
+
+            {/* Multi-look toggle */}
+            <div className="control-group">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <input
+                  type="checkbox"
+                  id="multiLook"
+                  checked={multiLook}
+                  onChange={(e) => {
+                    setMultiLook(e.target.checked);
+                    addStatusLog('info', e.target.checked
+                      ? 'Multi-look enabled — area-averaged resampling (slower, less speckle)'
+                      : 'Multi-look disabled — nearest-neighbour preview (fast)');
+                  }}
+                />
+                <label htmlFor="multiLook" style={{ margin: 0 }}>
+                  Multi-look
+                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    {multiLook ? '(area avg)' : '(fast preview)'}
+                  </span>
+                </label>
+              </div>
+            </div>
+          </CollapsibleSection>
         </div>
 
         {/* Viewer Container */}
@@ -417,48 +1767,35 @@ function App() {
 
           {!loading && !error && !imageData && (
             <div className="loading">
-              Enter a Cloud Optimized GeoTIFF URL and click Load to begin
+              {fileType === 'cog'
+                ? 'Enter a Cloud Optimized GeoTIFF URL and click Load to begin'
+                : 'Select a NISAR GCOV HDF5 file to begin'}
             </div>
           )}
 
           {imageData && (
             <SARViewer
+              ref={viewerRef}
               cogUrl={imageData.cogUrl}
               getTile={imageData.getTile}
               imageData={imageData.data ? imageData : null}
               bounds={imageData.bounds}
-              contrastLimits={contrastLimits}
+              contrastLimits={effectiveContrastLimits}
               useDecibels={useDecibels}
               colormap={colormap}
+              gamma={gamma}
+              stretchMode={stretchMode}
+              compositeId={displayMode === 'rgb' ? compositeId : null}
+              multiLook={multiLook}
+              showGrid={showGrid}
               opacity={1}
               width="100%"
               height="100%"
               onViewStateChange={handleViewStateChange}
               initialViewState={initialViewState}
+              extraLayers={overtureLayers}
             />
           )}
-        </div>
-
-        {/* State Panel (Phase 2) */}
-        <div className="state-panel">
-          <div className="state-panel-header">
-            <h3>State (Markdown)</h3>
-            <span className="badge">{isMarkdownEdited ? 'Edited' : 'Live'}</span>
-          </div>
-          <div className="state-content">
-            <textarea
-              className="state-textarea"
-              value={markdownState}
-              onChange={handleMarkdownChange}
-              placeholder="State will appear here..."
-              spellCheck={false}
-            />
-            {isMarkdownEdited && (
-              <button className="apply-button" onClick={handleApplyMarkdown}>
-                Apply Changes
-              </button>
-            )}
-          </div>
         </div>
       </div>
 
@@ -468,11 +1805,39 @@ function App() {
         isCollapsed={statusCollapsed}
         onToggle={() => setStatusCollapsed(!statusCollapsed)}
       />
+
+      {/* Footer */}
+      <footer style={{
+        position: 'fixed',
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: '24px',
+        background: 'var(--sardine-bg, #0a1628)',
+        borderTop: '1px solid rgba(78, 201, 212, 0.15)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '0 12px',
+        fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+        fontSize: '0.6rem',
+        color: 'var(--text-muted, #5a7099)',
+        zIndex: 1000,
+        letterSpacing: '0.03em',
+      }}>
+        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>SARdine</a> v1.0 · MIT</span>
+        <span>steinerlab - ccny</span>
+        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6 }}>
+          deck.gl {multiLook ? '· multi-look' : '· nearest-neighbour'}
+        </span>
+      </footer>
     </div>
   );
 }
 
-// Mount the app
+// Mount the app (guard against Vite HMR re-execution)
 const container = document.getElementById('app');
-const root = createRoot(container);
-root.render(<App />);
+if (!container._reactRoot) {
+  container._reactRoot = createRoot(container);
+}
+container._reactRoot.render(<App />);

@@ -15,13 +15,13 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: '#1e1e1e',
-    borderTop: '2px solid #444',
+    backgroundColor: 'var(--sardine-bg-raised, #0f1f38)',
+    borderTop: '1px solid var(--sardine-border, #1e3a5f)',
     zIndex: 1000,
     transition: 'all 0.3s ease',
     maxHeight: isCollapsed ? '32px' : '300px',
     overflow: 'hidden',
-    fontFamily: 'monospace',
+    fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
     fontSize: '12px',
   };
 
@@ -30,20 +30,22 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '8px 12px',
-    backgroundColor: '#252525',
+    backgroundColor: 'var(--sardine-bg-panel, #122240)',
     cursor: 'pointer',
     userSelect: 'none',
-    borderBottom: isCollapsed ? 'none' : '1px solid #444',
+    borderBottom: isCollapsed ? 'none' : '1px solid var(--sardine-border-subtle, #162d4a)',
   };
 
   const titleStyle = {
-    color: '#ddd',
-    fontWeight: 'bold',
-    fontSize: '13px',
+    color: 'var(--text-primary, #e8edf5)',
+    fontWeight: '600',
+    fontSize: '0.75rem',
+    letterSpacing: '1px',
+    textTransform: 'uppercase',
   };
 
   const toggleButtonStyle = {
-    color: '#888',
+    color: 'var(--text-muted, #5a7099)',
     fontSize: '14px',
     fontWeight: 'bold',
   };
@@ -52,19 +54,19 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
     padding: '8px 12px',
     maxHeight: '268px',
     overflowY: 'auto',
-    color: '#ddd',
+    color: 'var(--text-secondary, #8fa4c4)',
   };
 
   const logEntryStyle = (type) => ({
     padding: '4px 8px',
     marginBottom: '4px',
     borderLeft: `3px solid ${getLogColor(type)}`,
-    backgroundColor: '#2a2a2a',
+    backgroundColor: 'var(--sardine-bg, #0a1628)',
     borderRadius: '2px',
   });
 
   const timestampStyle = {
-    color: '#666',
+    color: 'var(--text-disabled, #3a5070)',
     marginRight: '8px',
   };
 
@@ -75,15 +77,15 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   function getLogColor(type) {
     switch (type) {
       case 'error':
-        return '#f44336';
+        return 'var(--status-flood, #ff5c5c)';
       case 'warning':
-        return '#ff9800';
+        return 'var(--sardine-orange, #e8833a)';
       case 'success':
-        return '#4caf50';
+        return 'var(--status-success, #3ddc84)';
       case 'info':
-        return '#2196f3';
+        return 'var(--sardine-cyan, #4ec9d4)';
       default:
-        return '#999';
+        return 'var(--text-muted, #5a7099)';
     }
   }
 
@@ -93,7 +95,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
         <div style={titleStyle}>
           Status Window
           {logs.length > 0 && !isCollapsed && (
-            <span style={{ marginLeft: '8px', color: '#666' }}>
+            <span style={{ marginLeft: '8px', color: 'var(--text-disabled, #3a5070)' }}>
               ({logs.length} {logs.length === 1 ? 'entry' : 'entries'})
             </span>
           )}
@@ -106,7 +108,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
       {!isCollapsed && (
         <div style={contentStyle}>
           {logs.length === 0 ? (
-            <div style={{ color: '#666', fontStyle: 'italic' }}>
+            <div style={{ color: 'var(--text-disabled, #3a5070)', fontStyle: 'italic' }}>
               No status messages yet...
             </div>
           ) : (
@@ -115,7 +117,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
                 <span style={timestampStyle}>{log.timestamp}</span>
                 <span style={messageStyle(log.type)}>{log.message}</span>
                 {log.details && (
-                  <div style={{ marginTop: '4px', color: '#888', fontSize: '11px', paddingLeft: '80px' }}>
+                  <div style={{ marginTop: '4px', color: 'var(--text-muted, #5a7099)', fontSize: '11px', paddingLeft: '80px' }}>
                     {log.details}
                   </div>
                 )}

@@ -63,30 +63,30 @@ export function ScaleBar({ viewState, bounds }) {
         zIndex: 10000,
         pointerEvents: 'none',
         padding: '8px',
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
-        borderRadius: '4px',
+        backgroundColor: 'var(--sardine-bg-raised, #0f1f38)',
+        border: '1px solid var(--sardine-border, #1e3a5f)',
+        borderRadius: 'var(--radius-sm, 4px)',
       }}
     >
       {/* Scale bar */}
       <div
         style={{
           width: `${scaleInfo.pixels}px`,
-          height: '5px',
-          backgroundColor: 'white',
-          border: '2px solid black',
-          boxShadow: '0 0 6px rgba(0,0,0,0.8)',
+          height: '4px',
+          backgroundColor: 'var(--sardine-cyan, #4ec9d4)',
+          borderRadius: '2px',
           marginBottom: '4px',
         }}
       />
       {/* Label */}
       <div
         style={{
-          fontSize: '13px',
-          fontFamily: 'monospace',
-          color: 'white',
-          fontWeight: 'bold',
+          fontSize: '0.7rem',
+          fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+          color: 'var(--text-secondary, #8fa4c4)',
+          fontWeight: '500',
           textAlign: 'center',
-          textShadow: '1px 1px 3px black, -1px -1px 3px black',
+          letterSpacing: '0.5px',
         }}
       >
         {scaleInfo.label}

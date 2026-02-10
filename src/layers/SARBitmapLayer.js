@@ -1,5 +1,6 @@
 import { BitmapLayer } from '@deck.gl/layers';
 import { getColormap } from '../utils/colormap.js';
+import { applyStretch } from '../utils/stretch.js';
 
 /**
  * SARBitmapLayer - A deck.gl BitmapLayer for full SAR images
@@ -30,12 +31,14 @@ export class SARBitmapLayer extends BitmapLayer {
       contrastLimits = [-25, 0],
       useDecibels = true,
       colormap = 'grayscale',
+      gamma = 1.0,
+      stretchMode = 'linear',
       opacity = 1,
       ...otherProps
     } = props;
 
     // Create RGBA texture from SAR data
-    const imageData = createSARTexture(data, width, height, contrastLimits, useDecibels, colormap);
+    const imageData = createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma, stretchMode);
 
     super({
       id: props.id || 'sar-bitmap-layer',
@@ -57,36 +60,34 @@ export class SARBitmapLayer extends BitmapLayer {
  * @param {string} colormap - Colormap name
  * @returns {ImageData} RGBA image data for texture
  */
-function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap) {
+function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear') {
   const [min, max] = contrastLimits;
   const colormapFunc = getColormap(colormap);
   const rgba = new Uint8ClampedArray(width * height * 4);
+  const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
 
   for (let i = 0; i < data.length; i++) {
     const amplitude = data[i];
     let value;
 
     if (useDecibels) {
-      // Convert to decibels: dB = 10 * log10(amplitude)
       const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
       value = (db - min) / (max - min);
     } else {
-      // Linear scaling
       value = (amplitude - min) / (max - min);
     }
 
     value = Math.max(0, Math.min(1, value));
+    if (needsStretch) value = applyStretch(value, stretchMode, gamma);
 
     const [r, g, b] = colormapFunc(value);
     const idx = i * 4;
     rgba[idx] = r;
     rgba[idx + 1] = g;
     rgba[idx + 2] = b;
-    // Handle no-data (typically 0 or NaN)
     rgba[idx + 3] = amplitude === 0 || isNaN(amplitude) ? 0 : 255;
   }
 
-  // Create an ImageData object
   return new ImageData(rgba, width, height);
 }
 
