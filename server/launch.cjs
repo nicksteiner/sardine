@@ -307,8 +307,20 @@ function main() {
     process.exit(1);
   }
 
+  var loggedProxyUrl = false;
+
   var server = http.createServer(function (req, res) {
     var reqUrl = req.url;
+
+    // On first request, log the public proxy URL from the Host header
+    if (!loggedProxyUrl && proxyPath && req.headers.host) {
+      loggedProxyUrl = true;
+      var proto = req.headers['x-forwarded-proto'] || 'https';
+      var pubHost = req.headers['x-forwarded-host'] || req.headers.host;
+      var fullUrl = proto + '://' + pubHost + proxyPath;
+      console.log('  Public URL: ' + fullUrl);
+      console.log('');
+    }
 
     // CORS preflight
     if (req.method === 'OPTIONS') {
@@ -344,15 +356,13 @@ function main() {
   var displayHost = opts.host === '0.0.0.0' ? 'localhost' : opts.host;
   var localUrl = 'http://' + displayHost + ':' + opts.port;
 
-  // Detect JupyterHub environment for useful proxy URL
+  // Detect JupyterHub environment for proxy path
   var jupyterUser = process.env.JUPYTERHUB_USER;
   var jupyterBase = process.env.JUPYTERHUB_BASE_URL || '';
-  var jupyterHost = process.env.JUPYTERHUB_HOST || process.env.JUPYTERHUB_URL || '';
-  var proxyUrl = null;
+  var proxyPath = null;
   if (jupyterUser) {
-    // JupyterHub proxy URL: {host}{base}user/{user}/proxy/{port}/
     var base = jupyterBase.replace(/\/+$/, '');
-    proxyUrl = jupyterHost + base + '/user/' + jupyterUser + '/proxy/' + opts.port + '/';
+    proxyPath = base + '/user/' + jupyterUser + '/proxy/' + opts.port + '/';
   }
 
   server.listen(opts.port, opts.host, function () {
@@ -360,8 +370,8 @@ function main() {
     console.log('  SARdine server running');
     console.log('  ─────────────────────────────────────────');
     console.log('  Local:     ' + localUrl);
-    if (proxyUrl) {
-      console.log('  Proxy:     ' + proxyUrl);
+    if (proxyPath) {
+      console.log('  Proxy:     *' + proxyPath);
     }
     console.log('  Data dir:  ' + opts.dataDir);
     console.log('');
@@ -370,8 +380,8 @@ function main() {
     console.log('    /api/files     directory listing API');
     console.log('    /data/<path>   file serving (Range OK)');
     console.log('');
-    if (proxyUrl) {
-      console.log('  Open in browser: ' + proxyUrl);
+    if (proxyPath) {
+      console.log('  Waiting for first request to detect public URL...');
     } else {
       console.log('  Open in browser: ' + localUrl);
     }
