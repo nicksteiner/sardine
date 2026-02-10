@@ -1,8 +1,8 @@
 {
   "name": "sardine",
-  "version": "1.0.0",
+  "version": "1.0.0-beta.1",
   "type": "module",
-  "description": "SARdine - Prompt-driven SAR imagery analysis tool built on deck.gl and geotiff.js",
+  "description": "SARdine - Browser-native SAR imagery viewer with GPU-accelerated rendering",
   "main": "src/index.js",
   "module": "src/index.js",
   "scripts": {
