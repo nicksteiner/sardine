@@ -77,16 +77,16 @@ vec3 inferno(float t) {
   return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
 }
 
-// Plasma colormap lookup
+// Plasma colormap lookup (matplotlib canonical coefficients)
 vec3 plasma(float t) {
-  const vec3 c0 = vec3(0.0505, 0.0298, 0.5280);
-  const vec3 c1 = vec3(2.0206, 0.0000, 0.7067);
-  const vec3 c2 = vec3(-1.0313, 1.2882, 0.3985);
-  const vec3 c3 = vec3(-6.0884, -0.7839, -4.6899);
-  const vec3 c4 = vec3(7.1103, -2.6782, 6.5379);
-  const vec3 c5 = vec3(-2.7666, 3.0649, -3.5380);
-  const vec3 c6 = vec3(0.8027, -0.8948, 0.9565);
-  
+  const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
+  const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
+  const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
+  const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
+  const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
+  const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
+  const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
+
   t = clamp(t, 0.0, 1.0);
   return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
 }
@@ -279,6 +279,139 @@ export const STRETCH_MODE_IDS = {
 export function getStretchModeId(name) {
   return STRETCH_MODE_IDS[name] ?? STRETCH_MODE_IDS.linear;
 }
+
+/**
+ * Consolidated GLSL colormap functions (single source of truth)
+ * Use this in all layers to ensure consistent colormaps across the application.
+ */
+export const glslColormaps = `
+// Grayscale colormap
+vec3 grayscale(float t) {
+  t = clamp(t, 0.0, 1.0);
+  return vec3(t, t, t);
+}
+
+// Viridis colormap lookup
+vec3 viridis(float t) {
+  const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+  const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
+  const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
+  const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+  const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
+  const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+  const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+
+  t = clamp(t, 0.0, 1.0);
+  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+}
+
+// Inferno colormap lookup
+vec3 inferno(float t) {
+  const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
+  const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
+  const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
+  const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
+  const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
+  const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
+  const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
+
+  t = clamp(t, 0.0, 1.0);
+  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+}
+
+// Plasma colormap lookup (matplotlib canonical coefficients)
+vec3 plasma(float t) {
+  const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
+  const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
+  const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
+  const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
+  const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
+  const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
+  const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
+
+  t = clamp(t, 0.0, 1.0);
+  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+}
+
+// Phase colormap (cyclic, for interferometry)
+vec3 phaseColormap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  float angle = t * 6.28318530718; // 2 * PI
+  return vec3(
+    0.5 + 0.5 * cos(angle),
+    0.5 + 0.5 * cos(angle + 2.09439510239), // + 2*PI/3
+    0.5 + 0.5 * cos(angle + 4.18879020479)  // + 4*PI/3
+  );
+}
+
+// SARdine brand colormap — navy → teal → cyan → near-white
+vec3 sardineMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.33) {
+    float s = t / 0.33;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.165, 0.541, 0.576), s);
+  } else if (t < 0.67) {
+    float s = (t - 0.33) / 0.34;
+    c = mix(vec3(0.165, 0.541, 0.576), vec3(0.306, 0.788, 0.824), s);
+  } else {
+    float s = (t - 0.67) / 0.33;
+    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.910, 0.929, 0.961), s);
+  }
+  return c;
+}
+
+// Flood alert colormap — navy → deep orange → bright orange → red
+vec3 floodMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.33) {
+    float s = t / 0.33;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.710, 0.392, 0.165), s);
+  } else if (t < 0.67) {
+    float s = (t - 0.33) / 0.34;
+    c = mix(vec3(0.710, 0.392, 0.165), vec3(0.910, 0.514, 0.227), s);
+  } else {
+    float s = (t - 0.67) / 0.33;
+    c = mix(vec3(0.910, 0.514, 0.227), vec3(1.0, 0.361, 0.361), s);
+  }
+  return c;
+}
+
+// Diverging colormap — cyan → navy → orange (zero-centered)
+vec3 divergingMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.5) {
+    float s = t / 0.5;
+    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.039, 0.086, 0.157), s);
+  } else {
+    float s = (t - 0.5) / 0.5;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.910, 0.514, 0.227), s);
+  }
+  return c;
+}
+
+// Polarimetric colormap — for RGB decompositions
+vec3 polarimetricMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  vec3 c;
+  if (t < 0.25) {
+    float s = t / 0.25;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.306, 0.216, 0.529), s);
+  } else if (t < 0.5) {
+    float s = (t - 0.25) / 0.25;
+    c = mix(vec3(0.306, 0.216, 0.529), vec3(0.710, 0.392, 0.165), s);
+  } else if (t < 0.75) {
+    float s = (t - 0.5) / 0.25;
+    c = mix(vec3(0.710, 0.392, 0.165), vec3(0.910, 0.788, 0.227), s);
+  } else {
+    float s = (t - 0.75) / 0.25;
+    c = mix(vec3(0.910, 0.788, 0.227), vec3(0.961, 0.961, 0.961), s);
+  }
+  return c;
+}
+`;
 
 export default {
   sarVertexShader,

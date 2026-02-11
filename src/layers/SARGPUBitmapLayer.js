@@ -1,6 +1,6 @@
 import { BitmapLayer } from '@deck.gl/layers';
 import { Texture2D } from '@luma.gl/core';
-import { getColormapId, getStretchModeId } from './shaders.js';
+import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 import GL from '@luma.gl/constants';
 
 /**
@@ -33,108 +33,8 @@ export class SARGPUBitmapLayer extends BitmapLayer {
           uniform float uGamma;
           uniform float uStretchMode;
 
-          // Viridis colormap
-          vec3 viridis(float t) {
-            const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
-            const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
-            const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
-            const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
-            const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
-            const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
-            const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
-
-            t = clamp(t, 0.0, 1.0);
-            return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-          }
-
-          // Inferno colormap
-          vec3 inferno(float t) {
-            const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
-            const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
-            const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
-            const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
-            const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
-            const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
-            const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
-
-            t = clamp(t, 0.0, 1.0);
-            return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-          }
-
-          // Plasma colormap
-          vec3 plasma(float t) {
-            const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
-            const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
-            const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
-            const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
-            const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
-            const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
-            const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
-
-            t = clamp(t, 0.0, 1.0);
-            return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-          }
-
-          // Phase colormap (hue-based)
-          vec3 phaseColormap(float t) {
-            t = clamp(t, 0.0, 1.0);
-            float angle = t * 6.28318530718;
-            return vec3(
-              0.5 + 0.5 * cos(angle),
-              0.5 + 0.5 * cos(angle + 2.09439510239),
-              0.5 + 0.5 * cos(angle + 4.18879020479)
-            );
-          }
-
-          // Grayscale colormap
-          vec3 grayscale(float t) {
-            t = clamp(t, 0.0, 1.0);
-            return vec3(t, t, t);
-          }
-
-          // SARdine brand colormap: navy → teal → cyan → white
-          vec3 sardineMap(float t) {
-            t = clamp(t, 0.0, 1.0);
-            vec3 c0 = vec3(0.039, 0.086, 0.157);  // #0a1628
-            vec3 c1 = vec3(0.165, 0.541, 0.576);  // #2a8a93
-            vec3 c2 = vec3(0.306, 0.788, 0.831);  // #4ec9d4
-            vec3 c3 = vec3(0.910, 0.929, 0.961);  // #e8edf5
-            if (t < 0.333) return mix(c0, c1, t * 3.0);
-            if (t < 0.667) return mix(c1, c2, (t - 0.333) * 3.0);
-            return mix(c2, c3, (t - 0.667) * 3.0);
-          }
-
-          // Flood alert colormap: navy → orange → red
-          vec3 floodMap(float t) {
-            t = clamp(t, 0.0, 1.0);
-            vec3 c0 = vec3(0.039, 0.086, 0.157);  // #0a1628
-            vec3 c1 = vec3(0.710, 0.392, 0.165);  // #b5642a
-            vec3 c2 = vec3(0.910, 0.514, 0.227);  // #e8833a
-            vec3 c3 = vec3(1.000, 0.361, 0.361);  // #ff5c5c
-            if (t < 0.333) return mix(c0, c1, t * 3.0);
-            if (t < 0.667) return mix(c1, c2, (t - 0.333) * 3.0);
-            return mix(c2, c3, (t - 0.667) * 3.0);
-          }
-
-          // Diverging colormap: cyan → navy → orange
-          vec3 divergingMap(float t) {
-            t = clamp(t, 0.0, 1.0);
-            vec3 cCyan = vec3(0.306, 0.788, 0.831);  // #4ec9d4
-            vec3 cMid  = vec3(0.039, 0.086, 0.157);  // #0a1628
-            vec3 cWarm = vec3(0.910, 0.514, 0.227);  // #e8833a
-            if (t < 0.5) return mix(cCyan, cMid, t * 2.0);
-            return mix(cMid, cWarm, (t - 0.5) * 2.0);
-          }
-
-          // Polarimetric colormap: magenta → navy → green
-          vec3 polarimetricMap(float t) {
-            t = clamp(t, 0.0, 1.0);
-            vec3 cMag   = vec3(0.831, 0.361, 1.000);  // #d45cff
-            vec3 cMid   = vec3(0.039, 0.086, 0.157);  // #0a1628
-            vec3 cGreen = vec3(0.239, 0.863, 0.518);  // #3ddc84
-            if (t < 0.5) return mix(cMag, cMid, t * 2.0);
-            return mix(cMid, cGreen, (t - 0.5) * 2.0);
-          }
+          // Colormaps (imported from shaders.js - single source of truth)
+          ${glslColormaps}
         `,
         'fs:DECKGL_FILTER_COLOR': `
           // Read raw float amplitude from R channel

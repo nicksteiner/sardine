@@ -295,8 +295,9 @@ export async function sampleViewportStats(
   const stepX = regionWidth / gridSize;
   const stepY = regionHeight / gridSize;
   const allValues = [];
-  let done = 0;
 
+  // Build tile requests
+  const tileRequests = [];
   for (let ty = 0; ty < gridSize; ty++) {
     for (let tx = 0; tx < gridSize; tx++) {
       const left = originX + tx * stepX;
@@ -304,26 +305,32 @@ export async function sampleViewportStats(
       const worldBottom = imgH - (originY + (ty + 1) * stepY);
       const worldTop = imgH - (originY + ty * stepY);
 
-      try {
-        const tileData = await getTile({
+      tileRequests.push({
+        promise: getTile({
           x: tx, y: ty, z: 0,
           bbox: { left, top: worldBottom, right, bottom: worldTop },
-        });
-
-        if (tileData && tileData.data) {
-          // Subsample every 4th pixel within each tile for efficiency
-          for (let i = 0; i < tileData.data.length; i += 4) {
-            const v = tileData.data[i];
-            if (v > 0 && !isNaN(v)) allValues.push(v);
-          }
-        }
-      } catch (e) {
-        // Skip failed tiles
-      }
-
-      done++;
-      if (onProgress) onProgress(done, totalTiles);
+        }),
+        tx, ty,
+      });
     }
+  }
+
+  // Fetch all tiles in parallel
+  const results = await Promise.allSettled(tileRequests.map(r => r.promise));
+
+  // Process results and collect values
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled' && result.value && result.value.data) {
+      const tileData = result.value;
+      // Adaptive stride: use larger stride for big tiles
+      const stride = Math.max(4, Math.floor(tileData.data.length / 50000));
+      for (let j = 0; j < tileData.data.length; j += stride) {
+        const v = tileData.data[j];
+        if (v > 0 && !isNaN(v)) allValues.push(v);
+      }
+    }
+    if (onProgress) onProgress(i + 1, totalTiles);
   }
 
   if (allValues.length === 0) return null;

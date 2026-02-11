@@ -26,6 +26,7 @@ var http = require('http');
 var fs   = require('fs');
 var path = require('path');
 var url  = require('url');
+var crypto = require('crypto');
 
 var DIST_DIR = path.resolve(__dirname, '..', 'dist');
 
@@ -283,6 +284,164 @@ function handleStatic(urlPath, res) {
   });
 }
 
+// ─── S3 Presigning (server-side, credentials from env) ──────────────────
+/**
+ * Generate AWS S3 pre-signed URL using Signature Version 4.
+ * Credentials are read from environment variables (never sent to client).
+ *
+ * POST /api/presign
+ * Body: { bucket, key, region?, expires? }
+ * Returns: { url: "https://..." } or { error: "..." }
+ */
+function handlePresignRequest(req, res) {
+  // Only POST is allowed
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+    return;
+  }
+
+  // Read AWS credentials from environment
+  var accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  var secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  var sessionToken = process.env.AWS_SESSION_TOKEN;
+
+  if (!accessKeyId || !secretAccessKey) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Server-side AWS credentials not configured. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.'
+    }));
+    return;
+  }
+
+  // Parse request body
+  var body = '';
+  req.on('data', function(chunk) {
+    body += chunk.toString();
+    // Prevent DoS: limit body size to 10KB
+    if (body.length > 10000) {
+      req.connection.destroy();
+    }
+  });
+
+  req.on('end', function() {
+    try {
+      var params = JSON.parse(body);
+      var bucket = params.bucket;
+      var key = params.key;
+      var region = params.region || process.env.AWS_REGION || 'us-west-2';
+      var expires = params.expires || 3600; // 1 hour default
+
+      if (!bucket || !key) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required parameters: bucket, key' }));
+        return;
+      }
+
+      // Generate presigned URL
+      var presignedUrl = generatePresignedUrl({
+        bucket: bucket,
+        key: key,
+        region: region,
+        accessKeyId: accessKeyId,
+        secretAccessKey: secretAccessKey,
+        sessionToken: sessionToken,
+        expires: expires
+      });
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      });
+      res.end(JSON.stringify({ url: presignedUrl }));
+
+    } catch (e) {
+      console.error('Error generating presigned URL:', e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to generate presigned URL: ' + e.message }));
+    }
+  });
+}
+
+/**
+ * AWS Signature Version 4 signing implementation.
+ * Pure Node.js built-ins (crypto module), zero dependencies.
+ */
+function generatePresignedUrl(opts) {
+  var bucket = opts.bucket;
+  var key = opts.key;
+  var region = opts.region;
+  var accessKeyId = opts.accessKeyId;
+  var secretAccessKey = opts.secretAccessKey;
+  var sessionToken = opts.sessionToken;
+  var expires = opts.expires;
+  var method = opts.method || 'GET';
+
+  var service = 's3';
+  var host = bucket + '.s3.' + region + '.amazonaws.com';
+  var now = new Date();
+  var amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  var dateStamp = amzDate.slice(0, 8);
+  var credentialScope = dateStamp + '/' + region + '/' + service + '/aws4_request';
+  var credential = accessKeyId + '/' + credentialScope;
+
+  // Canonical URI: percent-encode each path segment
+  var canonicalUri = '/' + key.split('/').map(encodeURIComponent).join('/');
+
+  // Query parameters (sorted alphabetically)
+  var params = {
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': credential,
+    'X-Amz-Date': amzDate,
+    'X-Amz-Expires': String(expires),
+    'X-Amz-SignedHeaders': 'host'
+  };
+  if (sessionToken) {
+    params['X-Amz-Security-Token'] = sessionToken;
+  }
+
+  var sortedKeys = Object.keys(params).sort();
+  var canonicalQueryString = sortedKeys
+    .map(function(k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); })
+    .join('&');
+
+  // Canonical headers
+  var canonicalHeaders = 'host:' + host + '\n';
+  var signedHeaders = 'host';
+  var payloadHash = 'UNSIGNED-PAYLOAD';
+
+  // Canonical request
+  var canonicalRequest = [
+    method,
+    canonicalUri,
+    canonicalQueryString,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join('\n');
+
+  // String to sign
+  var canonicalRequestHash = crypto.createHash('sha256').update(canonicalRequest).digest('hex');
+  var stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    canonicalRequestHash
+  ].join('\n');
+
+  // Signing key derivation
+  var kDate = crypto.createHmac('sha256', 'AWS4' + secretAccessKey).update(dateStamp).digest();
+  var kRegion = crypto.createHmac('sha256', kDate).update(region).digest();
+  var kService = crypto.createHmac('sha256', kRegion).update(service).digest();
+  var signingKey = crypto.createHmac('sha256', kService).update('aws4_request').digest();
+
+  // Signature
+  var signature = crypto.createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+
+  // Build final URL
+  return 'https://' + host + canonicalUri + '?' + canonicalQueryString + '&X-Amz-Signature=' + signature;
+}
+
 // ─── Main server ─────────────────────────────────────────────────────────
 function main() {
   var opts = parseArgs();
@@ -326,8 +485,8 @@ function main() {
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-        'Access-Control-Allow-Headers': 'Range',
+        'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Range, Content-Type',
         'Access-Control-Max-Age': '86400',
       });
       res.end();
@@ -335,7 +494,9 @@ function main() {
     }
 
     try {
-      if (reqUrl.indexOf('/api/files') === 0) {
+      if (reqUrl.indexOf('/api/presign') === 0) {
+        handlePresignRequest(req, res);
+      } else if (reqUrl.indexOf('/api/files') === 0) {
         handleFileList(opts.dataDir, reqUrl, res);
       } else if (reqUrl.indexOf('/data/') === 0) {
         var dataPath = decodeURIComponent(reqUrl.slice('/data/'.length));

@@ -28,6 +28,7 @@
 
 import h5wasm from 'h5wasm';
 import { openH5ChunkFile, openH5ChunkUrl } from './h5chunk.js';
+import { loadMetadataCube } from '../utils/metadata-cube.js';
 
 // ─── NISAR GCOV Product Specification (JPL D-102274 Rev E) ──────────────
 // All paths below are derived from Tables 5-1 through 5-8 of the spec.
@@ -875,7 +876,7 @@ async function extractMetadata(h5file, frequency, band = 'LSAR') {
     yCoordsDataset = safeGet(h5file, `${paths.radarGrid}/yCoordinates`);
   }
 
-  let xCoords, yCoords;
+  let xCoords = null, yCoords = null;
   let width, height;
   let bounds;
 
@@ -1650,19 +1651,27 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   }));
 
   // Chunk-level cache: shared across tiles so zoomed views reuse data
+  // LRU cache: Map maintains insertion order, move accessed items to end
   const chunkCache = new Map();
   const MAX_CHUNK_CACHE = 500;
 
-  // Tile cache for rendered tiles
+  // Tile cache for rendered tiles (LRU with bounded size)
   const tileCache = new Map();
-  const MAX_TILE_CACHE = 200;
+  const MAX_TILE_CACHE = 200;  // ~200MB at 256x256 Float32 tiles
 
   /**
-   * Read a single chunk with caching
+   * Read a single chunk with caching (LRU)
    */
   async function getCachedChunk(chunkRow, chunkCol) {
     const key = `${chunkRow},${chunkCol}`;
-    if (chunkCache.has(key)) return chunkCache.get(key);
+
+    // LRU: If chunk exists, move it to end (most recently used)
+    if (chunkCache.has(key)) {
+      const chunk = chunkCache.get(key);
+      chunkCache.delete(key);
+      chunkCache.set(key, chunk);
+      return chunk;
+    }
 
     let chunk;
     try {
@@ -1673,10 +1682,10 @@ async function loadNISARGCOVStreaming(file, options = {}) {
       return null;
     }
     // Only cache successful reads (including null for sparse/missing chunks)
+    // LRU cache eviction: remove oldest entries (from beginning of Map)
     if (chunkCache.size >= MAX_CHUNK_CACHE) {
-      // Evict oldest entries
-      const keys = Array.from(chunkCache.keys()).slice(0, 100);
-      keys.forEach(k => chunkCache.delete(k));
+      const oldestKeys = Array.from(chunkCache.keys()).slice(0, 100);
+      oldestKeys.forEach(k => chunkCache.delete(k));
     }
     chunkCache.set(key, chunk);
     return chunk;
@@ -1690,7 +1699,14 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   async function getTile({ x, y, z, bbox, multiLook = false }) {
     const ml = multiLook ? 'ml' : 'nn';
     const tileKey = `${x},${y},${z},${ml}`;
-    if (tileCache.has(tileKey)) return tileCache.get(tileKey);
+
+    // LRU: If tile exists, move it to end (most recently used)
+    if (tileCache.has(tileKey)) {
+      const tile = tileCache.get(tileKey);
+      tileCache.delete(tileKey);
+      tileCache.set(tileKey, tile);
+      return tile;
+    }
 
     try {
       const tileSize = 256;
@@ -1792,10 +1808,10 @@ async function loadNISARGCOVStreaming(file, options = {}) {
 
       const tile = { data: tileData, width: tileSize, height: tileSize };
 
-      // Cache tile
+      // LRU cache eviction: remove oldest entries (from beginning of Map)
       if (tileCache.size >= MAX_TILE_CACHE) {
-        const keys = Array.from(tileCache.keys()).slice(0, 50);
-        keys.forEach(k => tileCache.delete(k));
+        const oldestKeys = Array.from(tileCache.keys()).slice(0, 50);
+        oldestKeys.forEach(k => tileCache.delete(k));
       }
       tileCache.set(tileKey, tile);
       return tile;
@@ -1872,6 +1888,18 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   // Read product identification metadata
   const identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
 
+  // Load metadata cube (incidence angle, slant range, elevation angle, etc.)
+  // This is optional - if not found, metadataCube will be null
+  let metadataCube = null;
+  try {
+    metadataCube = await loadMetadataCube(streamReader, band);
+    if (metadataCube) {
+      console.log(`[NISAR Loader] Metadata cube loaded: ${metadataCube.getFieldNames().join(', ')}`);
+    }
+  } catch (e) {
+    console.warn('[NISAR Loader] Could not load metadata cube:', e.message);
+  }
+
   const result = {
     getTile,
     getExportStripe,
@@ -1893,6 +1921,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
 
     /** Full-resolution northing coordinates (Float64Array, length = height). */
     yCoords,
+    metadataCube,  // NEW: Metadata cube for incidence angle, slant range, etc.
     _streaming: true,
     _h5chunk: streamReader,
   };
@@ -2266,6 +2295,17 @@ export async function loadNISARGCOV(file, options = {}) {
   // Read product identification metadata
   const identification = await readProductIdentification(h5file, paths, frequency, 'h5wasm');
 
+  // Load metadata cube (incidence angle, slant range, elevation angle, etc.)
+  let metadataCube = null;
+  try {
+    metadataCube = await loadMetadataCube(h5file, band);
+    if (metadataCube) {
+      console.log(`[NISAR Loader] Metadata cube loaded: ${metadataCube.getFieldNames().join(', ')}`);
+    }
+  } catch (e) {
+    console.warn('[NISAR Loader] Could not load metadata cube:', e.message);
+  }
+
   const result = {
     getTile,
     bounds,
@@ -2285,6 +2325,7 @@ export async function loadNISARGCOV(file, options = {}) {
 
     /** Full-resolution northing coordinates (Float64Array, length = height). */
     yCoords,
+    metadataCube,  // NEW: Metadata cube for incidence angle, slant range, etc.
     _fullLoaded: fullLoaded,
     _h5file: h5file,
   };
@@ -2679,9 +2720,13 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
     console.log(`[NISAR Tile] Request: tile(${x},${y},${z}), multiLook=${multiLook}, bbox=`, bbox ? `[${bbox.left?.toFixed(0)}, ${bbox.top?.toFixed(0)}, ${bbox.right?.toFixed(0)}, ${bbox.bottom?.toFixed(0)}]` : 'none');
 
+    // LRU: If tile exists, move it to end (most recently used)
     if (tileCache.has(tileKey)) {
       console.log(`[NISAR Tile] Cache hit: ${tileKey}`);
-      return tileCache.get(tileKey);
+      const tile = tileCache.get(tileKey);
+      tileCache.delete(tileKey);
+      tileCache.set(tileKey, tile);
+      return tile;
     }
 
     try {
@@ -2850,9 +2895,10 @@ export async function loadNISARRGBComposite(file, options = {}) {
         compositeId,
       };
 
+      // LRU cache eviction: remove oldest entries (from beginning of Map)
       if (tileCache.size >= MAX_TILE_CACHE) {
-        const keys = Array.from(tileCache.keys()).slice(0, 25);
-        keys.forEach(k => tileCache.delete(k));
+        const oldestKeys = Array.from(tileCache.keys()).slice(0, 25);
+        oldestKeys.forEach(k => tileCache.delete(k));
       }
       tileCache.set(tileKey, tile);
 

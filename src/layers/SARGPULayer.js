@@ -2,7 +2,7 @@ import { Layer, project32, picking, COORDINATE_SYSTEM } from '@deck.gl/core';
 import { Model, Geometry } from '@luma.gl/engine';
 import { Texture2D } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
-import { getColormapId, getStretchModeId } from './shaders.js';
+import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 
 /**
  * Simple vertex shader using deck.gl's project module
@@ -89,116 +89,8 @@ float processChannel(float amplitude, float cMin, float cMax) {
   return value;
 }
 
-// ─── Colormaps (single-band mode only) ───────────────────────────────
-
-vec3 viridis(float t) {
-  const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
-  const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
-  const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
-  const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
-  const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
-  const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
-  const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
-  t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-}
-
-vec3 inferno(float t) {
-  const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
-  const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
-  const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
-  const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
-  const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
-  const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
-  const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
-  t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-}
-
-vec3 plasma(float t) {
-  const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
-  const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
-  const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
-  const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
-  const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
-  const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
-  const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
-  t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
-}
-
-vec3 phaseColormap(float t) {
-  t = clamp(t, 0.0, 1.0);
-  float angle = t * 6.28318530718;
-  return vec3(
-    0.5 + 0.5 * cos(angle),
-    0.5 + 0.5 * cos(angle + 2.09439510239),
-    0.5 + 0.5 * cos(angle + 4.18879020479)
-  );
-}
-
-vec3 grayscale(float t) {
-  t = clamp(t, 0.0, 1.0);
-  return vec3(t, t, t);
-}
-
-vec3 sardineMap(float t) {
-  t = clamp(t, 0.0, 1.0);
-  vec3 c;
-  if (t < 0.33) {
-    float s = t / 0.33;
-    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.165, 0.541, 0.576), s);
-  } else if (t < 0.67) {
-    float s = (t - 0.33) / 0.34;
-    c = mix(vec3(0.165, 0.541, 0.576), vec3(0.306, 0.788, 0.824), s);
-  } else {
-    float s = (t - 0.67) / 0.33;
-    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.910, 0.929, 0.961), s);
-  }
-  return c;
-}
-
-vec3 floodMap(float t) {
-  t = clamp(t, 0.0, 1.0);
-  vec3 c;
-  if (t < 0.33) {
-    float s = t / 0.33;
-    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.710, 0.392, 0.165), s);
-  } else if (t < 0.67) {
-    float s = (t - 0.33) / 0.34;
-    c = mix(vec3(0.710, 0.392, 0.165), vec3(0.910, 0.514, 0.227), s);
-  } else {
-    float s = (t - 0.67) / 0.33;
-    c = mix(vec3(0.910, 0.514, 0.227), vec3(1.0, 0.361, 0.361), s);
-  }
-  return c;
-}
-
-vec3 divergingMap(float t) {
-  t = clamp(t, 0.0, 1.0);
-  vec3 c;
-  if (t < 0.5) {
-    float s = t / 0.5;
-    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.039, 0.086, 0.157), s);
-  } else {
-    float s = (t - 0.5) / 0.5;
-    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.910, 0.514, 0.227), s);
-  }
-  return c;
-}
-
-vec3 polarimetricMap(float t) {
-  t = clamp(t, 0.0, 1.0);
-  vec3 c;
-  if (t < 0.5) {
-    float s = t / 0.5;
-    c = mix(vec3(0.831, 0.361, 1.0), vec3(0.039, 0.086, 0.157), s);
-  } else {
-    float s = (t - 0.5) / 0.5;
-    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.239, 0.863, 0.518), s);
-  }
-  return c;
-}
+// ─── Colormaps (imported from shaders.js - single source of truth) ──
+${glslColormaps}
 
 // ─── Main ────────────────────────────────────────────────────────────
 
@@ -275,6 +167,34 @@ export class SARGPULayer extends Layer {
   initializeState() {
     // Initialize state - create geometry in updateState when we have bounds
     this.setState({ needsGeometryUpdate: true });
+
+    // Setup WebGL context loss/restore handlers
+    const { gl } = this.context;
+    if (gl && gl.canvas) {
+      // Store bound handlers so we can remove them in finalizeState
+      this.handleContextLost = (event) => {
+        event.preventDefault(); // Prevent default context loss behavior
+        console.warn('[SARGPULayer] WebGL context lost');
+        this.setState({ contextLost: true });
+      };
+
+      this.handleContextRestored = () => {
+        console.log('[SARGPULayer] WebGL context restored, recreating resources');
+        this.setState({
+          contextLost: false,
+          needsGeometryUpdate: true,
+          model: null,
+          texture: null,
+          textureG: null,
+          textureB: null
+        });
+        // Trigger re-render by setting needsUpdate
+        this.setNeedsUpdate();
+      };
+
+      gl.canvas.addEventListener('webglcontextlost', this.handleContextLost, false);
+      gl.canvas.addEventListener('webglcontextrestored', this.handleContextRestored, false);
+    }
   }
 
   // Override: we draw a static quad, not instanced rendering.
@@ -287,6 +207,12 @@ export class SARGPULayer extends Layer {
   updateState({ props, oldProps }) {
     const { gl } = this.context;
     const { data, width, height, bounds } = props;
+
+    // Skip updates if WebGL context is lost
+    if (this.state.contextLost) {
+      console.warn('[SARGPULayer] Skipping update while WebGL context is lost');
+      return;
+    }
 
     // Create model when bounds change (geometry needs world coordinates)
     if (this.state.needsGeometryUpdate || bounds !== oldProps.bounds) {
@@ -514,8 +440,20 @@ export class SARGPULayer extends Layer {
 
   finalizeState() {
     super.finalizeState();
-    if (this.state.model) this.state.model.delete();
+
+    // Remove WebGL context loss/restore event listeners
     const { gl } = this.context;
+    if (gl && gl.canvas) {
+      if (this.handleContextLost) {
+        gl.canvas.removeEventListener('webglcontextlost', this.handleContextLost, false);
+      }
+      if (this.handleContextRestored) {
+        gl.canvas.removeEventListener('webglcontextrestored', this.handleContextRestored, false);
+      }
+    }
+
+    // Clean up resources
+    if (this.state.model) this.state.model.delete();
     if (gl) {
       if (this.state.texture) gl.deleteTexture(this.state.texture);
       if (this.state.textureG) gl.deleteTexture(this.state.textureG);

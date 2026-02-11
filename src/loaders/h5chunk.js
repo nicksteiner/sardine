@@ -96,6 +96,10 @@ class BufferReader {
   readUint64() {
     const v = this.view.getBigUint64(this._off, this.le);
     this.pos += 8;
+    // Check for precision loss when converting BigInt to Number
+    if (v > Number.MAX_SAFE_INTEGER) {
+      console.warn(`[h5chunk] readUint64: value ${v} exceeds MAX_SAFE_INTEGER, precision may be lost`);
+    }
     return Number(v);
   }
 
@@ -941,8 +945,13 @@ function getFilterName(id) {
  */
 function parseBTreeV1(reader, address, superblock, rank, chunkSize) {
   const chunks = new Map();
+  const MAX_DEPTH = 100; // Prevent stack overflow from malicious/corrupted files
 
-  function parseNode(nodeAddress) {
+  function parseNode(nodeAddress, depth = 0) {
+    if (depth > MAX_DEPTH) {
+      throw new Error(`[h5chunk] B-tree depth exceeded ${MAX_DEPTH} — possible infinite recursion or corrupted file`);
+    }
+
     reader.seek(nodeAddress);
 
     const sig = reader.readBytes(4);
@@ -996,7 +1005,7 @@ function parseBTreeV1(reader, address, superblock, rank, chunkSize) {
         // Wrap individually so one out-of-range child doesn't lose
         // chunks that were already collected from other children.
         try {
-          parseNode(entry.childAddress);
+          parseNode(entry.childAddress, depth + 1);
         } catch (e) {
           console.warn(`[h5chunk] B-tree child at 0x${entry.childAddress.toString(16)} failed: ${e.message}`);
         }
@@ -1124,22 +1133,27 @@ export class H5Chunk {
     this.metadataBuffer = null;
     this.file = null;
     this.url = null;
+    this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
   }
 
   /**
    * Open a local HDF5 file
    * @param {File} file - Local file from input[type="file"]
-   * @param {number} metadataSize - Bytes to read for metadata (default 8MB)
+   * @param {number} metadataSize - Bytes to read for metadata (default 8MB for bulk, or auto for lazy)
    */
-  async openFile(file, metadataSize = 8 * 1024 * 1024) {
+  async openFile(file, metadataSize = null) {
     this.file = file;
 
     console.log(`[h5chunk] Opening file: ${file.name}`);
     console.log(`[h5chunk] File size: ${(file.size / 1e6).toFixed(1)} MB`);
-    console.log(`[h5chunk] Reading metadata: ${(metadataSize / 1e6).toFixed(1)} MB`);
+
+    // Lazy tree-walking: read only superblock + root group (~10 KB)
+    // Bulk mode: read full metadata page (8-32 MB)
+    const readSize = metadataSize || (this.lazyTreeWalking ? 10 * 1024 : 8 * 1024 * 1024);
+    console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
 
     // Read metadata portion
-    const slice = file.slice(0, Math.min(metadataSize, file.size));
+    const slice = file.slice(0, Math.min(readSize, file.size));
     this.metadataBuffer = await slice.arrayBuffer();
 
     await this._parseMetadata();
@@ -1148,18 +1162,22 @@ export class H5Chunk {
   /**
    * Open an HDF5 file from URL
    * @param {string} url - HTTP(S) URL supporting range requests
-   * @param {number} metadataSize - Bytes to read for metadata
+   * @param {number} metadataSize - Bytes to read for metadata (default auto-sized for lazy/bulk)
    */
-  async openUrl(url, metadataSize = 8 * 1024 * 1024) {
+  async openUrl(url, metadataSize = null) {
     this.url = url;
 
     console.log(`[h5chunk] Opening URL: ${url}`);
-    console.log(`[h5chunk] Reading metadata: ${(metadataSize / 1e6).toFixed(1)} MB`);
+
+    // Lazy tree-walking: read only superblock + root group (~10 KB)
+    // Bulk mode: read full metadata page (8-32 MB)
+    const readSize = metadataSize || (this.lazyTreeWalking ? 10 * 1024 : 8 * 1024 * 1024);
+    console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
 
     // Fetch metadata with range request
     const response = await fetch(url, {
       headers: {
-        'Range': `bytes=0-${metadataSize - 1}`,
+        'Range': `bytes=0-${readSize - 1}`,
       },
     });
 
@@ -1212,9 +1230,9 @@ export class H5Chunk {
    * Scan for NISAR datasets
    * Uses multiple strategies:
    * 1. Parse from root group address
-   * 2. Scan for v1 object headers (no signature, but known structure)
-   * 3. Scan for v2 object headers (OHDR signature)
-   * 4. Look for Data Layout messages that indicate chunked datasets
+   * 2. Scan for v1 object headers (no signature, but known structure) [disabled in lazy mode]
+   * 3. Scan for v2 object headers (OHDR signature) [disabled in lazy mode]
+   * 4. Look for Data Layout messages that indicate chunked datasets [disabled in lazy mode]
    */
   async _scanForDatasets(reader) {
 
@@ -1225,6 +1243,12 @@ export class H5Chunk {
       await this._parseObjectAtAddress(reader, this.superblock.rootGroupAddress, '/');
     } catch (e) {
       console.warn('[h5chunk] Failed to parse root group:', e.message);
+    }
+
+    // Skip signature scanning in lazy tree-walking mode (saves bandwidth + time)
+    if (this.lazyTreeWalking) {
+      console.log(`[h5chunk] Lazy mode: skipping signature scans, found ${this.datasets.size} datasets from root group`);
+      return;
     }
 
     // Strategy 2: Scan for OHDR signatures (v2 object headers)
@@ -1486,7 +1510,8 @@ export class H5Chunk {
       };
 
       // Parse chunk index if chunked and B-tree is within our metadata
-      if (layout && layout.type === 'chunked' && layout.btreeAddress) {
+      // In lazy mode, skip B-tree parsing (will be fetched on-demand)
+      if (layout && layout.type === 'chunked' && layout.btreeAddress && !this.lazyTreeWalking) {
         if (layout.btreeAddress < this.metadataBuffer.byteLength) {
           try {
             if (layout.version < 4) {
@@ -1943,8 +1968,8 @@ export class H5Chunk {
                 chunks: null,
               };
 
-              // Try to parse B-tree if within metadata
-              if (layout.btreeAddress && layout.btreeAddress < this.metadataBuffer.byteLength) {
+              // Try to parse B-tree if within metadata (skip in lazy mode)
+              if (layout.btreeAddress && layout.btreeAddress < this.metadataBuffer.byteLength && !this.lazyTreeWalking) {
                 try {
                   datasetInfo.chunks = parseBTreeV1(
                     reader,
@@ -2034,8 +2059,8 @@ export class H5Chunk {
           chunks: null,
         };
 
-        // Try to parse B-tree
-        if (layout && layout.type === 'chunked' && layout.btreeAddress) {
+        // Try to parse B-tree (skip in lazy mode)
+        if (layout && layout.type === 'chunked' && layout.btreeAddress && !this.lazyTreeWalking) {
           if (layout.btreeAddress < this.metadataBuffer.byteLength) {
             try {
               datasetInfo.chunks = parseBTreeV1(
@@ -2335,6 +2360,56 @@ export class H5Chunk {
   }
 
   /**
+   * Ensure chunk index is loaded for a dataset (lazy B-tree fetching)
+   * @param {string} datasetId - Dataset identifier
+   * @returns {Promise<void>}
+   */
+  async _ensureChunkIndex(datasetId) {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) {
+      throw new Error(`Dataset not found: ${datasetId}`);
+    }
+
+    // Already loaded or not chunked
+    if (dataset.chunks || !dataset.layout || dataset.layout.type !== 'chunked') {
+      return;
+    }
+
+    const layout = dataset.layout;
+    if (!layout.btreeAddress) {
+      console.warn(`[h5chunk] No B-tree address for dataset ${datasetId}`);
+      return;
+    }
+
+    console.log(`[h5chunk] Lazy-loading B-tree for ${dataset.path || datasetId} at 0x${layout.btreeAddress.toString(16)}`);
+
+    // Fetch B-tree region (typically 10-100 KB per dataset)
+    const btreeSize = 150 * 1024; // Conservative estimate: 150 KB
+    const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
+    const btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
+
+    // Parse B-tree to build chunk index
+    try {
+      if (layout.version < 4) {
+        const rank = dataset.shape?.length || 2;
+        dataset.chunks = parseBTreeV1(
+          btreeReader,
+          layout.btreeAddress,
+          this.superblock,
+          rank + 1,
+          layout.chunkDims
+        );
+        console.log(`[h5chunk] Loaded ${dataset.chunks.size} chunks for ${dataset.path || datasetId}`);
+      } else {
+        console.warn(`[h5chunk] B-tree v2 (version 4) not yet supported for lazy loading`);
+      }
+    } catch (e) {
+      console.warn(`[h5chunk] Failed to parse B-tree for ${datasetId}:`, e.message);
+      throw e;
+    }
+  }
+
+  /**
    * Read a chunk of data
    * @param {string} datasetId - Dataset identifier
    * @param {number} row - Chunk row index
@@ -2345,6 +2420,11 @@ export class H5Chunk {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) {
       throw new Error(`Dataset not found: ${datasetId}`);
+    }
+
+    // Lazy-load chunk index if not yet loaded
+    if (this.lazyTreeWalking && !dataset.chunks) {
+      await this._ensureChunkIndex(datasetId);
     }
 
     if (!dataset.chunks) {
