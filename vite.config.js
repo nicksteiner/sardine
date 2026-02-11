@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  base: '/',   // Absolute paths for JupyterHub proxy
+  base: './',   // Relative paths for JupyterHub proxy
   root: 'app',
   resolve: {
     alias: {
