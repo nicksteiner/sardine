@@ -14,6 +14,7 @@ export default defineConfig({
     host: '0.0.0.0',  // Listen on all interfaces for JupyterHub proxy
     port: 5173,
     open: false,  // Disable auto-open for headless/Jupyter environments
+    allowedHosts: ['.jpl.nasa.gov'],  // Allow JupyterHub proxy domain
   },
   build: {
     outDir: '../dist',
