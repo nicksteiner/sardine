@@ -8,6 +8,7 @@ export default defineConfig({
   resolve: {
     alias: {
       'sardine': '/src/index.js',
+      '@src': '/src',
     },
   },
   server: {
