@@ -11,6 +11,7 @@ export default defineConfig({
     },
   },
   server: {
+    host: '0.0.0.0',  // Listen on all interfaces for JupyterHub proxy
     port: 5173,
     open: false,  // Disable auto-open for headless/Jupyter environments
   },
