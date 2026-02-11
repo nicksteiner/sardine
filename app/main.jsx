@@ -324,6 +324,15 @@ function App() {
     return { minLon: arr[0], minLat: arr[1], maxLon: arr[2], maxLat: arr[3] };
   }, [imageData]);
 
+  // Compute viewport bounds for STAC search
+  const computedViewBounds = useMemo(() => {
+    if (imageData?.bounds) return imageData.bounds;
+    // Compute viewport bounds from viewCenter and viewZoom for STAC mode
+    const [cx, cy] = viewCenter;
+    const span = 360 / Math.pow(2, viewZoom + 1);
+    return [cx - span/2, cy - span/2, cx + span/2, cy + span/2];
+  }, [imageData, viewCenter, viewZoom]);
+
   // Helper to add status log
   const addStatusLog = useCallback((type, message, details = null) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -1436,7 +1445,7 @@ function App() {
 
   // Fetch Overture features when viewport changes (debounced)
   useEffect(() => {
-    if (!overtureEnabled || overtureThemes.length === 0 || !imageData) return;
+    if (!overtureEnabled || overtureThemes.length === 0) return;
 
     // Clear previous debounce
     if (overtureDebounceRef.current) {
@@ -1447,25 +1456,35 @@ function App() {
       try {
         setOvertureLoading(true);
 
-        // Calculate viewport bbox in pixel/projected coordinates
-        const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
-        const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
-        const cx = viewCenter[0];
-        const cy = viewCenter[1];
+        let wgs84Bbox;
 
-        const projBbox = [
-          cx - vpHalfW,
-          cy - vpHalfH,
-          cx + vpHalfW,
-          cy + vpHalfH,
-        ];
+        if (imageData) {
+          // Calculate viewport bbox in pixel/projected coordinates
+          const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
+          const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
+          const cx = viewCenter[0];
+          const cy = viewCenter[1];
 
-        // Convert to WGS84 for Overture queries
-        const crs = imageData.crs || 'EPSG:4326';
-        const wgs84Bbox = projectedToWGS84(
-          imageData.worldBounds || projBbox,
-          crs
-        );
+          const projBbox = [
+            cx - vpHalfW,
+            cy - vpHalfH,
+            cx + vpHalfW,
+            cy + vpHalfH,
+          ];
+
+          // Convert to WGS84 for Overture queries
+          const crs = imageData.crs || 'EPSG:4326';
+          wgs84Bbox = projectedToWGS84(
+            imageData.worldBounds || projBbox,
+            crs
+          );
+        } else {
+          // No imageData (STAC mode) - compute bbox from viewCenter/viewZoom
+          const cx = viewCenter[0];
+          const cy = viewCenter[1];
+          const span = 360 / Math.pow(2, viewZoom + 1);
+          wgs84Bbox = [cx - span/2, cy - span/2, cx + span/2, cy + span/2];
+        }
 
         addStatusLog('info', `Fetching Overture data: [${wgs84Bbox.map(b => b.toFixed(4)).join(', ')}]`);
 
@@ -1846,7 +1865,13 @@ function App() {
                 }}
                 onStatus={addStatusLog}
                 onLayersChange={setStacLayers}
-                viewBounds={imageData?.bounds || null}
+                viewBounds={computedViewBounds}
+                onZoomToBounds={(bbox) => {
+                  const [minX, minY, maxX, maxY] = bbox;
+                  setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
+                  const span = Math.max(maxX - minX, maxY - minY);
+                  setViewZoom(Math.log2(360 / span) - 1);
+                }}
               />
 
               {/* Show dataset selectors when remote NISAR metadata is loaded */}
@@ -2321,7 +2346,7 @@ function App() {
 
           {error && <div className="error">{error}</div>}
 
-          {!loading && !error && !imageData && (
+          {!loading && !error && !imageData && fileType !== 'stac' && (
             <div className="loading">
               {fileType === 'cog'
                 ? 'Enter a Cloud Optimized GeoTIFF URL and click Load to begin'
@@ -2331,14 +2356,14 @@ function App() {
             </div>
           )}
 
-          {imageData && (
+          {(imageData || fileType === 'stac') && (
             <SARViewer
               ref={viewerRef}
-              cogUrl={imageData.cogUrl}
-              getTile={imageData.getTile}
+              cogUrl={imageData?.cogUrl}
+              getTile={imageData?.getTile}
               tileVersion={tileVersion}
-              imageData={imageData.data ? imageData : null}
-              bounds={imageData.bounds}
+              imageData={imageData?.data ? imageData : null}
+              bounds={imageData?.bounds || [-180, -90, 180, 90]}
               contrastLimits={effectiveContrastLimits}
               useDecibels={useDecibels}
               colormap={colormap}

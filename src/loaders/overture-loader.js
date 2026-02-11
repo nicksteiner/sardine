@@ -139,7 +139,12 @@ export async function fetchOvertureFeatures(theme, type, bbox, options = {}) {
     // Use the Overture Maps API endpoint for bbox queries
     // This is the recommended browser-friendly approach
     const apiUrl = buildOvertureApiUrl(theme, type, bbox, release);
-    
+
+    if (!apiUrl) {
+      console.warn('[Overture] No bbox API available. Use PMTiles mode instead (see fetchOvertureTile).');
+      return { type: 'FeatureCollection', features: [] };
+    }
+
     const response = await fetch(apiUrl);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -187,10 +192,16 @@ export async function fetchOvertureFeatures(theme, type, bbox, options = {}) {
 function buildOvertureApiUrl(theme, type, bbox, release) {
   const [minLon, minLat, maxLon, maxLat] = bbox;
 
-  // Option 1: Overture Maps Explorer API (community endpoint)
-  // This returns GeoJSON directly for a bbox
-  // Replace with your preferred API endpoint
-  return `https://overturemaps.org/api/v1/${theme}/${type}?bbox=${minLon},${minLat},${maxLon},${maxLat}&limit=50000`;
+  // Overture doesn't provide a public bbox GeoJSON API
+  // The original URL (overturemaps.org/api/v1) doesn't exist
+  //
+  // Possible approaches:
+  // 1. Use PMTiles for vector tiles (already implemented via fetchOvertureTile)
+  // 2. Use DuckDB WASM to query GeoParquet files directly
+  // 3. Use a third-party proxy/API service
+  //
+  // For now, returning null to signal "not available"
+  return null;
 }
 
 /**
@@ -266,15 +277,92 @@ function utmToWGS84(bounds, zone, isNorth) {
 }
 
 /**
+ * Convert lon/lat to tile coordinates at a given zoom level.
+ */
+function lon2tile(lon, zoom) {
+  return Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
+}
+
+function lat2tile(lat, zoom) {
+  return Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * Math.pow(2, zoom));
+}
+
+/**
+ * Get tile coordinates that cover a bbox at a given zoom level.
+ * @param {number[]} bbox - [minLon, minLat, maxLon, maxLat]
+ * @param {number} zoom - Tile zoom level
+ * @returns {{ minX: number, minY: number, maxX: number, maxY: number, zoom: number }}
+ */
+function bboxToTiles(bbox, zoom) {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  return {
+    minX: lon2tile(minLon, zoom),
+    maxX: lon2tile(maxLon, zoom),
+    minY: lat2tile(maxLat, zoom), // Note: lat2tile is inverted (north = smaller Y)
+    maxY: lat2tile(minLat, zoom),
+    zoom,
+  };
+}
+
+/**
+ * Determine appropriate zoom level for a bbox viewport.
+ * Too high = too many tiles, too low = too coarse features.
+ */
+function getZoomForBbox(bbox) {
+  const [minLon, minLat, maxLon, maxLat] = bbox;
+  const spanLon = maxLon - minLon;
+  const spanLat = maxLat - minLat;
+  const span = Math.max(spanLon, spanLat);
+
+  // Heuristic: pick zoom level where viewport ≈ 1–16 tiles
+  if (span > 180) return 0;  // Global view (1 tile)
+  if (span > 90) return 1;   // Hemisphere (4 tiles)
+  if (span > 45) return 2;   // Continent (16 tiles)
+  if (span > 20) return 3;   // Large country
+  if (span > 10) return 4;   // Country
+  if (span > 5) return 5;    // Region
+  if (span > 2) return 6;    // Large area
+  if (span > 1) return 7;
+  if (span > 0.5) return 8;
+  if (span > 0.2) return 9;
+  if (span > 0.1) return 10;
+  return 11;  // Close zoom (capped at 11 to avoid too many tiles)
+}
+
+/**
  * Get all enabled Overture layers' features for the current viewport.
+ *
+ * Now uses PMTiles vector tiles instead of the non-existent bbox API.
  *
  * @param {string[]} enabledThemes - Theme keys from OVERTURE_THEMES
  * @param {number[]} wgs84Bbox - [minLon, minLat, maxLon, maxLat]
  * @param {Object} options
+ * @param {string} [options.release] - PMTiles release date
+ * @param {number} [options.maxTiles] - Max tiles to fetch (default 50)
  * @returns {Promise<Object>} Map of theme → FeatureCollection
  */
 export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options = {}) {
+  const { release = DEFAULT_TILES_RELEASE, maxTiles = 100 } = options;
   const results = {};
+
+  const [minLon, minLat, maxLon, maxLat] = wgs84Bbox;
+  const spanLon = maxLon - minLon;
+  const spanLat = maxLat - minLat;
+
+  const zoom = getZoomForBbox(wgs84Bbox);
+  const tiles = bboxToTiles(wgs84Bbox, zoom);
+  const tileCount = (tiles.maxX - tiles.minX + 1) * (tiles.maxY - tiles.minY + 1);
+
+  // Skip if too many tiles even at low zoom
+  if (tileCount > maxTiles) {
+    console.warn(`[Overture] Too many tiles (${tileCount}) for bbox at zoom ${zoom}, skipping. Try zooming in.`);
+    enabledThemes.forEach(key => {
+      results[key] = { type: 'FeatureCollection', features: [] };
+    });
+    return results;
+  }
+
+  console.log(`[Overture] Fetching ${enabledThemes.length} themes at zoom ${zoom} (${tileCount} tiles, span ${spanLon.toFixed(1)}° x ${spanLat.toFixed(1)}°)`);
 
   const fetches = enabledThemes.map(async (themeKey) => {
     const themeDef = OVERTURE_THEMES[themeKey];
@@ -283,10 +371,24 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
     const actualTheme = themeDef.theme || themeKey;
     const features = [];
 
-    for (const type of themeDef.types) {
-      const fc = await fetchOvertureFeatures(actualTheme, type, wgs84Bbox, options);
-      features.push(...(fc.features || []));
+    let tilesLoaded = 0;
+    // Fetch all tiles that cover the bbox
+    for (let x = tiles.minX; x <= tiles.maxX && tilesLoaded < maxTiles; x++) {
+      for (let y = tiles.minY; y <= tiles.maxY && tilesLoaded < maxTiles; y++) {
+        try {
+          const tileData = await fetchOvertureTile(actualTheme, zoom, x, y, release);
+          // PMTiles MVT tiles have multiple layers — extract all features
+          for (const layerFeatures of Object.values(tileData.layers || {})) {
+            features.push(...layerFeatures);
+          }
+          tilesLoaded++;
+        } catch (e) {
+          console.warn(`[Overture] Failed to load tile ${actualTheme}/${zoom}/${x}/${y}:`, e.message);
+        }
+      }
     }
+
+    console.log(`[Overture] Got ${features.length} features for ${themeKey} from ${tilesLoaded} tiles`);
 
     results[themeKey] = {
       type: 'FeatureCollection',
@@ -687,23 +789,30 @@ function decodeMVT(buffer, tileX, tileY, tileZ) {
 export async function fetchOvertureTile(theme, z, x, y, release = DEFAULT_TILES_RELEASE) {
   const cacheKey = `tile:${theme}/${z}/${x}/${y}`;
   if (pmtilesGeoJSONCache.has(cacheKey)) {
+    console.log(`[Overture PMTiles] Cache hit: ${cacheKey}`);
     return pmtilesGeoJSONCache.get(cacheKey);
   }
+
+  console.log(`[Overture PMTiles] Fetching ${theme}/${z}/${x}/${y} from ${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`);
 
   try {
     const pm = getPMTiles(theme, release);
     const tileData = await pm.getZxy(z, x, y);
 
     if (!tileData || !tileData.data) {
-      console.log(`[Overture PMTiles] No data for ${theme}/${z}/${x}/${y}`);
+      console.log(`[Overture PMTiles] No data for ${theme}/${z}/${x}/${y} (tile may be empty)`);
       return { layers: {} };
     }
 
+    console.log(`[Overture PMTiles] Got ${tileData.data.byteLength} bytes for ${theme}/${z}/${x}/${y}`);
     const decoded = decodeMVT(tileData.data, x, y, z);
+    const featureCount = Object.values(decoded.layers || {}).reduce((sum, features) => sum + features.length, 0);
+    console.log(`[Overture PMTiles] Decoded ${featureCount} features from ${theme}/${z}/${x}/${y}`);
+
     pmtilesGeoJSONCache.set(cacheKey, decoded);
     return decoded;
   } catch (e) {
-    console.warn(`[Overture PMTiles] Failed to read ${theme}/${z}/${x}/${y}:`, e.message);
+    console.error(`[Overture PMTiles] Failed to read ${theme}/${z}/${x}/${y}:`, e);
     return { layers: {} };
   }
 }

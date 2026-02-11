@@ -11,6 +11,7 @@
  *   onStatus: (type, message, details?) => void — status logging
  *   onLayersChange: (layers[]) => void — deck.gl footprint layers
  *   viewBounds: [west, south, east, north] | null — current map viewport for bbox
+ *   onZoomToBounds: (bbox) => void — zoom map to bbox of results
  */
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
@@ -24,7 +25,30 @@ import {
   resolveAsset,
 } from '../loaders/stac-client.js';
 
-export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayersChange, viewBounds }) {
+/**
+ * Compute bbox from a GeoJSON geometry
+ */
+function computeGeometryBbox(geometry) {
+  if (!geometry || !geometry.coordinates) return null;
+
+  let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+
+  function processCoord(coord) {
+    if (typeof coord[0] === 'number') {
+      minLon = Math.min(minLon, coord[0]);
+      maxLon = Math.max(maxLon, coord[0]);
+      minLat = Math.min(minLat, coord[1]);
+      maxLat = Math.max(maxLat, coord[1]);
+    } else {
+      coord.forEach(processCoord);
+    }
+  }
+
+  processCoord(geometry.coordinates);
+  return isFinite(minLon) ? [minLon, minLat, maxLon, maxLat] : null;
+}
+
+export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayersChange, viewBounds, onZoomToBounds }) {
   // ─── Connection state ────────────────────────────────────────────────
   const [endpointUrl, setEndpointUrl] = useState(STAC_ENDPOINTS[0].url);
   const [customUrl, setCustomUrl] = useState('');
@@ -42,6 +66,9 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
   const [dateStart, setDateStart] = useState('');
   const [dateEnd, setDateEnd] = useState('');
   const [useBbox, setUseBbox] = useState(false);
+  const [track, setTrack] = useState('');
+  const [frame, setFrame] = useState('');
+  const [releaseId, setReleaseId] = useState('');
 
   // ─── Results ─────────────────────────────────────────────────────────
   const [items, setItems] = useState([]);
@@ -124,7 +151,22 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
         params.bbox = viewBounds;
       }
 
+      // NISAR property filters (Track/Frame/Release ID)
+      const query = {};
+      if (track) query['nisar:track'] = { eq: parseInt(track) };
+      if (frame) query['nisar:frame'] = { eq: parseInt(frame) };
+      if (releaseId) query['nisar:composite_release_id'] = { eq: releaseId };
+      if (Object.keys(query).length > 0) {
+        params.query = query;
+      }
+
       const result = await searchItems(activeUrl, params);
+
+      console.log('[STACSearch] Search results:', {
+        itemCount: result.items.length,
+        hasGeometry: result.items[0]?.geometry != null,
+        params,
+      });
 
       if (append) {
         setItems(prev => [...prev, ...result.items]);
@@ -144,7 +186,7 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
     } finally {
       setSearching(false);
     }
-  }, [activeUrl, selectedCollection, dateStart, dateEnd, useBbox, viewBounds, token, nextToken, items.length, onStatus]);
+  }, [activeUrl, selectedCollection, dateStart, dateEnd, useBbox, viewBounds, token, nextToken, items.length, track, frame, releaseId, onStatus]);
 
   // ─── Scene selection (single) ────────────────────────────────────────
 
@@ -168,6 +210,47 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
     onSelectScene?.(scene);
     onStatus?.('info', `Selected: ${scene.name}`);
   }, [multiSelect, onSelectScene, onStatus]);
+
+  // ─── Apply result filters ────────────────────────────────────────────
+
+  const filteredItems = useMemo(() => {
+    if (!filterPol && !filterOrbit && !filterPlatform) return items;
+    return items.filter(item => {
+      const p = item.properties || {};
+      if (filterPol && !(p['sar:polarizations'] || []).includes(filterPol)) return false;
+      if (filterOrbit && p['sat:orbit_state'] !== filterOrbit) return false;
+      if (filterPlatform && p.platform !== filterPlatform) return false;
+      return true;
+    });
+  }, [items, filterPol, filterOrbit, filterPlatform]);
+
+  // ─── Zoom to results bbox ────────────────────────────────────────────
+
+  const handleZoomToResults = useCallback(() => {
+    if (filteredItems.length === 0) return;
+
+    // Compute bbox from all result geometries
+    let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+
+    filteredItems.forEach(item => {
+      if (!item.bbox && !item.geometry) return;
+
+      // Use item.bbox if available, otherwise compute from geometry
+      const bbox = item.bbox || computeGeometryBbox(item.geometry);
+      if (!bbox) return;
+
+      minLon = Math.min(minLon, bbox[0]);
+      minLat = Math.min(minLat, bbox[1]);
+      maxLon = Math.max(maxLon, bbox[2]);
+      maxLat = Math.max(maxLat, bbox[3]);
+    });
+
+    if (isFinite(minLon)) {
+      const resultBbox = [minLon, minLat, maxLon, maxLat];
+      onZoomToBounds?.(resultBbox);
+      onStatus?.('info', `Zoomed to ${filteredItems.length} results`);
+    }
+  }, [filteredItems, onZoomToBounds, onStatus]);
 
   // ─── Load multiple selected items ──────────────────────────────────
 
@@ -215,19 +298,6 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
     if (items.length === 0) return null;
     return extractItemFilters(items);
   }, [items]);
-
-  // ─── Apply result filters ────────────────────────────────────────────
-
-  const filteredItems = useMemo(() => {
-    if (!filterPol && !filterOrbit && !filterPlatform) return items;
-    return items.filter(item => {
-      const p = item.properties || {};
-      if (filterPol && !(p['sar:polarizations'] || []).includes(filterPol)) return false;
-      if (filterOrbit && p['sat:orbit_state'] !== filterOrbit) return false;
-      if (filterPlatform && p.platform !== filterPlatform) return false;
-      return true;
-    });
-  }, [items, filterPol, filterOrbit, filterPlatform]);
 
   // ─── Filtered collection list ────────────────────────────────────────
 
@@ -298,7 +368,7 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
 
   useEffect(() => {
     onLayersChange?.(layers);
-  }, [layers, onLayersChange]);
+  }, [layers]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Render ──────────────────────────────────────────────────────────
 
@@ -446,6 +516,32 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
               title="End date"
             />
           </div>
+          <div style={{ display: 'flex', gap: 'var(--space-xs)', marginTop: '4px' }}>
+            <input
+              type="number"
+              value={track}
+              onChange={e => setTrack(e.target.value)}
+              placeholder="Track"
+              style={{ flex: 1, fontSize: '0.7rem' }}
+              title="NISAR Track number"
+            />
+            <input
+              type="number"
+              value={frame}
+              onChange={e => setFrame(e.target.value)}
+              placeholder="Frame"
+              style={{ flex: 1, fontSize: '0.7rem' }}
+              title="NISAR Frame number"
+            />
+            <input
+              type="text"
+              value={releaseId}
+              onChange={e => setReleaseId(e.target.value)}
+              placeholder="Release ID"
+              style={{ flex: 1, fontSize: '0.7rem' }}
+              title="Composite Release ID (e.g., X05010)"
+            />
+          </div>
           <label style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
             <input
               type="checkbox"
@@ -511,23 +607,35 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
 
       {/* Results count + multi-select toggle */}
       {items.length > 0 && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
-            {filteredItems.length}{filteredItems.length !== items.length ? `/${items.length}` : ''} items
-            {matched != null && ` of ${matched} total`}
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+              {filteredItems.length}{filteredItems.length !== items.length ? `/${items.length}` : ''} items
+              {matched != null && ` of ${matched} total`}
+              <span style={{ color: 'var(--sardine-cyan)', marginLeft: '6px' }}>
+                ● {filteredItems.length} footprint{filteredItems.length !== 1 ? 's' : ''}
+              </span>
+            </div>
+            <label style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={multiSelect}
+                onChange={e => {
+                  setMultiSelect(e.target.checked);
+                  setSelectedIndices(new Set());
+                }}
+              />
+              Multi
+            </label>
           </div>
-          <label style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={multiSelect}
-              onChange={e => {
-                setMultiSelect(e.target.checked);
-                setSelectedIndices(new Set());
-              }}
-            />
-            Multi
-          </label>
-        </div>
+          <button
+            className="btn-secondary"
+            onClick={handleZoomToResults}
+            style={{ width: '100%', fontSize: '0.7rem', marginTop: '4px' }}
+          >
+            🗺️ Zoom to Results
+          </button>
+        </>
       )}
 
       {/* Multi-select controls */}

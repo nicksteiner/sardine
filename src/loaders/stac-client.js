@@ -11,6 +11,13 @@
 
 export const STAC_ENDPOINTS = [
   {
+    id: 'local',
+    label: 'Local STAC API',
+    url: 'http://localhost:8000',
+    description: 'Local development STAC API server',
+    requiresAuth: false,
+  },
+  {
     id: 'cmr-stac',
     label: 'NASA CMR-STAC',
     url: 'https://cmr.earthdata.nasa.gov/stac',
@@ -44,12 +51,18 @@ export const STAC_ENDPOINTS = [
 
 // ─── Core API calls ──────────────────────────────────────────────────────────
 
+// ─── URL normalization helper ────────────────────────────────────────────────
+
+function normalizeUrl(url) {
+  return url.replace(/\/+$/, ''); // Remove trailing slashes
+}
+
 /**
  * Fetch the root catalog from a STAC API endpoint.
  * Returns { id, title, description, conformsTo, links }.
  */
 export async function fetchCatalog(apiUrl, { token } = {}) {
-  const resp = await stacFetch(apiUrl, { token });
+  const resp = await stacFetch(normalizeUrl(apiUrl), { token });
   return resp;
 }
 
@@ -58,7 +71,7 @@ export async function fetchCatalog(apiUrl, { token } = {}) {
  * Returns array of { id, title, description, extent, links, ... }.
  */
 export async function listCollections(apiUrl, { token } = {}) {
-  const resp = await stacFetch(`${apiUrl}/collections`, { token });
+  const resp = await stacFetch(`${normalizeUrl(apiUrl)}/collections`, { token });
   return resp.collections || [];
 }
 
@@ -66,7 +79,7 @@ export async function listCollections(apiUrl, { token } = {}) {
  * Get a single collection by ID.
  */
 export async function getCollection(apiUrl, collectionId, { token } = {}) {
-  return stacFetch(`${apiUrl}/collections/${encodeURIComponent(collectionId)}`, { token });
+  return stacFetch(`${normalizeUrl(apiUrl)}/collections/${encodeURIComponent(collectionId)}`, { token });
 }
 
 /**
@@ -99,7 +112,7 @@ export async function searchItems(apiUrl, params = {}) {
     body.token = nextToken;
   }
 
-  const searchUrl = `${apiUrl}/search`;
+  const searchUrl = `${normalizeUrl(apiUrl)}/search`;
 
   // Try POST first (STAC API best practice), fall back to GET
   let resp;

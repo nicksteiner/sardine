@@ -83,14 +83,6 @@ export const SARViewer = forwardRef(function SARViewer({
       zoom = Math.log2(360 / maxSpan) - 1;
     }
 
-    console.log('[SARViewer] Calculated view state:', {
-      isProjected,
-      bounds,
-      center: [centerX, centerY],
-      zoom,
-      maxSpan,
-    });
-
     return {
       target: [centerX, centerY],
       zoom,
