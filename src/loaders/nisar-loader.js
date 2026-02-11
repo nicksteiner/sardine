@@ -686,8 +686,8 @@ export async function listNISARDatasets(file) {
     console.log('[NISAR Loader] Large file - using streaming mode');
 
     try {
-      // Use 32MB metadata read for NISAR cloud-optimized files
-      const streamReader = await openH5ChunkFile(file, 32 * 1024 * 1024);
+      // Use lazy tree-walking for fast, efficient metadata loading
+      const streamReader = await openH5ChunkFile(file);
       const h5Datasets = streamReader.getDatasets();
 
       console.log(`[h5chunk] Found ${h5Datasets.length} datasets`);
@@ -1344,10 +1344,9 @@ async function loadNISARGCOVStreaming(file, options = {}) {
 
   console.log('[NISAR Loader] Opening with h5chunk streaming...');
 
-  // Open with h5chunk - reads metadata
-  // NISAR cloud-optimized files have metadata + B-trees at front
-  // Use larger size (32MB) to capture chunk indices
-  const streamReader = await openH5ChunkFile(file, 32 * 1024 * 1024);
+  // Open with h5chunk - uses lazy tree-walking by default
+  // With lazy mode: reads ~10KB + remote object headers (~1-2MB) + on-demand B-trees
+  const streamReader = await openH5ChunkFile(file); // Let h5chunk decide based on lazyTreeWalking flag
 
   // Get discovered datasets
   const h5Datasets = streamReader.getDatasets();
@@ -1360,6 +1359,11 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   const activeFreq = frequencies.includes(frequency) ? frequency : frequencies[0];
 
   console.log(`[NISAR Loader] Detected: band=${band}, frequencies=[${frequencies}], active=${activeFreq}`);
+
+  // Read product identification metadata EARLY (before coordinate loading)
+  // This allows metadata panel to populate instantly while other data loads
+  const identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
+  console.log(`[NISAR Loader] Product identification loaded: ${Object.keys(identification).length} fields`);
 
   // Find the requested dataset by spec path
   let selectedDataset = null;
@@ -1885,11 +1889,9 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     return { bands: { [polarization]: output }, width: exportWidth, height: numRows };
   }
 
-  // Read product identification metadata
-  const identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
-
   // Load metadata cube (incidence angle, slant range, elevation angle, etc.)
   // This is optional - if not found, metadataCube will be null
+  // (Product identification was already loaded earlier for instant metadata display)
   let metadataCube = null;
   try {
     metadataCube = await loadMetadataCube(streamReader, band);
@@ -2459,8 +2461,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
   console.log(`[NISAR Loader] Loading RGB composite: ${compositeId}`);
   console.log(`[NISAR Loader] Required polarizations: ${requiredPols.join(', ')}`);
 
-  // Open with h5chunk streaming (works for all file sizes)
-  const streamReader = await openH5ChunkFile(file, 32 * 1024 * 1024);
+  // Open with h5chunk streaming with lazy tree-walking (fast for all file sizes)
+  const streamReader = await openH5ChunkFile(file); // Use lazy mode default
   const h5Datasets = streamReader.getDatasets();
 
   console.log(`[NISAR Loader] h5chunk found ${h5Datasets.length} datasets`);
@@ -3157,7 +3159,7 @@ export async function listNISARDatasetsFromUrl(url) {
   console.log(`[NISAR Loader] Listing datasets from URL: ${url}`);
 
   try {
-    const streamReader = await openH5ChunkUrl(url, 8 * 1024 * 1024);
+    const streamReader = await openH5ChunkUrl(url); // Use lazy tree-walking
     const h5Datasets = streamReader.getDatasets();
 
     console.log(`[h5chunk] Found ${h5Datasets.length} datasets from URL`);

@@ -2690,10 +2690,10 @@ export class H5Chunk {
 /**
  * Create an H5Chunk reader for a local file
  * @param {File} file
- * @param {number} metadataSize
+ * @param {number} metadataSize - Optional metadata size (defaults to auto-sized for lazy/bulk mode)
  * @returns {Promise<H5Chunk>}
  */
-export async function openH5ChunkFile(file, metadataSize = 8 * 1024 * 1024) {
+export async function openH5ChunkFile(file, metadataSize = null) {
   const reader = new H5Chunk();
   await reader.openFile(file, metadataSize);
   return reader;
@@ -2702,10 +2702,10 @@ export async function openH5ChunkFile(file, metadataSize = 8 * 1024 * 1024) {
 /**
  * Create an H5Chunk reader for a URL
  * @param {string} url
- * @param {number} metadataSize
+ * @param {number} metadataSize - Optional metadata size (defaults to auto-sized for lazy/bulk mode)
  * @returns {Promise<H5Chunk>}
  */
-export async function openH5ChunkUrl(url, metadataSize = 8 * 1024 * 1024) {
+export async function openH5ChunkUrl(url, metadataSize = null) {
   const reader = new H5Chunk();
   await reader.openUrl(url, metadataSize);
   return reader;
