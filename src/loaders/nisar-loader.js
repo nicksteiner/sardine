@@ -1950,8 +1950,8 @@ async function loadNISARGCOVFullImageStreaming(file, options = {}, maxSize = 204
 
   console.log('[NISAR Loader] Loading full image via streaming...');
 
-  // Open with h5chunk - use 32MB for cloud-optimized files
-  const streamReader = await openH5ChunkFile(file, 32 * 1024 * 1024);
+  // Open with h5chunk using lazy tree-walking
+  const streamReader = await openH5ChunkFile(file);
   const h5Datasets = streamReader.getDatasets();
 
   // Detect product structure from spec paths
@@ -3209,7 +3209,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   console.log(`[NISAR Loader] Dataset: frequency${frequency}/${polarization}`);
 
   // Reuse reader from listNISARDatasetsFromUrl if available (avoids re-downloading metadata)
-  const streamReader = existingReader || await openH5ChunkUrl(url, 8 * 1024 * 1024);
+  const streamReader = existingReader || await openH5ChunkUrl(url); // Use lazy tree-walking
   const h5Datasets = streamReader.getDatasets();
 
   console.log(`[NISAR Loader] h5chunk discovered ${h5Datasets.length} datasets from URL`);
@@ -3408,11 +3408,32 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   const getTile = async ({ x, y, z, bbox }) => {
     const tileSize = 256;
     try {
-      // Map tile bbox to pixel region
-      const pxLeft = Math.max(0, Math.round(((bbox.left - bounds[0]) / (bounds[2] - bounds[0])) * width));
-      const pxRight = Math.min(width, Math.round(((bbox.right - bounds[0]) / (bounds[2] - bounds[0])) * width));
-      const pxTop = Math.max(0, Math.round(((bounds[3] - bbox.bottom) / (bounds[3] - bounds[1])) * height));
-      const pxBottom = Math.min(height, Math.round(((bounds[3] - bbox.top) / (bounds[3] - bounds[1])) * height));
+      // Auto-detect coordinate system: pixel coords vs world coords
+      // Check if bbox values are within image pixel bounds [0, width]×[0, height]
+      // If yes → pixel coordinates, if no → world coordinates (need conversion)
+      let pxLeft, pxRight, pxTop, pxBottom;
+
+      const isPixelCoords = (
+        bbox.left >= 0 && bbox.left <= width &&
+        bbox.right >= 0 && bbox.right <= width &&
+        bbox.top >= 0 && bbox.top <= height &&
+        bbox.bottom >= 0 && bbox.bottom <= height
+      );
+
+      if (isPixelCoords) {
+        // Direct pixel coordinates (from histogram sampling or direct pixel access)
+        pxLeft = Math.max(0, Math.floor(bbox.left));
+        pxRight = Math.min(width, Math.ceil(bbox.right));
+        pxTop = Math.max(0, Math.floor(Math.min(bbox.top, bbox.bottom)));
+        pxBottom = Math.min(height, Math.ceil(Math.max(bbox.top, bbox.bottom)));
+      } else {
+        // World coordinates (CRS-specific: UTM meters, lat/lon degrees, etc.)
+        // Convert to pixels using worldBounds
+        pxLeft = Math.max(0, Math.round(((bbox.left - bounds[0]) / (bounds[2] - bounds[0])) * width));
+        pxRight = Math.min(width, Math.round(((bbox.right - bounds[0]) / (bounds[2] - bounds[0])) * width));
+        pxTop = Math.max(0, Math.round(((bounds[3] - bbox.bottom) / (bounds[3] - bounds[1])) * height));
+        pxBottom = Math.min(height, Math.round(((bounds[3] - bbox.top) / (bounds[3] - bounds[1])) * height));
+      }
 
       const sliceW = pxRight - pxLeft;
       const sliceH = pxBottom - pxTop;

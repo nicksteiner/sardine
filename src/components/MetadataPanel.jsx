@@ -504,6 +504,34 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
             )}
           </CollapsibleSection>
 
+          {/* ── Product Identification ── */}
+          {Object.keys(id).length > 0 && (
+            <CollapsibleSection title="Product ID" defaultOpen={false} count={Object.keys(id).length}>
+              {id.productType && <MetadataRow label="Product Type" value={id.productType} accent />}
+              {id.missionId && <MetadataRow label="Mission" value={id.missionId} />}
+              {id.granuleId && <MetadataRow label="Granule ID" value={id.granuleId} />}
+              {id.absoluteOrbitNumber != null && <MetadataRow label="Orbit" value={id.absoluteOrbitNumber} />}
+              {id.trackNumber != null && <MetadataRow label="Track" value={id.trackNumber} />}
+              {id.frameNumber != null && <MetadataRow label="Frame" value={id.frameNumber} />}
+              {id.orbitPassDirection && <MetadataRow label="Pass Direction" value={id.orbitPassDirection} />}
+              {id.lookDirection && <MetadataRow label="Look Direction" value={id.lookDirection} />}
+              {id.zeroDopplerStartTime && <MetadataRow label="Start Time" value={id.zeroDopplerStartTime} />}
+              {id.zeroDopplerEndTime && <MetadataRow label="End Time" value={id.zeroDopplerEndTime} />}
+              {id.processingDateTime && <MetadataRow label="Processing Date" value={id.processingDateTime} />}
+              {id.productVersion && <MetadataRow label="Product Version" value={id.productVersion} />}
+              {id.processingCenter && <MetadataRow label="Processing Center" value={id.processingCenter} />}
+              {id.softwareVersion && <MetadataRow label="Software Version" value={id.softwareVersion} />}
+              {id.isGeocoded !== undefined && <MetadataRow label="Geocoded" value={id.isGeocoded ? 'Yes' : 'No'} />}
+              {id.isDithered !== undefined && <MetadataRow label="Dithered" value={id.isDithered ? 'Yes' : 'No'} />}
+              {id.isFullFrame !== undefined && <MetadataRow label="Full Frame" value={id.isFullFrame ? 'Yes' : 'No'} />}
+              {id.rtcApplied !== undefined && <MetadataRow label="RTC Applied" value={id.rtcApplied ? 'Yes' : 'No'} />}
+              {id.rfiApplied !== undefined && <MetadataRow label="RFI Applied" value={id.rfiApplied ? 'Yes' : 'No'} />}
+              {id.ionoRangeApplied !== undefined && <MetadataRow label="Iono Range" value={id.ionoRangeApplied ? 'Yes' : 'No'} />}
+              {id.dryTropoApplied !== undefined && <MetadataRow label="Dry Tropo" value={id.dryTropoApplied ? 'Yes' : 'No'} />}
+              {id.wetTropoApplied !== undefined && <MetadataRow label="Wet Tropo" value={id.wetTropoApplied ? 'Yes' : 'No'} />}
+            </CollapsibleSection>
+          )}
+
           {/* ── Data Info ── */}
           <CollapsibleSection title="Data" defaultOpen={true}>
             <MetadataRow label="Band" value={imageData.band} />
