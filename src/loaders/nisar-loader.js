@@ -2498,7 +2498,10 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
   console.log('[NISAR Loader] Dataset → covariance term mapping:');
   for (const [term, dsId] of Object.entries(polMap)) {
-    console.log(`[NISAR Loader]   ${term} → ${dsId}`);
+    const ds = h5Datasets.find(d => d.id === dsId);
+    const shapeStr = ds?.shape?.join('x') || 'unknown';
+    const chunkStr = ds?.chunkDims?.join('x') || 'unknown';
+    console.log(`[NISAR Loader]   ${term} → ${dsId} (${shapeStr}, chunks: ${chunkStr})`);
   }
 
   // Verify we have the required polarizations
@@ -2559,6 +2562,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
   const xCoordId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
   const yCoordId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
+  console.log(`[NISAR Loader] RGB coordinate dataset IDs: x=${xCoordId}, y=${yCoordId}, paths: ${paths.xCoordinates(activeFreq)}, ${paths.yCoordinates(activeFreq)}`);
 
   // Tier 1: Full coordinate arrays
   try {
@@ -2624,7 +2628,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
     }
   }
 
-  if (worldBounds) bounds = worldBounds;
+  // Note: Keep bounds as pixel coordinates [0,0,width,height] like single-band mode
+  // worldBounds contains world coordinates (meters) for georeferencing
 
   // ── Finalize CRS: infer from UTM zone + coordinates if not yet determined ──
   if (!crs && utmZoneFromAttr && worldBounds) {
@@ -2644,12 +2649,14 @@ export async function loadNISARRGBComposite(file, options = {}) {
   }
   console.log(`[NISAR Loader] RGB composite CRS: ${crs}`);
 
-  // Calculate pixel size from bounds and dimensions
-  const pixelSizeX = (bounds[2] - bounds[0]) / (width - 1 || 1);
-  const pixelSizeY = (bounds[3] - bounds[1]) / (height - 1 || 1);
+  // Calculate pixel size from world coordinates (meters/degrees)
+  const geoBounds = worldBounds || bounds;
+  const pixelSizeX = (geoBounds[2] - geoBounds[0]) / (width - 1 || 1);
+  const pixelSizeY = (geoBounds[3] - geoBounds[1]) / (height - 1 || 1);
 
   console.log(`[NISAR Loader] RGB composite metadata:`, {
     bounds,
+    worldBounds,
     crs,
     pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) }
   });
@@ -2679,6 +2686,10 @@ export async function loadNISARRGBComposite(file, options = {}) {
     let chunk;
     try {
       chunk = await streamReader.readChunk(dsId, chunkRow, chunkCol);
+      // Debug: log first chunk read
+      if (chunkRow === 0 && chunkCol === 0 && chunk) {
+        console.log(`[NISAR RGB Export] First chunk ${pol}(0,0): length=${chunk.length}, expected=${chunkW * chunkH}`);
+      }
     } catch (e) {
       // Chunk read failed — do NOT cache the error so it can be retried
       console.warn(`[NISAR RGB] Chunk ${pol}(${chunkRow},${chunkCol}) read failed:`, e.message);
@@ -2762,17 +2773,15 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
             left = Math.max(0, Math.floor(pixelLeft));
             right = Math.min(width, Math.ceil(pixelRight));
-            top = Math.max(0, height - Math.ceil(bbox.bottom));
-            bottom = Math.min(height, height - Math.floor(bbox.top));
+            top = Math.max(0, Math.floor(pixelTop));
+            bottom = Math.min(height, Math.ceil(pixelBottom));
           } else {
-            // Pixel coordinates (histogram sampling)
-            // Handle Y coordinates in either orientation
+            // Pixel coordinates - flip Y axis to match OrthographicView
+            // bbox.top = min world Y (bottom), bbox.bottom = max world Y (top)
             left = Math.max(0, Math.floor(bbox.left));
             right = Math.min(width, Math.ceil(bbox.right));
-            const y1 = bbox.top;
-            const y2 = bbox.bottom;
-            top = Math.max(0, Math.floor(Math.min(y1, y2)));
-            bottom = Math.min(height, Math.ceil(Math.max(y1, y2)));
+            top = Math.max(0, height - Math.ceil(bbox.bottom));
+            bottom = Math.min(height, height - Math.floor(bbox.top));
           }
         } else {
           // Geographic coordinates (west, south, east, north)
@@ -2931,6 +2940,18 @@ export async function loadNISARRGBComposite(file, options = {}) {
    * @returns {Promise<{bands: Object, width: number, height: number}>}
    */
   async function getExportStripe({ startRow, numRows, ml, exportWidth }) {
+    // Debug: log export parameters
+    if (startRow === 0) {
+      console.log(`[NISAR RGB Export] Starting export with:`, {
+        sourceWidth: width,
+        sourceHeight: height,
+        chunkDims: [chunkH, chunkW],
+        ml,
+        exportWidth,
+        requestedRows: numRows
+      });
+    }
+
     // Source region for this stripe
     const srcTop = startRow * ml;
     const srcBottom = Math.min((startRow + numRows) * ml, height);

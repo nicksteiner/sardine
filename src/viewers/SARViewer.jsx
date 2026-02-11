@@ -28,6 +28,7 @@ export const SARViewer = forwardRef(function SARViewer({
   gamma = 1.0,
   stretchMode = 'linear',
   compositeId = null, // SAR RGB composite ID (null = single band)
+  multiLook = false,  // Multi-look mode (area-averaged resampling)
   showGrid = true,    // Show coordinate grid + corner coordinates
   opacity = 1,
   toneMapping, // Tone mapping configuration

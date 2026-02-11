@@ -449,6 +449,11 @@ export const PRESET_BUCKETS = [
     description: 'sardine-launch — direct localhost connection',
   },
   {
+    label: 'NISAR Oasis (us-west-2)',
+    url: 'https://nisar-oasis.s3.us-west-2.amazonaws.com',
+    description: 'Personal NISAR bucket in us-west-2',
+  },
+  {
     label: 'ASF DAAC (Earthdata)',
     url: 'https://nisar.asf.alaska.edu',
     description: 'Alaska Satellite Facility — requires Earthdata login',

@@ -34,7 +34,14 @@ export class SARTileLayer extends TileLayer {
     if (computedMinZoom === undefined && bounds) {
       const [minX, minY, maxX, maxY] = bounds;
       const maxSpan = Math.max(maxX - minX, maxY - minY);
-      computedMinZoom = -Math.ceil(Math.log2(maxSpan / tileSize));
+      // For pixel-coordinate TileLayers (like NISAR), tiles are in pixel space starting at zoom 0
+      // For world-coordinate TileLayers, use negative zoom for large extents
+      const isPixelCoords = maxX < 100000 && maxY < 100000; // Heuristic: pixel coords are < 100k
+      if (isPixelCoords) {
+        computedMinZoom = 0; // Pixel-space tiles start at zoom 0
+      } else {
+        computedMinZoom = -Math.ceil(Math.log2(maxSpan / tileSize));
+      }
     }
     if (computedMinZoom === undefined) computedMinZoom = -8;
 

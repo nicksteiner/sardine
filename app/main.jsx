@@ -330,7 +330,10 @@ function App() {
     // Compute viewport bounds from viewCenter and viewZoom for STAC mode
     const [cx, cy] = viewCenter;
     const span = 360 / Math.pow(2, viewZoom + 1);
-    return [cx - span/2, cy - span/2, cx + span/2, cy + span/2];
+    // Clamp latitude to avoid poles (Web Mercator limit)
+    const minLat = Math.max(-85, cy - span/2);
+    const maxLat = Math.min(85, cy + span/2);
+    return [cx - span/2, minLat, cx + span/2, maxLat];
   }, [imageData, viewCenter, viewZoom]);
 
   // Helper to add status log
@@ -1483,7 +1486,10 @@ function App() {
           const cx = viewCenter[0];
           const cy = viewCenter[1];
           const span = 360 / Math.pow(2, viewZoom + 1);
-          wgs84Bbox = [cx - span/2, cy - span/2, cx + span/2, cy + span/2];
+          // Clamp latitude to avoid poles (Web Mercator limit)
+          const minLat = Math.max(-85, cy - span/2);
+          const maxLat = Math.min(85, cy + span/2);
+          wgs84Bbox = [cx - span/2, minLat, cx + span/2, maxLat];
         }
 
         addStatusLog('info', `Fetching Overture data: [${wgs84Bbox.map(b => b.toFixed(4)).join(', ')}]`);

@@ -186,7 +186,7 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
     } finally {
       setSearching(false);
     }
-  }, [activeUrl, selectedCollection, dateStart, dateEnd, useBbox, viewBounds, token, nextToken, items.length, track, frame, releaseId, onStatus]);
+  }, [activeUrl, selectedCollection, dateStart, dateEnd, useBbox, token, nextToken, items.length, track, frame, releaseId, onStatus]); // viewBounds intentionally excluded - only used when search is manually triggered
 
   // ─── Scene selection (single) ────────────────────────────────────────
 
@@ -364,7 +364,7 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
     }
 
     return result;
-  }, [filteredItems, selectedItemIdx, selectedIndices, multiSelect, handleSelectItem]);
+  }, [filteredItems, selectedItemIdx, selectedIndices, multiSelect]); // handleSelectItem excluded - captured in onClick closure
 
   useEffect(() => {
     onLayersChange?.(layers);
