@@ -18,6 +18,7 @@ import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
+import { STACSearch } from '../src/components/STACSearch.jsx';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -282,6 +283,9 @@ function App() {
 
   // Scene catalog overlay layers (from SceneCatalog component)
   const [catalogLayers, setCatalogLayers] = useState([]);
+
+  // STAC search overlay layers
+  const [stacLayers, setStacLayers] = useState([]);
 
   // Overture Maps overlay state
   const [overtureEnabled, setOvertureEnabled] = useState(false);
@@ -1519,6 +1523,7 @@ function App() {
                 <option value="nisar">NISAR GCOV HDF5 (Local File)</option>
                 <option value="remote">Remote Bucket / S3</option>
                 <option value="catalog">Scene Catalog (GeoJSON)</option>
+                <option value="stac">STAC Catalog Search</option>
               </select>
             </div>
           </CollapsibleSection>
@@ -1725,6 +1730,126 @@ function App() {
               />
 
               {/* Show dataset selectors when remote NISAR metadata is loaded (reuse remote pattern) */}
+              {remoteUrl && nisarDatasets.length > 0 && (
+                <>
+                  <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                    {remoteName}
+                  </div>
+
+                  <div className="control-group">
+                    <label>Frequency</label>
+                    <select
+                      value={selectedFrequency}
+                      onChange={(e) => {
+                        setSelectedFrequency(e.target.value);
+                        const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
+                        if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
+                      }}
+                    >
+                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
+                        <option key={f} value={f}>Frequency {f}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="control-group">
+                    <label>Polarization</label>
+                    <select
+                      value={selectedPolarization}
+                      onChange={(e) => setSelectedPolarization(e.target.value)}
+                    >
+                      {nisarDatasets
+                        .filter(d => d.frequency === selectedFrequency)
+                        .map(d => (
+                          <option key={d.polarization} value={d.polarization}>
+                            {d.polarization}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  <button onClick={handleLoadRemoteNISAR} disabled={loading}>
+                    {loading ? 'Loading...' : 'Load Dataset'}
+                  </button>
+                </>
+              )}
+            </CollapsibleSection>
+          )}
+
+          {/* STAC Catalog Search */}
+          {fileType === 'stac' && (
+            <CollapsibleSection title="STAC Catalog Search">
+              <STACSearch
+                onSelectScene={(sceneInfo) => {
+                  handleRemoteFileSelect({
+                    url: sceneInfo.url,
+                    name: sceneInfo.name,
+                    size: sceneInfo.size || 0,
+                    type: sceneInfo.type || 'nisar',
+                  });
+                }}
+                onSelectMultiple={async ({ scenes, mode }) => {
+                  // Route multi-select to existing multi-file COG loaders
+                  const cogScenes = scenes.filter(s => s.type === 'cog');
+                  const nisarScenes = scenes.filter(s => s.type === 'nisar');
+
+                  if (cogScenes.length >= 2) {
+                    // Load COGs via existing multi-file pipeline
+                    const urls = cogScenes.map(s => s.url);
+                    const names = cogScenes.map(s => s.name);
+                    addStatusLog('info', `Loading ${cogScenes.length} COGs as ${mode}`);
+
+                    setLoading(true);
+                    setError(null);
+                    try {
+                      let data;
+                      if (mode === 'multi-band') {
+                        data = await loadMultiBandCOG({ urls, bands: names });
+                        addStatusLog('success', `Multi-band loaded: ${data.bandNames?.join(', ')}`);
+                      } else {
+                        const acquisitions = cogScenes.map(s => ({
+                          url: s.url,
+                          date: s.datetime || s.name,
+                          label: s.name,
+                        }));
+                        data = await loadTemporalCOGs(acquisitions);
+                        addStatusLog('success', `Temporal stack loaded: ${data.acquisitionCount} dates`);
+                      }
+                      setImageData(data);
+                      if (data.bounds) {
+                        const [minX, minY, maxX, maxY] = data.bounds;
+                        setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
+                        const span = Math.max(maxX - minX, maxY - minY);
+                        setViewZoom(Math.log2(360 / span) - 1);
+                      }
+                    } catch (e) {
+                      setError(`Multi-file load failed: ${e.message}`);
+                      addStatusLog('error', 'Multi-file load failed', e.message);
+                    } finally {
+                      setLoading(false);
+                    }
+                  } else if (nisarScenes.length >= 1) {
+                    // For NISAR HDF5 — load first selected, note that multi-HDF5 isn't supported yet
+                    addStatusLog('info', `Loading first NISAR scene: ${nisarScenes[0].name}`);
+                    if (nisarScenes.length > 1) {
+                      addStatusLog('warning', `Multi-HDF5 loading not yet supported — loading first of ${nisarScenes.length}`);
+                    }
+                    handleRemoteFileSelect({
+                      url: nisarScenes[0].url,
+                      name: nisarScenes[0].name,
+                      size: 0,
+                      type: 'nisar',
+                    });
+                  } else {
+                    addStatusLog('warning', 'No loadable scenes in selection');
+                  }
+                }}
+                onStatus={addStatusLog}
+                onLayersChange={setStacLayers}
+                viewBounds={imageData?.bounds || null}
+              />
+
+              {/* Show dataset selectors when remote NISAR metadata is loaded */}
               {remoteUrl && nisarDatasets.length > 0 && (
                 <>
                   <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
@@ -2228,7 +2353,7 @@ function App() {
               height="100%"
               onViewStateChange={handleViewStateChange}
               initialViewState={initialViewState}
-              extraLayers={[...overtureLayers, ...catalogLayers]}
+              extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
             />
           )}
 
