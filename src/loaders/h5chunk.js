@@ -1175,7 +1175,8 @@ export class H5Chunk {
     // aggregation puts all structural metadata at the front, so 1 MB covers the
     // full tree walk in-buffer and avoids dozens of sequential _fetchBytes calls.
     // Bulk mode: read full metadata page (8-32 MB)
-    const readSize = metadataSize || (this.lazyTreeWalking ? 1024 * 1024 : 8 * 1024 * 1024);    console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
+    const readSize = metadataSize || (this.lazyTreeWalking ? 1024 * 1024 : 8 * 1024 * 1024);
+    console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
 
     // Fetch metadata with range request
     const response = await fetch(url, {
