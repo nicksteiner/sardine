@@ -70,6 +70,7 @@ export {
   autoSelectComposite,
   getAvailableComposites,
   getRequiredDatasets,
+  getRequiredComplexDatasets,
   computeRGBBands,
   createRGBTexture,
 } from './utils/sar-composites.js';

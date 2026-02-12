@@ -644,6 +644,14 @@ function parseDatatypeMessage(reader, offset) {
       dtype = 'string';
       break;
 
+    case 6: // Compound — detect complex number types (CFloat32, CFloat64)
+      // NISAR GCOV off-diagonal terms are CFloat32: {r: float32, i: float32}
+      littleEndian = true; // compound members inherit file byte order
+      if (size === 8) dtype = 'cfloat32';
+      else if (size === 16) dtype = 'cfloat64';
+      else dtype = `compound${size}`;
+      break;
+
     default:
       dtype = `class${dtClass}`;
   }
@@ -2542,6 +2550,8 @@ export class H5Chunk {
     }
 
     const [chunkRows, chunkCols] = dataset.layout?.chunkDims || [numRows, numCols];
+    const isComplex = dataset.dtype === 'cfloat32' || dataset.dtype === 'cfloat64';
+    const valuesPerPixel = isComplex ? 2 : 1; // complex = interleaved [real, imag]
 
     // Determine which chunks we need
     const startChunkRow = Math.floor(startRow / chunkRows);
@@ -2549,7 +2559,7 @@ export class H5Chunk {
     const startChunkCol = Math.floor(startCol / chunkCols);
     const endChunkCol = Math.floor((startCol + numCols - 1) / chunkCols);
 
-    const result = new Float32Array(numRows * numCols);
+    const result = new Float32Array(numRows * numCols * valuesPerPixel);
 
     // Read each chunk
     for (let cr = startChunkRow; cr <= endChunkRow; cr++) {
@@ -2570,11 +2580,12 @@ export class H5Chunk {
               const srcCol = chunkStartCol + c;
               if (srcCol < startCol || srcCol >= startCol + numCols) continue;
 
-              const srcIdx = r * chunkCols + c;
-              const dstIdx = (srcRow - startRow) * numCols + (srcCol - startCol);
+              const srcIdx = (r * chunkCols + c) * valuesPerPixel;
+              const dstIdx = ((srcRow - startRow) * numCols + (srcCol - startCol)) * valuesPerPixel;
 
               if (srcIdx < chunkData.length) {
                 result[dstIdx] = chunkData[srcIdx];
+                if (isComplex) result[dstIdx + 1] = chunkData[srcIdx + 1];
               }
             }
           }
@@ -2693,6 +2704,12 @@ export class H5Chunk {
         return new Float32Array(new Uint8Array(buffer));
       case 'int8':
         return new Float32Array(new Int8Array(buffer));
+      case 'cfloat32':
+        // Interleaved [real, imag, real, imag, ...] — 2 float32 per pixel
+        return new Float32Array(buffer);
+      case 'cfloat64':
+        // Interleaved complex float64 → convert to float32
+        return new Float32Array(new Float64Array(buffer));
       default:
         console.warn(`[h5chunk] Unknown dtype: ${dtype}, assuming float32`);
         return new Float32Array(buffer);

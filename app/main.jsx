@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
-import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
@@ -953,12 +953,14 @@ function App() {
       if (displayMode === 'rgb' && compositeId) {
         // RGB composite mode
         const requiredPols = getRequiredDatasets(compositeId);
-        addStatusLog('info', `Loading RGB composite: ${compositeId} (${requiredPols.join(', ')})`);
+        const requiredComplexPols = getRequiredComplexDatasets(compositeId);
+        addStatusLog('info', `Loading RGB composite: ${compositeId} (${requiredPols.join(', ')}${requiredComplexPols.length ? ' + complex: ' + requiredComplexPols.join(', ') : ''})`);
 
         data = await loadNISARRGBComposite(nisarFile, {
           frequency: selectedFrequency,
           compositeId,
           requiredPols,
+          requiredComplexPols,
         });
 
         // In RGB mode, pass getRGBTile as getTile
