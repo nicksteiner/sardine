@@ -1106,6 +1106,10 @@ function App() {
     setExporting(true);
     const exportStart = performance.now();
     addStatusLog('info', '--- GeoTIFF Export Started ---');
+    console.log('[Export] GeoTIFF export started');
+
+    // Yield to browser so "Exporting..." button state renders before heavy work
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     try {
       const sourceWidth = imageData.width;
@@ -1116,16 +1120,16 @@ function App() {
       const exportWidth = Math.floor(sourceWidth / effectiveMl);
       const exportHeight = Math.floor(sourceHeight / effectiveMl);
 
-      // Check per-band size — each Float32Array must fit in one JS ArrayBuffer (~2GB).
-      // Bands are separate allocations so total across bands is fine; the constraint
-      // is per-array, not aggregate.
+      // Warn if per-band allocation is very large (modern 64-bit browsers
+      // support ArrayBuffers well beyond 2 GB, but system RAM is the real limit)
       const perBandBytes = exportWidth * exportHeight * 4;
-      const MAX_SINGLE_ARRAY = 1.8e9; // ~1.8GB per Float32Array (leave headroom below 2GB JS limit)
-      if (perBandBytes > MAX_SINGLE_ARRAY) {
-        const suggestedMl = effectiveMl * 2;
-        addStatusLog('error', `Single band too large (${(perBandBytes / 1e9).toFixed(1)}GB). Increase multilook to ${suggestedMl}x or higher.`);
+      if (perBandBytes > 6e9) {
+        addStatusLog('error', `Single band too large (${(perBandBytes / 1e9).toFixed(1)}GB). Increase multilook to reduce size.`);
         setExporting(false);
         return;
+      }
+      if (perBandBytes > 2e9) {
+        addStatusLog('warning', `Large allocation: ${(perBandBytes / 1e9).toFixed(1)}GB per band — ensure sufficient RAM`);
       }
 
       // Extract EPSG from CRS string
@@ -1135,6 +1139,14 @@ function App() {
       // Band names from the loaded data's required polarizations
       // Single-band: ['HHHH'], RGB composite: ['HHHH', 'HVHV', 'VVVV'], etc.
       const bandNames = imageData.requiredPols || [imageData.polarization || 'HHHH'];
+
+      // Complex band names (e.g. HHVV → HHVV_re, HHVV_im) for decompositions
+      const complexBandNames = [];
+      if (imageData.requiredComplexPols) {
+        for (const cpol of imageData.requiredComplexPols) {
+          complexBandNames.push(`${cpol}_re`, `${cpol}_im`);
+        }
+      }
 
       addStatusLog('info', `Source: ${sourceWidth} x ${sourceHeight}`);
       addStatusLog('info', `Multilook: ${effectiveMl}x${effectiveMl} (integer)`);
@@ -1157,9 +1169,10 @@ function App() {
         addStatusLog('info', `Format: GeoTIFF (Float32, 512x512 tiles, DEFLATE)`);
       }
 
-      // Allocate output arrays for each band
+      // Allocate output arrays for each band (power + complex)
       const bands = {};
-      for (const name of bandNames) {
+      const allBandNames = [...bandNames, ...complexBandNames];
+      for (const name of allBandNames) {
         bands[name] = new Float32Array(exportWidth * exportHeight);
       }
 
@@ -1180,8 +1193,8 @@ function App() {
           exportWidth,
         });
 
-        // Copy stripe data into output arrays
-        for (const name of bandNames) {
+        // Copy stripe data into output arrays (power + complex bands)
+        for (const name of allBandNames) {
           if (stripe.bands[name]) {
             bands[name].set(stripe.bands[name], startRow * exportWidth);
           }
@@ -1319,9 +1332,10 @@ function App() {
 
         filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
       } else {
-        // --- Raw export: Float32 linear power ---
+        // --- Raw export: Float32 linear power (+ complex bands if present) ---
+        const rawBandNames = complexBandNames.length > 0 ? allBandNames : bandNames;
         addStatusLog('info', 'Writing Float32 GeoTIFF...');
-        geotiff = writeFloat32GeoTIFF(bands, bandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
+        geotiff = writeFloat32GeoTIFF(bands, rawBandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
           onProgress: (pct) => {
             if (pct % 20 === 0 && pct > 0 && pct < 100) {
               addStatusLog('info', `Encoding: ${pct}%`);

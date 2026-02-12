@@ -1833,7 +1833,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
       // For small regions, read directly with readRegion (fast path)
       const MAX_DIRECT_PIXELS = 1024 * 1024; // 1M pixels max for direct read
       if (sliceW * sliceH <= MAX_DIRECT_PIXELS) {
-        console.log(`[NISAR Loader] Tile ${tileKey}: direct read [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH})`);
+        // console.log(`[NISAR Loader] Tile ${tileKey}: direct read [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH})`);
         const readPromises = [streamReader.readRegion(selectedDatasetId, top, left, sliceH, sliceW)];
         if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, top, left, sliceH, sliceW));
         const [regionResult, maskRegion] = await Promise.all(readPromises);
@@ -1855,7 +1855,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         const nSub = multiLook
           ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
           : 1;
-        console.log(`[NISAR Loader] Tile ${tileKey}: chunk-sampled [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH}) ${multiLook ? 'multi-look' : 'preview'} samples=${nSub}x${nSub}`);
+        // console.log(`[NISAR Loader] Tile ${tileKey}: chunk-sampled [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH}) ${multiLook ? 'multi-look' : 'preview'} samples=${nSub}x${nSub}`);
 
         for (let ty = 0; ty < tileSize; ty++) {
           for (let tx = 0; tx < tileSize; tx++) {
@@ -2938,7 +2938,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
     // LRU: If tile exists, move it to end (most recently used)
     if (tileCache.has(tileKey)) {
-      console.log(`[NISAR Tile] Cache hit: ${tileKey}`);
+      // console.log(`[NISAR Tile] Cache hit: ${tileKey}`);
       const tile = tileCache.get(tileKey);
       tileCache.delete(tileKey);
       tileCache.set(tileKey, tile);
@@ -3153,7 +3153,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
       }
       tileCache.set(tileKey, tile);
 
-      console.log(`[NISAR Tile] Success: ${tileKey}, region=[${left},${top},${right},${bottom}], samples=${Object.keys(bandArrays)[0] ? bandArrays[Object.keys(bandArrays)[0]].length : 0}`);
+      // console.log(`[NISAR Tile] Success: ${tileKey}, region=[${left},${top},${right},${bottom}], samples=${Object.keys(bandArrays)[0] ? bandArrays[Object.keys(bandArrays)[0]].length : 0}`);
 
       return tile;
 

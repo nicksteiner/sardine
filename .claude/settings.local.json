@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(ls:*)",
+      "Bash(nm:*)",
+      "Bash(echo:*)",
+      "Bash(npm --version:*)",
+      "Bash(LD_LIBRARY_PATH=\"\" /usr/bin/node:*)"
     ]
   }
 }

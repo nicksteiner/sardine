@@ -2431,10 +2431,24 @@ export class H5Chunk {
 
     console.log(`[h5chunk] Lazy-loading B-tree for ${dataset.path || datasetId} at 0x${layout.btreeAddress.toString(16)}`);
 
-    // Fetch B-tree region (typically 10-100 KB per dataset)
-    const btreeSize = 150 * 1024; // Conservative estimate: 150 KB
-    const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
-    const btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
+    // Use the metadata buffer if the B-tree falls within it — avoids a redundant
+    // fetch AND gives the parser access to child nodes that may be scattered
+    // across the metadata region (NISAR B-trees for 35K×35K images can span
+    // hundreds of KB; child nodes at absolute addresses need the full buffer).
+    let btreeReader;
+    if (layout.btreeAddress < this.metadataBuffer.byteLength) {
+      btreeReader = new BufferReader(this.metadataBuffer, true, 0);
+    } else {
+      // B-tree beyond metadata buffer — fetch a region sized to the expected
+      // number of chunks. Each B-tree leaf entry ≈ 50 bytes.
+      const shape = dataset.shape || [1, 1];
+      const chunkDims = layout.chunkDims || [512, 512];
+      const numChunks = shape.reduce((n, dim, i) =>
+        n * Math.ceil(dim / (chunkDims[i] || 1)), 1);
+      const btreeSize = Math.max(256 * 1024, numChunks * 64);
+      const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
+      btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
+    }
 
     // Parse B-tree to build chunk index
     try {
