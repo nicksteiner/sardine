@@ -41,6 +41,8 @@ uniform sampler2D uTexture;
 // RGB-mode textures (only used when uMode > 0.5)
 uniform sampler2D uTextureG;
 uniform sampler2D uTextureB;
+// Mask texture (NISAR §4.3.3: 0=invalid, 1-5=valid, 255=fill)
+uniform sampler2D uTextureMask;
 
 uniform float uMin;
 uniform float uMax;
@@ -49,6 +51,7 @@ uniform float uColormap;
 uniform float uGamma;
 uniform float uStretchMode;
 uniform float uMode;  // 0 = single-band + colormap, 1 = RGB composite
+uniform float uUseMask;  // > 0.5 = apply mask
 // Per-channel min/max for RGB mode (falls back to uMin/uMax if equal)
 uniform float uMinR;
 uniform float uMaxR;
@@ -113,6 +116,12 @@ void main() {
                     (ampB != 0.0 && !isnan(ampB));
     float alpha = anyValid ? 1.0 : 0.0;
 
+    // Apply mask: 0=invalid, 255=fill → transparent; 1-5=valid
+    if (uUseMask > 0.5) {
+      float maskVal = texture(uTextureMask, vTexCoord).r;
+      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0.0;
+    }
+
     fragColor = vec4(rgb, alpha);
   } else {
     // ── Single-band mode: R32F texture + colormap ──
@@ -144,6 +153,13 @@ void main() {
     }
 
     float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
+
+    // Apply mask: 0=invalid, 255=fill → transparent; 1-5=valid
+    if (uUseMask > 0.5) {
+      float maskVal = texture(uTextureMask, vTexCoord).r;
+      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0.0;
+    }
+
     fragColor = vec4(rgb, alpha);
   }
 }
@@ -186,7 +202,8 @@ export class SARGPULayer extends Layer {
           model: null,
           texture: null,
           textureG: null,
-          textureB: null
+          textureB: null,
+          textureMask: null
         });
         // Trigger re-render by setting needsUpdate
         this.setNeedsUpdate();
@@ -301,9 +318,19 @@ export class SARGPULayer extends Layer {
         this.setState({ texture });
       }
     }
+
+    // Upload mask texture when dataMask changes
+    const { dataMask } = props;
+    if (dataMask && (dataMask !== oldProps.dataMask || width !== oldProps.width || height !== oldProps.height)) {
+      const texMask = this._createR32FTexture(dataMask, width, height, true);
+      if (texMask) {
+        if (this.state.textureMask) gl.deleteTexture(this.state.textureMask);
+        this.setState({ textureMask: texMask });
+      }
+    }
   }
 
-  _createR32FTexture(data, width, height) {
+  _createR32FTexture(data, width, height, nearest = false) {
     const { gl } = this.context;
 
     try {
@@ -335,8 +362,9 @@ export class SARGPULayer extends Layer {
       );
 
       // Set texture parameters
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      const filter = nearest ? gl.NEAREST : gl.LINEAR;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
@@ -351,7 +379,7 @@ export class SARGPULayer extends Layer {
   }
 
   draw({ uniforms }) {
-    const { model, texture, textureG, textureB } = this.state;
+    const { model, texture, textureG, textureB, textureMask } = this.state;
 
     if (!model || !texture) return;
 
@@ -361,7 +389,8 @@ export class SARGPULayer extends Layer {
       colormap = 'grayscale',
       gamma = 1.0,
       stretchMode = 'linear',
-      mode = 'single'
+      mode = 'single',
+      useMask = false
     } = this.props;
 
     const isRGB = mode === 'rgb';
@@ -408,6 +437,8 @@ export class SARGPULayer extends Layer {
         uGamma: gamma,
         uStretchMode: getStretchModeId(stretchMode),
         uMode: isRGB ? 1.0 : 0.0,
+        uUseMask: (useMask && textureMask) ? 1.0 : 0.0,
+        uTextureMask: 3,
       };
 
       if (isRGB && textureG && textureB) {
@@ -421,10 +452,20 @@ export class SARGPULayer extends Layer {
         layerUniforms.uTextureB = 2;
       }
 
+      // Bind mask texture to unit 3
+      if (textureMask) {
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, textureMask);
+      }
+
       model.setUniforms(layerUniforms);
       model.draw();
 
       // Unbind textures
+      if (textureMask) {
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+      }
       if (isRGB) {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, null);
@@ -458,6 +499,7 @@ export class SARGPULayer extends Layer {
       if (this.state.texture) gl.deleteTexture(this.state.texture);
       if (this.state.textureG) gl.deleteTexture(this.state.textureG);
       if (this.state.textureB) gl.deleteTexture(this.state.textureB);
+      if (this.state.textureMask) gl.deleteTexture(this.state.textureMask);
     }
   }
 }
@@ -470,6 +512,9 @@ SARGPULayer.defaultProps = {
   dataR: { type: 'object', value: null, compare: false },
   dataG: { type: 'object', value: null, compare: false },
   dataB: { type: 'object', value: null, compare: false },
+  // Mask data (Float32Array, uint8 values: 0=invalid, 1-5=valid, 255=fill)
+  dataMask: { type: 'object', value: null, compare: false },
+  useMask: { type: 'boolean', value: false, compare: true },
   mode: { type: 'string', value: 'single', compare: true },  // 'single' or 'rgb'
   width: { type: 'number', value: 256, min: 1 },
   height: { type: 'number', value: 256, min: 1 },

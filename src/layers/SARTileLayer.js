@@ -24,6 +24,7 @@ export class SARTileLayer extends TileLayer {
       stretchMode = 'linear',
       opacity = 1,
       multiLook = false,
+      useMask = false,
       minZoom,
       maxZoom = 20,
       tileSize = 256,
@@ -74,7 +75,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, useMask],
       },
 
       renderSubLayers: (subProps) => {
@@ -85,6 +86,9 @@ export class SARTileLayer extends TileLayer {
         const tileBounds = bbox.west !== undefined
           ? [bbox.west, bbox.south, bbox.east, bbox.north]
           : [bbox.left, bbox.top, bbox.right, bbox.bottom];
+
+        // Mask data (if available from tile)
+        const maskProps = tileData.mask ? { dataMask: tileData.mask, useMask } : { useMask: false };
 
         // RGB composite mode - GPU accelerated (3x R32F textures)
         if (tileData.bands && tileData.compositeId) {
@@ -106,6 +110,7 @@ export class SARTileLayer extends TileLayer {
             gamma,
             stretchMode,
             opacity: subProps.opacity,
+            ...maskProps,
           });
         } else if (tileData.data) {
           return new SARGPULayer({
@@ -120,6 +125,7 @@ export class SARTileLayer extends TileLayer {
             gamma,
             stretchMode,
             opacity: subProps.opacity,
+            ...maskProps,
           });
         } else {
           return null;

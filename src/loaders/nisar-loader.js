@@ -1380,18 +1380,29 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     }
   }
 
-  // Strategy 2: Match by path tail
+  // Strategy 2: Match by path tail, preferring the correct frequency
   if (!selectedDataset) {
+    let fallback = null;
     for (const ds of h5Datasets) {
       if (ds.shape?.length === 2 && ds.path) {
         const tail = ds.path.split('/').pop();
         if (tail === polarization) {
-          selectedDataset = ds;
-          selectedDatasetId = ds.id;
-          console.log(`[NISAR Loader] Matched ${polarization} by path tail: ${ds.path}`);
-          break;
+          // Prefer datasets under the active frequency
+          if (ds.path.includes(`frequency${activeFreq}`)) {
+            selectedDataset = ds;
+            selectedDatasetId = ds.id;
+            console.log(`[NISAR Loader] Matched ${polarization} by path tail (freq ${activeFreq}): ${ds.path}`);
+            break;
+          } else if (!fallback) {
+            fallback = ds;
+          }
         }
       }
+    }
+    if (!selectedDataset && fallback) {
+      selectedDataset = fallback;
+      selectedDatasetId = fallback.id;
+      console.log(`[NISAR Loader] Matched ${polarization} by path tail (fallback freq): ${fallback.path}`);
     }
   }
 
@@ -1496,6 +1507,31 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   const xCoordId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
   const yCoordId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
 
+  // ── Authoritative pixel spacing from xCoordinateSpacing / yCoordinateSpacing ──
+  // These scalar datasets encode the true posting (bandwidth-dependent: 20m for
+  // 80/20 MHz, 10m for 40 MHz).  Read them FIRST so Tiers 1–2 don't need to
+  // infer spacing from extent / dimensions (which fails when coordinate arrays
+  // have more elements than the data grid).
+  let spacingFromFile = false;
+  try {
+    const xSpacingId = streamReader.findDatasetByPath(paths.xCoordinateSpacing(activeFreq));
+    const ySpacingId = streamReader.findDatasetByPath(paths.yCoordinateSpacing(activeFreq));
+    if (xSpacingId != null && ySpacingId != null) {
+      const xSpData = await streamReader.readSmallDataset(xSpacingId);
+      const ySpData = await streamReader.readSmallDataset(ySpacingId);
+      if (xSpData?.data?.[0] && ySpData?.data?.[0]) {
+        pixelSizeX = Math.abs(xSpData.data[0]);
+        pixelSizeY = Math.abs(ySpData.data[0]);
+        spacingFromFile = true;
+        console.log(`[NISAR Loader] Pixel spacing from file: ${pixelSizeX.toFixed(1)}m x ${pixelSizeY.toFixed(1)}m`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[NISAR Loader] Could not read spacing datasets:`, e.message);
+  }
+
+  // ── Bounds extraction (3-tier fallback) ──
+
   // Tier 1: Try reading full coordinate arrays
   try {
     if (xCoordId != null && yCoordId != null) {
@@ -1510,10 +1546,16 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         const minY = Math.min(yCoords[0], yCoords[yCoords.length - 1]);
         const maxY = Math.max(yCoords[0], yCoords[yCoords.length - 1]);
         worldBounds = [minX, minY, maxX, maxY];
-        pixelSizeX = (maxX - minX) / (width - 1 || 1);
-        pixelSizeY = (maxY - minY) / (height - 1 || 1);
+        if (!spacingFromFile) {
+          // Fall back: derive spacing from coordinate array lengths
+          pixelSizeX = (maxX - minX) / (xCoords.length - 1 || 1);
+          pixelSizeY = (maxY - minY) / (yCoords.length - 1 || 1);
+        }
         console.log(`[NISAR Loader] World bounds from full coordinate arrays: [${worldBounds.join(', ')}]`);
         console.log(`[NISAR Loader] Pixel spacing: ${pixelSizeX.toFixed(1)}m x ${pixelSizeY.toFixed(1)}m`);
+        if (xCoords.length !== width || yCoords.length !== height) {
+          console.warn(`[NISAR Loader] Coordinate/data dimension mismatch: coords=${xCoords.length}x${yCoords.length}, data=${width}x${height}`);
+        }
       }
     }
   } catch (e) {
@@ -1532,62 +1574,49 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         const minY = Math.min(yEndpoints.first, yEndpoints.last);
         const maxY = Math.max(yEndpoints.first, yEndpoints.last);
         worldBounds = [minX, minY, maxX, maxY];
-        pixelSizeX = (maxX - minX) / (width - 1 || 1);
-        pixelSizeY = (maxY - minY) / (height - 1 || 1);
+        if (!spacingFromFile) {
+          // Fall back: derive spacing from coordinate array lengths
+          pixelSizeX = (maxX - minX) / (xEndpoints.length - 1 || 1);
+          pixelSizeY = (maxY - minY) / (yEndpoints.length - 1 || 1);
+        }
         console.log(`[NISAR Loader] World bounds from coordinate endpoints: [${worldBounds.join(', ')}]`);
         console.log(`[NISAR Loader] Pixel spacing: ${pixelSizeX.toFixed(1)}m x ${pixelSizeY.toFixed(1)}m`);
+        if (xEndpoints.length !== width || yEndpoints.length !== height) {
+          console.warn(`[NISAR Loader] Coordinate/data dimension mismatch: coords=${xEndpoints.length}x${yEndpoints.length}, data=${width}x${height}`);
+        }
       }
     } catch (e) {
       console.warn(`[NISAR Loader] Tier 2 (endpoints) failed:`, e.message);
     }
   }
 
-  // Tier 3: Use coordinate spacing datasets + first coordinate element
-  if (!worldBounds) {
+  // Tier 3: Use first coordinate element + spacing to compute bounds
+  if (!worldBounds && spacingFromFile) {
     try {
-      const xSpacingId = streamReader.findDatasetByPath(paths.xCoordinateSpacing(activeFreq));
-      const ySpacingId = streamReader.findDatasetByPath(paths.yCoordinateSpacing(activeFreq));
-
-      if (xSpacingId != null && ySpacingId != null) {
-        const xSpData = await streamReader.readSmallDataset(xSpacingId);
-        const ySpData = await streamReader.readSmallDataset(ySpacingId);
-
-        if (xSpData?.data?.[0] && ySpData?.data?.[0]) {
-          const dx = Math.abs(xSpData.data[0]);
-          const dy = Math.abs(ySpData.data[0]);
-          pixelSizeX = dx;
-          pixelSizeY = dy;
-
-          // Try to get the first coordinate element for the origin
-          let x0 = null, y0 = null;
-          if (xCoordId != null) {
-            const xEp = await streamReader.readDatasetEndpoints(xCoordId);
-            if (xEp) x0 = xEp.first;
-          }
-          if (yCoordId != null) {
-            const yEp = await streamReader.readDatasetEndpoints(yCoordId);
-            if (yEp) y0 = yEp.first;
-          }
-
-          if (x0 != null && y0 != null) {
-            // xCoordinates: pixel-center coords, ascending or descending
-            // yCoordinates: pixel-center coords, typically descending (north-up)
-            const xEnd = x0 + (width - 1) * dx;
-            const yEnd = y0 - (height - 1) * dy; // y typically decreases (north-up)
-            worldBounds = [
-              Math.min(x0, xEnd),
-              Math.min(y0, yEnd),
-              Math.max(x0, xEnd),
-              Math.max(y0, yEnd),
-            ];
-            console.log(`[NISAR Loader] World bounds from spacing + first coord: [${worldBounds.join(', ')}]`);
-          } else {
-            console.warn(`[NISAR Loader] Spacing datasets found (dx=${dx}, dy=${dy}) but no origin coordinate`);
-          }
-        }
+      let x0 = null, y0 = null;
+      let xLen = width, yLen = height;
+      if (xCoordId != null) {
+        const xEp = await streamReader.readDatasetEndpoints(xCoordId);
+        if (xEp) { x0 = xEp.first; xLen = xEp.length; }
+      }
+      if (yCoordId != null) {
+        const yEp = await streamReader.readDatasetEndpoints(yCoordId);
+        if (yEp) { y0 = yEp.first; yLen = yEp.length; }
+      }
+      if (x0 != null && y0 != null) {
+        // Use coordinate array lengths — may differ from data dimensions
+        const xEnd = x0 + (xLen - 1) * pixelSizeX;
+        const yEnd = y0 - (yLen - 1) * pixelSizeY;
+        worldBounds = [
+          Math.min(x0, xEnd),
+          Math.min(y0, yEnd),
+          Math.max(x0, xEnd),
+          Math.max(y0, yEnd),
+        ];
+        console.log(`[NISAR Loader] World bounds from spacing + first coord: [${worldBounds.join(', ')}]`);
       }
     } catch (e) {
-      console.warn(`[NISAR Loader] Tier 3 (spacing) failed:`, e.message);
+      console.warn(`[NISAR Loader] Tier 3 (spacing + origin) failed:`, e.message);
     }
   }
 
@@ -1654,10 +1683,29 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     band,
   }));
 
+  // ── Mask dataset (NISAR spec §4.3.3) ──
+  // uint8 layer with same grid/chunks as data: 0=invalid, 1-5=valid, 255=fill
+  let maskDatasetId = null;
+  try {
+    const maskId = streamReader.findDatasetByPath(paths.mask(activeFreq));
+    if (maskId != null) {
+      const maskDs = h5Datasets.find(d => d.id === maskId);
+      if (maskDs?.shape?.length === 2) {
+        maskDatasetId = maskId;
+        console.log(`[NISAR Loader] Mask dataset found: ${maskDs.path} [${maskDs.shape.join(', ')}] dtype=${maskDs.dtype}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[NISAR Loader] Could not find mask dataset:', e.message);
+  }
+
   // Chunk-level cache: shared across tiles so zoomed views reuse data
   // LRU cache: Map maintains insertion order, move accessed items to end
   const chunkCache = new Map();
   const MAX_CHUNK_CACHE = 500;
+
+  // Mask chunk cache (separate from data to avoid key collisions)
+  const maskChunkCache = new Map();
 
   // Tile cache for rendered tiles (LRU with bounded size)
   const tileCache = new Map();
@@ -1692,6 +1740,32 @@ async function loadNISARGCOVStreaming(file, options = {}) {
       oldestKeys.forEach(k => chunkCache.delete(k));
     }
     chunkCache.set(key, chunk);
+    return chunk;
+  }
+
+  /**
+   * Read a mask chunk with caching (LRU). Returns null if no mask dataset.
+   */
+  async function getCachedMaskChunk(chunkRow, chunkCol) {
+    if (!maskDatasetId) return null;
+    const key = `${chunkRow},${chunkCol}`;
+    if (maskChunkCache.has(key)) {
+      const chunk = maskChunkCache.get(key);
+      maskChunkCache.delete(key);
+      maskChunkCache.set(key, chunk);
+      return chunk;
+    }
+    let chunk;
+    try {
+      chunk = await streamReader.readChunk(maskDatasetId, chunkRow, chunkCol);
+    } catch (e) {
+      return null;
+    }
+    if (maskChunkCache.size >= MAX_CHUNK_CACHE) {
+      const oldestKeys = Array.from(maskChunkCache.keys()).slice(0, 100);
+      oldestKeys.forEach(k => maskChunkCache.delete(k));
+    }
+    maskChunkCache.set(key, chunk);
     return chunk;
   }
 
@@ -1754,19 +1828,27 @@ async function loadNISARGCOVStreaming(file, options = {}) {
       if (sliceW <= 0 || sliceH <= 0) return null;
 
       let tileData;
+      let maskData = null;
 
       // For small regions, read directly with readRegion (fast path)
       const MAX_DIRECT_PIXELS = 1024 * 1024; // 1M pixels max for direct read
       if (sliceW * sliceH <= MAX_DIRECT_PIXELS) {
         console.log(`[NISAR Loader] Tile ${tileKey}: direct read [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH})`);
-        const regionResult = await streamReader.readRegion(selectedDatasetId, top, left, sliceH, sliceW);
+        const readPromises = [streamReader.readRegion(selectedDatasetId, top, left, sliceH, sliceW)];
+        if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, top, left, sliceH, sliceW));
+        const [regionResult, maskRegion] = await Promise.all(readPromises);
         if (!regionResult?.data) return null;
         tileData = resampleToTileSize(regionResult.data, sliceW, sliceH, tileSize, NaN, multiLook);
+        if (maskRegion?.data) {
+          // Nearest-neighbor resample for mask (categorical, no averaging)
+          maskData = resampleToTileSize(maskRegion.data, sliceW, sliceH, tileSize, 0, false);
+        }
       } else {
         // For large regions, sample by reading chunks
         const stepX = sliceW / tileSize;
         const stepY = sliceH / tileSize;
         tileData = new Float32Array(tileSize * tileSize);
+        if (maskDatasetId) maskData = new Float32Array(tileSize * tileSize);
 
         // multiLook=false → 1 sample (nearest-neighbour, instant preview)
         // multiLook=true  → 4–8 sub-samples per axis (16–64 look area average)
@@ -1778,6 +1860,10 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         for (let ty = 0; ty < tileSize; ty++) {
           for (let tx = 0; tx < tileSize; tx++) {
             let sum = 0, count = 0;
+
+            // For mask: nearest-neighbor (center sample only, no averaging)
+            const centerSrcY = top + Math.floor((ty + 0.5) * stepY);
+            const centerSrcX = left + Math.floor((tx + 0.5) * stepX);
 
             for (let sy = 0; sy < nSub; sy++) {
               const srcY = top + Math.floor(ty * stepY + (sy + 0.5) * stepY / nSub);
@@ -1806,11 +1892,27 @@ async function loadNISARGCOVStreaming(file, options = {}) {
             }
 
             tileData[ty * tileSize + tx] = count > 0 ? sum / count : 0;
+
+            // Mask: nearest-neighbor from center pixel
+            if (maskData && centerSrcY >= 0 && centerSrcY < height && centerSrcX >= 0 && centerSrcX < width) {
+              const cr = Math.floor(centerSrcY / chunkH);
+              const cc = Math.floor(centerSrcX / chunkW);
+              const mChunk = await getCachedMaskChunk(cr, cc);
+              if (mChunk) {
+                const localY = centerSrcY - cr * chunkH;
+                const localX = centerSrcX - cc * chunkW;
+                const idx = localY * chunkW + localX;
+                if (idx >= 0 && idx < mChunk.length) {
+                  maskData[ty * tileSize + tx] = mChunk[idx];
+                }
+              }
+            }
           }
         }
       }
 
       const tile = { data: tileData, width: tileSize, height: tileSize };
+      if (maskData) tile.mask = maskData;
 
       // LRU cache eviction: remove oldest entries (from beginning of Map)
       if (tileCache.size >= MAX_TILE_CACHE) {
@@ -1924,6 +2026,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     /** Full-resolution northing coordinates (Float64Array, length = height). */
     yCoords,
     metadataCube,  // NEW: Metadata cube for incidence angle, slant range, etc.
+    hasMask: maskDatasetId != null,
     _streaming: true,
     _h5chunk: streamReader,
   };
@@ -2564,6 +2667,27 @@ export async function loadNISARRGBComposite(file, options = {}) {
   const yCoordId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
   console.log(`[NISAR Loader] RGB coordinate dataset IDs: x=${xCoordId}, y=${yCoordId}, paths: ${paths.xCoordinates(activeFreq)}, ${paths.yCoordinates(activeFreq)}`);
 
+  // ── Authoritative pixel spacing from xCoordinateSpacing / yCoordinateSpacing ──
+  let pixelSizeX = 1;
+  let pixelSizeY = 1;
+  let spacingFromFile = false;
+  try {
+    const xSpId = streamReader.findDatasetByPath(paths.xCoordinateSpacing(activeFreq));
+    const ySpId = streamReader.findDatasetByPath(paths.yCoordinateSpacing(activeFreq));
+    if (xSpId != null && ySpId != null) {
+      const xSpData = await streamReader.readSmallDataset(xSpId);
+      const ySpData = await streamReader.readSmallDataset(ySpId);
+      if (xSpData?.data?.[0] && ySpData?.data?.[0]) {
+        pixelSizeX = Math.abs(xSpData.data[0]);
+        pixelSizeY = Math.abs(ySpData.data[0]);
+        spacingFromFile = true;
+        console.log(`[NISAR Loader] RGB pixel spacing from file: ${pixelSizeX.toFixed(1)}m x ${pixelSizeY.toFixed(1)}m`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[NISAR Loader] RGB: Could not read spacing datasets:`, e.message);
+  }
+
   // Tier 1: Full coordinate arrays
   try {
     if (xCoordId != null && yCoordId != null) {
@@ -2577,7 +2701,14 @@ export async function loadNISARRGBComposite(file, options = {}) {
         const minY = Math.min(yCoords[0], yCoords[yCoords.length - 1]);
         const maxY = Math.max(yCoords[0], yCoords[yCoords.length - 1]);
         worldBounds = [minX, minY, maxX, maxY];
+        if (!spacingFromFile) {
+          pixelSizeX = (maxX - minX) / (xCoords.length - 1 || 1);
+          pixelSizeY = (maxY - minY) / (yCoords.length - 1 || 1);
+        }
         console.log(`[NISAR Loader] RGB bounds from full arrays: [${worldBounds.join(', ')}]`);
+        if (xCoords.length !== width || yCoords.length !== height) {
+          console.warn(`[NISAR Loader] RGB: Coordinate/data dimension mismatch: coords=${xCoords.length}x${yCoords.length}, data=${width}x${height}`);
+        }
       }
     }
   } catch (e) {
@@ -2594,34 +2725,32 @@ export async function loadNISARRGBComposite(file, options = {}) {
           Math.min(xEp.first, xEp.last), Math.min(yEp.first, yEp.last),
           Math.max(xEp.first, xEp.last), Math.max(yEp.first, yEp.last),
         ];
+        if (!spacingFromFile) {
+          pixelSizeX = (worldBounds[2] - worldBounds[0]) / (xEp.length - 1 || 1);
+          pixelSizeY = (worldBounds[3] - worldBounds[1]) / (yEp.length - 1 || 1);
+        }
         console.log(`[NISAR Loader] RGB bounds from endpoints: [${worldBounds.join(', ')}]`);
+        if (xEp.length !== width || yEp.length !== height) {
+          console.warn(`[NISAR Loader] RGB: Coordinate/data dimension mismatch: coords=${xEp.length}x${yEp.length}, data=${width}x${height}`);
+        }
       }
     } catch (e) {
       console.warn(`[NISAR Loader] RGB Tier 2 failed:`, e.message);
     }
   }
 
-  // Tier 3: Spacing + first element
-  if (!worldBounds) {
+  // Tier 3: Use first coordinate + spacing for bounds
+  if (!worldBounds && spacingFromFile) {
     try {
-      const xSpId = streamReader.findDatasetByPath(paths.xCoordinateSpacing(activeFreq));
-      const ySpId = streamReader.findDatasetByPath(paths.yCoordinateSpacing(activeFreq));
-      if (xSpId != null && ySpId != null) {
-        const xSpData = await streamReader.readSmallDataset(xSpId);
-        const ySpData = await streamReader.readSmallDataset(ySpId);
-        if (xSpData?.data?.[0] && ySpData?.data?.[0]) {
-          const dx = Math.abs(xSpData.data[0]);
-          const dy = Math.abs(ySpData.data[0]);
-          let x0 = null, y0 = null;
-          if (xCoordId) { const ep = await streamReader.readDatasetEndpoints(xCoordId); if (ep) x0 = ep.first; }
-          if (yCoordId) { const ep = await streamReader.readDatasetEndpoints(yCoordId); if (ep) y0 = ep.first; }
-          if (x0 != null && y0 != null) {
-            const xEnd = x0 + (width - 1) * dx;
-            const yEnd = y0 - (height - 1) * dy;
-            worldBounds = [Math.min(x0, xEnd), Math.min(y0, yEnd), Math.max(x0, xEnd), Math.max(y0, yEnd)];
-            console.log(`[NISAR Loader] RGB bounds from spacing: [${worldBounds.join(', ')}]`);
-          }
-        }
+      let x0 = null, y0 = null;
+      let xLen = width, yLen = height;
+      if (xCoordId) { const ep = await streamReader.readDatasetEndpoints(xCoordId); if (ep) { x0 = ep.first; xLen = ep.length; } }
+      if (yCoordId) { const ep = await streamReader.readDatasetEndpoints(yCoordId); if (ep) { y0 = ep.first; yLen = ep.length; } }
+      if (x0 != null && y0 != null) {
+        const xEnd = x0 + (xLen - 1) * pixelSizeX;
+        const yEnd = y0 - (yLen - 1) * pixelSizeY;
+        worldBounds = [Math.min(x0, xEnd), Math.min(y0, yEnd), Math.max(x0, xEnd), Math.max(y0, yEnd)];
+        console.log(`[NISAR Loader] RGB bounds from spacing: [${worldBounds.join(', ')}]`);
       }
     } catch (e) {
       console.warn(`[NISAR Loader] RGB Tier 3 failed:`, e.message);
@@ -2648,11 +2777,6 @@ export async function loadNISARRGBComposite(file, options = {}) {
     console.warn(`[NISAR Loader] RGB: No projection found, using fallback: ${crs}`);
   }
   console.log(`[NISAR Loader] RGB composite CRS: ${crs}`);
-
-  // Calculate pixel size from world coordinates (meters/degrees)
-  const geoBounds = worldBounds || bounds;
-  const pixelSizeX = (geoBounds[2] - geoBounds[0]) / (width - 1 || 1);
-  const pixelSizeY = (geoBounds[3] - geoBounds[1]) / (height - 1 || 1);
 
   console.log(`[NISAR Loader] RGB composite metadata:`, {
     bounds,
@@ -3074,19 +3198,31 @@ async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A'
 
   if (datasets.length === 0) return polMap;
 
-  // ── Strategy 1: Match from HDF5 path tail ──
+  // ── Strategy 1: Match from HDF5 path tail, preferring active frequency ──
   // NISAR paths: /science/{band}/GCOV/grids/frequency{f}/{term}
   let matchedFromPath = 0;
+  const freqTag = `frequency${freq}`;
 
   for (const ds of datasets) {
     if (ds.path) {
       const tail = ds.path.split('/').pop();
-      if (COV_TERM_SET.has(tail) && !polMap[tail]) {
-        polMap[tail] = ds.id;
-        matchedFromPath++;
-        console.log(`[NISAR Loader] Matched ${tail} → ${ds.id} (path: ${ds.path})`);
+      if (COV_TERM_SET.has(tail)) {
+        const isActiveFreq = ds.path.includes(freqTag);
+        // Only overwrite if we don't have this term yet OR the new match
+        // belongs to the active frequency (and the existing one doesn't)
+        if (!polMap[tail] || (isActiveFreq && !polMap[`_freq_${tail}`])) {
+          polMap[tail] = ds.id;
+          if (isActiveFreq) polMap[`_freq_${tail}`] = true;
+          matchedFromPath++;
+          console.log(`[NISAR Loader] Matched ${tail} → ${ds.id} (path: ${ds.path})`);
+        }
       }
     }
+  }
+
+  // Clean up internal frequency tracking keys
+  for (const key of Object.keys(polMap)) {
+    if (key.startsWith('_freq_')) delete polMap[key];
   }
 
   if (matchedFromPath > 0) {
@@ -3253,16 +3389,28 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     }
   }
 
+  // Strategy 2: Match by path tail, preferring the correct frequency
   if (!selectedDataset) {
+    let fallback = null;
     for (const ds of h5Datasets) {
       if (ds.shape?.length === 2 && ds.path) {
         const tail = ds.path.split('/').pop();
         if (tail === polarization) {
-          selectedDataset = ds;
-          selectedDatasetId = ds.id;
-          break;
+          if (ds.path.includes(`frequency${activeFreq}`)) {
+            selectedDataset = ds;
+            selectedDatasetId = ds.id;
+            console.log(`[NISAR Loader] URL: Matched ${polarization} by path tail (freq ${activeFreq}): ${ds.path}`);
+            break;
+          } else if (!fallback) {
+            fallback = ds;
+          }
         }
       }
+    }
+    if (!selectedDataset && fallback) {
+      selectedDataset = fallback;
+      selectedDatasetId = fallback.id;
+      console.warn(`[NISAR Loader] URL: Using fallback frequency for ${polarization}: ${fallback.path}`);
     }
   }
 
@@ -3318,10 +3466,24 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   const chunkH = selectedDataset.chunkDims?.[0] || 512;
   const chunkW = selectedDataset.chunkDims?.[1] || 512;
 
+  // ── Mask dataset (NISAR spec §4.3.3) ──
+  let maskDatasetId = null;
+  try {
+    const maskId = streamReader.findDatasetByPath(paths.mask(activeFreq));
+    if (maskId != null) {
+      const maskDs = h5Datasets.find(d => d.id === maskId);
+      if (maskDs?.shape?.length === 2) {
+        maskDatasetId = maskId;
+        console.log(`[NISAR Loader] URL: Mask dataset found: ${maskDs.path} [${maskDs.shape.join(', ')}]`);
+      }
+    }
+  } catch { /* ignore */ }
+
   // Per-chunk cache for streaming (keyed by "cr,cc")
   // Sized to hold a full fine grid (24×24 = 576) plus headroom
   const chunkCache = new Map();
   const MAX_CHUNK_CACHE = 600;
+  const maskChunkCache = new Map();
 
   async function getStreamChunk(cr, cc) {
     const key = `${cr},${cc}`;
@@ -3335,6 +3497,24 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         chunkCache.delete(first);
       }
       chunkCache.set(key, result);
+      return result;
+    } catch {
+      return null;
+    }
+  }
+
+  async function getStreamMaskChunk(cr, cc) {
+    if (!maskDatasetId) return null;
+    const key = `${cr},${cc}`;
+    if (maskChunkCache.has(key)) return maskChunkCache.get(key);
+    try {
+      const data = await streamReader.readChunk(maskDatasetId, cr, cc);
+      const result = data?.data || data;
+      if (maskChunkCache.size >= MAX_CHUNK_CACHE) {
+        const first = maskChunkCache.keys().next().value;
+        maskChunkCache.delete(first);
+      }
+      maskChunkCache.set(key, result);
       return result;
     } catch {
       return null;
@@ -3462,33 +3642,41 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       if (sliceW <= 0 || sliceH <= 0) return null;
 
       let tileData;
+      let maskData = null;
 
       // Small regions: read directly with readRegion (contiguous, fast)
       const MAX_DIRECT_PIXELS = 1024 * 1024;
       if (sliceW * sliceH <= MAX_DIRECT_PIXELS) {
-        const result = await streamReader.readRegion(
-          selectedDatasetId, pxTop, pxLeft, sliceH, sliceW
-        );
+        const readPromises = [streamReader.readRegion(selectedDatasetId, pxTop, pxLeft, sliceH, sliceW)];
+        if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, pxTop, pxLeft, sliceH, sliceW));
+        const [result, maskRegion] = await Promise.all(readPromises);
         if (!result) return null;
         tileData = result.data || result;
+        const maskRaw = maskRegion ? (maskRegion.data || maskRegion) : null;
 
         // Resample to tileSize if region is larger than tile
         if (sliceW > tileSize || sliceH > tileSize) {
           const resampled = new Float32Array(tileSize * tileSize);
           const scaleX = sliceW / tileSize;
           const scaleY = sliceH / tileSize;
+          let maskResampled = maskRaw ? new Float32Array(tileSize * tileSize) : null;
           for (let ty = 0; ty < tileSize; ty++) {
             const srcY = Math.min(Math.floor(ty * scaleY), sliceH - 1);
             for (let tx = 0; tx < tileSize; tx++) {
               const srcX = Math.min(Math.floor(tx * scaleX), sliceW - 1);
               resampled[ty * tileSize + tx] = tileData[srcY * sliceW + srcX];
+              if (maskResampled) maskResampled[ty * tileSize + tx] = maskRaw[srcY * sliceW + srcX];
             }
           }
           tileData = resampled;
-          return { data: tileData, width: tileSize, height: tileSize };
+          const tile = { data: tileData, width: tileSize, height: tileSize };
+          if (maskResampled) tile.mask = maskResampled;
+          return tile;
         }
 
-        return { data: tileData, width: sliceW, height: sliceH };
+        const tile = { data: tileData, width: sliceW, height: sliceH };
+        if (maskRaw) tile.mask = maskRaw;
+        return tile;
       }
 
       // Large regions: progressive mosaic + bilinear.
@@ -3533,6 +3721,34 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       tileData = buildMosaicTile(coarseGrid, coarseRows, coarseCols,
         pxTop, pxLeft, sliceH, sliceW, tileSize);
 
+      // Build mask tile via nearest-neighbor from coarse grid chunks
+      if (maskDatasetId) {
+        const maskPromises = [];
+        for (const cr of coarseRows) {
+          for (const cc of coarseCols) {
+            maskPromises.push(getStreamMaskChunk(cr, cc));
+          }
+        }
+        await Promise.all(maskPromises);
+
+        maskData = new Float32Array(tileSize * tileSize);
+        const stepX = sliceW / tileSize;
+        const stepY = sliceH / tileSize;
+        for (let ty = 0; ty < tileSize; ty++) {
+          const srcY = Math.min(Math.floor(pxTop + (ty + 0.5) * stepY), height - 1);
+          const cr = Math.floor(srcY / chunkH);
+          for (let tx = 0; tx < tileSize; tx++) {
+            const srcX = Math.min(Math.floor(pxLeft + (tx + 0.5) * stepX), width - 1);
+            const cc = Math.floor(srcX / chunkW);
+            const mChunk = maskChunkCache.get(`${cr},${cc}`);
+            if (mChunk) {
+              const idx = (srcY - cr * chunkH) * chunkW + (srcX - cc * chunkW);
+              if (idx >= 0 && idx < mChunk.length) maskData[ty * tileSize + tx] = mChunk[idx];
+            }
+          }
+        }
+      }
+
       // Schedule Phase 2 refinement if coarse was significantly sub-sampled
       const FINE_MAX = 24;
       const fineStrideR = Math.max(1, Math.ceil(totalCR / FINE_MAX));
@@ -3562,7 +3778,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
             const fineData = buildMosaicTile(fineGrid, fineRows, fineCols,
               pxTop, pxLeft, sliceH, sliceW, tileSize);
-            refinedTiles.set(tileKey, { data: fineData, width: tileSize, height: tileSize });
+            const refinedTile = { data: fineData, width: tileSize, height: tileSize };
+            if (maskData) refinedTile.mask = maskData;
+            refinedTiles.set(tileKey, refinedTile);
             if (_onRefine) _onRefine(tileKey);
           } catch (e) {
             console.warn('[NISAR URL] Tile refinement error:', e.message);
@@ -3570,7 +3788,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         })();
       }
 
-      return { data: tileData, width: tileSize, height: tileSize };
+      const tile = { data: tileData, width: tileSize, height: tileSize };
+      if (maskData) tile.mask = maskData;
+      return tile;
     } catch (e) {
       console.warn(`[NISAR URL] Tile error (${x},${y},${z}):`, e.message);
       return null;
@@ -3600,6 +3820,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     xCoords,
     yCoords,
     identification,
+    hasMask: maskDatasetId != null,
     /** Set a callback to be notified when a tile's refined data is ready. */
     set onRefine(fn) { _onRefine = fn; },
     get onRefine() { return _onRefine; },

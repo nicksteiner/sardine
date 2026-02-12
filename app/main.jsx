@@ -265,6 +265,7 @@ function App() {
   const [gamma, setGamma] = useState(1.0);
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
+  const [useMask, setUseMask] = useState(false);
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
@@ -1219,8 +1220,10 @@ function App() {
       }
       const geoBounds = imageData.worldBounds || imageData.bounds;
       // worldBounds are pixel-CENTER: span = (N-1) * spacing, so divide by (N-1)
-      const nativeSpacingX = imageData.pixelSpacing?.x || ((geoBounds[2] - geoBounds[0]) / (sourceWidth - 1));
-      const nativeSpacingY = imageData.pixelSpacing?.y || ((geoBounds[3] - geoBounds[1]) / (sourceHeight - 1));
+      // Always compute from worldBounds and data dimensions — pixelSpacing reflects
+      // coordinate posting which may differ from data pixel footprint.
+      const nativeSpacingX = (geoBounds[2] - geoBounds[0]) / (sourceWidth - 1 || 1);
+      const nativeSpacingY = (geoBounds[3] - geoBounds[1]) / (sourceHeight - 1 || 1);
       // Pixel-edge bounds must match the pixels actually used by multilooking.
       // getExportStripe reads source pixels 0..(exportWidth*ml - 1), truncating
       // any remainder when sourceWidth isn't evenly divisible by ml.
@@ -2336,6 +2339,31 @@ function App() {
                 </label>
               </div>
             </div>
+
+            {/* Mask toggle — only shown when mask dataset is available */}
+            {imageData?.hasMask && (
+              <div className="control-group">
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="checkbox"
+                    id="useMask"
+                    checked={useMask}
+                    onChange={(e) => {
+                      setUseMask(e.target.checked);
+                      addStatusLog('info', e.target.checked
+                        ? 'Mask enabled — invalid/fill pixels hidden'
+                        : 'Mask disabled — all pixels shown');
+                    }}
+                  />
+                  <label htmlFor="useMask" style={{ margin: 0 }}>
+                    Apply mask
+                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      {useMask ? '(0=invalid, 255=fill)' : '(off)'}
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
           </CollapsibleSection>
 
           {/* NOTE: Tone Mapping UI hidden — feature only wired for SARTiledCOGLayer,
@@ -2377,6 +2405,7 @@ function App() {
               stretchMode={stretchMode}
               compositeId={displayMode === 'rgb' ? compositeId : null}
               multiLook={multiLook}
+              useMask={useMask}
               showGrid={showGrid}
               opacity={1}
               // toneMapping={toneMapping}  // hidden — see tone mapping NOTE above

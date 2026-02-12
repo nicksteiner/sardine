@@ -1147,9 +1147,11 @@ export class H5Chunk {
     console.log(`[h5chunk] Opening file: ${file.name}`);
     console.log(`[h5chunk] File size: ${(file.size / 1e6).toFixed(1)} MB`);
 
-    // Lazy tree-walking: read only superblock + root group (~10 KB)
-    // Bulk mode: read full metadata page (8-32 MB)
-    const readSize = metadataSize || (this.lazyTreeWalking ? 10 * 1024 : 8 * 1024 * 1024);
+    // Local files: read 1MB upfront (covers full tree structure for most NISAR products).
+    // This is cheap for local I/O and avoids missing groups during lazy tree-walking
+    // that would require many small remote fetches.
+    // Bulk mode: read full metadata page (8 MB).
+    const readSize = metadataSize || (this.lazyTreeWalking ? 1024 * 1024 : 8 * 1024 * 1024);
     console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
 
     // Read metadata portion
@@ -1296,11 +1298,29 @@ export class H5Chunk {
     const isRemote = address >= this.metadataBuffer.byteLength;
 
     if (isRemote) {
-      // Fetch a generous chunk at the remote address — 8KB covers any
-      // small dataset's object header + inline data (identification fields
-      // are scalar strings/ints, well under 1KB each).
-      const fetchSize = 8192;
-      const buf = await this._fetchBytes(address, fetchSize);
+      // Initial fetch: 8KB covers most object headers (scalar datasets,
+      // small groups). Groups with many children (e.g. NISAR frequencyA
+      // with 15+ datasets) may need more — we re-fetch if the v1 header
+      // declares a larger size.
+      let fetchSize = 8192;
+      let buf = await this._fetchBytes(address, fetchSize);
+
+      // Check v1 object header size — if the declared headerSize exceeds
+      // our fetch, re-fetch with enough data to capture all messages.
+      const firstByte = new Uint8Array(buf)[0];
+      if (firstByte === 1) {
+        // v1 header: version(1) + reserved(1) + numMessages(2) + refCount(4) + headerSize(4) = 12 bytes prefix
+        if (buf.byteLength >= 16) {
+          const dv = new DataView(buf);
+          const declaredHeaderSize = dv.getUint32(8, true); // headerSize at offset 8
+          const needed = 16 + declaredHeaderSize; // prefix (aligned to 16) + messages
+          if (needed > fetchSize) {
+            fetchSize = Math.min(needed + 256, 256 * 1024); // cap at 256KB
+            buf = await this._fetchBytes(address, fetchSize);
+          }
+        }
+      }
+
       activeReader = new BufferReader(buf, true, address);
     }
 
@@ -1363,7 +1383,9 @@ export class H5Chunk {
     }
 
     // ── Follow continuation blocks (v1 headers often have these) ────────
-    for (const cont of continuationBlocks) {
+    // Use index-based loop because nested continuations may append entries.
+    for (let ci = 0; ci < continuationBlocks.length; ci++) {
+      const cont = continuationBlocks[ci];
       try {
         let contBuffer;
         if (cont.offset < this.metadataBuffer.byteLength &&
@@ -1395,6 +1417,14 @@ export class H5Chunk {
               const attr = parseAttributeMessage(cr, cmsg.offset, contBuffer);
               if (attr && attr.name) {
                 attributes.set(attr.name, attr.value);
+              }
+            } else if (cmsg.type === MSG_OBJ_HEADER_CONTINUATION) {
+              // Nested continuation — follow the chain
+              cr.seek(cmsg.offset);
+              const nestedOffset = cr.readOffset(this.superblock.offsetSize);
+              const nestedLength = cr.readLength(this.superblock.lengthSize);
+              if (nestedOffset > 0 && nestedLength > 0 && nestedLength < 64 * 1024) {
+                continuationBlocks.push({ offset: nestedOffset, length: nestedLength });
               }
             }
           } catch (e) {
@@ -1715,6 +1745,7 @@ export class H5Chunk {
   /**
    * Enumerate children of a remote group whose B-tree and local heap are
    * beyond the metadata buffer. Fetches just the needed bytes.
+   *
    *
    * @param {number} btreeAddr — Group B-tree v1 address
    * @param {number} heapAddr — Local heap address
@@ -2107,12 +2138,19 @@ export class H5Chunk {
     for (const [id, info] of this.datasets.entries()) {
       if (info.path === targetPath) return id;
     }
-    // Also try matching just the tail component if the full path wasn't resolved
-    const targetTail = targetPath.split('/').pop();
+    // Partial path match: require that all path segments of the target
+    // appear in the candidate in the correct order.  This avoids the
+    // ambiguity of a pure tail match (e.g. frequencyA/HHHH vs
+    // frequencyB/HHHH) while still handling incomplete path resolution.
+    const targetParts = targetPath.split('/').filter(Boolean);
     for (const [id, info] of this.datasets.entries()) {
       if (info.path) {
-        const tail = info.path.split('/').pop();
-        if (tail === targetTail) return id;
+        const candParts = info.path.split('/').filter(Boolean);
+        let ti = 0;
+        for (let ci = 0; ci < candParts.length && ti < targetParts.length; ci++) {
+          if (candParts[ci] === targetParts[ti]) ti++;
+        }
+        if (ti === targetParts.length) return id; // all target segments matched
       }
     }
     return null;
@@ -2651,6 +2689,10 @@ export class H5Chunk {
         return new Float32Array(new Int32Array(buffer));
       case 'uint32':
         return new Float32Array(new Uint32Array(buffer));
+      case 'uint8':
+        return new Float32Array(new Uint8Array(buffer));
+      case 'int8':
+        return new Float32Array(new Int8Array(buffer));
       default:
         console.warn(`[h5chunk] Unknown dtype: ${dtype}, assuming float32`);
         return new Float32Array(buffer);

@@ -45,6 +45,8 @@ test/data/
 test/output/
 test_sar_*.tif
 *.tif.aux.xml
+*tif
+*h5
 
 # Backup files
 *.bak

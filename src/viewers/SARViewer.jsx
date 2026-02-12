@@ -29,6 +29,7 @@ export const SARViewer = forwardRef(function SARViewer({
   stretchMode = 'linear',
   compositeId = null, // SAR RGB composite ID (null = single band)
   multiLook = false,  // Multi-look mode (area-averaged resampling)
+  useMask = false,    // Apply NISAR mask (0=invalid, 255=fill → transparent)
   showGrid = true,    // Show coordinate grid + corner coordinates
   opacity = 1,
   toneMapping, // Tone mapping configuration
@@ -182,13 +183,14 @@ export const SARViewer = forwardRef(function SARViewer({
           stretchMode,
           opacity,
           multiLook,
+          useMask,
         }),
       ];
     }
 
     return [];
   // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
-  }, [cogUrl, getTile, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, toneMapping, handleLoadingChange, redrawTick]);
+  }, [cogUrl, getTile, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, toneMapping, handleLoadingChange, redrawTick]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;
