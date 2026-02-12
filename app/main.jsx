@@ -454,11 +454,14 @@ function App() {
 
         addStatusLog('info', 'Histogram: computing statistics...');
         const hists = {};
+        const autoLims = {};
         for (const ch of ['R', 'G', 'B']) {
           hists[ch] = computeChannelStats(rawValues[ch], useDecibels);
+          autoLims[ch] = hists[ch] ? [hists[ch].p2, hists[ch].p98] : [0, 1];
         }
         setHistogramData(hists);
-        addStatusLog('success', `${scopeLabel} histogram updated (RGB)`);
+        setRgbContrastLimits(autoLims);
+        addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`);
       } else {
         // Single-band histogram — pass origin offset for correct viewport sampling
         const stats = await sampleViewportStats(
@@ -490,12 +493,12 @@ function App() {
   useEffect(() => {
     if (useDecibels !== useDecibelsRef.current) {
       useDecibelsRef.current = useDecibels;
-      // Recompute histogram in the new scale
-      if (imageData && displayMode === 'single') {
+      // Recompute histogram in the new scale (both single-band and RGB)
+      if (imageData) {
         handleRecomputeHistogram();
       }
     }
-  }, [useDecibels, imageData, displayMode, handleRecomputeHistogram]);
+  }, [useDecibels, imageData, handleRecomputeHistogram]);
 
   // Tone mapping config — hidden, see tone mapping NOTE in JSX below
   // const toneMapping = useMemo(() => ({
@@ -1091,6 +1094,7 @@ function App() {
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
 
   const handleExportGeoTIFF = useCallback(async () => {
     if (!imageData) {
@@ -1185,6 +1189,7 @@ function App() {
         const numRows = Math.min(stripeRows, exportHeight - startRow);
 
         addStatusLog('info', `Reading stripe ${s + 1}/${numStripes} (rows ${startRow}-${startRow + numRows - 1})...`);
+        setExportProgress(Math.round((s / numStripes) * 50));
 
         const stripe = await imageData.getExportStripe({
           startRow,
@@ -1200,6 +1205,10 @@ function App() {
           }
         }
       }
+
+      addStatusLog('info', 'Encoding GeoTIFF...');
+      setExportProgress(50);
+      await new Promise(r => setTimeout(r, 0));
 
       // --- Append metadata cube fields as extra bands ---
       if (imageData.metadataCube && imageData.xCoords && imageData.yCoords) {
@@ -1321,12 +1330,10 @@ function App() {
         }
 
         addStatusLog('info', 'Writing RGBA GeoTIFF...');
-        geotiff = writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
+        geotiff = await writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
           generateOverviews: false,
           onProgress: (pct) => {
-            if (pct % 20 === 0 && pct > 0 && pct < 100) {
-              addStatusLog('info', `Encoding: ${pct}%`);
-            }
+            setExportProgress(50 + Math.round(pct / 2));
           }
         });
 
@@ -1335,11 +1342,9 @@ function App() {
         // --- Raw export: Float32 linear power (+ complex bands if present) ---
         const rawBandNames = complexBandNames.length > 0 ? allBandNames : bandNames;
         addStatusLog('info', 'Writing Float32 GeoTIFF...');
-        geotiff = writeFloat32GeoTIFF(bands, rawBandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
+        geotiff = await writeFloat32GeoTIFF(bands, rawBandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
           onProgress: (pct) => {
-            if (pct % 20 === 0 && pct > 0 && pct < 100) {
-              addStatusLog('info', `Encoding: ${pct}%`);
-            }
+            setExportProgress(50 + Math.round(pct / 2));
           }
         });
 
@@ -1369,6 +1374,7 @@ function App() {
       console.error('GeoTIFF export error:', e);
     } finally {
       setExporting(false);
+      setExportProgress(0);
     }
   }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, addStatusLog]);
 
@@ -2204,14 +2210,17 @@ function App() {
 
             {/* Export buttons */}
             {imageData && (
-              <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+              <div style={{ marginTop: '8px' }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
                 {imageData?.getExportStripe && (
                   <button
                     onClick={handleExportGeoTIFF}
                     disabled={exporting}
                     style={{ flex: 1 }}
                   >
-                    {exporting ? 'Exporting...' : exportMode === 'raw' ? 'Export GeoTIFF (Float32)' : 'Export GeoTIFF (Rendered)'}
+                    {exporting
+                      ? `Exporting... ${exportProgress}%`
+                      : exportMode === 'raw' ? 'Export GeoTIFF (Float32)' : 'Export GeoTIFF (Rendered)'}
                   </button>
                 )}
                 <button
@@ -2220,6 +2229,12 @@ function App() {
                 >
                   Save Figure (PNG)
                 </button>
+                </div>
+                {exporting && (
+                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                    <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
+                  </div>
+                )}
               </div>
             )}
             {displayMode === 'rgb' && compositeId && (
