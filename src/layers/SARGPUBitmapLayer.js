@@ -1,7 +1,5 @@
 import { BitmapLayer } from '@deck.gl/layers';
-import { Texture2D } from '@luma.gl/core';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
-import GL from '@luma.gl/constants';
 
 /**
  * SARGPUBitmapLayer - GPU-accelerated SAR rendering

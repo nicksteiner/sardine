@@ -142,6 +142,7 @@ export const SARViewer = forwardRef(function SARViewer({
           gamma,
           stretchMode,
           opacity,
+          useMask,
           toneMapping,
           onLoadingChange: handleLoadingChange,
         }),
@@ -155,6 +156,7 @@ export const SARViewer = forwardRef(function SARViewer({
         new SARBitmapLayer({
           id: 'sar-bitmap-layer',
           data: imageData.data,
+          dataMask: imageData.mask || null,
           width: imageData.width,
           height: imageData.height,
           bounds,
@@ -164,6 +166,7 @@ export const SARViewer = forwardRef(function SARViewer({
           gamma,
           stretchMode,
           opacity,
+          useMask,
         }),
       ];
     }
@@ -297,7 +300,11 @@ function ColorbarOverlay({ colormap, contrastLimits, useDecibels, compositeId })
     // Get per-channel labels from the preset
     const getLabel = (ch) => {
       if (!preset) return ch;
-      const chDef = preset.channels[ch];
+      // Handle freeman-durden style (channelLabels) or standard style (channels)
+      if (preset.channelLabels) {
+        return preset.channelLabels[ch] || ch;
+      }
+      const chDef = preset.channels?.[ch];
       if (!chDef) return ch;
       return chDef.label || chDef.dataset || ch;
     };

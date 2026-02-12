@@ -1269,10 +1269,13 @@ function App() {
           // then per-channel dB/contrast/stretch via createRGBTexture
           addStatusLog('info', `Applying RGB composite "${compositeId}" + per-channel contrast...`);
           const rgbBands = computeRGBBands(bands, compositeId, exportWidth, exportWidth * exportHeight);
+          // Note: mask not yet supported in export path (would need to be added to getExportStripe)
           const rgbImageData = createRGBTexture(
             rgbBands, exportWidth, exportHeight,
             effectiveContrastLimits,  // per-channel {R:[min,max], G:[min,max], B:[min,max]}
-            useDecibels, gamma, stretchMode
+            useDecibels, gamma, stretchMode,
+            null,  // dataMask - not available in export yet
+            false  // useMask
           );
           rgbaData = new Uint8ClampedArray(rgbImageData.data);
         } else {

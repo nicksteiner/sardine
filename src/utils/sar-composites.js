@@ -78,9 +78,9 @@ function freemanDurden(c11, c22, c33, c13re, c13im) {
 /**
  * Compute Freeman-Durden RGB bands for an entire tile.
  *
- * Convention: R = Pd (double-bounce, red in urban areas),
- *             G = Pv (volume, green in forests),
- *             B = Ps (surface, blue in bare soil / water).
+ * Standard convention: R = Pd (double-bounce, red in urban areas),
+ *                      G = Pv (volume, green in forests),
+ *                      B = Ps (surface, blue over water / bare soil).
  *
  * @param {Object} bands - {HHHH, HVHV, VVVV, HHVV_re, HHVV_im} Float32Arrays
  * @returns {{R: Float32Array, G: Float32Array, B: Float32Array}}
@@ -107,9 +107,9 @@ function computeFreemanDurdenRGB(bands) {
     if (c11 <= 0 && c22 <= 0 && c33 <= 0) continue; // nodata
 
     const { Ps, Pd, Pv } = freemanDurden(c11, c22, c33, c13re, c13im);
-    R[i] = Pd;
-    G[i] = Pv;
-    B[i] = Ps;
+    R[i] = Pd;  // double-bounce → red (urban)
+    G[i] = Pv;  // volume → green (vegetation)
+    B[i] = Ps;  // surface → blue (water/soil)
   }
 
   return { R, G, B };
@@ -210,7 +210,7 @@ export const SAR_COMPOSITES = {
   },
   'freeman-durden': {
     name: 'Freeman-Durden',
-    description: 'Surface / Double-bounce / Volume decomposition',
+    description: 'Double-bounce / Volume / Surface decomposition',
     required: ['HHHH', 'HVHV', 'VVVV'],
     requiredComplex: ['HHVV'],
     computeAll: true,
@@ -340,9 +340,11 @@ export function computeRGBBands(bandData, compositeId, tileSize, numPixels) {
  * @param {boolean} useDecibels - Whether to apply 10*log10 before stretching
  * @param {number} gamma - Gamma exponent (default 1.0)
  * @param {string} stretchMode - Stretch mode (default 'linear')
+ * @param {Uint8Array|null} dataMask - Optional mask array (NISAR convention: 0=invalid, 1-5=valid, 255=fill)
+ * @param {boolean} useMask - Whether to apply mask (if dataMask provided)
  * @returns {ImageData}
  */
-export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear') {
+export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear', dataMask = null, useMask = false) {
   // Support per-channel contrast: {R: [min,max], G: [min,max], B: [min,max]}
   // or uniform: [min, max]
   const channelKeys = ['R', 'G', 'B'];
@@ -391,7 +393,13 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
       rgba[idx + c] = Math.round(value * 255);
     }
 
-    rgba[idx + 3] = anyValid ? 255 : 0;
+    let alpha = anyValid ? 255 : 0;
+    // Apply mask if enabled (NISAR convention: 0=invalid, 255=fill → transparent; 1-5=valid)
+    if (useMask && dataMask && dataMask[i] !== undefined) {
+      const maskVal = dataMask[i];
+      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0;
+    }
+    rgba[idx + 3] = alpha;
   }
 
   return new ImageData(rgba, width, height);
