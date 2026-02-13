@@ -17,7 +17,11 @@
     "debug:gpu": "vite --config vite.test.config.js --open /test/gpu-debug.html --force",
     "benchmark": "vite --config vite.test.config.js --open /test/benchmarks/gpu-vs-cpu.html --force",
     "launch": "node server/launch.cjs",
-    "launch:dev": "npm run build && node server/launch.cjs"
+    "launch:dev": "npm run build && node server/launch.cjs",
+    "process": "node cli/sardine-process.js"
+  },
+  "bin": {
+    "sardine-process": "cli/sardine-process.js"
   },
   "keywords": [
     "sar",

@@ -115,10 +115,18 @@ export {
   parseS3Uri,
 } from './utils/s3-presign.js';
 
+// Workflow YAML
+export {
+  generateWorkflowYAML,
+  parseWorkflowYAML,
+  downloadWorkflowYAML,
+} from './utils/workflow-yaml.js';
+
 // Components
 export { MetadataPanel } from './components/MetadataPanel.jsx';
 export { OverviewMap } from './components/OverviewMap.jsx';
 export { StatusWindow } from './components/StatusWindow.jsx';
+export { WorkflowPanel } from './components/WorkflowPanel.jsx';
 export { SceneCatalog } from './components/SceneCatalog.jsx';
 export { STACSearch } from './components/STACSearch.jsx';
 

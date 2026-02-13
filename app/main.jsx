@@ -13,6 +13,8 @@ import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { exportFigure, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
+import { WorkflowPanel } from '../src/components/WorkflowPanel.jsx';
+import { generateWorkflowYAML } from '../src/utils/workflow-yaml.js';
 import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
@@ -281,6 +283,10 @@ function App() {
   const [markdownState, setMarkdownState] = useState('');
   const [isMarkdownEdited, setIsMarkdownEdited] = useState(false);
 
+  // Workflow panel state
+  const [workflowVisible, setWorkflowVisible] = useState(false);
+  const [subsetBbox, setSubsetBbox] = useState(null); // [minX, minY, maxX, maxY] in CRS coords
+
   // Scene catalog overlay layers (from SceneCatalog component)
   const [catalogLayers, setCatalogLayers] = useState([]);
 
@@ -508,6 +514,94 @@ function App() {
     // toneMapEnabled, toneMapMethod, toneMapGamma, toneMapStrength,  // hidden
     view: { center: viewCenter, zoom: viewZoom },
   }), [fileType, cogUrl, nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, contrastMin, contrastMax, colormap, useDecibels, viewCenter, viewZoom]);
+
+  // Workflow state for YAML panel — captures full processing parameters
+  const workflowState = useMemo(() => ({
+    source: fileType,
+    file: fileType === 'cog' ? cogUrl : (nisarFile?.name || remoteUrl || ''),
+    frequency: selectedFrequency,
+    polarization: selectedPolarization,
+    displayMode,
+    compositeId,
+    useDecibels,
+    multilook: exportMultilookWindow,
+    stretchMode,
+    gamma,
+    colormap,
+    contrastMin,
+    contrastMax,
+    rgbContrastLimits,
+    exportMode,
+    subsetBbox,
+    crs: imageData?.crs || null,
+    outputDir: './output',
+  }), [fileType, cogUrl, nisarFile, remoteUrl, selectedFrequency, selectedPolarization,
+    displayMode, compositeId, useDecibels, exportMultilookWindow, stretchMode, gamma,
+    colormap, contrastMin, contrastMax, rgbContrastLimits, exportMode, subsetBbox, imageData]);
+
+  // Handle workflow apply — update app state from parsed YAML
+  const handleWorkflowApply = useCallback((parsed) => {
+    if (parsed.useDecibels !== undefined) setUseDecibels(parsed.useDecibels);
+    if (parsed.multilook) setExportMultilookWindow(parsed.multilook);
+    if (parsed.stretchMode) setStretchMode(parsed.stretchMode);
+    if (parsed.gamma) setGamma(parsed.gamma);
+    if (parsed.colormap) setColormap(parsed.colormap);
+    if (parsed.contrastMin !== undefined) setContrastMin(parsed.contrastMin);
+    if (parsed.contrastMax !== undefined) setContrastMax(parsed.contrastMax);
+    if (parsed.rgbContrastLimits) setRgbContrastLimits(parsed.rgbContrastLimits);
+    if (parsed.exportMode) setExportMode(parsed.exportMode);
+    if (parsed.subsetBbox) setSubsetBbox(parsed.subsetBbox);
+    if (parsed.displayMode) setDisplayMode(parsed.displayMode);
+    if (parsed.compositeId) setCompositeId(parsed.compositeId);
+    if (parsed.frequency) setSelectedFrequency(parsed.frequency);
+    if (parsed.polarization) setSelectedPolarization(parsed.polarization);
+  }, []);
+
+  // Capture current viewport as subset bbox (in CRS coordinates)
+  const handleUseViewport = useCallback(() => {
+    if (!imageData) {
+      addStatusLog('warning', 'No data loaded — cannot capture viewport');
+      return;
+    }
+
+    const bounds = imageData.worldBounds || imageData.bounds;
+    if (!bounds) {
+      addStatusLog('warning', 'No bounds available');
+      return;
+    }
+
+    // Convert pixel-space viewport to CRS coordinates
+    const imgW = imageData.width;
+    const imgH = imageData.height;
+    const spanX = bounds[2] - bounds[0];
+    const spanY = bounds[3] - bounds[1];
+
+    // viewCenter is in pixel coords, viewZoom is log2 scale
+    const scale = Math.pow(2, viewZoom);
+    // Visible extent in pixels (assuming ~800px viewport — approximate)
+    const vpPixelsW = 800 / scale;
+    const vpPixelsH = 600 / scale;
+
+    const pxLeft = Math.max(0, viewCenter[0] - vpPixelsW / 2);
+    const pxRight = Math.min(imgW, viewCenter[0] + vpPixelsW / 2);
+    const pxTop = Math.max(0, viewCenter[1] - vpPixelsH / 2);
+    const pxBottom = Math.min(imgH, viewCenter[1] + vpPixelsH / 2);
+
+    // Map pixel extents to CRS
+    const crsMinX = bounds[0] + (pxLeft / imgW) * spanX;
+    const crsMaxX = bounds[0] + (pxRight / imgW) * spanX;
+    const crsMinY = bounds[1] + (pxTop / imgH) * spanY;
+    const crsMaxY = bounds[1] + (pxBottom / imgH) * spanY;
+
+    const bbox = [
+      parseFloat(crsMinX.toFixed(2)),
+      parseFloat(crsMinY.toFixed(2)),
+      parseFloat(crsMaxX.toFixed(2)),
+      parseFloat(crsMaxY.toFixed(2)),
+    ];
+    setSubsetBbox(bbox);
+    addStatusLog('success', `Subset bbox captured: [${bbox.join(', ')}] ${imageData.crs || ''}`);
+  }, [imageData, viewCenter, viewZoom, addStatusLog]);
 
   // Update markdown when state changes (unless edited)
   useEffect(() => {
@@ -1098,8 +1192,34 @@ function App() {
 
       // Use the user's selected multilook factor directly
       let effectiveMl = exportMultilookWindow || 1;
-      const exportWidth = Math.floor(sourceWidth / effectiveMl);
-      const exportHeight = Math.floor(sourceHeight / effectiveMl);
+
+      // --- Subset: compute pixel range from CRS bbox ---
+      let srcColStart = 0, srcColEnd = sourceWidth;
+      let srcRowStart = 0, srcRowEnd = sourceHeight;
+      const geoBoundsForSubset = imageData.worldBounds || imageData.bounds;
+
+      if (subsetBbox && geoBoundsForSubset) {
+        const [bMinX, bMinY, bMaxX, bMaxY] = geoBoundsForSubset;
+        const spanX = bMaxX - bMinX;
+        const spanY = bMaxY - bMinY;
+
+        // Map CRS bbox to pixel coordinates
+        srcColStart = Math.max(0, Math.floor(((subsetBbox[0] - bMinX) / spanX) * sourceWidth));
+        srcColEnd = Math.min(sourceWidth, Math.ceil(((subsetBbox[2] - bMinX) / spanX) * sourceWidth));
+        srcRowStart = Math.max(0, Math.floor(((subsetBbox[1] - bMinY) / spanY) * sourceHeight));
+        srcRowEnd = Math.min(sourceHeight, Math.ceil(((subsetBbox[3] - bMinY) / spanY) * sourceHeight));
+
+        // Snap to multilook grid
+        srcColStart = Math.floor(srcColStart / effectiveMl) * effectiveMl;
+        srcRowStart = Math.floor(srcRowStart / effectiveMl) * effectiveMl;
+
+        addStatusLog('info', `Subset: pixels [${srcColStart}:${srcColEnd}, ${srcRowStart}:${srcRowEnd}] of [${sourceWidth}, ${sourceHeight}]`);
+      }
+
+      const subsetPixelW = srcColEnd - srcColStart;
+      const subsetPixelH = srcRowEnd - srcRowStart;
+      const exportWidth = Math.floor(subsetPixelW / effectiveMl);
+      const exportHeight = Math.floor(subsetPixelH / effectiveMl);
 
       // Check per-band size — each Float32Array must fit in one JS ArrayBuffer (~2GB).
       // Bands are separate allocations so total across bands is fine; the constraint
@@ -1149,6 +1269,8 @@ function App() {
       }
 
       // Stripe-based reading: 256 output rows per stripe
+      // For subset, offset the stripe start so getExportStripe reads the right source rows
+      const subsetRowOffset = Math.floor(srcRowStart / effectiveMl); // output-space row offset
       const stripeRows = 256;
       const numStripes = Math.ceil(exportHeight / stripeRows);
 
@@ -1159,7 +1281,7 @@ function App() {
         addStatusLog('info', `Reading stripe ${s + 1}/${numStripes} (rows ${startRow}-${startRow + numRows - 1})...`);
 
         const stripe = await imageData.getExportStripe({
-          startRow,
+          startRow: startRow + subsetRowOffset,
           numRows,
           ml: effectiveMl,
           exportWidth,
@@ -1209,15 +1331,14 @@ function App() {
       // worldBounds are pixel-CENTER: span = (N-1) * spacing, so divide by (N-1)
       const nativeSpacingX = imageData.pixelSpacing?.x || ((geoBounds[2] - geoBounds[0]) / (sourceWidth - 1));
       const nativeSpacingY = imageData.pixelSpacing?.y || ((geoBounds[3] - geoBounds[1]) / (sourceHeight - 1));
-      // Pixel-edge bounds must match the pixels actually used by multilooking.
-      // getExportStripe reads source pixels 0..(exportWidth*ml - 1), truncating
-      // any remainder when sourceWidth isn't evenly divisible by ml.
-      // Posting = nativeSpacing * ml, guaranteed exact by construction.
+      // Pixel-edge bounds — account for subset offset when present
+      const originX = geoBounds[0] + srcColStart * nativeSpacingX;
+      const originY = geoBounds[1] + srcRowStart * nativeSpacingY;
       const exportBounds = [
-        geoBounds[0] - nativeSpacingX / 2,                                             // minX edge
-        geoBounds[1] - nativeSpacingY / 2,                                             // minY edge
-        geoBounds[0] - nativeSpacingX / 2 + exportWidth * effectiveMl * nativeSpacingX,  // maxX edge
-        geoBounds[1] - nativeSpacingY / 2 + exportHeight * effectiveMl * nativeSpacingY, // maxY edge
+        originX - nativeSpacingX / 2,                                             // minX edge
+        originY - nativeSpacingY / 2,                                             // minY edge
+        originX - nativeSpacingX / 2 + exportWidth * effectiveMl * nativeSpacingX,  // maxX edge
+        originY - nativeSpacingY / 2 + exportHeight * effectiveMl * nativeSpacingY, // maxY edge
       ];
 
       const exportPixelX = (exportBounds[2] - exportBounds[0]) / exportWidth;
@@ -1297,7 +1418,7 @@ function App() {
           }
         });
 
-        filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+        filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}${subsetBbox ? '_subset' : ''}.tif`;
       } else {
         // --- Raw export: Float32 linear power ---
         addStatusLog('info', 'Writing Float32 GeoTIFF...');
@@ -1309,7 +1430,7 @@ function App() {
           }
         });
 
-        filename = `sardine_${bandNames.join('-')}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+        filename = `sardine_${bandNames.join('-')}_ml${effectiveMl}_${exportWidth}x${exportHeight}${subsetBbox ? '_subset' : ''}.tif`;
       }
 
       // Georef verification logging
@@ -1336,7 +1457,7 @@ function App() {
     } finally {
       setExporting(false);
     }
-  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, addStatusLog]);
+  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, subsetBbox, addStatusLog]);
 
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
@@ -2313,6 +2434,99 @@ function App() {
              scene analysis). Re-enable here once wired end-to-end for all render paths.
              See also: toneMapping state vars + useMemo below, SARTiledCOGLayer.renderTile(),
              and src/index.js tone-mapping exports. */}
+
+          {/* Workflow — live YAML parameter file */}
+          <WorkflowPanel
+            workflowState={workflowState}
+            onApply={handleWorkflowApply}
+            onStatus={addStatusLog}
+            visible={workflowVisible}
+            onToggle={() => setWorkflowVisible(v => !v)}
+          />
+
+          {/* Subset bbox — capture viewport as export region */}
+          {imageData && workflowVisible && (
+            <div style={{
+              background: 'var(--sardine-bg-raised)',
+              border: '1px solid var(--sardine-border)',
+              borderRadius: 'var(--radius-md)',
+              padding: 'var(--space-sm) var(--space-md)',
+              marginBottom: 'var(--space-md)',
+            }}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                marginBottom: '6px',
+              }}>
+                <span style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.7rem',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  letterSpacing: '0.5px',
+                  textTransform: 'uppercase',
+                }}>Subset</span>
+                {subsetBbox && (
+                  <span style={{
+                    fontSize: '0.55rem',
+                    background: 'var(--sardine-green)',
+                    color: 'var(--sardine-bg)',
+                    padding: '1px 5px',
+                    borderRadius: '2px',
+                    fontWeight: 600,
+                  }}>SET</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <button
+                  onClick={handleUseViewport}
+                  style={{
+                    flex: 1,
+                    fontSize: '0.65rem',
+                    padding: '4px 8px',
+                    fontFamily: 'var(--font-mono)',
+                    background: 'var(--sardine-cyan-bg)',
+                    color: 'var(--sardine-cyan)',
+                    border: '1px solid var(--sardine-cyan-dim)',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Use Viewport
+                </button>
+                {subsetBbox && (
+                  <button
+                    onClick={() => { setSubsetBbox(null); addStatusLog('info', 'Subset cleared — full extent'); }}
+                    style={{
+                      fontSize: '0.65rem',
+                      padding: '4px 8px',
+                      fontFamily: 'var(--font-mono)',
+                      background: 'transparent',
+                      color: 'var(--text-muted)',
+                      border: '1px solid var(--sardine-border)',
+                      borderRadius: 'var(--radius-sm)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {subsetBbox && (
+                <div style={{
+                  marginTop: '4px',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.6rem',
+                  color: 'var(--text-muted)',
+                  lineHeight: 1.5,
+                }}>
+                  [{subsetBbox.map(v => v.toFixed(1)).join(', ')}]
+                  {imageData?.crs && <span style={{ marginLeft: '4px', color: 'var(--sardine-cyan-dim)' }}>{imageData.crs}</span>}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Viewer Container */}
