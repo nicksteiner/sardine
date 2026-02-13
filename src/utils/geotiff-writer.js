@@ -346,7 +346,7 @@ async function extractAndCompressTiles(rgbaData, width, height, onTileRowProgres
       }
 
       // Apply horizontal predictor for better compression
-      const predicted = applyHorizontalPredictor(tileData, tileW, tileH);
+      const predicted = applyHorizontalPredictor(tileData);
 
       // Compress with DEFLATE (level 1: ~5-10x faster than level 6,
       // minimal size difference for noisy SAR data)
@@ -392,13 +392,15 @@ function extractTile(rgbaData, imgWidth, imgHeight, x0, y0, tileW, tileH) {
 
 /**
  * Apply horizontal predictor (TIFF Predictor tag value 2)
- * Encodes each pixel as the difference from the previous pixel
+ * Encodes each pixel as the difference from the previous pixel.
+ * Must process the full TILE_SIZE columns per row (not just the valid data width)
+ * because the TIFF decoder applies inverse predictor to the full tile.
  */
-function applyHorizontalPredictor(data, width, height) {
+function applyHorizontalPredictor(data) {
   const predicted = new Uint8Array(data.length);
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
+  for (let y = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++) {
       const idx = (y * TILE_SIZE + x) * 4;
 
       if (x === 0) {
@@ -567,8 +569,8 @@ function buildIFD(width, height, tiles, bounds, pixelScale, epsgCode, isOverview
   const tileByteCounts = tiles.map(t => t.byteCount);
   entries.push(makeArrayEntry(TAG_TILE_BYTE_COUNTS, TYPE_LONG, tileByteCounts));
 
-  // ExtraSamples: 1 = associated alpha (transparency)
-  entries.push(makeArrayEntry(TAG_EXTRA_SAMPLES, TYPE_SHORT, [1]));
+  // ExtraSamples: 2 = unassociated (straight) alpha — RGB values are NOT pre-multiplied
+  entries.push(makeArrayEntry(TAG_EXTRA_SAMPLES, TYPE_SHORT, [2]));
 
   // SampleFormat: 1 = unsigned integer
   entries.push(makeArrayEntry(TAG_SAMPLE_FORMAT, TYPE_SHORT, [1, 1, 1, 1]));

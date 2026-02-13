@@ -1325,6 +1325,21 @@ function App() {
         }
       }
 
+      // Data validation: check that stripe reading produced non-empty data
+      for (const name of bandNames) {
+        const arr = bands[name];
+        let nonZero = 0, nanCount = 0;
+        for (let i = 0; i < arr.length; i++) {
+          if (isNaN(arr[i])) nanCount++;
+          else if (arr[i] !== 0) nonZero++;
+        }
+        addStatusLog(nonZero > 0 ? 'info' : 'warning',
+          `Band ${name}: ${nonZero} valid, ${nanCount} NaN, ${arr.length - nonZero - nanCount} zero of ${arr.length} pixels`);
+        if (nonZero === 0) {
+          addStatusLog('warning', `Band ${name} is EMPTY — export will be blank. Check that the dataset loaded correctly.`);
+        }
+      }
+
       addStatusLog('info', 'Encoding GeoTIFF...');
       setExportProgress(50);
       await new Promise(r => setTimeout(r, 0));
