@@ -1287,19 +1287,45 @@ function App() {
         let rgbaData;
 
         if (displayMode === 'rgb' && compositeId) {
-          // RGB composite: apply computeRGBBands (same transform as GPU tile path)
-          // then per-channel dB/contrast/stretch via createRGBTexture
+          // RGB composite: process in stripes to limit peak memory.
+          // Full-image rendering would allocate ~4.4 GB of intermediate arrays
+          // (ratio band + RGBA ImageData + copy) on top of ~2.9 GB band data,
+          // exceeding Chrome's per-tab limit for large images (>300M pixels).
           addStatusLog('info', `Applying RGB composite "${compositeId}" + per-channel contrast...`);
-          const rgbBands = computeRGBBands(bands, compositeId, exportWidth, exportWidth * exportHeight);
-          // Note: mask not yet supported in export path (would need to be added to getExportStripe)
-          const rgbImageData = createRGBTexture(
-            rgbBands, exportWidth, exportHeight,
-            effectiveContrastLimits,  // per-channel {R:[min,max], G:[min,max], B:[min,max]}
-            useDecibels, gamma, stretchMode,
-            null,  // dataMask - not available in export yet
-            false  // useMask
-          );
-          rgbaData = new Uint8ClampedArray(rgbImageData.data);
+          rgbaData = new Uint8ClampedArray(numPixels * 4);
+          const STRIPE_ROWS = 512;
+
+          for (let y = 0; y < exportHeight; y += STRIPE_ROWS) {
+            const h = Math.min(STRIPE_ROWS, exportHeight - y);
+            const stripePixels = h * exportWidth;
+            const offset = y * exportWidth;
+
+            // Subarray views into existing bands (zero-copy)
+            const stripeBands = {};
+            for (const name of Object.keys(bands)) {
+              stripeBands[name] = bands[name].subarray(offset, offset + stripePixels);
+            }
+
+            // Compute RGB channels for this stripe (~37 MB intermediate per stripe)
+            const rgbBands = computeRGBBands(stripeBands, compositeId, exportWidth, stripePixels);
+            const stripeImage = createRGBTexture(
+              rgbBands, exportWidth, h,
+              effectiveContrastLimits,
+              useDecibels, gamma, stretchMode,
+              null, false
+            );
+            rgbaData.set(stripeImage.data, offset * 4);
+
+            // Yield every few stripes so the browser can update the UI
+            if ((y / STRIPE_ROWS) % 4 === 0) {
+              await new Promise(r => setTimeout(r, 0));
+            }
+          }
+
+          // Free band data before GeoTIFF encoding (~2.9 GB freed)
+          for (const name of Object.keys(bands)) {
+            bands[name] = null;
+          }
         } else {
           // Single-band: apply colormap
           addStatusLog('info', `Applying ${useDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
@@ -1326,6 +1352,11 @@ function App() {
             rgbaData[i * 4 + 1] = g;
             rgbaData[i * 4 + 2] = b;
             rgbaData[i * 4 + 3] = (amplitude === 0 || isNaN(amplitude)) ? 0 : 255;
+          }
+
+          // Free band data before GeoTIFF encoding
+          for (const name of Object.keys(bands)) {
+            bands[name] = null;
           }
         }
 
