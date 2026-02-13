@@ -77,11 +77,13 @@ const RASTER_TYPE_PIXEL_IS_AREA = 1;
  * @returns {ArrayBuffer} Valid Cloud Optimized GeoTIFF file
  */
 export async function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode = 32610, options = {}) {
-  const { generateOverviews = true, onProgress, dbLimits, useDecibels = true, multilookWindow } = options;
+  const { generateOverviews = true, onProgress, dbLimits, useDecibels = true, multilookWindow, renderTile } = options;
 
-  // Validate inputs
-  if (rgbaData.length !== width * height * 4) {
-    throw new Error(`RGBA data size mismatch: expected ${width * height * 4}, got ${rgbaData.length}`);
+  // Validate inputs (skip when using tile-rendering callback)
+  if (!renderTile) {
+    if (rgbaData.length !== width * height * 4) {
+      throw new Error(`RGBA data size mismatch: expected ${width * height * 4}, got ${rgbaData.length}`);
+    }
   }
 
   // Report progress
@@ -91,10 +93,10 @@ export async function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode
 
   reportProgress(0);
 
-  // Generate image pyramid
+  // Generate image pyramid (only when full image is available)
   const pyramid = [{ data: rgbaData, width, height }];
 
-  if (generateOverviews) {
+  if (generateOverviews && !renderTile) {
     let currentLevel = { data: rgbaData, width, height };
     let scale = 2;
 
@@ -131,7 +133,7 @@ export async function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode
     const tiles = await extractAndCompressTiles(data, lvlWidth, lvlHeight, (ty, total) => {
       const levelPct = 10 + (i / pyramid.length + (ty / total) / pyramid.length) * 80;
       reportProgress(Math.round(levelPct));
-    });
+    }, renderTile);
     levels.push({ width: lvlWidth, height: lvlHeight, tiles });
   }
 
@@ -301,8 +303,17 @@ function generateOverview(rgbaData, width, height, scale, options = {}) {
 /**
  * Extract tiles from RGBA data and compress with DEFLATE.
  * Async with periodic yields so the browser can paint progress updates.
+ *
+ * @param {Uint8ClampedArray|null} rgbaData - Full image RGBA data (null when renderTileFn is used)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {function} onTileRowProgress - Progress callback (tileRow, totalRows)
+ * @param {function} [renderTileFn] - Optional callback (x0, y0, tileW, tileH) => Uint8Array|Uint8ClampedArray
+ *   Returns RGBA pixels for the tile region (tileW × tileH × 4 bytes).
+ *   When provided, tiles are rendered on-the-fly instead of extracted from rgbaData,
+ *   eliminating the need for the full image in memory.
  */
-async function extractAndCompressTiles(rgbaData, width, height, onTileRowProgress) {
+async function extractAndCompressTiles(rgbaData, width, height, onTileRowProgress, renderTileFn) {
   const tilesX = Math.ceil(width / TILE_SIZE);
   const tilesY = Math.ceil(height / TILE_SIZE);
   const tiles = [];
@@ -316,8 +327,23 @@ async function extractAndCompressTiles(rgbaData, width, height, onTileRowProgres
       const tileW = x1 - x0;
       const tileH = y1 - y0;
 
-      // Extract tile (may be partial at edges)
-      const tileData = extractTile(rgbaData, width, height, x0, y0, tileW, tileH);
+      let tileData;
+      if (renderTileFn) {
+        // Render this tile on-the-fly from source data
+        const rendered = renderTileFn(x0, y0, tileW, tileH);
+        // Pad to TILE_SIZE × TILE_SIZE (zero-filled for partial edge tiles)
+        tileData = new Uint8Array(TILE_SIZE * TILE_SIZE * 4);
+        const src = new Uint8Array(rendered.buffer, rendered.byteOffset, rendered.byteLength);
+        for (let py = 0; py < tileH; py++) {
+          tileData.set(
+            src.subarray(py * tileW * 4, (py + 1) * tileW * 4),
+            py * TILE_SIZE * 4
+          );
+        }
+      } else {
+        // Extract tile from pre-rendered full image
+        tileData = extractTile(rgbaData, width, height, x0, y0, tileW, tileH);
+      }
 
       // Apply horizontal predictor for better compression
       const predicted = applyHorizontalPredictor(tileData, tileW, tileH);

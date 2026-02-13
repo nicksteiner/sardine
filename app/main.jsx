@@ -1284,48 +1284,50 @@ function App() {
         }
 
         const numPixels = exportWidth * exportHeight;
-        let rgbaData;
 
         if (displayMode === 'rgb' && compositeId) {
-          // RGB composite: process in stripes to limit peak memory.
-          // Full-image rendering would allocate ~4.4 GB of intermediate arrays
-          // (ratio band + RGBA ImageData + copy) on top of ~2.9 GB band data,
-          // exceeding Chrome's per-tab limit for large images (>300M pixels).
+          // RGB composite: render tiles on-the-fly during GeoTIFF encoding.
+          // This avoids allocating a full RGBA image (~1.5 GB for 366M pixels)
+          // on top of the band data (~2.9 GB), which would exceed browser limits.
+          // Each 512×512 tile (~4 MB) is rendered and compressed individually.
           addStatusLog('info', `Applying RGB composite "${compositeId}" + per-channel contrast...`);
-          rgbaData = new Uint8ClampedArray(numPixels * 4);
-          const STRIPE_ROWS = 512;
 
-          for (let y = 0; y < exportHeight; y += STRIPE_ROWS) {
-            const h = Math.min(STRIPE_ROWS, exportHeight - y);
-            const stripePixels = h * exportWidth;
-            const offset = y * exportWidth;
-
-            // Subarray views into existing bands (zero-copy)
-            const stripeBands = {};
+          const renderTile = (x0, y0, tileW, tileH) => {
+            const tilePixels = tileW * tileH;
+            // Extract contiguous tile bands from row-major image bands
+            const tileBands = {};
             for (const name of Object.keys(bands)) {
-              stripeBands[name] = bands[name].subarray(offset, offset + stripePixels);
+              const arr = new Float32Array(tilePixels);
+              for (let py = 0; py < tileH; py++) {
+                const srcOff = (y0 + py) * exportWidth + x0;
+                arr.set(bands[name].subarray(srcOff, srcOff + tileW), py * tileW);
+              }
+              tileBands[name] = arr;
             }
-
-            // Compute RGB channels for this stripe (~37 MB intermediate per stripe)
-            const rgbBands = computeRGBBands(stripeBands, compositeId, exportWidth, stripePixels);
-            const stripeImage = createRGBTexture(
-              rgbBands, exportWidth, h,
+            const rgbBands = computeRGBBands(tileBands, compositeId, tileW, tilePixels);
+            const tileImage = createRGBTexture(
+              rgbBands, tileW, tileH,
               effectiveContrastLimits,
               useDecibels, gamma, stretchMode,
               null, false
             );
-            rgbaData.set(stripeImage.data, offset * 4);
+            return tileImage.data;
+          };
 
-            // Yield every few stripes so the browser can update the UI
-            if ((y / STRIPE_ROWS) % 4 === 0) {
-              await new Promise(r => setTimeout(r, 0));
+          geotiff = await writeRGBAGeoTIFF(null, exportWidth, exportHeight, exportBounds, epsgCode, {
+            generateOverviews: false,
+            renderTile,
+            onProgress: (pct) => {
+              setExportProgress(50 + Math.round(pct / 2));
             }
-          }
+          });
 
-          // Free band data before GeoTIFF encoding (~2.9 GB freed)
+          // Free band data
           for (const name of Object.keys(bands)) {
             bands[name] = null;
           }
+
+          filename = `sardine_${bandNames.join('-')}_${compositeId}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
         } else {
           // Single-band: apply colormap
           addStatusLog('info', `Applying ${useDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
@@ -1333,7 +1335,7 @@ function App() {
           const cMin = contrastMin;
           const cMax = contrastMax;
           const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
-          rgbaData = new Uint8ClampedArray(numPixels * 4);
+          const rgbaData = new Uint8ClampedArray(numPixels * 4);
           const bandData = bands[bandNames[0]];
 
           for (let i = 0; i < numPixels; i++) {
@@ -1358,17 +1360,17 @@ function App() {
           for (const name of Object.keys(bands)) {
             bands[name] = null;
           }
+
+          addStatusLog('info', 'Writing RGBA GeoTIFF...');
+          geotiff = await writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
+            generateOverviews: false,
+            onProgress: (pct) => {
+              setExportProgress(50 + Math.round(pct / 2));
+            }
+          });
+
+          filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
         }
-
-        addStatusLog('info', 'Writing RGBA GeoTIFF...');
-        geotiff = await writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
-          generateOverviews: false,
-          onProgress: (pct) => {
-            setExportProgress(50 + Math.round(pct / 2));
-          }
-        });
-
-        filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
       } else {
         // --- Raw export: Float32 linear power (+ complex bands if present) ---
         const rawBandNames = complexBandNames.length > 0 ? allBandNames : bandNames;
