@@ -34,11 +34,13 @@ export class SARBitmapLayer extends BitmapLayer {
       gamma = 1.0,
       stretchMode = 'linear',
       opacity = 1,
+      dataMask = null,
+      useMask = false,
       ...otherProps
     } = props;
 
     // Create RGBA texture from SAR data
-    const imageData = createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma, stretchMode);
+    const imageData = createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma, stretchMode, dataMask, useMask);
 
     super({
       id: props.id || 'sar-bitmap-layer',
@@ -85,9 +87,11 @@ export class SARBitmapLayer extends BitmapLayer {
  * @param {number[]} contrastLimits - [min, max] contrast limits
  * @param {boolean} useDecibels - Whether to apply dB scaling
  * @param {string} colormap - Colormap name
+ * @param {Float32Array} dataMask - Mask data (NISAR convention: 0=invalid, 1-5=valid, 255=fill)
+ * @param {boolean} useMask - Whether to apply the mask
  * @returns {ImageData} RGBA image data for texture
  */
-function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear') {
+function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear', dataMask = null, useMask = false) {
   const [min, max] = contrastLimits;
   const colormapFunc = getColormap(colormap);
   const expectedSize = width * height;
@@ -116,7 +120,15 @@ function createSARTexture(data, width, height, contrastLimits, useDecibels, colo
     rgba[idx] = r;
     rgba[idx + 1] = g;
     rgba[idx + 2] = b;
-    rgba[idx + 3] = amplitude === 0 || isNaN(amplitude) ? 0 : 255;
+
+    // Alpha: transparent for nodata or invalid mask
+    let alpha = (amplitude === 0 || isNaN(amplitude)) ? 0 : 255;
+    if (useMask && dataMask && dataMask[i] !== undefined) {
+      const maskVal = dataMask[i];
+      // NISAR mask: 0=invalid, 1-5=valid, 255=fill → 0 and 255 are transparent
+      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0;
+    }
+    rgba[idx + 3] = alpha;
   }
 
   return new ImageData(rgba, width, height);

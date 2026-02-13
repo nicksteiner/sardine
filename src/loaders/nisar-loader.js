@@ -1833,7 +1833,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
       // For small regions, read directly with readRegion (fast path)
       const MAX_DIRECT_PIXELS = 1024 * 1024; // 1M pixels max for direct read
       if (sliceW * sliceH <= MAX_DIRECT_PIXELS) {
-        console.log(`[NISAR Loader] Tile ${tileKey}: direct read [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH})`);
+        // console.log(`[NISAR Loader] Tile ${tileKey}: direct read [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH})`);
         const readPromises = [streamReader.readRegion(selectedDatasetId, top, left, sliceH, sliceW)];
         if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, top, left, sliceH, sliceW));
         const [regionResult, maskRegion] = await Promise.all(readPromises);
@@ -1855,7 +1855,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         const nSub = multiLook
           ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
           : 1;
-        console.log(`[NISAR Loader] Tile ${tileKey}: chunk-sampled [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH}) ${multiLook ? 'multi-look' : 'preview'} samples=${nSub}x${nSub}`);
+        // console.log(`[NISAR Loader] Tile ${tileKey}: chunk-sampled [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH}) ${multiLook ? 'multi-look' : 'preview'} samples=${nSub}x${nSub}`);
 
         for (let ty = 0; ty < tileSize; ty++) {
           for (let tx = 0; tx < tileSize; tx++) {
@@ -2559,10 +2559,14 @@ export async function loadNISARRGBComposite(file, options = {}) {
     frequency = 'A',
     compositeId = 'hh-hv-vv',
     requiredPols = ['HHHH', 'HVHV', 'VVVV'],
+    requiredComplexPols = [],
   } = options;
 
   console.log(`[NISAR Loader] Loading RGB composite: ${compositeId}`);
   console.log(`[NISAR Loader] Required polarizations: ${requiredPols.join(', ')}`);
+  if (requiredComplexPols.length > 0) {
+    console.log(`[NISAR Loader] Required complex terms: ${requiredComplexPols.join(', ')}`);
+  }
 
   // Open with h5chunk streaming with lazy tree-walking (fast for all file sizes)
   const streamReader = await openH5ChunkFile(file); // Use lazy mode default
@@ -2612,6 +2616,29 @@ export async function loadNISARRGBComposite(file, options = {}) {
   if (missingPols.length > 0) {
     console.warn(`[NISAR Loader] Missing polarizations: ${missingPols.join(', ')}`);
     console.warn('[NISAR Loader] Will use zeros for missing bands');
+  }
+
+  // Find complex (off-diagonal) datasets by spec path
+  const complexPolMap = {};
+  for (const cpol of requiredComplexPols) {
+    // First check if classifyDatasets already found it in polMap
+    if (polMap[cpol]) {
+      complexPolMap[cpol] = polMap[cpol];
+      console.log(`[NISAR Loader] Complex term ${cpol} → ${polMap[cpol]} (from polMap)`);
+    } else {
+      // Try spec path lookup
+      try {
+        const dsId = streamReader.findDatasetByPath(paths.dataset(activeFreq, cpol));
+        if (dsId != null) {
+          complexPolMap[cpol] = dsId;
+          console.log(`[NISAR Loader] Complex term ${cpol} → ${dsId} (from spec path)`);
+        } else {
+          console.warn(`[NISAR Loader] Complex term ${cpol} not found`);
+        }
+      } catch (e) {
+        console.warn(`[NISAR Loader] Failed to find complex term ${cpol}:`, e.message);
+      }
+    }
   }
 
   const [height, width] = targetShape;
@@ -2785,12 +2812,16 @@ export async function loadNISARRGBComposite(file, options = {}) {
     pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) }
   });
 
-  // Per-dataset chunk caches
+  // Per-dataset chunk caches (real + complex)
   const chunkCaches = {};
   for (const pol of requiredPols) {
     chunkCaches[pol] = new Map();
   }
+  for (const cpol of requiredComplexPols) {
+    chunkCaches[cpol] = new Map();
+  }
   const MAX_CHUNK_CACHE_PER_BAND = 300;
+  const hasComplexData = requiredComplexPols.length > 0 && Object.keys(complexPolMap).length > 0;
 
   // Tile cache
   const tileCache = new Map();
@@ -2845,6 +2876,54 @@ export async function loadNISARRGBComposite(file, options = {}) {
   }
 
   /**
+   * Read a complex (CFloat32) chunk with caching.
+   * Returns interleaved Float32Array [re, im, re, im, ...] of length 2×chunkH×chunkW.
+   */
+  async function getCachedComplexChunk(cpol, chunkRow, chunkCol) {
+    const dsId = complexPolMap[cpol];
+    if (!dsId) return null;
+
+    const cache = chunkCaches[cpol];
+    const key = `${chunkRow},${chunkCol}`;
+    if (cache.has(key)) return cache.get(key);
+
+    let chunk;
+    try {
+      chunk = await streamReader.readChunk(dsId, chunkRow, chunkCol);
+      if (chunkRow === 0 && chunkCol === 0 && chunk) {
+        console.log(`[NISAR RGB] Complex chunk ${cpol}(0,0): length=${chunk.length}, expected=${chunkW * chunkH * 2} (interleaved)`);
+      }
+    } catch (e) {
+      console.warn(`[NISAR RGB] Complex chunk ${cpol}(${chunkRow},${chunkCol}) failed:`, e.message);
+      return null;
+    }
+
+    if (cache.size >= MAX_CHUNK_CACHE_PER_BAND) {
+      const keys = Array.from(cache.keys()).slice(0, 50);
+      keys.forEach(k => cache.delete(k));
+    }
+    cache.set(key, chunk);
+    return chunk;
+  }
+
+  /**
+   * Sample real and imaginary parts from a complex (interleaved) chunk.
+   * @returns {{re: number, im: number}}
+   */
+  function sampleComplexPixel(chunk, srcY, srcX, chunkRow, chunkCol) {
+    if (!chunk) return { re: 0, im: 0 };
+    const localY = srcY - chunkRow * chunkH;
+    const localX = srcX - chunkCol * chunkW;
+    const idx = (localY * chunkW + localX) * 2; // 2 floats per pixel
+    if (idx >= 0 && idx + 1 < chunk.length) {
+      const re = chunk[idx];
+      const im = chunk[idx + 1];
+      return { re: isNaN(re) ? 0 : re, im: isNaN(im) ? 0 : im };
+    }
+    return { re: 0, im: 0 };
+  }
+
+  /**
    * Get RGB tile data — reads from multiple datasets in parallel.
    * Returns {bands, width, height, compositeId} with Float32Arrays per channel.
    *
@@ -2859,7 +2938,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
     // LRU: If tile exists, move it to end (most recently used)
     if (tileCache.has(tileKey)) {
-      console.log(`[NISAR Tile] Cache hit: ${tileKey}`);
+      // console.log(`[NISAR Tile] Cache hit: ${tileKey}`);
       const tile = tileCache.get(tileKey);
       tileCache.delete(tileKey);
       tileCache.set(tileKey, tile);
@@ -2959,8 +3038,15 @@ export async function loadNISARRGBComposite(file, options = {}) {
       for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
         for (let cc = minChunkCol; cc <= maxChunkCol; cc++) {
           for (const pol of requiredPols) {
-            chunkKeys.push({ pol, cr, cc });
+            chunkKeys.push({ pol, cr, cc, complex: false });
             chunkFetches.push(getCachedChunk(pol, cr, cc));
+          }
+          // Also pre-fetch complex (off-diagonal) chunks
+          for (const cpol of requiredComplexPols) {
+            if (complexPolMap[cpol]) {
+              chunkKeys.push({ pol: cpol, cr, cc, complex: true });
+              chunkFetches.push(getCachedComplexChunk(cpol, cr, cc));
+            }
           }
         }
       }
@@ -2972,6 +3058,9 @@ export async function loadNISARRGBComposite(file, options = {}) {
       for (const pol of requiredPols) {
         prefetched[pol] = {};
       }
+      for (const cpol of requiredComplexPols) {
+        prefetched[cpol] = {};
+      }
       for (let i = 0; i < chunkKeys.length; i++) {
         const { pol, cr, cc } = chunkKeys[i];
         prefetched[pol][`${cr},${cc}`] = fetchedChunks[i];
@@ -2981,6 +3070,13 @@ export async function loadNISARRGBComposite(file, options = {}) {
       const bandArrays = {};
       for (const pol of requiredPols) {
         bandArrays[pol] = new Float32Array(tileSize * tileSize);
+      }
+      // Complex bands → separate _re and _im arrays
+      for (const cpol of requiredComplexPols) {
+        if (complexPolMap[cpol]) {
+          bandArrays[`${cpol}_re`] = new Float32Array(tileSize * tileSize);
+          bandArrays[`${cpol}_im`] = new Float32Array(tileSize * tileSize);
+        }
       }
 
       for (let ty = 0; ty < tileSize; ty++) {
@@ -3018,6 +3114,26 @@ export async function loadNISARRGBComposite(file, options = {}) {
           for (const pol of requiredPols) {
             bandArrays[pol][pixIdx] = counts[pol] > 0 ? sums[pol] / counts[pol] : 0;
           }
+
+          // Complex bands: nearest-neighbor (center sample only, no averaging)
+          // Complex cross-products are not power values — averaging re/im separately is valid
+          // but NN is simpler and sufficient at tile resolution
+          if (hasComplexData) {
+            const centerY = top + Math.floor((ty + 0.5) * stepY);
+            const centerX = left + Math.floor((tx + 0.5) * stepX);
+            if (centerY >= 0 && centerY < height && centerX >= 0 && centerX < width) {
+              const cr = Math.floor(centerY / chunkH);
+              const cc = Math.floor(centerX / chunkW);
+              const chunkKey = `${cr},${cc}`;
+              for (const cpol of requiredComplexPols) {
+                if (!complexPolMap[cpol]) continue;
+                const chunk = prefetched[cpol][chunkKey];
+                const { re, im } = sampleComplexPixel(chunk, centerY, centerX, cr, cc);
+                bandArrays[`${cpol}_re`][pixIdx] = re;
+                bandArrays[`${cpol}_im`][pixIdx] = im;
+              }
+            }
+          }
         }
       }
 
@@ -3037,7 +3153,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
       }
       tileCache.set(tileKey, tile);
 
-      console.log(`[NISAR Tile] Success: ${tileKey}, region=[${left},${top},${right},${bottom}], samples=${Object.keys(bandArrays)[0] ? bandArrays[Object.keys(bandArrays)[0]].length : 0}`);
+      // console.log(`[NISAR Tile] Success: ${tileKey}, region=[${left},${top},${right},${bottom}], samples=${Object.keys(bandArrays)[0] ? bandArrays[Object.keys(bandArrays)[0]].length : 0}`);
 
       return tile;
 
@@ -3092,6 +3208,11 @@ export async function loadNISARRGBComposite(file, options = {}) {
         for (const pol of requiredPols) {
           fetches.push(getCachedChunk(pol, cr, cc));
         }
+        for (const cpol of requiredComplexPols) {
+          if (complexPolMap[cpol]) {
+            fetches.push(getCachedComplexChunk(cpol, cr, cc));
+          }
+        }
       }
     }
     await Promise.all(fetches);
@@ -3100,6 +3221,13 @@ export async function loadNISARRGBComposite(file, options = {}) {
     const bandArrays = {};
     for (const pol of requiredPols) {
       bandArrays[pol] = new Float32Array(exportWidth * numRows);
+    }
+    // Complex bands for export
+    for (const cpol of requiredComplexPols) {
+      if (complexPolMap[cpol]) {
+        bandArrays[`${cpol}_re`] = new Float32Array(exportWidth * numRows);
+        bandArrays[`${cpol}_im`] = new Float32Array(exportWidth * numRows);
+      }
     }
 
     // Exact box-filter averaging: each output pixel averages ALL ml×ml source pixels
@@ -3129,6 +3257,30 @@ export async function loadNISARRGBComposite(file, options = {}) {
           }
           bandArrays[pol][oy * exportWidth + ox] = count > 0 ? sum / count : NaN;
         }
+
+        // Complex bands: average real and imaginary parts separately
+        if (hasComplexData) {
+          for (const cpol of requiredComplexPols) {
+            if (!complexPolMap[cpol]) continue;
+            let sumRe = 0, sumIm = 0, count = 0;
+            for (let sy = sy0; sy < sy1; sy++) {
+              const cr = Math.floor(sy / chunkH);
+              for (let sx = sx0; sx < sx1; sx++) {
+                const cc = Math.floor(sx / chunkW);
+                const chunk = chunkCaches[cpol].get(`${cr},${cc}`);
+                const { re, im } = sampleComplexPixel(chunk, sy, sx, cr, cc);
+                if (re !== 0 || im !== 0) {
+                  sumRe += re;
+                  sumIm += im;
+                  count++;
+                }
+              }
+            }
+            const pixIdx = oy * exportWidth + ox;
+            bandArrays[`${cpol}_re`][pixIdx] = count > 0 ? sumRe / count : 0;
+            bandArrays[`${cpol}_im`][pixIdx] = count > 0 ? sumIm / count : 0;
+          }
+        }
       }
     }
 
@@ -3155,6 +3307,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
     height,
     pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) },
     requiredPols,
+    requiredComplexPols: Object.keys(complexPolMap),
     composite: compositeId,
     band,
     identification,
@@ -3166,6 +3319,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
   console.log('[NISAR Loader] RGB composite loaded:', {
     width, height, bounds, worldBounds, crs, compositeId,
     mappedPols: Object.keys(polMap),
+    complexPols: Object.keys(complexPolMap),
   });
 
   return result;

@@ -350,7 +350,7 @@ export class SARTiledCOGLayer extends CompositeLayer {
 
   renderLayers() {
     const { bounds, tiff } = this.state;
-    const { contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, onLoadingChange, toneMapping } = this.props;
+    const { contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, onLoadingChange, toneMapping, useMask = false } = this.props;
 
     // Wait for COG to be loaded before rendering
     if (!bounds || !tiff) {
@@ -460,6 +460,8 @@ export class SARTiledCOGLayer extends CompositeLayer {
             gamma,
             stretchMode,
             opacity,
+            dataMask: tileData.mask || null,
+            useMask,
           })
         );
       }

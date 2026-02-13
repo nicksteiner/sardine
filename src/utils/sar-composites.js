@@ -4,9 +4,116 @@
  * Standard SAR polarimetric color combinations for GCOV power data.
  * GCOV datasets contain backscatter power values:
  *   HHHH = |HH|², HVHV = |HV|², VHVH = |VH|², VVVV = |VV|²
+ *
+ * Off-diagonal terms (complex):
+ *   HHVV = <SHH·SVV*> — stored as CFloat32 in NISAR, de-interleaved
+ *   to HHVV_re (real) and HHVV_im (imaginary) by the loader.
  */
 
 import { applyStretch } from './stretch.js';
+
+/**
+ * Freeman-Durden 3-component decomposition (per-pixel).
+ *
+ * Decomposes the 3×3 covariance matrix into:
+ *   Ps — surface (single-bounce Bragg)
+ *   Pd — double-bounce (dihedral)
+ *   Pv — volume (random canopy)
+ *
+ * Uses the random-dipole-cloud volume model (Freeman & Durden 1998, IEEE TGRS).
+ *
+ * @param {number} c11 - <|SHH|²>      (HHHH)
+ * @param {number} c22 - <|SHV|²>      (HVHV)
+ * @param {number} c33 - <|SVV|²>      (VVVV)
+ * @param {number} c13re - Re(<SHH·SVV*>) (Re(HHVV))
+ * @param {number} c13im - Im(<SHH·SVV*>) (Im(HHVV))
+ * @returns {{Ps: number, Pd: number, Pv: number}}
+ */
+function freemanDurden(c11, c22, c33, c13re, c13im) {
+  const span = c11 + 2 * c22 + c33;
+  if (span <= 1e-20) return { Ps: 0, Pd: 0, Pv: 0 };
+
+  // Volume: random dipole cloud model
+  // Cv_22 = fv/4 → fv = 4·C22
+  // Cv_11 = Cv_33 = fv/2, Cv_13 = fv/4
+  // Volume power in span: fv/2 + 2·fv/4 + fv/2 = 3fv/2
+  const fv = 4 * c22;
+
+  // Residual co-pol after removing volume contribution
+  const c11r = c11 - fv / 2;     // C11 - 2·C22
+  const c33r = c33 - fv / 2;     // C33 - 2·C22
+  const c13r_re = c13re - c22;   // Re(C13) - C22  (fv/4 = C22)
+  const c13r_im = c13im;
+
+  let Ps, Pd, Pv;
+
+  if (c11r <= 0 || c33r <= 0) {
+    // Volume over-estimated — assign all power to volume
+    return { Ps: 0, Pd: 0, Pv: span };
+  }
+
+  const c13r_sq = c13r_re * c13r_re + c13r_im * c13r_im;
+  const det = c11r * c33r;
+
+  if (c13r_re >= 0) {
+    // Surface dominant: fix α = -1
+    // Ps from C33 residual, Pd from remainder
+    Ps = c33r;
+    Pd = (det > c13r_sq) ? c11r - c13r_sq / c33r : 0;
+  } else {
+    // Double-bounce dominant: fix β = 1
+    // Pd from C11 residual, Ps from remainder
+    Pd = c11r;
+    Ps = (det > c13r_sq) ? c33r - c13r_sq / c11r : 0;
+  }
+
+  if (Ps < 0) Ps = 0;
+  if (Pd < 0) Pd = 0;
+  Pv = span - Ps - Pd;
+  if (Pv < 0) Pv = 0;
+
+  return { Ps, Pd, Pv };
+}
+
+/**
+ * Compute Freeman-Durden RGB bands for an entire tile.
+ *
+ * Standard convention: R = Pd (double-bounce, red in urban areas),
+ *                      G = Pv (volume, green in forests),
+ *                      B = Ps (surface, blue over water / bare soil).
+ *
+ * @param {Object} bands - {HHHH, HVHV, VVVV, HHVV_re, HHVV_im} Float32Arrays
+ * @returns {{R: Float32Array, G: Float32Array, B: Float32Array}}
+ */
+function computeFreemanDurdenRGB(bands) {
+  const hh = bands['HHHH'];
+  const hv = bands['HVHV'];
+  const vv = bands['VVVV'];
+  const re = bands['HHVV_re'];
+  const im = bands['HHVV_im'];
+  const n = hh.length;
+
+  const R = new Float32Array(n);
+  const G = new Float32Array(n);
+  const B = new Float32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const c11 = hh[i];
+    const c22 = hv[i];
+    const c33 = vv[i];
+    const c13re = re ? re[i] : 0;
+    const c13im = im ? im[i] : 0;
+
+    if (c11 <= 0 && c22 <= 0 && c33 <= 0) continue; // nodata
+
+    const { Ps, Pd, Pv } = freemanDurden(c11, c22, c33, c13re, c13im);
+    R[i] = Pd;  // double-bounce → red (urban)
+    G[i] = Pv;  // volume → green (vegetation)
+    B[i] = Ps;  // surface → blue (water/soil)
+  }
+
+  return { R, G, B };
+}
 
 /**
  * SAR composite preset definitions
@@ -101,6 +208,15 @@ export const SAR_COMPOSITES = {
       },
     },
   },
+  'freeman-durden': {
+    name: 'Freeman-Durden',
+    description: 'Double-bounce / Volume / Surface decomposition',
+    required: ['HHHH', 'HVHV', 'VVVV'],
+    requiredComplex: ['HHVV'],
+    computeAll: true,
+    formula: computeFreemanDurdenRGB,
+    channelLabels: { R: 'Pd (dbl-bounce)', G: 'Pv (volume)', B: 'Ps (surface)' },
+  },
 };
 
 /**
@@ -136,6 +252,9 @@ export function getAvailableComposites(availableDatasets) {
 
   return Object.entries(SAR_COMPOSITES)
     .filter(([, preset]) => preset.required.every(p => pols.has(p)))
+    // Note: complex terms (requiredComplex) are discovered at load time,
+    // not from the dataset list. We show the composite as available if
+    // the diagonal terms match; missing complex terms will degrade gracefully.
     .map(([id, preset]) => ({
       id,
       name: preset.name,
@@ -144,7 +263,7 @@ export function getAvailableComposites(availableDatasets) {
 }
 
 /**
- * Get the unique dataset polarizations needed for a composite.
+ * Get the unique dataset polarizations needed for a composite (real-valued).
  * @param {string} compositeId
  * @returns {string[]} List of polarization names (e.g. ['HHHH', 'HVHV', 'VVVV'])
  */
@@ -152,6 +271,17 @@ export function getRequiredDatasets(compositeId) {
   const preset = SAR_COMPOSITES[compositeId];
   if (!preset) return [];
   return preset.required;
+}
+
+/**
+ * Get the complex (off-diagonal) datasets needed for a composite.
+ * @param {string} compositeId
+ * @returns {string[]} List of complex term names (e.g. ['HHVV'])
+ */
+export function getRequiredComplexDatasets(compositeId) {
+  const preset = SAR_COMPOSITES[compositeId];
+  if (!preset) return [];
+  return preset.requiredComplex || [];
 }
 
 /**
@@ -170,6 +300,12 @@ export function computeRGBBands(bandData, compositeId, tileSize, numPixels) {
   }
 
   if (numPixels === undefined) numPixels = tileSize * tileSize;
+
+  // Decomposition presets compute all channels at once (e.g. Freeman-Durden)
+  if (preset.computeAll && preset.formula) {
+    return preset.formula(bandData);
+  }
+
   const result = {};
 
   for (const channel of ['R', 'G', 'B']) {
@@ -204,9 +340,11 @@ export function computeRGBBands(bandData, compositeId, tileSize, numPixels) {
  * @param {boolean} useDecibels - Whether to apply 10*log10 before stretching
  * @param {number} gamma - Gamma exponent (default 1.0)
  * @param {string} stretchMode - Stretch mode (default 'linear')
+ * @param {Uint8Array|null} dataMask - Optional mask array (NISAR convention: 0=invalid, 1-5=valid, 255=fill)
+ * @param {boolean} useMask - Whether to apply mask (if dataMask provided)
  * @returns {ImageData}
  */
-export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear') {
+export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear', dataMask = null, useMask = false) {
   // Support per-channel contrast: {R: [min,max], G: [min,max], B: [min,max]}
   // or uniform: [min, max]
   const channelKeys = ['R', 'G', 'B'];
@@ -255,7 +393,13 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
       rgba[idx + c] = Math.round(value * 255);
     }
 
-    rgba[idx + 3] = anyValid ? 255 : 0;
+    let alpha = anyValid ? 255 : 0;
+    // Apply mask if enabled (NISAR convention: 0=invalid, 255=fill → transparent; 1-5=valid)
+    if (useMask && dataMask && dataMask[i] !== undefined) {
+      const maskVal = dataMask[i];
+      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0;
+    }
+    rgba[idx + 3] = alpha;
   }
 
   return new ImageData(rgba, width, height);

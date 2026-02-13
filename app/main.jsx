@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
-import { autoSelectComposite, getAvailableComposites, getRequiredDatasets } from '../src/utils/sar-composites.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
@@ -454,11 +454,14 @@ function App() {
 
         addStatusLog('info', 'Histogram: computing statistics...');
         const hists = {};
+        const autoLims = {};
         for (const ch of ['R', 'G', 'B']) {
           hists[ch] = computeChannelStats(rawValues[ch], useDecibels);
+          autoLims[ch] = hists[ch] ? [hists[ch].p2, hists[ch].p98] : [0, 1];
         }
         setHistogramData(hists);
-        addStatusLog('success', `${scopeLabel} histogram updated (RGB)`);
+        setRgbContrastLimits(autoLims);
+        addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`);
       } else {
         // Single-band histogram — pass origin offset for correct viewport sampling
         const stats = await sampleViewportStats(
@@ -490,12 +493,12 @@ function App() {
   useEffect(() => {
     if (useDecibels !== useDecibelsRef.current) {
       useDecibelsRef.current = useDecibels;
-      // Recompute histogram in the new scale
-      if (imageData && displayMode === 'single') {
+      // Recompute histogram in the new scale (both single-band and RGB)
+      if (imageData) {
         handleRecomputeHistogram();
       }
     }
-  }, [useDecibels, imageData, displayMode, handleRecomputeHistogram]);
+  }, [useDecibels, imageData, handleRecomputeHistogram]);
 
   // Tone mapping config — hidden, see tone mapping NOTE in JSX below
   // const toneMapping = useMemo(() => ({
@@ -953,12 +956,14 @@ function App() {
       if (displayMode === 'rgb' && compositeId) {
         // RGB composite mode
         const requiredPols = getRequiredDatasets(compositeId);
-        addStatusLog('info', `Loading RGB composite: ${compositeId} (${requiredPols.join(', ')})`);
+        const requiredComplexPols = getRequiredComplexDatasets(compositeId);
+        addStatusLog('info', `Loading RGB composite: ${compositeId} (${requiredPols.join(', ')}${requiredComplexPols.length ? ' + complex: ' + requiredComplexPols.join(', ') : ''})`);
 
         data = await loadNISARRGBComposite(nisarFile, {
           frequency: selectedFrequency,
           compositeId,
           requiredPols,
+          requiredComplexPols,
         });
 
         // In RGB mode, pass getRGBTile as getTile
@@ -1089,6 +1094,7 @@ function App() {
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
 
   const handleExportGeoTIFF = useCallback(async () => {
     if (!imageData) {
@@ -1104,6 +1110,10 @@ function App() {
     setExporting(true);
     const exportStart = performance.now();
     addStatusLog('info', '--- GeoTIFF Export Started ---');
+    console.log('[Export] GeoTIFF export started');
+
+    // Yield to browser so "Exporting..." button state renders before heavy work
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     try {
       const sourceWidth = imageData.width;
@@ -1114,16 +1124,16 @@ function App() {
       const exportWidth = Math.floor(sourceWidth / effectiveMl);
       const exportHeight = Math.floor(sourceHeight / effectiveMl);
 
-      // Check per-band size — each Float32Array must fit in one JS ArrayBuffer (~2GB).
-      // Bands are separate allocations so total across bands is fine; the constraint
-      // is per-array, not aggregate.
+      // Warn if per-band allocation is very large (modern 64-bit browsers
+      // support ArrayBuffers well beyond 2 GB, but system RAM is the real limit)
       const perBandBytes = exportWidth * exportHeight * 4;
-      const MAX_SINGLE_ARRAY = 1.8e9; // ~1.8GB per Float32Array (leave headroom below 2GB JS limit)
-      if (perBandBytes > MAX_SINGLE_ARRAY) {
-        const suggestedMl = effectiveMl * 2;
-        addStatusLog('error', `Single band too large (${(perBandBytes / 1e9).toFixed(1)}GB). Increase multilook to ${suggestedMl}x or higher.`);
+      if (perBandBytes > 6e9) {
+        addStatusLog('error', `Single band too large (${(perBandBytes / 1e9).toFixed(1)}GB). Increase multilook to reduce size.`);
         setExporting(false);
         return;
+      }
+      if (perBandBytes > 2e9) {
+        addStatusLog('warning', `Large allocation: ${(perBandBytes / 1e9).toFixed(1)}GB per band — ensure sufficient RAM`);
       }
 
       // Extract EPSG from CRS string
@@ -1133,6 +1143,14 @@ function App() {
       // Band names from the loaded data's required polarizations
       // Single-band: ['HHHH'], RGB composite: ['HHHH', 'HVHV', 'VVVV'], etc.
       const bandNames = imageData.requiredPols || [imageData.polarization || 'HHHH'];
+
+      // Complex band names (e.g. HHVV → HHVV_re, HHVV_im) for decompositions
+      const complexBandNames = [];
+      if (imageData.requiredComplexPols) {
+        for (const cpol of imageData.requiredComplexPols) {
+          complexBandNames.push(`${cpol}_re`, `${cpol}_im`);
+        }
+      }
 
       addStatusLog('info', `Source: ${sourceWidth} x ${sourceHeight}`);
       addStatusLog('info', `Multilook: ${effectiveMl}x${effectiveMl} (integer)`);
@@ -1155,9 +1173,10 @@ function App() {
         addStatusLog('info', `Format: GeoTIFF (Float32, 512x512 tiles, DEFLATE)`);
       }
 
-      // Allocate output arrays for each band
+      // Allocate output arrays for each band (power + complex)
       const bands = {};
-      for (const name of bandNames) {
+      const allBandNames = [...bandNames, ...complexBandNames];
+      for (const name of allBandNames) {
         bands[name] = new Float32Array(exportWidth * exportHeight);
       }
 
@@ -1170,6 +1189,7 @@ function App() {
         const numRows = Math.min(stripeRows, exportHeight - startRow);
 
         addStatusLog('info', `Reading stripe ${s + 1}/${numStripes} (rows ${startRow}-${startRow + numRows - 1})...`);
+        setExportProgress(Math.round((s / numStripes) * 50));
 
         const stripe = await imageData.getExportStripe({
           startRow,
@@ -1178,13 +1198,17 @@ function App() {
           exportWidth,
         });
 
-        // Copy stripe data into output arrays
-        for (const name of bandNames) {
+        // Copy stripe data into output arrays (power + complex bands)
+        for (const name of allBandNames) {
           if (stripe.bands[name]) {
             bands[name].set(stripe.bands[name], startRow * exportWidth);
           }
         }
       }
+
+      addStatusLog('info', 'Encoding GeoTIFF...');
+      setExportProgress(50);
+      await new Promise(r => setTimeout(r, 0));
 
       // --- Append metadata cube fields as extra bands ---
       if (imageData.metadataCube && imageData.xCoords && imageData.yCoords) {
@@ -1260,19 +1284,50 @@ function App() {
         }
 
         const numPixels = exportWidth * exportHeight;
-        let rgbaData;
 
         if (displayMode === 'rgb' && compositeId) {
-          // RGB composite: apply computeRGBBands (same transform as GPU tile path)
-          // then per-channel dB/contrast/stretch via createRGBTexture
+          // RGB composite: render tiles on-the-fly during GeoTIFF encoding.
+          // This avoids allocating a full RGBA image (~1.5 GB for 366M pixels)
+          // on top of the band data (~2.9 GB), which would exceed browser limits.
+          // Each 512×512 tile (~4 MB) is rendered and compressed individually.
           addStatusLog('info', `Applying RGB composite "${compositeId}" + per-channel contrast...`);
-          const rgbBands = computeRGBBands(bands, compositeId, exportWidth, exportWidth * exportHeight);
-          const rgbImageData = createRGBTexture(
-            rgbBands, exportWidth, exportHeight,
-            effectiveContrastLimits,  // per-channel {R:[min,max], G:[min,max], B:[min,max]}
-            useDecibels, gamma, stretchMode
-          );
-          rgbaData = new Uint8ClampedArray(rgbImageData.data);
+
+          const renderTile = (x0, y0, tileW, tileH) => {
+            const tilePixels = tileW * tileH;
+            // Extract contiguous tile bands from row-major image bands
+            const tileBands = {};
+            for (const name of Object.keys(bands)) {
+              const arr = new Float32Array(tilePixels);
+              for (let py = 0; py < tileH; py++) {
+                const srcOff = (y0 + py) * exportWidth + x0;
+                arr.set(bands[name].subarray(srcOff, srcOff + tileW), py * tileW);
+              }
+              tileBands[name] = arr;
+            }
+            const rgbBands = computeRGBBands(tileBands, compositeId, tileW, tilePixels);
+            const tileImage = createRGBTexture(
+              rgbBands, tileW, tileH,
+              effectiveContrastLimits,
+              useDecibels, gamma, stretchMode,
+              null, false
+            );
+            return tileImage.data;
+          };
+
+          geotiff = await writeRGBAGeoTIFF(null, exportWidth, exportHeight, exportBounds, epsgCode, {
+            generateOverviews: false,
+            renderTile,
+            onProgress: (pct) => {
+              setExportProgress(50 + Math.round(pct / 2));
+            }
+          });
+
+          // Free band data
+          for (const name of Object.keys(bands)) {
+            bands[name] = null;
+          }
+
+          filename = `sardine_${bandNames.join('-')}_${compositeId}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
         } else {
           // Single-band: apply colormap
           addStatusLog('info', `Applying ${useDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
@@ -1280,7 +1335,7 @@ function App() {
           const cMin = contrastMin;
           const cMax = contrastMax;
           const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
-          rgbaData = new Uint8ClampedArray(numPixels * 4);
+          const rgbaData = new Uint8ClampedArray(numPixels * 4);
           const bandData = bands[bandNames[0]];
 
           for (let i = 0; i < numPixels; i++) {
@@ -1300,27 +1355,29 @@ function App() {
             rgbaData[i * 4 + 2] = b;
             rgbaData[i * 4 + 3] = (amplitude === 0 || isNaN(amplitude)) ? 0 : 255;
           }
-        }
 
-        addStatusLog('info', 'Writing RGBA GeoTIFF...');
-        geotiff = writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
-          generateOverviews: false,
-          onProgress: (pct) => {
-            if (pct % 20 === 0 && pct > 0 && pct < 100) {
-              addStatusLog('info', `Encoding: ${pct}%`);
-            }
+          // Free band data before GeoTIFF encoding
+          for (const name of Object.keys(bands)) {
+            bands[name] = null;
           }
-        });
 
-        filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
-      } else {
-        // --- Raw export: Float32 linear power ---
-        addStatusLog('info', 'Writing Float32 GeoTIFF...');
-        geotiff = writeFloat32GeoTIFF(bands, bandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
-          onProgress: (pct) => {
-            if (pct % 20 === 0 && pct > 0 && pct < 100) {
-              addStatusLog('info', `Encoding: ${pct}%`);
+          addStatusLog('info', 'Writing RGBA GeoTIFF...');
+          geotiff = await writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
+            generateOverviews: false,
+            onProgress: (pct) => {
+              setExportProgress(50 + Math.round(pct / 2));
             }
+          });
+
+          filename = `sardine_${bandNames.join('-')}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+        }
+      } else {
+        // --- Raw export: Float32 linear power (+ complex bands if present) ---
+        const rawBandNames = complexBandNames.length > 0 ? allBandNames : bandNames;
+        addStatusLog('info', 'Writing Float32 GeoTIFF...');
+        geotiff = await writeFloat32GeoTIFF(bands, rawBandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
+          onProgress: (pct) => {
+            setExportProgress(50 + Math.round(pct / 2));
           }
         });
 
@@ -1350,6 +1407,7 @@ function App() {
       console.error('GeoTIFF export error:', e);
     } finally {
       setExporting(false);
+      setExportProgress(0);
     }
   }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, addStatusLog]);
 
@@ -2185,14 +2243,17 @@ function App() {
 
             {/* Export buttons */}
             {imageData && (
-              <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+              <div style={{ marginTop: '8px' }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
                 {imageData?.getExportStripe && (
                   <button
                     onClick={handleExportGeoTIFF}
                     disabled={exporting}
                     style={{ flex: 1 }}
                   >
-                    {exporting ? 'Exporting...' : exportMode === 'raw' ? 'Export GeoTIFF (Float32)' : 'Export GeoTIFF (Rendered)'}
+                    {exporting
+                      ? `Exporting... ${exportProgress}%`
+                      : exportMode === 'raw' ? 'Export GeoTIFF (Float32)' : 'Export GeoTIFF (Rendered)'}
                   </button>
                 )}
                 <button
@@ -2201,6 +2262,12 @@ function App() {
                 >
                   Save Figure (PNG)
                 </button>
+                </div>
+                {exporting && (
+                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                    <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
+                  </div>
+                )}
               </div>
             )}
             {displayMode === 'rgb' && compositeId && (

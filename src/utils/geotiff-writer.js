@@ -76,12 +76,14 @@ const RASTER_TYPE_PIXEL_IS_AREA = 1;
  *   E.g., multilookWindow=4 uses 4×4 averaging for all overview levels
  * @returns {ArrayBuffer} Valid Cloud Optimized GeoTIFF file
  */
-export function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode = 32610, options = {}) {
-  const { generateOverviews = true, onProgress, dbLimits, useDecibels = true, multilookWindow } = options;
+export async function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode = 32610, options = {}) {
+  const { generateOverviews = true, onProgress, dbLimits, useDecibels = true, multilookWindow, renderTile } = options;
 
-  // Validate inputs
-  if (rgbaData.length !== width * height * 4) {
-    throw new Error(`RGBA data size mismatch: expected ${width * height * 4}, got ${rgbaData.length}`);
+  // Validate inputs (skip when using tile-rendering callback)
+  if (!renderTile) {
+    if (rgbaData.length !== width * height * 4) {
+      throw new Error(`RGBA data size mismatch: expected ${width * height * 4}, got ${rgbaData.length}`);
+    }
   }
 
   // Report progress
@@ -91,10 +93,10 @@ export function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode = 326
 
   reportProgress(0);
 
-  // Generate image pyramid
+  // Generate image pyramid (only when full image is available)
   const pyramid = [{ data: rgbaData, width, height }];
 
-  if (generateOverviews) {
+  if (generateOverviews && !renderTile) {
     let currentLevel = { data: rgbaData, width, height };
     let scale = 2;
 
@@ -120,17 +122,22 @@ export function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode = 326
     }
   }
 
-  reportProgress(20);
+  reportProgress(10);
+  await new Promise(r => setTimeout(r, 0));
 
   // Pass 1: Compress all tiles and collect sizes
   const levels = [];
 
   for (let i = 0; i < pyramid.length; i++) {
     const { data, width: lvlWidth, height: lvlHeight } = pyramid[i];
-    const tiles = extractAndCompressTiles(data, lvlWidth, lvlHeight);
+    const tiles = await extractAndCompressTiles(data, lvlWidth, lvlHeight, (ty, total) => {
+      const levelPct = 10 + (i / pyramid.length + (ty / total) / pyramid.length) * 80;
+      reportProgress(Math.round(levelPct));
+    }, renderTile);
     levels.push({ width: lvlWidth, height: lvlHeight, tiles });
-    reportProgress(20 + (i + 1) / pyramid.length * 60);
   }
+
+  reportProgress(90);
 
   // Pass 2: Calculate file layout and write
   const buffer = buildCOGFile(levels, bounds, epsgCode);
@@ -294,9 +301,19 @@ function generateOverview(rgbaData, width, height, scale, options = {}) {
 }
 
 /**
- * Extract tiles from RGBA data and compress with DEFLATE
+ * Extract tiles from RGBA data and compress with DEFLATE.
+ * Async with periodic yields so the browser can paint progress updates.
+ *
+ * @param {Uint8ClampedArray|null} rgbaData - Full image RGBA data (null when renderTileFn is used)
+ * @param {number} width - Image width
+ * @param {number} height - Image height
+ * @param {function} onTileRowProgress - Progress callback (tileRow, totalRows)
+ * @param {function} [renderTileFn] - Optional callback (x0, y0, tileW, tileH) => Uint8Array|Uint8ClampedArray
+ *   Returns RGBA pixels for the tile region (tileW × tileH × 4 bytes).
+ *   When provided, tiles are rendered on-the-fly instead of extracted from rgbaData,
+ *   eliminating the need for the full image in memory.
  */
-function extractAndCompressTiles(rgbaData, width, height) {
+async function extractAndCompressTiles(rgbaData, width, height, onTileRowProgress, renderTileFn) {
   const tilesX = Math.ceil(width / TILE_SIZE);
   const tilesY = Math.ceil(height / TILE_SIZE);
   const tiles = [];
@@ -310,14 +327,30 @@ function extractAndCompressTiles(rgbaData, width, height) {
       const tileW = x1 - x0;
       const tileH = y1 - y0;
 
-      // Extract tile (may be partial at edges)
-      const tileData = extractTile(rgbaData, width, height, x0, y0, tileW, tileH);
+      let tileData;
+      if (renderTileFn) {
+        // Render this tile on-the-fly from source data
+        const rendered = renderTileFn(x0, y0, tileW, tileH);
+        // Pad to TILE_SIZE × TILE_SIZE (zero-filled for partial edge tiles)
+        tileData = new Uint8Array(TILE_SIZE * TILE_SIZE * 4);
+        const src = new Uint8Array(rendered.buffer, rendered.byteOffset, rendered.byteLength);
+        for (let py = 0; py < tileH; py++) {
+          tileData.set(
+            src.subarray(py * tileW * 4, (py + 1) * tileW * 4),
+            py * TILE_SIZE * 4
+          );
+        }
+      } else {
+        // Extract tile from pre-rendered full image
+        tileData = extractTile(rgbaData, width, height, x0, y0, tileW, tileH);
+      }
 
       // Apply horizontal predictor for better compression
       const predicted = applyHorizontalPredictor(tileData, tileW, tileH);
 
-      // Compress with DEFLATE
-      const compressed = pako.deflate(predicted, { level: 6 });
+      // Compress with DEFLATE (level 1: ~5-10x faster than level 6,
+      // minimal size difference for noisy SAR data)
+      const compressed = pako.deflate(predicted, { level: 1 });
 
       tiles.push({
         x: tx,
@@ -328,29 +361,30 @@ function extractAndCompressTiles(rgbaData, width, height) {
         byteCount: compressed.byteLength
       });
     }
+
+    // Yield to browser every tile row so progress bar renders
+    if (onTileRowProgress) onTileRowProgress(ty, tilesY);
+    await new Promise(r => setTimeout(r, 0));
   }
 
   return tiles;
 }
 
 /**
- * Extract a single tile from RGBA image data
+ * Extract a single tile from RGBA image data.
+ * Uses row-level TypedArray.set() instead of per-pixel copy.
  */
 function extractTile(rgbaData, imgWidth, imgHeight, x0, y0, tileW, tileH) {
   // Always allocate full TILE_SIZE×TILE_SIZE to maintain consistent tile dimensions
   // Fill with zeros (transparent black) for partial tiles
   const tileData = new Uint8Array(TILE_SIZE * TILE_SIZE * 4);
+  // Wrap source as Uint8Array for .subarray() (works with Uint8ClampedArray backing buffer)
+  const src = new Uint8Array(rgbaData.buffer, rgbaData.byteOffset, rgbaData.byteLength);
 
   for (let y = 0; y < tileH; y++) {
-    for (let x = 0; x < tileW; x++) {
-      const srcIdx = ((y0 + y) * imgWidth + (x0 + x)) * 4;
-      const dstIdx = (y * TILE_SIZE + x) * 4;
-
-      tileData[dstIdx] = rgbaData[srcIdx];
-      tileData[dstIdx + 1] = rgbaData[srcIdx + 1];
-      tileData[dstIdx + 2] = rgbaData[srcIdx + 2];
-      tileData[dstIdx + 3] = rgbaData[srcIdx + 3];
-    }
+    const srcOffset = ((y0 + y) * imgWidth + x0) * 4;
+    const dstOffset = y * TILE_SIZE * 4;
+    tileData.set(src.subarray(srcOffset, srcOffset + tileW * 4), dstOffset);
   }
 
   return tileData;
@@ -877,7 +911,7 @@ function writeLegacyOverflow(view, bytes, offset, entry) {
  * @param {Object} [options] - { onProgress }
  * @returns {ArrayBuffer} - Complete TIFF file
  */
-export function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, epsgCode, options = {}) {
+export async function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, epsgCode, options = {}) {
   const { onProgress } = options;
   const numBands = bandNames.length;
   const [minX, minY, maxX, maxY] = bounds;
@@ -892,6 +926,9 @@ export function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, eps
   const numTiles = tilesX * tilesY;
   const compressedTiles = [];
 
+  // Pre-resolve band arrays for inner loop
+  const bandArrays = bandNames.map(name => bands[name]);
+
   for (let ty = 0; ty < tilesY; ty++) {
     for (let tx = 0; tx < tilesX; tx++) {
       const x0 = tx * TILE_SIZE;
@@ -904,22 +941,26 @@ export function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, eps
       const tileData = new Float32Array(TILE_SIZE * TILE_SIZE * numBands);
 
       for (let py = 0; py < tileH; py++) {
+        const rowSrcBase = (y0 + py) * width + x0;
+        const rowDstBase = py * TILE_SIZE * numBands;
         for (let px = 0; px < tileW; px++) {
-          const srcIdx = (y0 + py) * width + (x0 + px);
-          const dstIdx = (py * TILE_SIZE + px) * numBands;
+          const srcIdx = rowSrcBase + px;
+          const dstIdx = rowDstBase + px * numBands;
           for (let b = 0; b < numBands; b++) {
-            tileData[dstIdx + b] = bands[bandNames[b]][srcIdx];
+            tileData[dstIdx + b] = bandArrays[b][srcIdx];
           }
         }
       }
 
-      // Compress as raw bytes
+      // Compress as raw bytes (level 1: ~5-10x faster, minimal size penalty for SAR noise)
       const tileBytes = new Uint8Array(tileData.buffer, tileData.byteOffset, tileData.byteLength);
-      const compressed = pako.deflate(tileBytes, { level: 6 });
+      const compressed = pako.deflate(tileBytes, { level: 1 });
       compressedTiles.push({ data: compressed, byteCount: compressed.byteLength });
     }
 
-    if (onProgress) onProgress(Math.round((ty + 1) / tilesY * 60));
+    // Yield to browser every tile row so progress bar renders
+    if (onProgress) onProgress(Math.round((ty + 1) / tilesY * 80));
+    await new Promise(r => setTimeout(r, 0));
   }
 
   // --- Step 2: Build IFD entries ---

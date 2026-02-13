@@ -644,6 +644,14 @@ function parseDatatypeMessage(reader, offset) {
       dtype = 'string';
       break;
 
+    case 6: // Compound — detect complex number types (CFloat32, CFloat64)
+      // NISAR GCOV off-diagonal terms are CFloat32: {r: float32, i: float32}
+      littleEndian = true; // compound members inherit file byte order
+      if (size === 8) dtype = 'cfloat32';
+      else if (size === 16) dtype = 'cfloat64';
+      else dtype = `compound${size}`;
+      break;
+
     default:
       dtype = `class${dtClass}`;
   }
@@ -2423,10 +2431,24 @@ export class H5Chunk {
 
     console.log(`[h5chunk] Lazy-loading B-tree for ${dataset.path || datasetId} at 0x${layout.btreeAddress.toString(16)}`);
 
-    // Fetch B-tree region (typically 10-100 KB per dataset)
-    const btreeSize = 150 * 1024; // Conservative estimate: 150 KB
-    const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
-    const btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
+    // Use the metadata buffer if the B-tree falls within it — avoids a redundant
+    // fetch AND gives the parser access to child nodes that may be scattered
+    // across the metadata region (NISAR B-trees for 35K×35K images can span
+    // hundreds of KB; child nodes at absolute addresses need the full buffer).
+    let btreeReader;
+    if (layout.btreeAddress < this.metadataBuffer.byteLength) {
+      btreeReader = new BufferReader(this.metadataBuffer, true, 0);
+    } else {
+      // B-tree beyond metadata buffer — fetch a region sized to the expected
+      // number of chunks. Each B-tree leaf entry ≈ 50 bytes.
+      const shape = dataset.shape || [1, 1];
+      const chunkDims = layout.chunkDims || [512, 512];
+      const numChunks = shape.reduce((n, dim, i) =>
+        n * Math.ceil(dim / (chunkDims[i] || 1)), 1);
+      const btreeSize = Math.max(256 * 1024, numChunks * 64);
+      const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
+      btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
+    }
 
     // Parse B-tree to build chunk index
     try {
@@ -2544,6 +2566,8 @@ export class H5Chunk {
     }
 
     const [chunkRows, chunkCols] = dataset.layout?.chunkDims || [numRows, numCols];
+    const isComplex = dataset.dtype === 'cfloat32' || dataset.dtype === 'cfloat64';
+    const valuesPerPixel = isComplex ? 2 : 1; // complex = interleaved [real, imag]
 
     // Determine which chunks we need
     const startChunkRow = Math.floor(startRow / chunkRows);
@@ -2551,7 +2575,7 @@ export class H5Chunk {
     const startChunkCol = Math.floor(startCol / chunkCols);
     const endChunkCol = Math.floor((startCol + numCols - 1) / chunkCols);
 
-    const result = new Float32Array(numRows * numCols);
+    const result = new Float32Array(numRows * numCols * valuesPerPixel);
 
     // Read each chunk
     for (let cr = startChunkRow; cr <= endChunkRow; cr++) {
@@ -2572,11 +2596,12 @@ export class H5Chunk {
               const srcCol = chunkStartCol + c;
               if (srcCol < startCol || srcCol >= startCol + numCols) continue;
 
-              const srcIdx = r * chunkCols + c;
-              const dstIdx = (srcRow - startRow) * numCols + (srcCol - startCol);
+              const srcIdx = (r * chunkCols + c) * valuesPerPixel;
+              const dstIdx = ((srcRow - startRow) * numCols + (srcCol - startCol)) * valuesPerPixel;
 
               if (srcIdx < chunkData.length) {
                 result[dstIdx] = chunkData[srcIdx];
+                if (isComplex) result[dstIdx + 1] = chunkData[srcIdx + 1];
               }
             }
           }
@@ -2695,6 +2720,12 @@ export class H5Chunk {
         return new Float32Array(new Uint8Array(buffer));
       case 'int8':
         return new Float32Array(new Int8Array(buffer));
+      case 'cfloat32':
+        // Interleaved [real, imag, real, imag, ...] — 2 float32 per pixel
+        return new Float32Array(buffer);
+      case 'cfloat64':
+        // Interleaved complex float64 → convert to float32
+        return new Float32Array(new Float64Array(buffer));
       default:
         console.warn(`[h5chunk] Unknown dtype: ${dtype}, assuming float32`);
         return new Float32Array(buffer);

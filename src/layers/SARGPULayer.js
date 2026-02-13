@@ -1,6 +1,5 @@
-import { Layer, project32, picking, COORDINATE_SYSTEM } from '@deck.gl/core';
-import { Model, Geometry } from '@luma.gl/engine';
-import { Texture2D } from '@luma.gl/core';
+import { Layer, project32, picking } from '@deck.gl/core';
+import { Model, Geometry } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 
