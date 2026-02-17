@@ -96,10 +96,6 @@ class BufferReader {
   readUint64() {
     const v = this.view.getBigUint64(this._off, this.le);
     this.pos += 8;
-    // Check for precision loss when converting BigInt to Number
-    if (v > Number.MAX_SAFE_INTEGER) {
-      console.warn(`[h5chunk] readUint64: value ${v} exceeds MAX_SAFE_INTEGER, precision may be lost`);
-    }
     return Number(v);
   }
 
@@ -1179,11 +1175,12 @@ export class H5Chunk {
 
     console.log(`[h5chunk] Opening URL: ${url}`);
 
-    // Lazy tree-walking: read 1 MB upfront (same as local files). NISAR's paged
-    // aggregation puts all structural metadata at the front, so 1 MB covers the
-    // full tree walk in-buffer and avoids dozens of sequential _fetchBytes calls.
-    // Bulk mode: read full metadata page (8-32 MB)
-    const readSize = metadataSize || (this.lazyTreeWalking ? 1024 * 1024 : 8 * 1024 * 1024);
+    // Remote URLs: read 8 MB upfront in lazy mode. NISAR HDF5 files have 150+
+    // datasets whose object headers, B-tree nodes and heap data span 4-6 MB.
+    // At 1 MB only a fraction fits in-buffer, forcing ~280 sequential HTTP
+    // round-trips during tree walking (each ~130 ms to S3 = 36+ seconds).
+    // 8 MB captures virtually all structural metadata in a single request.
+    const readSize = metadataSize || 8 * 1024 * 1024;
     console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
 
     // Fetch metadata with range request
@@ -1221,19 +1218,48 @@ export class H5Chunk {
    * Fetch arbitrary bytes from the file (for continuation blocks outside the
    * metadata buffer). Works for both local File objects and remote URLs.
    *
+   * For remote URLs, uses a read-ahead cache: small reads (< 64 KB) are
+   * promoted to 512 KB fetches, and the surplus is cached. This coalesces
+   * many sequential tiny tree-walking reads into far fewer HTTP round-trips.
+   *
    * @param {number} offset - Byte offset in the file
    * @param {number} length - Number of bytes to fetch
    * @returns {Promise<ArrayBuffer>}
    */
   async _fetchBytes(offset, length) {
+    // Guard against overflow offsets from readUint64 exceeding MAX_SAFE_INTEGER
+    if (offset > Number.MAX_SAFE_INTEGER || offset < 0 || length <= 0) {
+      throw new Error(`Invalid fetch range: offset=${offset}, length=${length}`);
+    }
     if (this.file) {
       const slice = this.file.slice(offset, offset + length);
       return slice.arrayBuffer();
     } else if (this.url) {
+      // Check the read-ahead cache first
+      if (this._readAheadCache) {
+        const { start, buffer } = this._readAheadCache;
+        const end = start + buffer.byteLength;
+        if (offset >= start && offset + length <= end) {
+          return buffer.slice(offset - start, offset - start + length);
+        }
+      }
+
+      // For small reads, fetch a larger region and cache the surplus
+      const READ_AHEAD = 512 * 1024; // 512 KB
+      const actualLength = length < 65536 ? Math.max(length, READ_AHEAD) : length;
       const response = await fetch(this.url, {
-        headers: { 'Range': `bytes=${offset}-${offset + length - 1}` },
+        headers: { 'Range': `bytes=${offset}-${offset + actualLength - 1}` },
       });
-      return response.arrayBuffer();
+      const fullBuffer = await response.arrayBuffer();
+
+      // Cache the full fetch for subsequent reads in the same region
+      if (actualLength > length) {
+        this._readAheadCache = { start: offset, buffer: fullBuffer };
+      }
+
+      return length < fullBuffer.byteLength
+        ? fullBuffer.slice(0, length)
+        : fullBuffer;
     }
     throw new Error('No file or URL available');
   }
@@ -1463,7 +1489,8 @@ export class H5Chunk {
           children = [];
         }
       }
-      for (const child of children) {
+      // Parse children in parallel (critical for remote URLs — avoids sequential round-trips)
+      const childPromises = children.map(async (child) => {
         const childPath = path === '/' ? `/${child.name}` : `${path}/${child.name}`;
 
         if (child.cacheType === 1 && child.btreeAddr != null && child.heapAddr != null) {
@@ -1473,14 +1500,10 @@ export class H5Chunk {
             const grandChildren = enumerateGroupChildren(
               reader, child.btreeAddr, child.heapAddr, this.superblock
             );
-            for (const gc of grandChildren) {
+            await Promise.all(grandChildren.map(gc => {
               const gcPath = `${childPath}/${gc.name}`;
-              try {
-                await this._parseObjectAtAddress(reader, gc.objAddr, gcPath);
-              } catch (e) {
-                // Skip children we can't parse
-              }
-            }
+              return this._parseObjectAtAddress(reader, gc.objAddr, gcPath).catch(() => {});
+            }));
           } else {
             // Cached group but B-tree/heap beyond metadata buffer —
             // fetch the needed regions and enumerate children remotely.
@@ -1488,14 +1511,10 @@ export class H5Chunk {
               const grandChildren = await this._enumerateRemoteGroup(
                 child.btreeAddr, child.heapAddr
               );
-              for (const gc of grandChildren) {
+              await Promise.all(grandChildren.map(gc => {
                 const gcPath = `${childPath}/${gc.name}`;
-                try {
-                  await this._parseObjectAtAddress(reader, gc.objAddr, gcPath);
-                } catch (e) {
-                  // Skip children we can't parse
-                }
-              }
+                return this._parseObjectAtAddress(reader, gc.objAddr, gcPath).catch(() => {});
+              }));
             } catch (e) {
               console.warn(`[h5chunk] Failed to enumerate remote group ${childPath}:`, e.message);
             }
@@ -1508,21 +1527,19 @@ export class H5Chunk {
             console.warn(`[h5chunk] Failed to parse ${childPath}:`, e.message);
           }
         }
-      }
+      });
+      await Promise.all(childPromises);
     }
 
     // ── Handle v2 groups via Link Info / fractal heap ───────────────────
     if (linkInfoFheapAddr != null && linkInfoFheapAddr !== 0xffffffffffffffff) {
       try {
         const v2Links = await this._enumerateV2GroupLinks(linkInfoFheapAddr);
-        for (const link of v2Links) {
+        // Parse all v2 children in parallel
+        await Promise.all(v2Links.map(link => {
           const childPath = path === '/' ? `/${link.name}` : `${path}/${link.name}`;
-          try {
-            await this._parseObjectAtAddress(reader, link.address, childPath);
-          } catch (e) {
-            // Skip children we can't parse
-          }
-        }
+          return this._parseObjectAtAddress(reader, link.address, childPath).catch(() => {});
+        }));
       } catch (e) {
         console.warn(`[h5chunk] Failed to enumerate v2 group ${path}:`, e.message);
       }
@@ -1578,14 +1595,12 @@ export class H5Chunk {
       this.objectAttributes.set(path, Object.fromEntries(attributes));
     }
 
-    // Recursively follow hard links to traverse group hierarchy (v2 groups)
-    for (const link of childLinks) {
-      const childPath = path === '/' ? `/${link.name}` : `${path}/${link.name}`;
-      try {
-        await this._parseObjectAtAddress(reader, link.address, childPath);
-      } catch (e) {
-        // Skip children we can't parse
-      }
+    // Recursively follow hard links in parallel (v2 groups)
+    if (childLinks.length > 0) {
+      await Promise.all(childLinks.map(link => {
+        const childPath = path === '/' ? `/${link.name}` : `${path}/${link.name}`;
+        return this._parseObjectAtAddress(reader, link.address, childPath).catch(() => {});
+      }));
     }
   }
 
@@ -2551,6 +2566,157 @@ export class H5Chunk {
   }
 
   /**
+   * Batch-read multiple chunks with coalesced HTTP Range requests.
+   * Instead of N individual fetch() calls, this:
+   *   1. Resolves all chunk (offset, size) from the B-tree index
+   *   2. Sorts by file offset
+   *   3. Merges adjacent/nearby ranges (gap < MERGE_GAP) into larger reads
+   *   4. Fetches merged ranges (far fewer HTTP round-trips)
+   *   5. Splits and decompresses individual chunks from the merged buffers
+   *
+   * @param {string} datasetId - Dataset identifier
+   * @param {Array<[number, number]>} coords - Array of [row, col] chunk indices
+   * @returns {Promise<Map<string, Float32Array|null>>} Map of "row,col" → decoded chunk data
+   */
+  async readChunksBatch(datasetId, coords) {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
+
+    if (this.lazyTreeWalking && !dataset.chunks) {
+      await this._ensureChunkIndex(datasetId);
+    }
+    if (!dataset.chunks) throw new Error('Dataset is not chunked or chunk index not available');
+
+    const chunkDims = dataset.layout?.chunkDims || [];
+    const results = new Map();
+
+    // Phase 1: Resolve all chunk coordinates to file offsets
+    const chunkEntries = []; // { key, row, col, offset, size, filterMask }
+    for (const [row, col] of coords) {
+      const key = `${row},${col}`;
+      const rowOffset = chunkDims.length >= 1 ? row * chunkDims[0] : row;
+      const colOffset = chunkDims.length >= 2 ? col * chunkDims[1] : col;
+      const btreeKey = `${rowOffset},${colOffset}`;
+      const info = dataset.chunks.get(btreeKey);
+      if (!info) {
+        results.set(key, null); // sparse chunk
+      } else {
+        chunkEntries.push({
+          key, row, col,
+          offset: info.offset, size: info.size,
+          filterMask: info.filterMask,
+        });
+      }
+    }
+
+    if (chunkEntries.length === 0) return results;
+
+    // For local files, just read each chunk directly (File.slice is fast)
+    if (this.file) {
+      const promises = chunkEntries.map(async (entry) => {
+        const slice = this.file.slice(entry.offset, entry.offset + entry.size);
+        const buffer = await slice.arrayBuffer();
+        const decoded = await this._decompressAndDecode(buffer, dataset, entry.filterMask);
+        results.set(entry.key, decoded);
+      });
+      await Promise.all(promises);
+      return results;
+    }
+
+    // Phase 2: Sort by file offset and merge nearby ranges
+    chunkEntries.sort((a, b) => a.offset - b.offset);
+
+    const MERGE_GAP = 256 * 1024; // Merge ranges within 256 KB gap
+    const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
+    let current = null;
+
+    for (const entry of chunkEntries) {
+      const entryEnd = entry.offset + entry.size;
+      if (current && entry.offset <= current.end + MERGE_GAP) {
+        // Extend current range
+        current.chunks.push({ entry, localOffset: entry.offset - current.start });
+        current.end = Math.max(current.end, entryEnd);
+      } else {
+        // Start new range
+        if (current) mergedRanges.push(current);
+        current = {
+          start: entry.offset,
+          end: entryEnd,
+          chunks: [{ entry, localOffset: 0 }],
+        };
+      }
+    }
+    if (current) mergedRanges.push(current);
+
+    // Phase 3: Fetch merged ranges in parallel
+    const MAX_CONCURRENT = 30;
+    const rangeResults = new Array(mergedRanges.length);
+
+    for (let i = 0; i < mergedRanges.length; i += MAX_CONCURRENT) {
+      const batch = mergedRanges.slice(i, i + MAX_CONCURRENT);
+      const batchResults = await Promise.all(batch.map(async (range, idx) => {
+        const length = range.end - range.start;
+        const response = await fetch(this.url, {
+          headers: { 'Range': `bytes=${range.start}-${range.end - 1}` },
+        });
+        return response.arrayBuffer();
+      }));
+      for (let j = 0; j < batchResults.length; j++) {
+        rangeResults[i + j] = batchResults[j];
+      }
+    }
+
+    // Phase 4: Extract and decompress individual chunks from merged buffers
+    const decodePromises = [];
+    for (let ri = 0; ri < mergedRanges.length; ri++) {
+      const range = mergedRanges[ri];
+      const mergedBuffer = rangeResults[ri];
+
+      for (const { entry, localOffset } of range.chunks) {
+        decodePromises.push((async () => {
+          const chunkBuffer = mergedBuffer.slice(localOffset, localOffset + entry.size);
+          const decoded = await this._decompressAndDecode(chunkBuffer, dataset, entry.filterMask);
+          results.set(entry.key, decoded);
+        })());
+      }
+    }
+    await Promise.all(decodePromises);
+
+    return results;
+  }
+
+  /**
+   * Decompress and decode a single chunk buffer.
+   * Shared logic between readChunk and readChunksBatch.
+   */
+  async _decompressAndDecode(buffer, dataset, filterMask) {
+    let data = buffer;
+    const chunkDimsProduct = (dataset.layout?.chunkDims || [])
+      .slice(0, -1)
+      .reduce((a, b) => a * b, 1);
+    const expectedBytes = chunkDimsProduct * dataset.bytesPerElement;
+
+    if (dataset.filters && filterMask === 0) {
+      data = await this._decompressChunk(buffer, dataset.filters);
+    } else if (!dataset.filters && buffer.byteLength < expectedBytes) {
+      try {
+        data = await this._decompressChunk(buffer, [{ id: FILTER_DEFLATE }]);
+      } catch (e) {
+        try {
+          data = await this._decompressChunk(buffer, [
+            { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
+            { id: FILTER_DEFLATE },
+          ]);
+        } catch (e2) {
+          // Use raw data as-is
+        }
+      }
+    }
+
+    return this._decodeData(data, dataset.dtype);
+  }
+
+  /**
    * Read a region of data (spanning multiple chunks)
    * @param {string} datasetId - Dataset identifier
    * @param {number} startRow - Start row
@@ -2577,36 +2743,44 @@ export class H5Chunk {
 
     const result = new Float32Array(numRows * numCols * valuesPerPixel);
 
-    // Read each chunk
+    // Read all chunks in parallel (critical for remote URLs — avoids sequential round-trips)
+    const chunkPromises = [];
     for (let cr = startChunkRow; cr <= endChunkRow; cr++) {
       for (let cc = startChunkCol; cc <= endChunkCol; cc++) {
-        try {
-          const chunkData = await this.readChunk(datasetId, cr, cc);
-          if (!chunkData) continue;
+        chunkPromises.push(
+          this.readChunk(datasetId, cr, cc)
+            .then(data => ({ cr, cc, data }))
+            .catch(e => {
+              console.warn(`[h5chunk] Failed to read chunk (${cr}, ${cc}):`, e.message);
+              return { cr, cc, data: null };
+            })
+        );
+      }
+    }
+    const chunks = await Promise.all(chunkPromises);
 
-          // Copy relevant portion to result
-          const chunkStartRow = cr * chunkRows;
-          const chunkStartCol = cc * chunkCols;
+    // Copy each chunk's relevant portion to result
+    for (const { cr, cc, data: chunkData } of chunks) {
+      if (!chunkData) continue;
 
-          for (let r = 0; r < chunkRows; r++) {
-            const srcRow = chunkStartRow + r;
-            if (srcRow < startRow || srcRow >= startRow + numRows) continue;
+      const chunkStartRow = cr * chunkRows;
+      const chunkStartCol = cc * chunkCols;
 
-            for (let c = 0; c < chunkCols; c++) {
-              const srcCol = chunkStartCol + c;
-              if (srcCol < startCol || srcCol >= startCol + numCols) continue;
+      for (let r = 0; r < chunkRows; r++) {
+        const srcRow = chunkStartRow + r;
+        if (srcRow < startRow || srcRow >= startRow + numRows) continue;
 
-              const srcIdx = (r * chunkCols + c) * valuesPerPixel;
-              const dstIdx = ((srcRow - startRow) * numCols + (srcCol - startCol)) * valuesPerPixel;
+        for (let c = 0; c < chunkCols; c++) {
+          const srcCol = chunkStartCol + c;
+          if (srcCol < startCol || srcCol >= startCol + numCols) continue;
 
-              if (srcIdx < chunkData.length) {
-                result[dstIdx] = chunkData[srcIdx];
-                if (isComplex) result[dstIdx + 1] = chunkData[srcIdx + 1];
-              }
-            }
+          const srcIdx = (r * chunkCols + c) * valuesPerPixel;
+          const dstIdx = ((srcRow - startRow) * numCols + (srcCol - startCol)) * valuesPerPixel;
+
+          if (srcIdx < chunkData.length) {
+            result[dstIdx] = chunkData[srcIdx];
+            if (isComplex) result[dstIdx + 1] = chunkData[srcIdx + 1];
           }
-        } catch (e) {
-          console.warn(`[h5chunk] Failed to read chunk (${cr}, ${cc}):`, e.message);
         }
       }
     }

@@ -5,6 +5,7 @@ import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
+import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
@@ -233,6 +234,7 @@ function App() {
   // Remote source state
   const [remoteUrl, setRemoteUrl] = useState(null);
   const [remoteName, setRemoteName] = useState(null);
+  const [directUrl, setDirectUrl] = useState('');
 
   // NISAR-specific state
   const [nisarFile, setNisarFile] = useState(null);
@@ -889,6 +891,28 @@ function App() {
       setLoading(false);
     }
   }, [addStatusLog]);
+
+  // Handle a manually pasted direct URL (pre-signed S3, public HTTPS, etc.)
+  const handleDirectUrlSubmit = useCallback(() => {
+    const url = directUrl.trim();
+    if (!url) return;
+
+    // Strip query string for extension detection; full URL (with pre-signed params) passes through
+    const pathOnly = url.split('?')[0];
+    const name = pathOnly.split('/').pop() || 'remote-file';
+
+    let type;
+    if (isNISARFile(pathOnly)) {
+      type = 'nisar';
+    } else if (isCOGFile(pathOnly)) {
+      type = 'cog';
+    } else {
+      addStatusLog('warn', `Unknown extension for ${name}, treating as NISAR HDF5`);
+      type = 'nisar';
+    }
+
+    handleRemoteFileSelect({ url, name, size: 0, type });
+  }, [directUrl, handleRemoteFileSelect, addStatusLog]);
 
   // Load remote NISAR dataset by URL
   const handleLoadRemoteNISAR = useCallback(async () => {
@@ -1746,6 +1770,27 @@ function App() {
           {/* Remote Bucket Browser */}
           {fileType === 'remote' && (
             <CollapsibleSection title="Browse Remote Data">
+              {/* Direct URL input (pre-signed S3, HTTPS) */}
+              <div className="control-group">
+                <label>Direct URL</label>
+                <input
+                  type="text"
+                  value={directUrl}
+                  onChange={(e) => setDirectUrl(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleDirectUrlSubmit(); }}
+                  placeholder="https://…/NISAR_*.h5?X-Amz-Signature=…"
+                  style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}
+                />
+              </div>
+              <button
+                className="btn-secondary"
+                onClick={handleDirectUrlSubmit}
+                disabled={loading || !directUrl.trim()}
+                style={{ width: '100%', marginBottom: '12px' }}
+              >
+                Load from URL
+              </button>
+
               <DataDiscovery
                 onSelectFile={handleRemoteFileSelect}
                 onStatus={addStatusLog}

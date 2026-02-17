@@ -213,83 +213,66 @@ async function readProductIdentification(reader, paths, freq = 'A', mode = 'stre
       return undefined;
     };
 
-    // ── Identification string fields (§5.2, Table 5-2) ──
-    const stringFieldPaths = [
-      ['productType', paths.productType],
-      ['lookDirection', paths.lookDirection],
-      ['orbitPassDirection', paths.orbitPassDirection],
-      ['zeroDopplerStartTime', paths.zeroDopplerStartTime],
-      ['zeroDopplerEndTime', paths.zeroDopplerEndTime],
-      ['missionId', paths.missionId],
-      ['processingCenter', paths.processingCenter],
-      ['granuleId', paths.granuleId],
-      ['productDoi', paths.productDoi],
-      ['productVersion', paths.productVersion],
-      ['productSpecificationVersion', paths.productSpecificationVersion],
-      ['processingDateTime', paths.processingDateTime],
-      ['radarBand', paths.radarBand],
-      ['platformName', paths.platformName],
-      ['instrumentName', paths.instrumentName],
-      ['processingType', paths.processingType],
-      ['productLevel', paths.productLevel],
-      ['compositeReleaseId', paths.compositeReleaseId],
-      ['boundingPolygon', paths.boundingPolygon],
+    // ── Read ALL metadata fields in parallel (avoids 38 sequential round-trips) ──
+    const allFields = [
+      // Identification string fields (§5.2, Table 5-2)
+      { key: 'productType', path: paths.productType, type: 'string' },
+      { key: 'lookDirection', path: paths.lookDirection, type: 'string' },
+      { key: 'orbitPassDirection', path: paths.orbitPassDirection, type: 'string' },
+      { key: 'zeroDopplerStartTime', path: paths.zeroDopplerStartTime, type: 'string' },
+      { key: 'zeroDopplerEndTime', path: paths.zeroDopplerEndTime, type: 'string' },
+      { key: 'missionId', path: paths.missionId, type: 'string' },
+      { key: 'processingCenter', path: paths.processingCenter, type: 'string' },
+      { key: 'granuleId', path: paths.granuleId, type: 'string' },
+      { key: 'productDoi', path: paths.productDoi, type: 'string' },
+      { key: 'productVersion', path: paths.productVersion, type: 'string' },
+      { key: 'productSpecificationVersion', path: paths.productSpecificationVersion, type: 'string' },
+      { key: 'processingDateTime', path: paths.processingDateTime, type: 'string' },
+      { key: 'radarBand', path: paths.radarBand, type: 'string' },
+      { key: 'platformName', path: paths.platformName, type: 'string' },
+      { key: 'instrumentName', path: paths.instrumentName, type: 'string' },
+      { key: 'processingType', path: paths.processingType, type: 'string' },
+      { key: 'productLevel', path: paths.productLevel, type: 'string' },
+      { key: 'compositeReleaseId', path: paths.compositeReleaseId, type: 'string' },
+      { key: 'boundingPolygon', path: paths.boundingPolygon, type: 'string' },
+      // Identification numeric fields
+      { key: 'absoluteOrbitNumber', path: paths.absoluteOrbitNumber, type: 'number' },
+      { key: 'trackNumber', path: paths.trackNumber, type: 'number' },
+      { key: 'frameNumber', path: paths.frameNumber, type: 'number' },
+      { key: 'diagnosticModeFlag', path: paths.diagnosticModeFlag, type: 'number' },
+      // Identification boolean fields
+      { key: 'isGeocoded', path: paths.isGeocoded, type: 'bool' },
+      { key: 'isUrgentObservation', path: paths.isUrgentObservation, type: 'bool' },
+      { key: 'isDithered', path: paths.isDithered, type: 'bool' },
+      { key: 'isMixedMode', path: paths.isMixedMode, type: 'bool' },
+      { key: 'isFullFrame', path: paths.isFullFrame, type: 'bool' },
+      { key: 'isJointObservation', path: paths.isJointObservation, type: 'bool' },
+      // Processing parameters (§5.6)
+      { key: 'softwareVersion', path: paths.softwareVersion, type: 'string' },
+      { key: 'backscatterConvention', path: paths.backscatterConvention, type: 'string' },
+      { key: 'orbitType', path: paths.orbitType, type: 'string' },
+      { key: 'isFullCovariance', path: paths.isFullCovariance, type: 'bool' },
+      { key: 'polSymApplied', path: paths.polSymApplied, type: 'bool' },
+      { key: 'rtcApplied', path: paths.rtcApplied, type: 'bool' },
+      { key: 'rfiApplied', path: paths.rfiApplied, type: 'bool' },
+      { key: 'ionoRangeApplied', path: paths.ionoRangeApplied, type: 'bool' },
+      { key: 'ionoAzApplied', path: paths.ionoAzApplied, type: 'bool' },
+      { key: 'dryTropoApplied', path: paths.dryTropoApplied, type: 'bool' },
+      { key: 'wetTropoApplied', path: paths.wetTropoApplied, type: 'bool' },
     ];
-    for (const [key, path] of stringFieldPaths) {
-      const v = asString(await readDs(path));
-      if (v) id[key] = v;
-    }
 
-    // ── Identification numeric fields ──
-    const numericFieldPaths = [
-      ['absoluteOrbitNumber', paths.absoluteOrbitNumber],
-      ['trackNumber', paths.trackNumber],
-      ['frameNumber', paths.frameNumber],
-      ['diagnosticModeFlag', paths.diagnosticModeFlag],
-    ];
-    for (const [key, path] of numericFieldPaths) {
-      const v = asNumber(await readDs(path));
-      if (v != null) id[key] = v;
-    }
+    const results = await Promise.all(
+      allFields.map(({ path }) => readDs(path))
+    );
 
-    // ── Identification boolean fields ──
-    const boolFieldPaths = [
-      ['isGeocoded', paths.isGeocoded],
-      ['isUrgentObservation', paths.isUrgentObservation],
-      ['isDithered', paths.isDithered],
-      ['isMixedMode', paths.isMixedMode],
-      ['isFullFrame', paths.isFullFrame],
-      ['isJointObservation', paths.isJointObservation],
-    ];
-    for (const [key, path] of boolFieldPaths) {
-      const v = asBool(await readDs(path));
-      if (v != null) id[key] = v;
-    }
-
-    // ── Processing parameters (§5.6) ──
-    const procStringPaths = [
-      ['softwareVersion', paths.softwareVersion],
-      ['backscatterConvention', paths.backscatterConvention],
-      ['orbitType', paths.orbitType],
-    ];
-    for (const [key, path] of procStringPaths) {
-      const v = asString(await readDs(path));
-      if (v) id[key] = v;
-    }
-
-    const procBoolPaths = [
-      ['isFullCovariance', paths.isFullCovariance],
-      ['polSymApplied', paths.polSymApplied],
-      ['rtcApplied', paths.rtcApplied],
-      ['rfiApplied', paths.rfiApplied],
-      ['ionoRangeApplied', paths.ionoRangeApplied],
-      ['ionoAzApplied', paths.ionoAzApplied],
-      ['dryTropoApplied', paths.dryTropoApplied],
-      ['wetTropoApplied', paths.wetTropoApplied],
-    ];
-    for (const [key, path] of procBoolPaths) {
-      const v = asBool(await readDs(path));
-      if (v != null) id[key] = v;
+    for (let i = 0; i < allFields.length; i++) {
+      const { key, type } = allFields[i];
+      const result = results[i];
+      let v;
+      if (type === 'string') v = asString(result);
+      else if (type === 'number') v = asNumber(result);
+      else if (type === 'bool') v = asBool(result);
+      if (v != null && v !== undefined) id[key] = v;
     }
 
     // ── Fallback: try h5chunk attributes on the identification group ──
@@ -1855,15 +1838,100 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         const nSub = multiLook
           ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
           : 1;
-        // console.log(`[NISAR Loader] Tile ${tileKey}: chunk-sampled [${top}:${bottom}, ${left}:${right}] (${sliceW}x${sliceH}) ${multiLook ? 'multi-look' : 'preview'} samples=${nSub}x${nSub}`);
 
+        // Phase A: Collect all unique chunk coordinates needed for this tile.
+        // This avoids sequential await inside nested loops — instead we batch-fetch
+        // all uncached chunks in parallel, then sample pixels from the cache.
+        const neededChunks = new Set();
+        const neededMaskChunks = new Set();
+        for (let ty = 0; ty < tileSize; ty++) {
+          for (let tx = 0; tx < tileSize; tx++) {
+            for (let sy = 0; sy < nSub; sy++) {
+              const srcY = top + Math.floor(ty * stepY + (sy + 0.5) * stepY / nSub);
+              if (srcY < 0 || srcY >= height) continue;
+              const cr = Math.floor(srcY / chunkH);
+              for (let sx = 0; sx < nSub; sx++) {
+                const srcX = left + Math.floor(tx * stepX + (sx + 0.5) * stepX / nSub);
+                if (srcX < 0 || srcX >= width) continue;
+                const cc = Math.floor(srcX / chunkW);
+                neededChunks.add(`${cr},${cc}`);
+              }
+            }
+            // Mask chunk for center pixel
+            if (maskDatasetId) {
+              const centerSrcY = top + Math.floor((ty + 0.5) * stepY);
+              const centerSrcX = left + Math.floor((tx + 0.5) * stepX);
+              if (centerSrcY >= 0 && centerSrcY < height && centerSrcX >= 0 && centerSrcX < width) {
+                neededMaskChunks.add(`${Math.floor(centerSrcY / chunkH)},${Math.floor(centerSrcX / chunkW)}`);
+              }
+            }
+          }
+        }
+
+        // Phase B: Batch-fetch all uncached chunks using coalesced HTTP Range requests.
+        // readChunksBatch sorts by file offset and merges adjacent ranges, reducing
+        // hundreds of individual HTTP requests to ~10-30 larger reads.
+        const uncachedData = [];
+        const uncachedMask = [];
+        for (const key of neededChunks) {
+          if (!chunkCache.has(key)) {
+            uncachedData.push(key.split(',').map(Number));
+          }
+        }
+        for (const key of neededMaskChunks) {
+          if (!maskChunkCache.has(key)) {
+            uncachedMask.push(key.split(',').map(Number));
+          }
+        }
+
+        const batchPromises = [];
+        if (uncachedData.length > 0 && streamReader.readChunksBatch) {
+          batchPromises.push(
+            streamReader.readChunksBatch(selectedDatasetId, uncachedData)
+              .then(batchMap => {
+                for (const [key, data] of batchMap) {
+                  if (chunkCache.size >= MAX_CHUNK_CACHE) {
+                    const oldest = Array.from(chunkCache.keys()).slice(0, 100);
+                    oldest.forEach(k => chunkCache.delete(k));
+                  }
+                  chunkCache.set(key, data);
+                }
+              })
+              .catch(e => {
+                console.warn('[NISAR Loader] Batch chunk read failed, falling back:', e.message);
+              })
+          );
+        } else if (uncachedData.length > 0) {
+          // Fallback: parallel individual reads
+          batchPromises.push(...uncachedData.map(([cr, cc]) => getCachedChunk(cr, cc)));
+        }
+        if (uncachedMask.length > 0 && maskDatasetId && streamReader.readChunksBatch) {
+          batchPromises.push(
+            streamReader.readChunksBatch(maskDatasetId, uncachedMask)
+              .then(batchMap => {
+                for (const [key, data] of batchMap) {
+                  if (maskChunkCache.size >= MAX_CHUNK_CACHE) {
+                    const oldest = Array.from(maskChunkCache.keys()).slice(0, 100);
+                    oldest.forEach(k => maskChunkCache.delete(k));
+                  }
+                  maskChunkCache.set(key, data);
+                }
+              })
+              .catch(e => {
+                console.warn('[NISAR Loader] Batch mask read failed:', e.message);
+              })
+          );
+        } else if (uncachedMask.length > 0) {
+          batchPromises.push(...uncachedMask.map(([cr, cc]) => getCachedMaskChunk(cr, cc)));
+        }
+        if (batchPromises.length > 0) {
+          await Promise.all(batchPromises);
+        }
+
+        // Phase C: Sample pixels from cached chunks (synchronous — no awaits)
         for (let ty = 0; ty < tileSize; ty++) {
           for (let tx = 0; tx < tileSize; tx++) {
             let sum = 0, count = 0;
-
-            // For mask: nearest-neighbor (center sample only, no averaging)
-            const centerSrcY = top + Math.floor((ty + 0.5) * stepY);
-            const centerSrcX = left + Math.floor((tx + 0.5) * stepX);
 
             for (let sy = 0; sy < nSub; sy++) {
               const srcY = top + Math.floor(ty * stepY + (sy + 0.5) * stepY / nSub);
@@ -1875,7 +1943,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
                 if (srcX < 0 || srcX >= width) continue;
                 const cc = Math.floor(srcX / chunkW);
 
-                const chunk = await getCachedChunk(cr, cc);
+                const chunk = chunkCache.get(`${cr},${cc}`);
                 if (chunk) {
                   const localY = srcY - cr * chunkH;
                   const localX = srcX - cc * chunkW;
@@ -1894,16 +1962,20 @@ async function loadNISARGCOVStreaming(file, options = {}) {
             tileData[ty * tileSize + tx] = count > 0 ? sum / count : 0;
 
             // Mask: nearest-neighbor from center pixel
-            if (maskData && centerSrcY >= 0 && centerSrcY < height && centerSrcX >= 0 && centerSrcX < width) {
-              const cr = Math.floor(centerSrcY / chunkH);
-              const cc = Math.floor(centerSrcX / chunkW);
-              const mChunk = await getCachedMaskChunk(cr, cc);
-              if (mChunk) {
-                const localY = centerSrcY - cr * chunkH;
-                const localX = centerSrcX - cc * chunkW;
-                const idx = localY * chunkW + localX;
-                if (idx >= 0 && idx < mChunk.length) {
-                  maskData[ty * tileSize + tx] = mChunk[idx];
+            if (maskData) {
+              const centerSrcY = top + Math.floor((ty + 0.5) * stepY);
+              const centerSrcX = left + Math.floor((tx + 0.5) * stepX);
+              if (centerSrcY >= 0 && centerSrcY < height && centerSrcX >= 0 && centerSrcX < width) {
+                const cr = Math.floor(centerSrcY / chunkH);
+                const cc = Math.floor(centerSrcX / chunkW);
+                const mChunk = maskChunkCache.get(`${cr},${cc}`);
+                if (mChunk) {
+                  const localY = centerSrcY - cr * chunkH;
+                  const localX = centerSrcX - cc * chunkW;
+                  const idx = localY * chunkW + localX;
+                  if (idx >= 0 && idx < mChunk.length) {
+                    maskData[ty * tileSize + tx] = mChunk[idx];
+                  }
                 }
               }
             }
@@ -3575,34 +3647,53 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   const [height, width] = selectedDataset.shape;
   console.log(`[NISAR Loader] Selected: ${selectedDataset.path || selectedDatasetId} [${height}×${width}]`);
 
-  // Read coordinate arrays
-  let xCoords = null, yCoords = null;
+  // Read coordinate arrays and projection in parallel
   const xId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
   const yId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
-  if (xId != null) {
-    try {
-      const xResult = await streamReader.readSmallDataset(xId);
-      if (xResult?.data) xCoords = xResult.data;
-    } catch { /* ignore */ }
-  }
-  if (yId != null) {
-    try {
-      const yResult = await streamReader.readSmallDataset(yId);
-      if (yResult?.data) yCoords = yResult.data;
-    } catch { /* ignore */ }
-  }
+  const projId = streamReader.findDatasetByPath(paths.projection(activeFreq));
+
+  // Fire all coordinate/projection reads concurrently
+  const [xCoords, yCoords, epsgCode] = await Promise.all([
+    // X coordinates: try full array, fallback to endpoints (first + last value)
+    (async () => {
+      if (xId == null) return null;
+      try {
+        const full = await streamReader.readSmallDataset(xId);
+        if (full?.data) return full.data;
+      } catch { /* ignore */ }
+      try {
+        const ep = await streamReader.readDatasetEndpoints(xId);
+        if (ep) return new Float64Array([ep.first, ep.last]);
+      } catch { /* ignore */ }
+      return null;
+    })(),
+    // Y coordinates: same fallback chain
+    (async () => {
+      if (yId == null) return null;
+      try {
+        const full = await streamReader.readSmallDataset(yId);
+        if (full?.data) return full.data;
+      } catch { /* ignore */ }
+      try {
+        const ep = await streamReader.readDatasetEndpoints(yId);
+        if (ep) return new Float64Array([ep.first, ep.last]);
+      } catch { /* ignore */ }
+      return null;
+    })(),
+    // Projection EPSG code
+    (async () => {
+      if (projId == null) return null;
+      try {
+        const projResult = await streamReader.readSmallDataset(projId);
+        if (projResult?.data?.[0] > 1000) return projResult.data[0];
+      } catch { /* ignore */ }
+      return null;
+    })(),
+  ]);
 
   // Compute bounds
-  let bounds, worldBounds, crs = 'EPSG:4326';
-  let epsgCode = null;
-  const projId = streamReader.findDatasetByPath(paths.projection(activeFreq));
-  if (projId != null) {
-    try {
-      const projResult = await streamReader.readSmallDataset(projId);
-      if (projResult?.data?.[0] > 1000) epsgCode = projResult.data[0];
-    } catch { /* ignore */ }
-  }
-  if (epsgCode) crs = `EPSG:${epsgCode}`;
+  let bounds, worldBounds;
+  let crs = epsgCode ? `EPSG:${epsgCode}` : 'EPSG:4326';
 
   if (xCoords && yCoords) {
     const minX = Math.min(xCoords[0], xCoords[xCoords.length - 1]);
@@ -3634,9 +3725,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   } catch { /* ignore */ }
 
   // Per-chunk cache for streaming (keyed by "cr,cc")
-  // Sized to hold a full fine grid (24×24 = 576) plus headroom
+  // Sized to hold prefetch (16×16=256) + coarse tiles + fine refinement + headroom
   const chunkCache = new Map();
-  const MAX_CHUNK_CACHE = 600;
+  const MAX_CHUNK_CACHE = 1000;
   const maskChunkCache = new Map();
 
   async function getStreamChunk(cr, cc) {
@@ -3678,6 +3769,35 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   // Progressive refinement: coarse tiles are shown first, refined tiles replace them
   const refinedTiles = new Map();
   let _onRefine = null;
+
+  // ── Foreground priority gate ──
+  // Phase 2 refinement defers until no foreground tile requests are in-flight.
+  // This prevents background chunk fetches from saturating S3 bandwidth.
+  let _pendingForeground = 0;
+  const _foregroundWaiters = [];
+  let _refinementEnabled = true;
+  const _pendingRefinements = [];
+  let _refinementGeneration = 0; // incremented on each foreground enter to abort stale refinements
+
+  function _waitForIdle() {
+    if (_pendingForeground === 0) return Promise.resolve();
+    return new Promise(resolve => _foregroundWaiters.push(resolve));
+  }
+  function _enterForeground() {
+    _pendingForeground++;
+    _refinementGeneration++; // signal any pending refinements to abort
+  }
+  function _leaveForeground() {
+    _pendingForeground--;
+    if (_pendingForeground === 0) {
+      const waiters = _foregroundWaiters.splice(0);
+      for (const w of waiters) w();
+    }
+  }
+
+  // Tile-level result cache for readRegion tiles (keyed by "x,y,z")
+  const tileResultCache = new Map();
+  const MAX_TILE_CACHE = 64;
 
   // Helper: build a 256×256 tile from a sparse chunk grid via mosaic + bilinear
   function buildMosaicTile(grid, rows, cols, pxTop, pxLeft, sliceH, sliceW, tileSize) {
@@ -3760,9 +3880,16 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   }
 
   // Build getTile function for on-demand chunk reading
-  const getTile = async ({ x, y, z, bbox }) => {
+  const getTile = async ({ x, y, z, bbox, multiLook }) => {
+    _enterForeground();
     const tileSize = 256;
     try {
+      // Check tile result cache first (covers readRegion tiles)
+      const tileCacheKey = `${x},${y},${z},${multiLook ? 'ml' : ''}`;
+      if (tileResultCache.has(tileCacheKey)) {
+        return tileResultCache.get(tileCacheKey);
+      }
+
       // Auto-detect coordinate system: pixel coords vs world coords
       // Check if bbox values are within image pixel bounds [0, width]×[0, height]
       // If yes → pixel coordinates, if no → world coordinates (need conversion)
@@ -3825,11 +3952,15 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
           tileData = resampled;
           const tile = { data: tileData, width: tileSize, height: tileSize };
           if (maskResampled) tile.mask = maskResampled;
+          if (tileResultCache.size >= MAX_TILE_CACHE) tileResultCache.delete(tileResultCache.keys().next().value);
+          tileResultCache.set(tileCacheKey, tile);
           return tile;
         }
 
         const tile = { data: tileData, width: sliceW, height: sliceH };
         if (maskRaw) tile.mask = maskRaw;
+        if (tileResultCache.size >= MAX_TILE_CACHE) tileResultCache.delete(tileResultCache.keys().next().value);
+        tileResultCache.set(tileCacheKey, tile);
         return tile;
       }
 
@@ -3850,7 +3981,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const totalCR = endCR - startCR + 1;
       const totalCC = endCC - startCC + 1;
 
-      // Phase 1: coarse grid (max 8×8 = 64 chunks)
+      // Phase 1: coarse grid (max 8×8 = 64 chunks).
+      // Fixed stride grid — matches prefetch alignment for z0.
+      // Mask is deferred to Phase 2 to halve HTTP request count.
       const COARSE_MAX = 8;
       const coarseStrideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
       const coarseStrideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
@@ -3860,31 +3993,46 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       for (let cc = startCC; cc <= endCC; cc += coarseStrideC) coarseCols.push(cc);
 
       const coarseGrid = new Map();
-      const coarsePromises = [];
+
+      // Collect uncached chunk coordinates for batch fetch
+      const uncachedCoords = [];
       for (const cr of coarseRows) {
         for (const cc of coarseCols) {
-          coarsePromises.push(
-            getStreamChunk(cr, cc).then(data => {
-              if (data) coarseGrid.set(`${cr},${cc}`, data);
-            })
-          );
+          const key = `${cr},${cc}`;
+          if (chunkCache.has(key)) {
+            coarseGrid.set(key, chunkCache.get(key));
+          } else {
+            uncachedCoords.push([cr, cc]);
+          }
         }
       }
-      await Promise.all(coarsePromises);
+
+      if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
+        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
+        for (const [key, data] of batchMap) {
+          const result = data?.data || data;
+          if (chunkCache.size >= MAX_CHUNK_CACHE) {
+            const first = chunkCache.keys().next().value;
+            chunkCache.delete(first);
+          }
+          chunkCache.set(key, result);
+          if (result) coarseGrid.set(key, result);
+        }
+      } else if (uncachedCoords.length > 0) {
+        // Fallback: individual parallel reads
+        await Promise.all(uncachedCoords.map(([cr, cc]) =>
+          getStreamChunk(cr, cc).then(data => {
+            if (data) coarseGrid.set(`${cr},${cc}`, data);
+          })
+        ));
+      }
 
       tileData = buildMosaicTile(coarseGrid, coarseRows, coarseCols,
         pxTop, pxLeft, sliceH, sliceW, tileSize);
 
-      // Build mask tile via nearest-neighbor from coarse grid chunks
+      // Mask deferred to Phase 2 refinement to reduce foreground HTTP requests.
+      // Use any already-cached mask chunks for the coarse phase (no new fetches).
       if (maskDatasetId) {
-        const maskPromises = [];
-        for (const cr of coarseRows) {
-          for (const cc of coarseCols) {
-            maskPromises.push(getStreamMaskChunk(cr, cc));
-          }
-        }
-        await Promise.all(maskPromises);
-
         maskData = new Float32Array(tileSize * tileSize);
         const stepX = sliceW / tileSize;
         const stepY = sliceH / tileSize;
@@ -3908,54 +4056,137 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const fineStrideR = Math.max(1, Math.ceil(totalCR / FINE_MAX));
       const fineStrideC = Math.max(1, Math.ceil(totalCC / FINE_MAX));
 
-      if (coarseStrideR > fineStrideR || coarseStrideC > fineStrideC) {
-        // Fire-and-forget background refinement
-        (async () => {
+      if (_refinementEnabled && (coarseStrideR > fineStrideR || coarseStrideC > fineStrideC)) {
+        // Background refinement — deferred and abortable.
+        // Captures the generation at scheduling time; if new foreground work starts
+        // before refinement runs, it aborts to avoid competing for bandwidth.
+        const myGeneration = _refinementGeneration;
+        const refinementPromise = (async () => {
           try {
+            // Wait until all foreground tile requests have completed
+            await _waitForIdle();
+            // Grace period: let any follow-up foreground requests start
+            await new Promise(r => setTimeout(r, 200));
+            // Abort if new foreground work arrived (generation changed)
+            if (_refinementGeneration !== myGeneration) return;
+            if (_pendingForeground > 0) await _waitForIdle();
+            if (_refinementGeneration !== myGeneration) return;
+
             const fineRows = [];
             for (let cr = startCR; cr <= endCR; cr += fineStrideR) fineRows.push(cr);
             const fineCols = [];
             for (let cc = startCC; cc <= endCC; cc += fineStrideC) fineCols.push(cc);
 
             const fineGrid = new Map();
-            const finePromises = [];
+            // Collect uncached coords for batch fetch
+            const fineUncached = [];
             for (const cr of fineRows) {
               for (const cc of fineCols) {
-                finePromises.push(
-                  getStreamChunk(cr, cc).then(data => {
-                    if (data) fineGrid.set(`${cr},${cc}`, data);
-                  })
-                );
+                const key = `${cr},${cc}`;
+                if (chunkCache.has(key)) {
+                  fineGrid.set(key, chunkCache.get(key));
+                } else {
+                  fineUncached.push([cr, cc]);
+                }
               }
             }
-            await Promise.all(finePromises);
+            if (fineUncached.length > 0 && streamReader.readChunksBatch) {
+              const batchMap = await streamReader.readChunksBatch(selectedDatasetId, fineUncached);
+              for (const [key, data] of batchMap) {
+                const result = data?.data || data;
+                if (chunkCache.size >= MAX_CHUNK_CACHE) {
+                  const first = chunkCache.keys().next().value;
+                  chunkCache.delete(first);
+                }
+                chunkCache.set(key, result);
+                if (result) fineGrid.set(key, result);
+              }
+            } else if (fineUncached.length > 0) {
+              await Promise.all(fineUncached.map(([cr, cc]) =>
+                getStreamChunk(cr, cc).then(data => {
+                  if (data) fineGrid.set(`${cr},${cc}`, data);
+                })
+              ));
+            }
 
             const fineData = buildMosaicTile(fineGrid, fineRows, fineCols,
               pxTop, pxLeft, sliceH, sliceW, tileSize);
             const refinedTile = { data: fineData, width: tileSize, height: tileSize };
-            if (maskData) refinedTile.mask = maskData;
+
+            // Fetch mask chunks for the fine grid (deferred from Phase 1)
+            if (maskDatasetId) {
+              const uncachedMaskCoords = [];
+              for (const cr of fineRows) {
+                for (const cc of fineCols) {
+                  if (!maskChunkCache.has(`${cr},${cc}`)) uncachedMaskCoords.push([cr, cc]);
+                }
+              }
+              if (uncachedMaskCoords.length > 0 && streamReader.readChunksBatch) {
+                const maskBatch = await streamReader.readChunksBatch(maskDatasetId, uncachedMaskCoords);
+                for (const [key, data] of maskBatch) {
+                  if (maskChunkCache.size >= MAX_CHUNK_CACHE) maskChunkCache.delete(maskChunkCache.keys().next().value);
+                  maskChunkCache.set(key, data);
+                }
+              }
+              const fineMask = new Float32Array(tileSize * tileSize);
+              const stepX = sliceW / tileSize;
+              const stepY = sliceH / tileSize;
+              for (let ty = 0; ty < tileSize; ty++) {
+                const srcY = Math.min(Math.floor(pxTop + (ty + 0.5) * stepY), height - 1);
+                const mcr = Math.floor(srcY / chunkH);
+                for (let tx = 0; tx < tileSize; tx++) {
+                  const srcX = Math.min(Math.floor(pxLeft + (tx + 0.5) * stepX), width - 1);
+                  const mcc = Math.floor(srcX / chunkW);
+                  const mChunk = maskChunkCache.get(`${mcr},${mcc}`);
+                  if (mChunk) {
+                    const idx = (srcY - mcr * chunkH) * chunkW + (srcX - mcc * chunkW);
+                    if (idx >= 0 && idx < mChunk.length) fineMask[ty * tileSize + tx] = mChunk[idx];
+                  }
+                }
+              }
+              refinedTile.mask = fineMask;
+            }
+
             refinedTiles.set(tileKey, refinedTile);
+            // Invalidate tile result cache so next request gets the refined version
+            tileResultCache.delete(`${x},${y},${z},`);
+            tileResultCache.delete(`${x},${y},${z},ml`);
             if (_onRefine) _onRefine(tileKey);
           } catch (e) {
             console.warn('[NISAR URL] Tile refinement error:', e.message);
           }
         })();
+        _pendingRefinements.push(refinementPromise);
+        // Cleanup settled promises periodically
+        if (_pendingRefinements.length > 20) {
+          const live = [];
+          for (const p of _pendingRefinements) {
+            const settled = await Promise.race([p.then(() => true), Promise.resolve(false)]);
+            if (!settled) live.push(p);
+          }
+          _pendingRefinements.length = 0;
+          _pendingRefinements.push(...live);
+        }
       }
 
       const tile = { data: tileData, width: tileSize, height: tileSize };
       if (maskData) tile.mask = maskData;
+      if (tileResultCache.size >= MAX_TILE_CACHE) tileResultCache.delete(tileResultCache.keys().next().value);
+      tileResultCache.set(tileCacheKey, tile);
       return tile;
     } catch (e) {
       console.warn(`[NISAR URL] Tile error (${x},${y},${z}):`, e.message);
       return null;
+    } finally {
+      _leaveForeground();
     }
   };
 
-  // Read identification metadata
+  // Read identification metadata in background (don't block first render)
   let identification = {};
-  try {
-    identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
-  } catch { /* ignore */ }
+  const identificationReady = readProductIdentification(streamReader, paths, activeFreq, 'streaming')
+    .then(id => { identification = id; })
+    .catch(() => {});
 
   const result = {
     width,
@@ -3973,7 +4204,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     polarization,
     xCoords,
     yCoords,
-    identification,
+    get identification() { return identification; },
+    identificationReady,
     hasMask: maskDatasetId != null,
     /** Set a callback to be notified when a tile's refined data is ready. */
     set onRefine(fn) { _onRefine = fn; },
@@ -3986,18 +4218,59 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     async prefetchOverviewChunks() {
       const totalCR = Math.ceil(height / chunkH);
       const totalCC = Math.ceil(width / chunkW);
+      // Prefetch an 8×8 grid — same as the tile coarse grid — so the z0
+      // overview tile is instant from cache. Kept at 8 for fast initial load.
       const COARSE_MAX = 8;
       const strideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
       const strideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
-      const fetches = [];
+
+      // Collect chunk coordinates for batch read
+      const coords = [];
       for (let cr = 0; cr < totalCR; cr += strideR) {
         for (let cc = 0; cc < totalCC; cc += strideC) {
-          fetches.push(getStreamChunk(cr, cc));
+          coords.push([cr, cc]);
         }
       }
-      console.log(`[NISAR Loader] Prefetching ${fetches.length} overview chunks (${totalCR}×${totalCC} grid, stride ${strideR}×${strideC})`);
-      await Promise.all(fetches);
+
+      console.log(`[NISAR Loader] Prefetching ${coords.length} overview chunks (${totalCR}×${totalCC} grid, stride ${strideR}×${strideC})`);
+
+      const tasks = [];
+      // Eagerly load the mask B-tree index in parallel
+      if (maskDatasetId) {
+        tasks.push(streamReader._ensureChunkIndex(maskDatasetId).catch(() => {}));
+      }
+
+      // Use batch read if available (coalesces into fewer HTTP requests)
+      if (streamReader.readChunksBatch) {
+        tasks.push(
+          streamReader.readChunksBatch(selectedDatasetId, coords).then(batchMap => {
+            for (const [key, data] of batchMap) {
+              if (chunkCache.size >= MAX_CHUNK_CACHE) {
+                const first = chunkCache.keys().next().value;
+                chunkCache.delete(first);
+              }
+              chunkCache.set(key, data);
+            }
+          })
+        );
+      } else {
+        // Fallback: individual parallel reads
+        for (const [cr, cc] of coords) {
+          tasks.push(getStreamChunk(cr, cc));
+        }
+      }
+
+      await Promise.all(tasks);
       console.log(`[NISAR Loader] Overview prefetch complete (${chunkCache.size} chunks cached)`);
+    },
+    /** Enable/disable Phase 2 background refinement. */
+    set refinementEnabled(v) { _refinementEnabled = !!v; },
+    get refinementEnabled() { return _refinementEnabled; },
+    /** Wait for all pending Phase 2 refinements to complete. */
+    async drainRefinement() {
+      if (_pendingRefinements.length === 0) return;
+      await Promise.allSettled(_pendingRefinements);
+      _pendingRefinements.length = 0;
     },
   };
   return result;

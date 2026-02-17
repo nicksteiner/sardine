@@ -6,7 +6,11 @@
       "Bash(nm:*)",
       "Bash(echo:*)",
       "Bash(npm --version:*)",
-      "Bash(LD_LIBRARY_PATH=\"\" /usr/bin/node:*)"
+      "Bash(LD_LIBRARY_PATH=\"\" /usr/bin/node:*)",
+      "Bash(curl.exe:*)",
+      "Bash(aws s3 presign:*)",
+      "Bash(node test/test-s3-streaming.mjs:*)",
+      "Bash(node test/test-chunk-pipeline.mjs:*)"
     ]
   }
 }
