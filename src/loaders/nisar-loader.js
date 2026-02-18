@@ -2006,15 +2006,18 @@ async function loadNISARGCOVStreaming(file, options = {}) {
    * Same interface as the RGB composite's getExportStripe, but for a single
    * polarization. Returns {bands: {POL: Float32Array}, width, height}.
    */
-  async function getExportStripe({ startRow, numRows, ml, exportWidth }) {
+  async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
+    const outCols = numCols || exportWidth;
     const srcTop = startRow * ml;
     const srcBottom = Math.min((startRow + numRows) * ml, height);
+    const srcLeft = startCol * ml;
+    const srcRight = Math.min((startCol + outCols) * ml, width);
 
-    // Pre-fetch all chunks covering this stripe region
+    // Pre-fetch only chunks covering the requested region
     const minChunkRow = Math.floor(srcTop / chunkH);
     const maxChunkRow = Math.floor(Math.min(srcBottom - 1, height - 1) / chunkH);
-    const minChunkCol = 0;
-    const maxChunkCol = Math.floor((width - 1) / chunkW);
+    const minChunkCol = Math.floor(srcLeft / chunkW);
+    const maxChunkCol = Math.floor(Math.min(srcRight - 1, width - 1) / chunkW);
 
     const fetches = [];
     for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
@@ -2025,12 +2028,12 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     await Promise.all(fetches);
 
     // Allocate output array for the single band
-    const output = new Float32Array(exportWidth * numRows);
+    const output = new Float32Array(outCols * numRows);
 
     // Exact box-filter averaging: each output pixel averages ALL ml×ml source pixels
     for (let oy = 0; oy < numRows; oy++) {
-      for (let ox = 0; ox < exportWidth; ox++) {
-        const sx0 = ox * ml;
+      for (let ox = 0; ox < outCols; ox++) {
+        const sx0 = (startCol + ox) * ml;
         const sy0 = (startRow + oy) * ml;
         const sx1 = Math.min(sx0 + ml, width);
         const sy1 = Math.min(sy0 + ml, height);
@@ -2056,11 +2059,11 @@ async function loadNISARGCOVStreaming(file, options = {}) {
             }
           }
         }
-        output[oy * exportWidth + ox] = count > 0 ? sum / count : NaN;
+        output[oy * outCols + ox] = count > 0 ? sum / count : NaN;
       }
     }
 
-    return { bands: { [polarization]: output }, width: exportWidth, height: numRows };
+    return { bands: { [polarization]: output }, width: outCols, height: numRows };
   }
 
   // Load metadata cube (incidence angle, slant range, elevation angle, etc.)
@@ -3251,7 +3254,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
    * @param {number} params.exportWidth - Output width in pixels
    * @returns {Promise<{bands: Object, width: number, height: number}>}
    */
-  async function getExportStripe({ startRow, numRows, ml, exportWidth }) {
+  async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
+    const outCols = numCols || exportWidth;
     // Debug: log export parameters
     if (startRow === 0) {
       console.log(`[NISAR RGB Export] Starting export with:`, {
@@ -3260,6 +3264,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
         chunkDims: [chunkH, chunkW],
         ml,
         exportWidth,
+        startCol,
+        outCols,
         requestedRows: numRows
       });
     }
@@ -3267,12 +3273,14 @@ export async function loadNISARRGBComposite(file, options = {}) {
     // Source region for this stripe
     const srcTop = startRow * ml;
     const srcBottom = Math.min((startRow + numRows) * ml, height);
+    const srcLeft = startCol * ml;
+    const srcRight = Math.min((startCol + outCols) * ml, width);
 
-    // Pre-fetch all chunks covering this stripe region (all columns, all bands)
+    // Pre-fetch only chunks covering the requested region (all bands)
     const minChunkRow = Math.floor(srcTop / chunkH);
     const maxChunkRow = Math.floor(Math.min(srcBottom - 1, height - 1) / chunkH);
-    const minChunkCol = 0;
-    const maxChunkCol = Math.floor((width - 1) / chunkW);
+    const minChunkCol = Math.floor(srcLeft / chunkW);
+    const maxChunkCol = Math.floor(Math.min(srcRight - 1, width - 1) / chunkW);
 
     const fetches = [];
     for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
@@ -3292,20 +3300,20 @@ export async function loadNISARRGBComposite(file, options = {}) {
     // Allocate output arrays
     const bandArrays = {};
     for (const pol of requiredPols) {
-      bandArrays[pol] = new Float32Array(exportWidth * numRows);
+      bandArrays[pol] = new Float32Array(outCols * numRows);
     }
     // Complex bands for export
     for (const cpol of requiredComplexPols) {
       if (complexPolMap[cpol]) {
-        bandArrays[`${cpol}_re`] = new Float32Array(exportWidth * numRows);
-        bandArrays[`${cpol}_im`] = new Float32Array(exportWidth * numRows);
+        bandArrays[`${cpol}_re`] = new Float32Array(outCols * numRows);
+        bandArrays[`${cpol}_im`] = new Float32Array(outCols * numRows);
       }
     }
 
     // Exact box-filter averaging: each output pixel averages ALL ml×ml source pixels
     for (let oy = 0; oy < numRows; oy++) {
-      for (let ox = 0; ox < exportWidth; ox++) {
-        const sx0 = ox * ml;
+      for (let ox = 0; ox < outCols; ox++) {
+        const sx0 = (startCol + ox) * ml;
         const sy0 = (startRow + oy) * ml;
         const sx1 = Math.min(sx0 + ml, width);
         const sy1 = Math.min(sy0 + ml, height);
@@ -3327,7 +3335,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
               }
             }
           }
-          bandArrays[pol][oy * exportWidth + ox] = count > 0 ? sum / count : NaN;
+          bandArrays[pol][oy * outCols + ox] = count > 0 ? sum / count : NaN;
         }
 
         // Complex bands: average real and imaginary parts separately
@@ -3348,7 +3356,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
                 }
               }
             }
-            const pixIdx = oy * exportWidth + ox;
+            const pixIdx = oy * outCols + ox;
             bandArrays[`${cpol}_re`][pixIdx] = count > 0 ? sumRe / count : 0;
             bandArrays[`${cpol}_im`][pixIdx] = count > 0 ? sumIm / count : 0;
           }
@@ -3356,7 +3364,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
       }
     }
 
-    return { bands: bandArrays, width: exportWidth, height: numRows };
+    return { bands: bandArrays, width: outCols, height: numRows };
   }
 
   // Build available datasets list
@@ -4182,6 +4190,98 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     }
   };
 
+  // ── Export: getExportStripe for URL streaming ──
+  // Same box-filter multilook as the local file path, but uses readChunksBatch
+  // to coalesce chunk fetches into fewer HTTP Range requests over S3.
+  //
+  // Supports optional column range (startCol, numCols) to fetch only the chunks
+  // covering the requested subset — critical for patch exports where fetching
+  // full-width rows wastes 10–20× bandwidth.
+  //
+  // Parameters:
+  //   startRow   — first output row (in multilooked space)
+  //   numRows    — number of output rows
+  //   ml         — multilook factor (box-filter kernel size)
+  //   exportWidth— total output width (full image width / ml, or numCols if subset)
+  //   startCol   — (optional) first output column, default 0
+  //   numCols    — (optional) number of output columns, default exportWidth
+  async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
+    const outCols = numCols || exportWidth;
+    const srcTop = startRow * ml;
+    const srcBottom = Math.min((startRow + numRows) * ml, height);
+    const srcLeft = startCol * ml;
+    const srcRight = Math.min((startCol + outCols) * ml, width);
+
+    // Identify chunks covering just the requested row/column range
+    const minChunkRow = Math.floor(srcTop / chunkH);
+    const maxChunkRow = Math.floor(Math.min(srcBottom - 1, height - 1) / chunkH);
+    const minChunkCol = Math.floor(srcLeft / chunkW);
+    const maxChunkCol = Math.floor(Math.min(srcRight - 1, width - 1) / chunkW);
+
+    // Collect uncached chunk coordinates for batch fetch
+    const uncachedCoords = [];
+    for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
+      for (let cc = minChunkCol; cc <= maxChunkCol; cc++) {
+        if (!chunkCache.has(`${cr},${cc}`)) {
+          uncachedCoords.push([cr, cc]);
+        }
+      }
+    }
+
+    // Batch-fetch uncached chunks (coalesced HTTP Range requests)
+    if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
+      const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
+      for (const [key, data] of batchMap) {
+        const result = data?.data || data;
+        if (chunkCache.size >= MAX_CHUNK_CACHE) {
+          chunkCache.delete(chunkCache.keys().next().value);
+        }
+        chunkCache.set(key, result);
+      }
+    } else if (uncachedCoords.length > 0) {
+      // Fallback: individual parallel reads
+      await Promise.all(uncachedCoords.map(([cr, cc]) => getStreamChunk(cr, cc)));
+    }
+
+    // Allocate output array
+    const output = new Float32Array(outCols * numRows);
+
+    // Exact box-filter averaging: each output pixel averages ALL ml×ml source pixels
+    for (let oy = 0; oy < numRows; oy++) {
+      for (let ox = 0; ox < outCols; ox++) {
+        const sx0 = (startCol + ox) * ml;
+        const sy0 = (startRow + oy) * ml;
+        const sx1 = Math.min(sx0 + ml, width);
+        const sy1 = Math.min(sy0 + ml, height);
+
+        let sum = 0;
+        let count = 0;
+        for (let sy = sy0; sy < sy1; sy++) {
+          const cr = Math.floor(sy / chunkH);
+          for (let sx = sx0; sx < sx1; sx++) {
+            const cc = Math.floor(sx / chunkW);
+            const chunk = chunkCache.get(`${cr},${cc}`);
+            if (chunk) {
+              const localY = sy - cr * chunkH;
+              const localX = sx - cc * chunkW;
+              const idx = localY * chunkW + localX;
+              if (idx >= 0 && idx < chunk.length) {
+                const v = chunk[idx];
+                if (!isNaN(v) && v > 0) {
+                  sum += v;
+                  count++;
+                }
+              }
+            }
+          }
+        }
+        output[oy * outCols + ox] = count > 0 ? sum / count : NaN;
+      }
+    }
+
+    return { bands: { [polarization]: output }, width: outCols, height: numRows };
+  }
+
   // Read identification metadata in background (don't block first render)
   let identification = {};
   const identificationReady = readProductIdentification(streamReader, paths, activeFreq, 'streaming')
@@ -4196,6 +4296,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     crs,
     epsgCode,
     getTile,
+    getExportStripe,
     mode: 'streaming',
     source: 'url',
     sourceUrl: url,

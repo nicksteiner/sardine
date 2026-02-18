@@ -10,7 +10,8 @@
       "Bash(curl.exe:*)",
       "Bash(aws s3 presign:*)",
       "Bash(node test/test-s3-streaming.mjs:*)",
-      "Bash(node test/test-chunk-pipeline.mjs:*)"
+      "Bash(node test/test-chunk-pipeline.mjs:*)",
+      "Bash(node test/test-export-streaming.mjs:*)"
     ]
   }
 }

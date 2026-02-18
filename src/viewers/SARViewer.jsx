@@ -9,6 +9,7 @@ import { SAR_COMPOSITES } from '../utils/sar-composites.js';
 import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
 import { ScaleBar } from '../components/ScaleBar.jsx';
 import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
+import { ROIOverlay } from '../components/ROIOverlay.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -39,6 +40,10 @@ export const SARViewer = forwardRef(function SARViewer({
   initialViewState,
   style = {},
   extraLayers = [],   // Additional deck.gl layers (e.g., Overture overlay)
+  roi = null,         // ROI rectangle { left, top, width, height } in image pixels
+  onROIChange,        // Callback when ROI changes via Shift+drag
+  imageWidth,         // Source image width in pixels (for ROI overlay)
+  imageHeight,        // Source image height in pixels (for ROI overlay)
 }, ref) {
   const containerRef = useRef(null);
 
@@ -231,6 +236,14 @@ export const SARViewer = forwardRef(function SARViewer({
         layers={allLayers}
         controller={true}
         glOptions={{ preserveDrawingBuffer: true }}
+      />
+      <ROIOverlay
+        viewState={viewState}
+        bounds={bounds}
+        imageWidth={imageWidth}
+        imageHeight={imageHeight}
+        roi={roi}
+        onROIChange={onROIChange}
       />
       {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} />}
       <LoadingIndicator

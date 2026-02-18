@@ -270,6 +270,7 @@ function App() {
   const [useMask, setUseMask] = useState(false);
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
+  const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
@@ -315,6 +316,9 @@ function App() {
 
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
+
+  // Clear ROI when image data changes (new file/dataset loaded)
+  useEffect(() => { setROI(null); }, [imageData]);
 
   // Compute WGS84 bounds for overview map and context layers
   const wgs84Bounds = useMemo(() => {
@@ -400,8 +404,16 @@ function App() {
 
     try {
       // Compute viewport region bounds (used for viewport scope)
-      const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
-      const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
+      // viewCenter is in world coordinates (= image pixel coords for NISAR data
+      // where bounds = [0, 0, width, height]).
+      // viewZoom: 2^zoom = pixels-per-world-unit (deck.gl OrthographicView).
+      // Visible world extent = canvasPixels / 2^zoom.
+      const ppu = Math.pow(2, viewZoom);
+      const canvas = viewerRef.current?.getCanvas();
+      const canvasW = canvas?.clientWidth || 900;
+      const canvasH = canvas?.clientHeight || 700;
+      const vpHalfW = (canvasW / 2) / ppu;
+      const vpHalfH = (canvasH / 2) / ppu;
       const cx = viewCenter[0];
       const cy = viewCenter[1];
       const vpLeft = Math.max(0, cx - vpHalfW);
@@ -955,13 +967,30 @@ function App() {
 
       addStatusLog('success', `Remote NISAR loaded: ${data.width}×${data.height}`,
         `URL: ${remoteUrl}`);
+
+      // Compute histogram (same as local path)
+      try {
+        if (data.getTile) {
+          addStatusLog('info', 'Computing histogram from tile samples...');
+          const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
+          if (stats) {
+            setHistogramData({ single: stats });
+            setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
+            setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
+            const unit = useDecibels ? 'dB' : '';
+            addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
+          }
+        }
+      } catch (e) {
+        addStatusLog('warning', 'Could not compute histogram', e.message);
+      }
     } catch (e) {
       setError(`Failed to load remote NISAR: ${e.message}`);
       addStatusLog('error', 'Remote load failed', e.message);
     } finally {
       setLoading(false);
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, addStatusLog]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, useDecibels, addStatusLog]);
 
   // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
@@ -1145,8 +1174,17 @@ function App() {
 
       // Use the user's selected multilook factor directly
       let effectiveMl = exportMultilookWindow || 1;
-      const exportWidth = Math.floor(sourceWidth / effectiveMl);
-      const exportHeight = Math.floor(sourceHeight / effectiveMl);
+
+      // If ROI is set, export only the selected region
+      const roiActive = roi && roi.width > 0 && roi.height > 0;
+      const roiStartCol = roiActive ? Math.floor(roi.left / effectiveMl) : 0;
+      const roiStartRow = roiActive ? Math.floor(roi.top / effectiveMl) : 0;
+      const exportWidth = roiActive
+        ? Math.floor(roi.width / effectiveMl)
+        : Math.floor(sourceWidth / effectiveMl);
+      const exportHeight = roiActive
+        ? Math.floor(roi.height / effectiveMl)
+        : Math.floor(sourceHeight / effectiveMl);
 
       // Warn if per-band allocation is very large (modern 64-bit browsers
       // support ArrayBuffers well beyond 2 GB, but system RAM is the real limit)
@@ -1177,6 +1215,9 @@ function App() {
       }
 
       addStatusLog('info', `Source: ${sourceWidth} x ${sourceHeight}`);
+      if (roiActive) {
+        addStatusLog('info', `ROI: ${roi.width} x ${roi.height} px @ (${roi.left}, ${roi.top})`);
+      }
       addStatusLog('info', `Multilook: ${effectiveMl}x${effectiveMl} (integer)`);
       addStatusLog('info', `Export: ${exportWidth} x ${exportHeight}`);
       const isRendered = exportMode === 'rendered';
@@ -1216,10 +1257,11 @@ function App() {
         setExportProgress(Math.round((s / numStripes) * 50));
 
         const stripe = await imageData.getExportStripe({
-          startRow,
+          startRow: roiActive ? roiStartRow + startRow : startRow,
           numRows,
           ml: effectiveMl,
           exportWidth,
+          ...(roiActive ? { startCol: roiStartCol, numCols: exportWidth } : {}),
         });
 
         // Copy stripe data into output arrays (power + complex bands)
@@ -1276,12 +1318,30 @@ function App() {
       // getExportStripe reads source pixels 0..(exportWidth*ml - 1), truncating
       // any remainder when sourceWidth isn't evenly divisible by ml.
       // Posting = nativeSpacing * ml, guaranteed exact by construction.
-      const exportBounds = [
-        geoBounds[0] - nativeSpacingX / 2,                                             // minX edge
-        geoBounds[1] - nativeSpacingY / 2,                                             // minY edge
-        geoBounds[0] - nativeSpacingX / 2 + exportWidth * effectiveMl * nativeSpacingX,  // maxX edge
-        geoBounds[1] - nativeSpacingY / 2 + exportHeight * effectiveMl * nativeSpacingY, // maxY edge
-      ];
+      let exportBounds;
+      if (roiActive) {
+        // ROI X: world X = image column (no flip). Left edge = geoBounds[0] + roi.left * sp.
+        const roiOriginX = geoBounds[0] + roi.left * nativeSpacingX - nativeSpacingX / 2;
+        // ROI Y: world Y is flipped (pixelToWorld uses Y-down, but geographic Y is Y-up).
+        // roi.top (small world Y) = top of screen = NORTH of image = near geoBounds[3].
+        // North pixel edge of the ROI:
+        const roiMaxGeoY = geoBounds[3] - roi.top * nativeSpacingY + nativeSpacingY / 2;
+        // South pixel edge: north edge minus the export span
+        const roiMinGeoY = roiMaxGeoY - exportHeight * effectiveMl * nativeSpacingY;
+        exportBounds = [
+          roiOriginX,
+          roiMinGeoY,
+          roiOriginX + exportWidth * effectiveMl * nativeSpacingX,
+          roiMaxGeoY,
+        ];
+      } else {
+        exportBounds = [
+          geoBounds[0] - nativeSpacingX / 2,                                             // minX edge
+          geoBounds[1] - nativeSpacingY / 2,                                             // minY edge
+          geoBounds[0] - nativeSpacingX / 2 + exportWidth * effectiveMl * nativeSpacingX,  // maxX edge
+          geoBounds[1] - nativeSpacingY / 2 + exportHeight * effectiveMl * nativeSpacingY, // maxY edge
+        ];
+      }
 
       const exportPixelX = (exportBounds[2] - exportBounds[0]) / exportWidth;
       const exportPixelY = (exportBounds[3] - exportBounds[1]) / exportHeight;
@@ -1433,7 +1493,7 @@ function App() {
       setExporting(false);
       setExportProgress(0);
     }
-  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, addStatusLog]);
+  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, addStatusLog]);
 
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
@@ -2286,6 +2346,38 @@ function App() {
               </div>
             )}
 
+            {/* ROI (Region of Interest) info */}
+            {imageData && (
+              <div style={{ marginTop: '8px', fontSize: '0.75rem' }}>
+                {roi ? (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    background: 'rgba(255, 200, 50, 0.08)',
+                    border: '1px solid rgba(255, 200, 50, 0.3)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '4px 8px',
+                  }}>
+                    <span style={{ color: '#ffc832' }}>
+                      ROI: {roi.width} × {roi.height} px
+                    </span>
+                    <button
+                      onClick={() => setROI(null)}
+                      style={{
+                        background: 'none', border: 'none', color: 'var(--text-muted)',
+                        cursor: 'pointer', padding: '0 2px', fontSize: '0.7rem',
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>
+                    Shift+drag on image to select ROI for export
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Export buttons */}
             {imageData && (
               <div style={{ marginTop: '8px' }}>
@@ -2298,7 +2390,7 @@ function App() {
                   >
                     {exporting
                       ? `Exporting... ${exportProgress}%`
-                      : exportMode === 'raw' ? 'Export GeoTIFF (Float32)' : 'Export GeoTIFF (Rendered)'}
+                      : `Export ${roi ? 'ROI ' : ''}GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
                   </button>
                 )}
                 <button
@@ -2339,7 +2431,14 @@ function App() {
                       key={scope}
                       className={histogramScope === scope ? '' : 'btn-secondary'}
                       style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
-                      onClick={() => setHistogramScope(scope)}
+                      onClick={() => {
+                        if (histogramScope === scope) {
+                          // Already active — re-run (e.g. viewport after pan/zoom)
+                          handleRecomputeHistogram();
+                        } else {
+                          setHistogramScope(scope);
+                        }
+                      }}
                     >
                       {scope === 'global' ? 'Global' : 'Viewport'}
                     </button>
@@ -2526,6 +2625,10 @@ function App() {
               onViewStateChange={handleViewStateChange}
               initialViewState={initialViewState}
               extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
+              roi={roi}
+              onROIChange={setROI}
+              imageWidth={imageData?.sourceWidth || imageData?.width}
+              imageHeight={imageData?.sourceHeight || imageData?.height}
             />
           )}
 

@@ -193,3 +193,12 @@ export function worldToPixel(wx, wy, viewState, canvasW, canvasH) {
   const py = (wy - cy) * ppu + canvasH / 2;
   return [px, py];
 }
+
+/**
+ * Convert canvas pixel coordinates → world coordinates (inverse of worldToPixel).
+ */
+export function pixelToWorld(px, py, viewState, canvasW, canvasH) {
+  const ppu = Math.pow(2, viewState.zoom || 0);
+  const [cx, cy] = viewState.target || [0, 0];
+  return [(px - canvasW / 2) / ppu + cx, (py - canvasH / 2) / ppu + cy];
+}
