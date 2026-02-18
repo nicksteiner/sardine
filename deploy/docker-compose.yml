@@ -3,8 +3,8 @@ version: '3.8'
 services:
   sardine:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: sardine:latest
     container_name: sardine-app
     ports:

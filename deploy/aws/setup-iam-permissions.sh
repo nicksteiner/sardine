@@ -6,6 +6,9 @@
 
 set -e
 
+# Resolve paths relative to this script's directory
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 echo "=== NISAR Oasis IAM Permission Setup ==="
 echo ""
 
@@ -62,7 +65,7 @@ else
   # Create the policy
   POLICY_ARN=$(aws iam create-policy \
     --policy-name "$POLICY_NAME" \
-    --policy-document file://iam-policy-nisar-oasis.json \
+    --policy-document "file://${SCRIPT_DIR}/iam-policy-nisar-oasis.json" \
     --description "Permissions for nisar-oasis S3 bucket operations" \
     --query 'Policy.Arn' \
     --output text 2>&1)
@@ -132,6 +135,6 @@ echo "=== Setup Complete ==="
 echo ""
 echo "You can now run:"
 echo "  aws s3api put-bucket-versioning --bucket nisar-oasis --versioning-configuration Status=Enabled"
-echo "  aws s3api put-bucket-cors --bucket nisar-oasis --cors-configuration file://cors-config.json"
+echo "  aws s3api put-bucket-cors --bucket nisar-oasis --cors-configuration file://deploy/aws/cors-config.json"
 echo "  aws s3 cp file.h5 s3://nisar-oasis/L2_GCOV/"
 echo ""
