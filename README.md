@@ -20,7 +20,7 @@
 
 ## Overview
 
-SARdine runs SAR analysis in the browser. No server, no Python, no GDAL — just open a local file or paste an S3 presigned URL.
+SARdine runs SAR analysis in the browser.
 
 It reads NISAR L2 GCOV HDF5 (`.h5`) and Cloud Optimized GeoTIFFs from any vendor. Rendering goes through WebGL2 shaders on deck.gl: dB scaling, colormaps, contrast, polarimetric composites — all on the GPU at 60 fps.
 
