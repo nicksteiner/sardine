@@ -93,7 +93,6 @@ export {
 
 // Overture Maps integration
 export {
-  fetchOvertureFeatures,
   fetchAllOvertureThemes,
   fetchOvertureTile,
   fetchWorldCoastlines,

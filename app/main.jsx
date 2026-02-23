@@ -699,6 +699,15 @@ function App() {
       return;
     }
 
+    // Validate URL format
+    try {
+      new URL(cogUrl);
+    } catch {
+      setError('Invalid URL format. Please enter a valid HTTP(S) URL.');
+      addStatusLog('error', `Invalid URL: ${cogUrl}`);
+      return;
+    }
+
     setLoading(true);
     setError(null);
     addStatusLog('info', `Loading COG from: ${cogUrl}`);
@@ -1184,8 +1193,8 @@ function App() {
       const sourceWidth = imageData.width;
       const sourceHeight = imageData.height;
 
-      // Use the user's selected multilook factor directly
-      let effectiveMl = exportMultilookWindow || 1;
+      // Use the user's selected multilook factor, clamped to valid range
+      let effectiveMl = Math.max(1, Math.min(128, exportMultilookWindow || 1));
 
       // If ROI is set, export only the selected region
       const roiActive = roi && roi.width > 0 && roi.height > 0;
