@@ -41,7 +41,7 @@ export class SARGPUBitmapLayer extends BitmapLayer {
           // Apply dB scaling and contrast
           float value;
           if (uUseDecibels > 0.5) {
-            float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+            float db = 10.0 * log2(max(amplitude, 1e-10)) * 0.30103;
             value = (db - uMin) / (uMax - uMin);
           } else {
             value = (amplitude - uMin) / (uMax - uMin);

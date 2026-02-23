@@ -414,12 +414,14 @@ export class SARTiledCOGLayer extends CompositeLayer {
       });
     }
 
-    // Load visible tiles (center tiles first due to sorting)
-    visibleTiles.forEach(tile => {
+    // Load visible tiles (center tiles first due to sorting), max 4 concurrent
+    const MAX_CONCURRENT = 4;
+    for (const tile of visibleTiles) {
+      if (this.state.loadingTiles.size >= MAX_CONCURRENT) break;
       if (!this.state.tileCache.has(tile.key) && !this.state.loadingTiles.has(tile.key)) {
         this._loadTile(tile);
       }
-    });
+    }
 
     // Report loading status
     if (onLoadingChange) {

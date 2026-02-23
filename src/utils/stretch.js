@@ -40,7 +40,7 @@ export function applyStretch(value, mode = 'linear', gamma = 1.0) {
       // Normalize so endpoints map to [0, 1]
       const lo = 1.0 / (1.0 + Math.exp(gain * 0.5));
       const hi = 1.0 / (1.0 + Math.exp(-gain * 0.5));
-      return (raw - lo) / (hi - lo);
+      return Math.max(0, Math.min(1, (raw - lo) / (hi - lo)));
     }
 
     case 'linear':

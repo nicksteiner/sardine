@@ -67,7 +67,7 @@ out vec4 fragColor;
 float processChannel(float amplitude, float cMin, float cMax) {
   float value;
   if (uUseDecibels > 0.5) {
-    float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+    float db = 10.0 * log2(max(amplitude, 1e-10)) * 0.30103;
     value = (db - cMin) / (cMax - cMin);
   } else {
     value = (amplitude - cMin) / (cMax - cMin);
@@ -271,15 +271,23 @@ export class SARGPULayer extends Layer {
         this.state.model.delete();
       }
 
-      const model = new Model(gl, {
-        ...this.getShaders(),
-        geometry,
-        parameters: {
-          blend: true,
-          blendFunc: [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA],
-          depthTest: false  // Don't use depth test for 2D imagery
-        }
-      });
+      let model;
+      try {
+        model = new Model(gl, {
+          ...this.getShaders(),
+          geometry,
+          parameters: {
+            blend: true,
+            blendFunc: [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA],
+            depthTest: false  // Don't use depth test for 2D imagery
+          }
+        });
+      } catch (err) {
+        console.error('[SARGPULayer] Shader compilation failed:', err.message);
+        const infoLog = err.infoLog || err.shaderLog || '';
+        if (infoLog) console.error('[SARGPULayer] Shader log:', infoLog);
+        return;
+      }
 
       this.setState({ model, needsGeometryUpdate: false });
     }
@@ -368,6 +376,14 @@ export class SARGPULayer extends Layer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
       gl.bindTexture(gl.TEXTURE_2D, null);
+
+      // Check for GL errors (VRAM exhaustion won't throw, it sets an error flag)
+      const glErr = gl.getError();
+      if (glErr !== gl.NO_ERROR) {
+        console.error(`[SARGPULayer] GL error 0x${glErr.toString(16)} after texImage2D (${width}x${height})`);
+        gl.deleteTexture(texture);
+        return null;
+      }
 
       // Return raw WebGL texture (compatible with luma.gl's model.setUniforms)
       return texture;

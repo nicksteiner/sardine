@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
@@ -231,6 +231,9 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Load generation counter — incremented on each new load to discard stale results
+  const loadGenRef = useRef(0);
+
   // Remote source state
   const [remoteUrl, setRemoteUrl] = useState(null);
   const [remoteName, setRemoteName] = useState(null);
@@ -346,7 +349,10 @@ function App() {
   // Helper to add status log
   const addStatusLog = useCallback((type, message, details = null) => {
     const timestamp = new Date().toLocaleTimeString();
-    setStatusLogs(prev => [...prev, { type, message, details, timestamp }]);
+    setStatusLogs(prev => {
+      const next = [...prev, { type, message, details, timestamp }];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
   }, []);
 
   // Memoize arrays to prevent unnecessary re-renders
@@ -596,6 +602,7 @@ function App() {
 
   // Load COG
   const handleLoadCOG = useCallback(async () => {
+    const gen = ++loadGenRef.current;
     // Check if multi-file mode
     if (multiFileMode) {
       const validFiles = fileList.filter(f => f && f.trim() !== '');
@@ -642,6 +649,7 @@ function App() {
             `Dimensions: ${data.width}x${data.height}, Acquisitions: ${data.acquisitionCount}`);
         }
 
+        if (gen !== loadGenRef.current) return; // stale load
         setImageData(data);
 
         // Update view to fit bounds
@@ -672,6 +680,7 @@ function App() {
         addStatusLog('success', 'Multi-file dataset loaded and ready to display');
 
       } catch (e) {
+        if (gen !== loadGenRef.current) return; // stale load
         setError(`Failed to load multi-file dataset: ${e.message}`);
         setImageData(null);
         addStatusLog('error', 'Failed to load multi-file dataset', e.message);
@@ -734,6 +743,7 @@ function App() {
           `Dimensions: ${data.width}x${data.height}, Bounds: ${data.bounds.map(b => b.toFixed(2)).join(', ')}`);
       }
 
+      if (gen !== loadGenRef.current) return; // stale load
       setImageData(data);
 
       // Auto-calculate contrast limits from a sample
@@ -929,6 +939,7 @@ function App() {
   // Load remote NISAR dataset by URL
   const handleLoadRemoteNISAR = useCallback(async () => {
     if (!remoteUrl) return;
+    const gen = ++loadGenRef.current;
 
     setLoading(true);
     setError(null);
@@ -953,6 +964,7 @@ function App() {
         }
       }
 
+      if (gen !== loadGenRef.current) return; // stale load
       setImageData(data);
 
       // Auto-fit view
@@ -2684,9 +2696,37 @@ function App() {
   );
 }
 
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[SARdine] Uncaught error:', error, info.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '2rem', color: '#e0e0e0', background: '#1a1a2e', height: '100vh', fontFamily: 'monospace' }}>
+          <h2>Something went wrong</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', color: '#ff6b6b' }}>{this.state.error?.message}</pre>
+          <button onClick={() => this.setState({ hasError: false, error: null })}
+            style={{ padding: '0.5rem 1rem', marginTop: '1rem', cursor: 'pointer' }}>
+            Try Again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // Mount the app (guard against Vite HMR re-execution)
 const container = document.getElementById('app');
 if (!container._reactRoot) {
   container._reactRoot = createRoot(container);
 }
-container._reactRoot.render(<App />);
+container._reactRoot.render(<ErrorBoundary><App /></ErrorBoundary>);

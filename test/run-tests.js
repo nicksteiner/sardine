@@ -197,7 +197,7 @@ check('fragment shader has uMin/uMax uniforms', () => {
 });
 
 check('fragment shader has dB scaling', () => {
-  assertContains(gpuContent, 'log(max(amplitude', 'dB scaling via log');
+  assertContains(gpuContent, 'log2(max(amplitude', 'dB scaling via log2');
 });
 
 check('fragment shader has all 5 colormaps', () => {

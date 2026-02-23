@@ -179,7 +179,7 @@ void main(void) {
   float value;
   if (uUseDecibels) {
     // Convert to decibels: dB = 10 * log10(amplitude)
-    float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+    float db = 10.0 * log2(max(amplitude, 1e-10)) * 0.30103;
     value = (db - uMin) / (uMax - uMin);
   } else {
     // Linear scaling
@@ -201,7 +201,7 @@ void main(void) {
     float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
     float lo = 1.0 / (1.0 + exp(gain * 0.5));
     float hi = 1.0 / (1.0 + exp(-gain * 0.5));
-    value = (raw - lo) / (hi - lo);
+    value = clamp((raw - lo) / (hi - lo), 0.0, 1.0);
   }
   // else: linear (no modification)
 
