@@ -252,14 +252,17 @@ export function getAvailableComposites(availableDatasets) {
 
   return Object.entries(SAR_COMPOSITES)
     .filter(([, preset]) => preset.required.every(p => pols.has(p)))
-    // Note: complex terms (requiredComplex) are discovered at load time,
-    // not from the dataset list. We show the composite as available if
-    // the diagonal terms match; missing complex terms will degrade gracefully.
-    .map(([id, preset]) => ({
-      id,
-      name: preset.name,
-      description: preset.description,
-    }));
+    .map(([id, preset]) => {
+      // Flag composites that need complex (off-diagonal) terms not yet confirmed
+      const needsComplex = preset.requiredComplex && preset.requiredComplex.length > 0;
+      const hasComplex = !needsComplex || preset.requiredComplex.every(p => pols.has(p));
+      return {
+        id,
+        name: preset.name,
+        description: preset.description,
+        needsComplex: needsComplex && !hasComplex,
+      };
+    });
 }
 
 /**

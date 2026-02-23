@@ -204,11 +204,16 @@ function parseLocalHeap(reader, address, superblock) {
     const freeOffset = reader.readLength(superblock.lengthSize);
     const dataAddr = reader.readOffset(superblock.offsetSize);
 
-    if (dataAddr + dataSize > reader.view.byteLength) return null;
+    if (dataAddr + dataSize > reader.view.byteLength) {
+      console.warn(`[h5chunk] Local heap at 0x${address.toString(16)} overflows buffer ` +
+        `(data at 0x${dataAddr.toString(16)}, size ${dataSize}, buffer ${reader.view.byteLength})`);
+      return null;
+    }
 
     const dataSegment = new Uint8Array(reader.view.buffer, dataAddr, dataSize);
     return { dataSegment };
   } catch (e) {
+    console.warn(`[h5chunk] Failed to parse local heap at 0x${address.toString(16)}: ${e.message}`);
     return null;
   }
 }
@@ -282,10 +287,13 @@ function parseSymbolTableNode(reader, address, superblock, heapData) {
  * @param {Uint8Array} heapData - Local heap data for name resolution
  * @returns {Array} - Flat list of SNOD entries
  */
-function walkGroupBTree(reader, address, superblock, heapData) {
+function walkGroupBTree(reader, address, superblock, heapData, visited) {
+  if (!visited) visited = new Set();
   const results = [];
   try {
     if (address >= reader.view.byteLength) return results;
+    if (visited.has(address)) return results; // cycle detection
+    visited.add(address);
 
     reader.seek(address);
     const sig = reader.readBytes(4);
@@ -320,7 +328,7 @@ function walkGroupBTree(reader, address, superblock, heapData) {
         reader.readOffset(superblock.offsetSize); // key
         const childAddr = reader.readOffset(superblock.offsetSize);
         if (childAddr < reader.view.byteLength) {
-          results.push(...walkGroupBTree(reader, childAddr, superblock, heapData));
+          results.push(...walkGroupBTree(reader, childAddr, superblock, heapData, visited));
           // Restore position for next entry
           reader.seek(address + 4 + 1 + 1 + 2 + superblock.offsetSize * 2 +
                        (i + 1) * superblock.offsetSize * 2);

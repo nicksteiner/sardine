@@ -421,6 +421,20 @@ async function openHDF5File(file) {
     console.warn(`[NISAR Loader] Large file (${(file.size / 1e9).toFixed(2)} GB) - this may use significant memory`);
   }
 
+  // Check available heap if the API is present (Chrome/Edge only)
+  if (performance.memory) {
+    const available = performance.memory.jsHeapSizeLimit - performance.memory.usedJSHeapSize;
+    // h5wasm needs roughly 2× file size (ArrayBuffer + WASM copy)
+    if (file.size * 2 > available) {
+      throw new Error(
+        `Not enough browser memory to load ${(file.size / 1e6).toFixed(0)} MB file. ` +
+        `Available heap: ${(available / 1e6).toFixed(0)} MB, ` +
+        `needed: ~${(file.size * 2 / 1e6).toFixed(0)} MB. ` +
+        `Try closing other tabs or use streaming mode for large files.`
+      );
+    }
+  }
+
   // Load the entire file - h5wasm requires complete files
   console.log('[NISAR Loader] Loading file into memory...');
   const startTime = performance.now();
@@ -696,9 +710,20 @@ export async function listNISARDatasets(file) {
 
     } catch (e) {
       console.error('[NISAR Loader] Streaming mode failed:', e);
-      throw new Error(`File too large for browser (${(file.size / 1e9).toFixed(2)} GB). ` +
-        `Streaming mode failed: ${e.message}. ` +
-        `Consider using a smaller file (<500MB) or converting to Cloud Optimized GeoTIFF.`);
+      const sizeGB = (file.size / 1e9).toFixed(2);
+      const msg = e.message || '';
+      let detail;
+      if (msg.includes('abort') || msg.includes('timeout') || msg.includes('network')) {
+        detail = `Network error reading ${sizeGB} GB file: ${msg}. Check your connection and try again.`;
+      } else if (msg.includes('signature') || msg.includes('superblock') || msg.includes('Invalid HDF5')) {
+        detail = `Corrupted or non-HDF5 file (${sizeGB} GB): ${msg}. Verify the file is a valid NISAR GCOV product.`;
+      } else if (msg.includes('memory') || msg.includes('heap') || msg.includes('allocat')) {
+        detail = `Out of memory loading ${sizeGB} GB file: ${msg}. Close other tabs or use a smaller file.`;
+      } else {
+        detail = `Streaming failed for ${sizeGB} GB file: ${msg}. ` +
+          `Consider using a smaller file (<500MB) or converting to Cloud Optimized GeoTIFF.`;
+      }
+      throw new Error(detail);
     }
   }
 

@@ -164,6 +164,16 @@ export async function loadCOG(url) {
       console.error('[COG Loader] ModelTransformation available:', !!modelTransformation);
       throw new Error('Could not determine bounding box from GeoTIFF metadata');
     }
+
+    // Fix inverted bounds (can happen with negative scale or wrong tiepoint)
+    if (bbox[0] > bbox[2]) {
+      console.warn('[COG Loader] Swapping inverted X bounds:', bbox[0], '>', bbox[2]);
+      [bbox[0], bbox[2]] = [bbox[2], bbox[0]];
+    }
+    if (bbox[1] > bbox[3]) {
+      console.warn('[COG Loader] Swapping inverted Y bounds:', bbox[1], '>', bbox[3]);
+      [bbox[1], bbox[3]] = [bbox[3], bbox[1]];
+    }
   }
 
   // Get CRS from GeoKeys
@@ -422,6 +432,16 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
       console.error('[COG Loader] PixelScale available:', !!pixelScale);
       console.error('[COG Loader] ModelTransformation available:', !!modelTransformation);
       throw new Error('Could not determine bounding box from GeoTIFF metadata');
+    }
+
+    // Fix inverted bounds (can happen with negative scale or wrong tiepoint)
+    if (bbox[0] > bbox[2]) {
+      console.warn('[COG Loader] Swapping inverted X bounds:', bbox[0], '>', bbox[2]);
+      [bbox[0], bbox[2]] = [bbox[2], bbox[0]];
+    }
+    if (bbox[1] > bbox[3]) {
+      console.warn('[COG Loader] Swapping inverted Y bounds:', bbox[1], '>', bbox[3]);
+      [bbox[1], bbox[3]] = [bbox[3], bbox[1]];
     }
   }
 
