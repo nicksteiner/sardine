@@ -32,7 +32,10 @@ export function computeStats(data, useDecibels = true) {
   const max = values[values.length - 1];
   const sum = values.reduce((a, b) => a + b, 0);
   const mean = sum / values.length;
-  const median = values[Math.floor(values.length / 2)];
+  const mid = Math.floor(values.length / 2);
+  const median = values.length % 2 === 1
+    ? values[mid]
+    : (values[mid - 1] + values[mid]) / 2;
 
   // Standard deviation
   const sqDiffSum = values.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0);
@@ -188,7 +191,10 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
   const max = allValues[allValues.length - 1];
   const sum = allValues.reduce((a, b) => a + b, 0);
   const mean = sum / allValues.length;
-  const median = allValues[Math.floor(allValues.length / 2)];
+  const mid = Math.floor(allValues.length / 2);
+  const median = allValues.length % 2 === 1
+    ? allValues[mid]
+    : (allValues[mid - 1] + allValues[mid]) / 2;
 
   const sqDiffSum = allValues.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0);
   const std = Math.sqrt(sqDiffSum / allValues.length);

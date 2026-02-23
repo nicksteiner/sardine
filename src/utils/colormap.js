@@ -82,13 +82,14 @@ export function inferno(t) {
  * @returns {number[]} [r, g, b] values 0-255
  */
 export function plasma(t) {
-  const c0 = [0.0505, 0.0298, 0.528];
-  const c1 = [2.0206, 0.0, 0.7067];
-  const c2 = [-1.0313, 1.2882, 0.3985];
-  const c3 = [-6.0884, -0.7839, -4.6899];
-  const c4 = [7.1103, -2.6782, 6.5379];
-  const c5 = [-2.7666, 3.0649, -3.538];
-  const c6 = [0.8027, -0.8948, 0.9565];
+  // Matplotlib canonical polynomial coefficients (must match GPU shaders.js)
+  const c0 = [0.0590, 0.0298, 0.5270];
+  const c1 = [0.1836, 0.0965, 0.8355];
+  const c2 = [2.3213, 0.4316, -1.5074];
+  const c3 = [-11.2436, -0.0486, 4.0720];
+  const c4 = [17.5896, -1.1766, -7.6916];
+  const c5 = [-11.6096, 1.9411, 6.2390];
+  const c6 = [2.8642, -0.6177, -1.6442];
 
   t = Math.max(0, Math.min(1, t));
   const rgb = [0, 0, 0];

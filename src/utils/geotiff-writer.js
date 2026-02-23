@@ -195,15 +195,18 @@ function generateOverview(rgbaData, width, height, scale, options = {}) {
     for (let x = 0; x < newWidth; x++) {
       const outIdx = (y * newWidth + x) * 4;
 
+      // Center the multilook window on the center of the source block.
+      // This avoids the old formula's fractional-arithmetic bias when mlWindow != scale.
+      const centerY = y * scale + Math.floor(scale / 2);
+      const centerX = x * scale + Math.floor(scale / 2);
+      const startY = centerY - Math.floor(mlWindow / 2);
+      const startX = centerX - Math.floor(mlWindow / 2);
+
       // Process each channel (R, G, B, Alpha)
       for (let c = 0; c < 4; c++) {
         if (c === 3) {
           // Alpha channel: simple averaging using multilook window
           let sumA = 0, count = 0;
-
-          // Center the multilook window on the target pixel
-          const startY = Math.floor(y * scale - (mlWindow - scale) / 2);
-          const startX = Math.floor(x * scale - (mlWindow - scale) / 2);
 
           for (let dy = 0; dy < mlWindow; dy++) {
             for (let dx = 0; dx < mlWindow; dx++) {
@@ -233,10 +236,6 @@ function generateOverview(rgbaData, width, height, scale, options = {}) {
 
             // Average in linear power space (SAR multilook) using multilook window
             let sumLinear = 0, count = 0;
-
-            // Center the multilook window on the target pixel
-            const startY = Math.floor(y * scale - (mlWindow - scale) / 2);
-            const startX = Math.floor(x * scale - (mlWindow - scale) / 2);
 
             for (let dy = 0; dy < mlWindow; dy++) {
               for (let dx = 0; dx < mlWindow; dx++) {
@@ -272,10 +271,6 @@ function generateOverview(rgbaData, width, height, scale, options = {}) {
           } else {
             // Simple averaging in uint8 space (fallback for non-SAR data)
             let sum = 0, count = 0;
-
-            // Center the multilook window on the target pixel
-            const startY = Math.floor(y * scale - (mlWindow - scale) / 2);
-            const startX = Math.floor(x * scale - (mlWindow - scale) / 2);
 
             for (let dy = 0; dy < mlWindow; dy++) {
               for (let dx = 0; dx < mlWindow; dx++) {
@@ -392,13 +387,19 @@ function extractTile(rgbaData, imgWidth, imgHeight, x0, y0, tileW, tileH) {
 
 /**
  * Apply horizontal predictor (TIFF Predictor tag value 2)
- * Encodes each pixel as the difference from the previous pixel
+ * Encodes each pixel as the difference from the previous pixel.
+ *
+ * IMPORTANT: Must operate on full TILE_SIZE-wide rows, not just the data
+ * portion. TIFF readers apply inverse prediction across the entire tile row.
+ * If we only predict `width` columns, the zero-padded area gets reconstructed
+ * as copies of the last data pixel instead of zeros, corrupting edge tiles.
  */
 function applyHorizontalPredictor(data, width, height) {
   const predicted = new Uint8Array(data.length);
 
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
+  // Predict full TILE_SIZE rows so TIFF readers can correctly invert
+  for (let y = 0; y < TILE_SIZE; y++) {
+    for (let x = 0; x < TILE_SIZE; x++) {
       const idx = (y * TILE_SIZE + x) * 4;
 
       if (x === 0) {

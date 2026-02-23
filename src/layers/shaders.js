@@ -392,22 +392,16 @@ vec3 divergingMap(float t) {
   return c;
 }
 
-// Polarimetric colormap — for RGB decompositions
+// Polarimetric colormap — magenta → navy → green (must match sarFragmentShader)
 vec3 polarimetricMap(float t) {
   t = clamp(t, 0.0, 1.0);
   vec3 c;
-  if (t < 0.25) {
-    float s = t / 0.25;
-    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.306, 0.216, 0.529), s);
-  } else if (t < 0.5) {
-    float s = (t - 0.25) / 0.25;
-    c = mix(vec3(0.306, 0.216, 0.529), vec3(0.710, 0.392, 0.165), s);
-  } else if (t < 0.75) {
-    float s = (t - 0.5) / 0.25;
-    c = mix(vec3(0.710, 0.392, 0.165), vec3(0.910, 0.788, 0.227), s);
+  if (t < 0.5) {
+    float s = t / 0.5;
+    c = mix(vec3(0.831, 0.361, 1.0), vec3(0.039, 0.086, 0.157), s);
   } else {
-    float s = (t - 0.75) / 0.25;
-    c = mix(vec3(0.910, 0.788, 0.227), vec3(0.961, 0.961, 0.961), s);
+    float s = (t - 0.5) / 0.5;
+    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.239, 0.863, 0.518), s);
   }
   return c;
 }
