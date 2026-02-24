@@ -114,6 +114,319 @@ export async function exportFigure(glCanvas, options = {}) {
   });
 }
 
+/**
+ * Capture the viewer and draw data overlays (ROI, profiles, histogram, pixel
+ * explorer) directly on the export canvas using Canvas 2D API, then add the
+ * standard SARdine figure decorations.
+ *
+ * @param {HTMLCanvasElement} glCanvas - The deck.gl WebGL canvas
+ * @param {Object} options - Same as exportFigure options plus overlay data
+ * @param {Object}  [options.roi]         - {left,top,width,height} in image px
+ * @param {Object}  [options.profileData] - {rowMeans,colMeans,hist,...}
+ * @param {Object}  [options.profileShow] - {v:bool, h:bool, i:bool}
+ * @param {number}  [options.imageWidth]
+ * @param {number}  [options.imageHeight]
+ * @returns {Promise<Blob>} PNG blob
+ */
+export async function exportFigureWithOverlays(glCanvas, options = {}) {
+  const {
+    colormap = 'grayscale',
+    contrastLimits,
+    useDecibels = true,
+    compositeId = null,
+    viewState,
+    bounds,
+    filename = '',
+    crs = '',
+    roi = null,
+    profileData = null,
+    profileShow = { v: true, h: true, i: true },
+    imageWidth = 0,
+    imageHeight = 0,
+  } = options;
+
+  const W = glCanvas.width;
+  const H = glCanvas.height;
+  const dpr = window.devicePixelRatio || 1;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // 1. Draw the WebGL canvas content (base layer)
+  ctx.drawImage(glCanvas, 0, 0);
+
+  // 2. Draw data overlays directly on canvas
+  if (roi && bounds && imageWidth && imageHeight && viewState) {
+    drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr);
+  }
+
+  if (profileData && roi && bounds && imageWidth && imageHeight && viewState) {
+    drawProfileOverlays(ctx, W, H, roi, profileData, profileShow, viewState, bounds, imageWidth, imageHeight, useDecibels, dpr);
+  }
+
+  // 3. Draw the standard figure overlays
+  const s = (v) => Math.round(v * dpr);
+  const projected = isProjectedBounds(bounds);
+
+  drawBorder(ctx, W, H, s);
+  drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s);
+  drawCornerCoordinates(ctx, W, H, viewState, projected, s);
+  drawScaleBar(ctx, W, H, viewState, bounds, projected, s);
+
+  if (compositeId) {
+    drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s);
+  } else {
+    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
+  }
+
+  drawMetadata(ctx, W, H, {
+    filename, crs, compositeId, useDecibels, viewState, bounds, projected,
+  }, s);
+  drawBranding(ctx, W, H, s);
+
+  return new Promise((resolve) => {
+    canvas.toBlob(resolve, 'image/png');
+  });
+}
+
+// ── Overlay drawing helpers (Canvas 2D, not SVG) ────────────────────────────
+
+import { worldToPixel } from './geo-overlays.js';
+
+function _imgToScreen(imgX, imgY, viewState, bounds, imageWidth, imageHeight, W, H) {
+  const [minX, minY, maxX, maxY] = bounds;
+  const wx = minX + (imgX / imageWidth) * (maxX - minX);
+  const wy = minY + (imgY / imageHeight) * (maxY - minY);
+  return worldToPixel(wx, wy, viewState, W, H);
+}
+
+/** Draw a gold dashed ROI rectangle on the export canvas. */
+function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr) {
+  const [sx0, sy0] = _imgToScreen(roi.left, roi.top, viewState, bounds, imageWidth, imageHeight, W, H);
+  const [sx1, sy1] = _imgToScreen(roi.left + roi.width, roi.top + roi.height, viewState, bounds, imageWidth, imageHeight, W, H);
+  const rx = Math.min(sx0, sx1);
+  const ry = Math.min(sy0, sy1);
+  const rw = Math.abs(sx1 - sx0);
+  const rh = Math.abs(sy1 - sy0);
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 200, 50, 0.08)';
+  ctx.fillRect(rx, ry, rw, rh);
+  ctx.strokeStyle = '#ffc832';
+  ctx.lineWidth = 2 * dpr;
+  ctx.setLineDash([6 * dpr, 4 * dpr]);
+  ctx.strokeRect(rx, ry, rw, rh);
+  ctx.setLineDash([]);
+
+  // Label
+  const label = `${roi.width} × ${roi.height} px`;
+  ctx.font = `${11 * dpr}px 'JetBrains Mono', monospace`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  const tw = ctx.measureText(label).width + 8 * dpr;
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(rx + 4 * dpr - 2 * dpr, ry - 4 * dpr - 13 * dpr, tw, 15 * dpr);
+  ctx.fillStyle = '#ffc832';
+  ctx.fillText(label, rx + 4 * dpr, ry - 4 * dpr);
+  ctx.restore();
+}
+
+/** Draw profile lines and histogram on the export canvas. */
+function drawProfileOverlays(ctx, W, H, roi, profileData, show, viewState, bounds, imageWidth, imageHeight, useDecibels, dpr) {
+  const { rowMeans, colMeans, hist, histMin, histMax, mean, count } = profileData;
+  const db = profileData.useDecibels ?? useDecibels;
+  const unit = db ? 'dB' : 'power';
+
+  const [sx0, sy0] = _imgToScreen(roi.left, roi.top, viewState, bounds, imageWidth, imageHeight, W, H);
+  const [sx1, sy1] = _imgToScreen(roi.left + roi.width, roi.top + roi.height, viewState, bounds, imageWidth, imageHeight, W, H);
+  const lx0 = Math.min(sx0, sx1);
+  const ly0 = Math.min(sy0, sy1);
+  const roiW = Math.abs(sx1 - sx0);
+  const roiH = Math.abs(sy1 - sy0);
+
+  if (roiW < 30 || roiH < 30) return;
+
+  const allMeans = [...(rowMeans || []), ...(colMeans || [])].filter(v => !isNaN(v));
+  const vMin = allMeans.length ? Math.min(...allMeans) : (histMin ?? 0);
+  const vMax = allMeans.length ? Math.max(...allMeans) : (histMax ?? 1);
+  const vRange = vMax - vMin || 1;
+
+  const C = { bg: 'rgba(10,22,40,0.88)', border: '#1e3a5f', cyan: '#4ec9d4', cyanDim: 'rgba(78,201,212,0.35)', orange: '#e8833a', muted: '#5a7099', text: '#e8edf5' };
+  const font = (sz) => `${sz * dpr}px 'JetBrains Mono', monospace`;
+  const fmtS = (v) => isNaN(v) ? '' : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1));
+  const fmt = (v) => isNaN(v) ? '' : v.toFixed(1);
+
+  const pad = { t: 4 * dpr, r: 6 * dpr, b: 20 * dpr, l: 36 * dpr };
+  const gap = 6 * dpr;
+
+  ctx.save();
+
+  // Y-profile (left of ROI)
+  if (show.v && rowMeans?.length) {
+    const yProfW = Math.min(80 * dpr, Math.max(50 * dpr, roiH * 0.25));
+    const x = lx0 - gap - yProfW;
+    const y = ly0;
+    const w = yProfW;
+    const h = roiH;
+    const innerW = w - pad.l - pad.r;
+    const innerH = h - pad.t - pad.b;
+
+    ctx.fillStyle = C.bg;
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = dpr;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+
+    // Mean marker
+    if (!isNaN(mean)) {
+      const mx = x + pad.l + ((mean - vMin) / vRange) * innerW;
+      ctx.strokeStyle = C.orange;
+      ctx.lineWidth = dpr;
+      ctx.setLineDash([3 * dpr, 2 * dpr]);
+      ctx.beginPath(); ctx.moveTo(mx, y + pad.t); ctx.lineTo(mx, y + h - pad.b); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Profile line
+    ctx.strokeStyle = C.cyan;
+    ctx.lineWidth = dpr;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < rowMeans.length; i++) {
+      if (isNaN(rowMeans[i])) continue;
+      const px = x + pad.l + ((rowMeans[i] - vMin) / vRange) * innerW;
+      const py = y + pad.t + (i / Math.max(rowMeans.length - 1, 1)) * innerH;
+      if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // Labels
+    ctx.fillStyle = C.muted;
+    ctx.font = font(8);
+    ctx.textAlign = 'center';
+    ctx.fillText(fmtS(vMin), x + pad.l, y + h - pad.b + 12 * dpr);
+    ctx.fillText(fmtS(vMax), x + pad.l + innerW, y + h - pad.b + 12 * dpr);
+    ctx.fillText('Y profile', x + w / 2, y - 3 * dpr);
+    ctx.fillText(unit, x + w / 2, y + h + 11 * dpr);
+  }
+
+  // X-profile (below ROI)
+  if (show.h && colMeans?.length) {
+    const xProfH = Math.min(80 * dpr, Math.max(50 * dpr, roiW * 0.25));
+    const x = lx0;
+    const y = ly0 + roiH + gap;
+    const w = roiW;
+    const h = xProfH;
+    const innerW = w - pad.l - pad.r;
+    const innerH = h - pad.t - pad.b;
+
+    ctx.fillStyle = C.bg;
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = dpr;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+
+    // Mean marker
+    if (!isNaN(mean)) {
+      const my = y + pad.t + (1 - (mean - vMin) / vRange) * innerH;
+      ctx.strokeStyle = C.orange;
+      ctx.lineWidth = dpr;
+      ctx.setLineDash([3 * dpr, 2 * dpr]);
+      ctx.beginPath(); ctx.moveTo(x + pad.l, my); ctx.lineTo(x + pad.l + innerW, my); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Profile line
+    ctx.strokeStyle = C.cyan;
+    ctx.lineWidth = dpr;
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < colMeans.length; i++) {
+      if (isNaN(colMeans[i])) continue;
+      const px = x + pad.l + (i / Math.max(colMeans.length - 1, 1)) * innerW;
+      const py = y + pad.t + (1 - (colMeans[i] - vMin) / vRange) * innerH;
+      if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+
+    // Labels
+    ctx.fillStyle = C.muted;
+    ctx.font = font(8);
+    ctx.textAlign = 'center';
+    ctx.fillText(fmtS(vMin), x + pad.l, y + h - pad.b + 10 * dpr);
+    ctx.textAlign = 'start';
+    ctx.fillText(fmtS(vMax), x + pad.l, y + pad.t + 6 * dpr);
+    ctx.textAlign = 'center';
+    ctx.fillText('X profile', x + w / 2, y - 3 * dpr);
+  }
+
+  // Histogram inset (centred in ROI)
+  if (show.i && hist?.length) {
+    const hW = Math.min(160 * dpr, Math.max(80 * dpr, roiW * 0.55));
+    const hH = Math.min(100 * dpr, Math.max(60 * dpr, roiH * 0.4));
+    const x = lx0 + roiW / 2 - hW / 2;
+    const y = ly0 + roiH / 2 - hH / 2;
+    const hp = { t: 6 * dpr, r: 6 * dpr, b: 18 * dpr, l: 28 * dpr };
+    const innerW = hW - hp.l - hp.r;
+    const innerH = hH - hp.t - hp.b;
+    const n = hist.length;
+    const maxCount = Math.max(...hist, 1);
+    const binW = innerW / n;
+
+    // Background
+    ctx.fillStyle = 'rgba(10,22,40,0.92)';
+    ctx.strokeStyle = C.cyan;
+    ctx.lineWidth = dpr;
+    ctx.setLineDash([4 * dpr, 3 * dpr]);
+    ctx.fillRect(x, y, hW, hH);
+    ctx.strokeRect(x, y, hW, hH);
+    ctx.setLineDash([]);
+
+    // Bars
+    ctx.fillStyle = C.cyanDim;
+    for (let i = 0; i < n; i++) {
+      const bh = (hist[i] / maxCount) * innerH;
+      ctx.fillRect(x + hp.l + i * binW, y + hp.t + innerH - bh, Math.max(1, binW - 0.5 * dpr), bh);
+    }
+
+    // Axis
+    ctx.strokeStyle = C.border;
+    ctx.lineWidth = dpr;
+    ctx.beginPath();
+    ctx.moveTo(x + hp.l, y + hp.t + innerH);
+    ctx.lineTo(x + hp.l + innerW, y + hp.t + innerH);
+    ctx.stroke();
+
+    // Mean line
+    if (!isNaN(mean) && !isNaN(histMin) && !isNaN(histMax)) {
+      const mx = ((mean - histMin) / (histMax - histMin || 1)) * innerW;
+      ctx.strokeStyle = C.orange;
+      ctx.lineWidth = dpr;
+      ctx.setLineDash([3 * dpr, 2 * dpr]);
+      ctx.beginPath(); ctx.moveTo(x + hp.l + mx, y + hp.t); ctx.lineTo(x + hp.l + mx, y + hp.t + innerH); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Labels
+    ctx.fillStyle = C.muted;
+    ctx.font = font(8);
+    ctx.textAlign = 'center';
+    ctx.fillText(fmtS(histMin), x + hp.l, y + hH - 2 * dpr);
+    ctx.fillText(fmtS(histMax), x + hp.l + innerW, y + hH - 2 * dpr);
+
+    // Stats title
+    ctx.fillStyle = C.text;
+    ctx.font = `500 ${font(8.5)}`;
+    ctx.textAlign = 'center';
+    const countStr = count >= 1000 ? (count / 1000).toFixed(1) + 'k' : count;
+    ctx.fillText(`\u03BC=${fmt(mean)} ${unit}  n=${countStr}`, x + hW / 2, y + hp.t - 1 * dpr);
+  }
+
+  ctx.restore();
+}
+
 // ── 1. Figure border ────────────────────────────────────────────────────────
 
 function drawBorder(ctx, W, H, s) {

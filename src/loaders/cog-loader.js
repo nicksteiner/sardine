@@ -266,8 +266,94 @@ export async function loadCOG(url) {
     }
   }
 
+  /**
+   * Read a rectangular region from the COG at full resolution.
+   * Returns raw Float32 values (power, not dB).
+   *
+   * @param {Object} params
+   * @param {number} params.startRow  - Start row in multilook grid
+   * @param {number} params.numRows   - Number of output rows
+   * @param {number} params.ml        - Multilook factor (box-average)
+   * @param {number} params.exportWidth - Output width (unused, uses numCols)
+   * @param {number} [params.startCol=0] - Start column in multilook grid
+   * @param {number} [params.numCols]  - Number of output columns
+   * @returns {Promise<{bands: Object}>}
+   */
+  async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
+    const outCols = numCols || exportWidth;
+    // Source pixel region
+    const srcLeft = startCol * ml;
+    const srcTop = startRow * ml;
+    const srcRight = Math.min(width, (startCol + outCols) * ml);
+    const srcBottom = Math.min(height, (startRow + numRows) * ml);
+    const srcW = srcRight - srcLeft;
+    const srcH = srcBottom - srcTop;
+
+    if (srcW <= 0 || srcH <= 0) {
+      return { bands: { band0: new Float32Array(outCols * numRows) } };
+    }
+
+    // Read at full resolution from the base image
+    const rasters = await image.readRasters({
+      window: [srcLeft, srcTop, srcRight, srcBottom],
+    });
+    const src = new Float32Array(rasters[0]);
+
+    // Apply multilook box-averaging
+    const out = new Float32Array(outCols * numRows);
+    for (let r = 0; r < numRows; r++) {
+      for (let c = 0; c < outCols; c++) {
+        let sum = 0, cnt = 0;
+        const r0 = r * ml;
+        const c0 = c * ml;
+        for (let dr = 0; dr < ml && r0 + dr < srcH; dr++) {
+          for (let dc = 0; dc < ml && c0 + dc < srcW; dc++) {
+            const v = src[(r0 + dr) * srcW + (c0 + dc)];
+            if (!isNaN(v) && v !== 0) { sum += v; cnt++; }
+          }
+        }
+        out[r * outCols + c] = cnt > 0 ? sum / cnt : NaN;
+      }
+    }
+
+    return { bands: { band0: out } };
+  }
+
+  /**
+   * Read a single pixel value (or window-averaged value) from the COG.
+   *
+   * @param {number} row - Image row
+   * @param {number} col - Image column
+   * @param {number} [windowSize=1] - Averaging window (odd integer)
+   * @returns {Promise<number>}
+   */
+  async function getPixelValue(row, col, windowSize = 1) {
+    const half = Math.floor(windowSize / 2);
+    const r0 = Math.max(0, row - half);
+    const c0 = Math.max(0, col - half);
+    const r1 = Math.min(height, row + half + 1);
+    const c1 = Math.min(width, col + half + 1);
+
+    if (r1 <= r0 || c1 <= c0) return NaN;
+
+    const rasters = await image.readRasters({
+      window: [c0, r0, c1, r1],
+    });
+    const data = new Float32Array(rasters[0]);
+
+    if (windowSize <= 1) return data[0];
+
+    let sum = 0, cnt = 0;
+    for (let i = 0; i < data.length; i++) {
+      if (!isNaN(data[i]) && data[i] !== 0) { sum += data[i]; cnt++; }
+    }
+    return cnt > 0 ? sum / cnt : NaN;
+  }
+
   const result = {
     getTile,
+    getExportStripe,
+    getPixelValue,
     bounds,
     crs,
     width,

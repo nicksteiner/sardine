@@ -13,13 +13,14 @@ import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
-import { exportFigure, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
+import { exportFigure, exportFigureWithOverlays, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
 import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { STACSearch } from '../src/components/STACSearch.jsx';
+import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -276,6 +277,8 @@ function App() {
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
+  const [roiProfile, setRoiProfile] = useState(null); // Computed profile data for ROIProfilePlot
+  const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
@@ -323,7 +326,108 @@ function App() {
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
 
   // Clear ROI when image data changes (new file/dataset loaded)
-  useEffect(() => { setROI(null); }, [imageData]);
+  useEffect(() => { setROI(null); setRoiProfile(null); }, [imageData]);
+
+  // Compute ROI profile data (row/col means + histogram) when ROI or imageData changes
+  useEffect(() => {
+    if (!roi || !imageData?.getExportStripe) {
+      if (roi) console.log('[ROI Profile] Skipping:', { roi: !!roi, hasGetExportStripe: !!imageData?.getExportStripe });
+      setRoiProfile(null);
+      return;
+    }
+    console.log('[ROI Profile] Computing for ROI:', roi);
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const sourceW = imageData.width;
+        const sourceH = imageData.height;
+        // Choose subsample factor to target ~128 output pixels on the longer axis
+        const ml = Math.max(1, Math.ceil(Math.max(roi.width, roi.height) / 128));
+        const startCol = Math.floor(Math.max(0, roi.left) / ml);
+        const startRow = Math.floor(Math.max(0, roi.top) / ml);
+        const endCol = Math.floor(Math.min(roi.left + roi.width, sourceW) / ml);
+        const endRow = Math.floor(Math.min(roi.top + roi.height, sourceH) / ml);
+        const exportW = Math.max(1, endCol - startCol);
+        const exportH = Math.max(1, endRow - startRow);
+
+        const result = await imageData.getExportStripe({
+          startRow,
+          numRows: exportH,
+          ml,
+          exportWidth: exportW,
+          startCol,
+          numCols: exportW,
+        });
+        if (cancelled) return;
+
+        const bandName = Object.keys(result.bands)[0];
+        const raw = result.bands[bandName];
+
+        // Convert to dB / linear and collect valid values
+        const vals = new Float32Array(raw.length);
+        let vMin = Infinity, vMax = -Infinity, vSum = 0, vCount = 0;
+        for (let i = 0; i < raw.length; i++) {
+          const r = raw[i];
+          if (!isNaN(r) && r > 0) {
+            const v = useDecibels ? 10 * Math.log10(r) : r;
+            vals[i] = v;
+            if (v < vMin) vMin = v;
+            if (v > vMax) vMax = v;
+            vSum += v; vCount++;
+          } else {
+            vals[i] = NaN;
+          }
+        }
+        if (vCount === 0 || cancelled) return;
+        const mean = vSum / vCount;
+
+        // Row means (one per export row)
+        const rowMeans = new Float32Array(exportH).fill(NaN);
+        for (let r = 0; r < exportH; r++) {
+          let s = 0, n = 0;
+          for (let c = 0; c < exportW; c++) {
+            const v = vals[r * exportW + c];
+            if (!isNaN(v)) { s += v; n++; }
+          }
+          rowMeans[r] = n > 0 ? s / n : NaN;
+        }
+
+        // Col means
+        const colMeans = new Float32Array(exportW).fill(NaN);
+        for (let c = 0; c < exportW; c++) {
+          let s = 0, n = 0;
+          for (let r = 0; r < exportH; r++) {
+            const v = vals[r * exportW + c];
+            if (!isNaN(v)) { s += v; n++; }
+          }
+          colMeans[c] = n > 0 ? s / n : NaN;
+        }
+
+        // Histogram (64 bins)
+        const NUM_BINS = 64;
+        const hist = new Uint32Array(NUM_BINS);
+        const range = vMax - vMin || 1;
+        for (let i = 0; i < vals.length; i++) {
+          const v = vals[i];
+          if (isNaN(v)) continue;
+          const bin = Math.max(0, Math.min(NUM_BINS - 1, Math.floor((v - vMin) / range * NUM_BINS)));
+          hist[bin]++;
+        }
+
+        if (!cancelled) {
+          console.log('[ROI Profile] Computed:', { exportW, exportH, vCount, mean: mean.toFixed(2), vMin: vMin.toFixed(2), vMax: vMax.toFixed(2) });
+          setRoiProfile({ rowMeans, colMeans, hist, histMin: vMin, histMax: vMax, mean, count: vCount, exportW, exportH, useDecibels });
+        }
+      } catch (e) {
+        console.error('[ROI Profile] Error:', e);
+        if (!cancelled) setRoiProfile(null);
+      }
+    };
+
+    run();
+    return () => { cancelled = true; };
+  }, [roi, imageData, useDecibels]);
 
   // Compute WGS84 bounds for overview map and context layers
   const wgs84Bounds = useMemo(() => {
@@ -1605,6 +1709,91 @@ function App() {
     }
   }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog]);
 
+  // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
+  const handleSaveFigureWithOverlays = useCallback(async () => {
+    if (!viewerRef.current) {
+      addStatusLog('error', 'Viewer not ready');
+      return;
+    }
+
+    const glCanvas = viewerRef.current.getCanvas();
+    if (!glCanvas) {
+      addStatusLog('error', 'Could not capture canvas');
+      return;
+    }
+
+    addStatusLog('info', 'Capturing figure with overlays...');
+
+    try {
+      const vs = viewerRef.current.getViewState();
+      const blob = await exportFigureWithOverlays(glCanvas, {
+        colormap,
+        contrastLimits: effectiveContrastLimits,
+        useDecibels,
+        compositeId: displayMode === 'rgb' ? compositeId : null,
+        viewState: vs,
+        bounds: imageData?.bounds,
+        filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
+        crs: imageData?.crs || '',
+        roi,
+        profileData: roiProfile,
+        profileShow,
+        imageWidth: imageData?.sourceWidth || imageData?.width,
+        imageHeight: imageData?.sourceHeight || imageData?.height,
+      });
+
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const figName = `sardine_figure_${ts}.png`;
+      downloadBlob(blob, figName);
+      addStatusLog('success', `Figure with overlays saved: ${figName}`);
+
+      viewerRef.current.redraw();
+    } catch (e) {
+      addStatusLog('error', 'Figure export failed', e.message);
+      console.error('Figure export error:', e);
+    }
+  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Skip when typing in inputs
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+      // Ctrl+Shift+S — Save figure with all overlays
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
+        e.preventDefault();
+        handleSaveFigureWithOverlays();
+        return;
+      }
+      // Ctrl+S — Save basic figure (no overlays)
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
+        e.preventDefault();
+        handleSaveFigure();
+        return;
+      }
+
+      // V/H/I — Toggle ROI profile views (only when no modifier keys)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (e.key === 'v' || e.key === 'V') {
+          setProfileShow(prev => ({ ...prev, v: !prev.v }));
+          return;
+        }
+        if (e.key === 'h' || e.key === 'H') {
+          setProfileShow(prev => ({ ...prev, h: !prev.h }));
+          return;
+        }
+        if (e.key === 'i' || e.key === 'I') {
+          setProfileShow(prev => ({ ...prev, i: !prev.i }));
+          return;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleSaveFigure, handleSaveFigureWithOverlays]);
+
   const handleExportColorbar = useCallback(async () => {
     if (displayMode !== 'rgb' || !compositeId) {
       addStatusLog('error', 'Colorbar export requires RGB composite mode');
@@ -2726,6 +2915,8 @@ function App() {
               pixelWindowSize={pixelWindowSize}
               xCoords={imageData?.xCoords}
               yCoords={imageData?.yCoords}
+              roiProfile={roiProfile}
+              profileShow={profileShow}
             />
           )}
 

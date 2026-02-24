@@ -11,6 +11,7 @@ import { ScaleBar } from '../components/ScaleBar.jsx';
 import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
 import { ROIOverlay } from '../components/ROIOverlay.jsx';
 import { PixelExplorer } from '../components/PixelExplorer.jsx';
+import { ROIProfilePlot } from '../components/ROIProfilePlot.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -50,6 +51,8 @@ export const SARViewer = forwardRef(function SARViewer({
   pixelWindowSize = 1,   // Averaging window for pixel explorer (odd int)
   xCoords,            // Float64Array easting coords (length = imageWidth)
   yCoords,            // Float64Array northing coords (length = imageHeight)
+  roiProfile = null,  // Precomputed profile data from main.jsx for ROIProfilePlot
+  profileShow = { v: true, h: true, i: true }, // Which profile views are visible
 }, ref) {
   const containerRef = useRef(null);
 
@@ -61,6 +64,8 @@ export const SARViewer = forwardRef(function SARViewer({
       if (!containerRef.current) return null;
       return containerRef.current.querySelector('canvas');
     },
+    /** Get the full container element (for capturing all overlays). */
+    getContainer: () => containerRef.current,
     getViewState: () => viewState,
     /** Force deck.gl to re-render (e.g. after canvas capture). */
     redraw: () => setRedrawTick(t => t + 1),
@@ -262,6 +267,16 @@ export const SARViewer = forwardRef(function SARViewer({
         enabled={pixelExplorer}
         xCoords={xCoords}
         yCoords={yCoords}
+      />
+      <ROIProfilePlot
+        roi={roi}
+        profileData={roiProfile}
+        viewState={viewState}
+        bounds={bounds}
+        imageWidth={imageWidth}
+        imageHeight={imageHeight}
+        useDecibels={useDecibels}
+        show={profileShow}
       />
       {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} />}
       <LoadingIndicator
