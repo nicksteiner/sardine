@@ -10,6 +10,7 @@ import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
 import { ScaleBar } from '../components/ScaleBar.jsx';
 import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
 import { ROIOverlay } from '../components/ROIOverlay.jsx';
+import { PixelExplorer } from '../components/PixelExplorer.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -44,6 +45,11 @@ export const SARViewer = forwardRef(function SARViewer({
   onROIChange,        // Callback when ROI changes via Shift+drag
   imageWidth,         // Source image width in pixels (for ROI overlay)
   imageHeight,        // Source image height in pixels (for ROI overlay)
+  getPixelValue,      // async (row, col, windowSize?) => value (for pixel explorer)
+  pixelExplorer = false, // Enable pixel value explorer overlay
+  pixelWindowSize = 1,   // Averaging window for pixel explorer (odd int)
+  xCoords,            // Float64Array easting coords (length = imageWidth)
+  yCoords,            // Float64Array northing coords (length = imageHeight)
 }, ref) {
   const containerRef = useRef(null);
 
@@ -244,6 +250,18 @@ export const SARViewer = forwardRef(function SARViewer({
         imageHeight={imageHeight}
         roi={roi}
         onROIChange={onROIChange}
+      />
+      <PixelExplorer
+        viewState={viewState}
+        bounds={bounds}
+        imageWidth={imageWidth}
+        imageHeight={imageHeight}
+        getPixelValue={getPixelValue}
+        useDecibels={useDecibels}
+        windowSize={pixelWindowSize}
+        enabled={pixelExplorer}
+        xCoords={xCoords}
+        yCoords={yCoords}
       />
       {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} />}
       <LoadingIndicator

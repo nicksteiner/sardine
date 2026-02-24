@@ -265,6 +265,8 @@ function App() {
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
+  const [pixelExplorer, setPixelExplorer] = useState(false);
+  const [pixelWindowSize, setPixelWindowSize] = useState(1);
   const [contrastMin, setContrastMin] = useState(-25);
   const [contrastMax, setContrastMax] = useState(0);
   const [gamma, setGamma] = useState(1.0);
@@ -1198,14 +1200,39 @@ function App() {
 
       // If ROI is set, export only the selected region
       const roiActive = roi && roi.width > 0 && roi.height > 0;
-      const roiStartCol = roiActive ? Math.floor(roi.left / effectiveMl) : 0;
-      const roiStartRow = roiActive ? Math.floor(roi.top / effectiveMl) : 0;
-      const exportWidth = roiActive
-        ? Math.floor(roi.width / effectiveMl)
+
+      // Clamp ROI to source data bounds before computing export dimensions
+      let roiClamped = roi;
+      if (roiActive) {
+        const cl = Math.max(0, Math.min(roi.left, sourceWidth));
+        const ct = Math.max(0, Math.min(roi.top, sourceHeight));
+        const cr = Math.max(cl, Math.min(roi.left + roi.width, sourceWidth));
+        const cb = Math.max(ct, Math.min(roi.top + roi.height, sourceHeight));
+        roiClamped = { left: cl, top: ct, width: cr - cl, height: cb - ct };
+      }
+
+      const roiStartCol = roiActive ? Math.floor(roiClamped.left / effectiveMl) : 0;
+      const roiStartRow = roiActive ? Math.floor(roiClamped.top / effectiveMl) : 0;
+      // Count complete multilook windows from the grid-aligned start to the ROI right/bottom edge.
+      // Using floor(right/ml) - floor(left/ml) avoids under-counting when ROI edges
+      // don't align to the multilook grid (the previous floor(width/ml) formula missed
+      // valid windows straddling the alignment boundary).
+      const roiEndCol = roiActive
+        ? Math.floor(Math.min(roiClamped.left + roiClamped.width, sourceWidth) / effectiveMl)
         : Math.floor(sourceWidth / effectiveMl);
-      const exportHeight = roiActive
-        ? Math.floor(roi.height / effectiveMl)
+      const roiEndRow = roiActive
+        ? Math.floor(Math.min(roiClamped.top + roiClamped.height, sourceHeight) / effectiveMl)
         : Math.floor(sourceHeight / effectiveMl);
+      const exportWidth = roiEndCol - roiStartCol;
+      const exportHeight = roiEndRow - roiStartRow;
+
+      // Guard against zero-size exports (ROI smaller than multilook window)
+      if (exportWidth < 1 || exportHeight < 1) {
+        addStatusLog('error', `ROI too small for multilook ${effectiveMl}x${effectiveMl}. ` +
+          `Need at least ${effectiveMl}x${effectiveMl} pixels, got ${roiClamped?.width || 0}x${roiClamped?.height || 0}.`);
+        setExporting(false);
+        return;
+      }
 
       // Warn if per-band allocation is very large (modern 64-bit browsers
       // support ArrayBuffers well beyond 2 GB, but system RAM is the real limit)
@@ -1237,7 +1264,8 @@ function App() {
 
       addStatusLog('info', `Source: ${sourceWidth} x ${sourceHeight}`);
       if (roiActive) {
-        addStatusLog('info', `ROI: ${roi.width} x ${roi.height} px @ (${roi.left}, ${roi.top})`);
+        addStatusLog('info', `ROI: ${roiClamped.width} x ${roiClamped.height} px @ (${roiClamped.left}, ${roiClamped.top})`);
+        addStatusLog('info', `ROI export grid: startCol=${roiStartCol}, startRow=${roiStartRow}, ${exportWidth}x${exportHeight}`);
       }
       addStatusLog('info', `Multilook: ${effectiveMl}x${effectiveMl} (integer)`);
       addStatusLog('info', `Export: ${exportWidth} x ${exportHeight}`);
@@ -1301,9 +1329,26 @@ function App() {
       if (imageData.metadataCube && imageData.xCoords && imageData.yCoords) {
         addStatusLog('info', 'Evaluating metadata cube fields on export grid...');
         try {
+          // When ROI is active, pass only the coordinate subset covering the ROI
+          // so the metadata cube evaluates at the correct geographic positions.
+          let cubeXCoords = imageData.xCoords;
+          let cubeYCoords = imageData.yCoords;
+          if (roiActive) {
+            // Use multilook-aligned origin to match getExportStripe data
+            const dataOriginCol = roiStartCol * effectiveMl;
+            const dataOriginRow = roiStartRow * effectiveMl;
+            const dataEndCol = dataOriginCol + exportWidth * effectiveMl;
+            const dataEndRow = dataOriginRow + exportHeight * effectiveMl;
+            const xStart = Math.min(dataOriginCol, imageData.xCoords.length);
+            const xEnd = Math.min(dataEndCol, imageData.xCoords.length);
+            const yStart = Math.min(dataOriginRow, imageData.yCoords.length);
+            const yEnd = Math.min(dataEndRow, imageData.yCoords.length);
+            cubeXCoords = imageData.xCoords.subarray(xStart, xEnd);
+            cubeYCoords = imageData.yCoords.subarray(yStart, yEnd);
+          }
           const cubeFields = imageData.metadataCube.evaluateAllFields(
-            imageData.xCoords,
-            imageData.yCoords,
+            cubeXCoords,
+            cubeYCoords,
             exportWidth,
             exportHeight,
             effectiveMl,
@@ -1341,12 +1386,15 @@ function App() {
       // Posting = nativeSpacing * ml, guaranteed exact by construction.
       let exportBounds;
       if (roiActive) {
-        // ROI X: world X = image column (no flip). Left edge = geoBounds[0] + roi.left * sp.
-        const roiOriginX = geoBounds[0] + roi.left * nativeSpacingX - nativeSpacingX / 2;
-        // ROI Y: world Y is flipped (pixelToWorld uses Y-down, but geographic Y is Y-up).
-        // roi.top (small world Y) = top of screen = NORTH of image = near geoBounds[3].
+        // Align geo-bounds to the actual multilook-grid origin that getExportStripe reads.
+        // getExportStripe reads from source column roiStartCol*ml and row roiStartRow*ml,
+        // which may differ from roiClamped.left/top when ROI isn't ml-aligned.
+        const dataOriginCol = roiStartCol * effectiveMl;
+        const dataOriginRow = roiStartRow * effectiveMl;
+        const roiOriginX = geoBounds[0] + dataOriginCol * nativeSpacingX - nativeSpacingX / 2;
+        // ROI Y: source row 0 = north = geoBounds[3]. Each row steps south by nativeSpacingY.
         // North pixel edge of the ROI:
-        const roiMaxGeoY = geoBounds[3] - roi.top * nativeSpacingY + nativeSpacingY / 2;
+        const roiMaxGeoY = geoBounds[3] - dataOriginRow * nativeSpacingY + nativeSpacingY / 2;
         // South pixel edge: north edge minus the export span
         const roiMinGeoY = roiMaxGeoY - exportHeight * effectiveMl * nativeSpacingY;
         exportBounds = [
@@ -2307,6 +2355,29 @@ function App() {
                 />
                 <label htmlFor="showGrid">Coordinate Grid</label>
               </div>
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="pixelExplorer"
+                  checked={pixelExplorer}
+                  onChange={(e) => setPixelExplorer(e.target.checked)}
+                />
+                <label htmlFor="pixelExplorer">Pixel Explorer</label>
+                {pixelExplorer && (
+                  <select
+                    value={pixelWindowSize}
+                    onChange={(e) => setPixelWindowSize(Number(e.target.value))}
+                    style={{ marginLeft: '8px', fontSize: '0.7rem', width: '55px' }}
+                    title="Averaging window size around cursor"
+                  >
+                    <option value={1}>1×1</option>
+                    <option value={3}>3×3</option>
+                    <option value={5}>5×5</option>
+                    <option value={7}>7×7</option>
+                    <option value={11}>11×11</option>
+                  </select>
+                )}
+              </div>
             </div>
 
             {/* Export settings */}
@@ -2650,6 +2721,11 @@ function App() {
               onROIChange={setROI}
               imageWidth={imageData?.sourceWidth || imageData?.width}
               imageHeight={imageData?.sourceHeight || imageData?.height}
+              getPixelValue={imageData?.getPixelValue}
+              pixelExplorer={pixelExplorer}
+              pixelWindowSize={pixelWindowSize}
+              xCoords={imageData?.xCoords}
+              yCoords={imageData?.yCoords}
             />
           )}
 

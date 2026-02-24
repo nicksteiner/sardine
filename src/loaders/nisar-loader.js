@@ -2104,9 +2104,70 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     console.warn('[NISAR Loader] Could not load metadata cube:', e.message);
   }
 
+  /**
+   * Read a single pixel value at (row, col) from the chunk cache.
+   * Returns the raw power value (Float32). Returns NaN if out of bounds or chunk unavailable.
+   * For a window of pixels, pass windowSize (odd integer) to average a windowSize×windowSize area.
+   */
+  async function getPixelValue(row, col, windowSize = 1) {
+    if (row < 0 || row >= height || col < 0 || col >= width) return NaN;
+
+    if (windowSize <= 1) {
+      const cr = Math.floor(row / chunkH);
+      const cc = Math.floor(col / chunkW);
+      const chunk = await getCachedChunk(cr, cc);
+      if (!chunk) return NaN;
+      const localY = row - cr * chunkH;
+      const localX = col - cc * chunkW;
+      const idx = localY * chunkW + localX;
+      if (idx < 0 || idx >= chunk.length) return NaN;
+      return chunk[idx];
+    }
+
+    // Window average: collect all values in the window
+    const half = Math.floor(windowSize / 2);
+    const r0 = Math.max(0, row - half);
+    const r1 = Math.min(height, row + half + 1);
+    const c0 = Math.max(0, col - half);
+    const c1 = Math.min(width, col + half + 1);
+
+    // Pre-fetch needed chunks
+    const neededChunks = new Set();
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        neededChunks.add(`${Math.floor(r / chunkH)},${Math.floor(c / chunkW)}`);
+      }
+    }
+    await Promise.all(
+      Array.from(neededChunks).map(k => {
+        const [cr, cc] = k.split(',').map(Number);
+        return getCachedChunk(cr, cc);
+      })
+    );
+
+    let sum = 0, count = 0;
+    for (let r = r0; r < r1; r++) {
+      const cr = Math.floor(r / chunkH);
+      for (let c = c0; c < c1; c++) {
+        const cc = Math.floor(c / chunkW);
+        const chunk = chunkCache.get(`${cr},${cc}`);
+        if (!chunk) continue;
+        const idx = (r - cr * chunkH) * chunkW + (c - cc * chunkW);
+        if (idx < 0 || idx >= chunk.length) continue;
+        const v = chunk[idx];
+        if (!isNaN(v) && v > 0) {
+          sum += v;
+          count++;
+        }
+      }
+    }
+    return count > 0 ? sum / count : NaN;
+  }
+
   const result = {
     getTile,
     getExportStripe,
+    getPixelValue,
     bounds,
     worldBounds,
     crs,
@@ -3402,9 +3463,61 @@ export async function loadNISARRGBComposite(file, options = {}) {
   // Read product identification metadata
   const identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
 
+  /**
+   * Read pixel values for all polarization bands at (row, col).
+   * Returns an object like {HHHH: value, HVHV: value, ...}.
+   * Pass windowSize (odd int) to average a windowSize×windowSize area.
+   */
+  async function getPixelValue(row, col, windowSize = 1) {
+    if (row < 0 || row >= height || col < 0 || col >= width) return null;
+    const result = {};
+
+    const half = Math.floor(windowSize / 2);
+    const r0 = Math.max(0, row - half);
+    const r1 = Math.min(height, row + half + 1);
+    const c0 = Math.max(0, col - half);
+    const c1 = Math.min(width, col + half + 1);
+
+    // Pre-fetch chunks for all pols
+    const neededChunks = new Set();
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        neededChunks.add(`${Math.floor(r / chunkH)},${Math.floor(c / chunkW)}`);
+      }
+    }
+    const fetches = [];
+    for (const k of neededChunks) {
+      const [cr, cc] = k.split(',').map(Number);
+      for (const pol of requiredPols) {
+        fetches.push(getCachedChunk(pol, cr, cc));
+      }
+    }
+    await Promise.all(fetches);
+
+    for (const pol of requiredPols) {
+      let sum = 0, count = 0;
+      for (let r = r0; r < r1; r++) {
+        const cr = Math.floor(r / chunkH);
+        for (let c = c0; c < c1; c++) {
+          const cc = Math.floor(c / chunkW);
+          const cache = chunkCaches[pol];
+          const chunk = cache?.get(`${cr},${cc}`);
+          if (!chunk) continue;
+          const idx = (r - cr * chunkH) * chunkW + (c - cc * chunkW);
+          if (idx < 0 || idx >= chunk.length) continue;
+          const v = chunk[idx];
+          if (!isNaN(v) && v > 0) { sum += v; count++; }
+        }
+      }
+      result[pol] = count > 0 ? sum / count : NaN;
+    }
+    return result;
+  }
+
   const result = {
     getRGBTile,
     getExportStripe,
+    getPixelValue,
     bounds,
     worldBounds,
     crs,
@@ -4313,6 +4426,60 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     .then(id => { identification = id; })
     .catch(() => {});
 
+  /**
+   * Read a single pixel value at (row, col). Returns raw power (Float32).
+   * Pass windowSize (odd int) to average a windowSize×windowSize area.
+   */
+  async function getPixelValue(row, col, windowSize = 1) {
+    if (row < 0 || row >= height || col < 0 || col >= width) return NaN;
+
+    if (windowSize <= 1) {
+      const cr = Math.floor(row / chunkH);
+      const cc = Math.floor(col / chunkW);
+      const chunk = await getStreamChunk(cr, cc);
+      if (!chunk) return NaN;
+      const localY = row - cr * chunkH;
+      const localX = col - cc * chunkW;
+      const idx = localY * chunkW + localX;
+      if (idx < 0 || idx >= chunk.length) return NaN;
+      return chunk[idx];
+    }
+
+    const half = Math.floor(windowSize / 2);
+    const r0 = Math.max(0, row - half);
+    const r1 = Math.min(height, row + half + 1);
+    const c0 = Math.max(0, col - half);
+    const c1 = Math.min(width, col + half + 1);
+
+    const neededChunks = new Set();
+    for (let r = r0; r < r1; r++) {
+      for (let c = c0; c < c1; c++) {
+        neededChunks.add(`${Math.floor(r / chunkH)},${Math.floor(c / chunkW)}`);
+      }
+    }
+    await Promise.all(
+      Array.from(neededChunks).map(k => {
+        const [cr, cc] = k.split(',').map(Number);
+        return getStreamChunk(cr, cc);
+      })
+    );
+
+    let sum = 0, count = 0;
+    for (let r = r0; r < r1; r++) {
+      const cr = Math.floor(r / chunkH);
+      for (let c = c0; c < c1; c++) {
+        const cc = Math.floor(c / chunkW);
+        const chunk = chunkCache.get(`${cr},${cc}`);
+        if (!chunk) continue;
+        const idx = (r - cr * chunkH) * chunkW + (c - cc * chunkW);
+        if (idx < 0 || idx >= chunk.length) continue;
+        const v = chunk[idx];
+        if (!isNaN(v) && v > 0) { sum += v; count++; }
+      }
+    }
+    return count > 0 ? sum / count : NaN;
+  }
+
   const result = {
     width,
     height,
@@ -4322,6 +4489,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     epsgCode,
     getTile,
     getExportStripe,
+    getPixelValue,
     mode: 'streaming',
     source: 'url',
     sourceUrl: url,
