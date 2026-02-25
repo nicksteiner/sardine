@@ -50,13 +50,14 @@ export class SARTileLayer extends TileLayer {
 
       // getTileData caches RAW float data (not rendered textures)
       getTileData: async (tile) => {
-        const { bbox } = tile;
+        const { bbox, signal } = tile;
         const tileData = await getTile({
           x: tile.index.x,
           y: tile.index.y,
           z: tile.index.z,
           bbox,
           multiLook,
+          signal,
         });
         if (!tileData) return null;
         // Return raw data — rendering happens in renderSubLayers
