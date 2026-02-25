@@ -29,6 +29,8 @@
 import h5wasm from 'h5wasm';
 import { openH5ChunkFile, openH5ChunkUrl } from './h5chunk.js';
 import { loadMetadataCube } from '../utils/metadata-cube.js';
+import { normalizeS3Url } from '../utils/s3-url.js';
+import { createPersistentChunkCache } from '../utils/chunk-cache.js';
 
 // ─── NISAR GCOV Product Specification (JPL D-102274 Rev E) ──────────────
 // All paths below are derived from Tables 5-1 through 5-8 of the spec.
@@ -3715,11 +3717,12 @@ async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A'
  * @param {string} url — HTTPS URL to a NISAR HDF5 file
  * @returns {Promise<Array<{frequency: string, polarization: string, band: string}>>}
  */
-export async function listNISARDatasetsFromUrl(url) {
-  console.log(`[NISAR Loader] Listing datasets from URL: ${url}`);
+export async function listNISARDatasetsFromUrl(url, { useTransferAcceleration = false, cloudfrontDomain } = {}) {
+  const resolvedUrl = normalizeS3Url(url, { useTransferAcceleration, cloudfrontDomain });
+  console.log(`[NISAR Loader] Listing datasets from URL: ${resolvedUrl}`);
 
   try {
-    const streamReader = await openH5ChunkUrl(url); // Use lazy tree-walking
+    const streamReader = await openH5ChunkUrl(resolvedUrl); // Use lazy tree-walking
     const h5Datasets = streamReader.getDatasets();
 
     console.log(`[h5chunk] Found ${h5Datasets.length} datasets from URL`);
@@ -3763,13 +3766,18 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     frequency = 'A',
     polarization = 'HHHH',
     _streamReader: existingReader = null,
+    useTransferAcceleration = false,
+    cloudfrontDomain,
   } = options;
 
-  console.log(`[NISAR Loader] Loading from URL: ${url}`);
+  // Normalize S3 URIs and optionally apply Transfer Acceleration / CloudFront
+  const resolvedUrl = normalizeS3Url(url, { useTransferAcceleration, cloudfrontDomain });
+
+  console.log(`[NISAR Loader] Loading from URL: ${resolvedUrl}${resolvedUrl !== url ? ` (original: ${url})` : ''}`);
   console.log(`[NISAR Loader] Dataset: frequency${frequency}/${polarization}`);
 
   // Reuse reader from listNISARDatasetsFromUrl if available (avoids re-downloading metadata)
-  const streamReader = existingReader || await openH5ChunkUrl(url); // Use lazy tree-walking
+  const streamReader = existingReader || await openH5ChunkUrl(resolvedUrl); // Use lazy tree-walking
   const h5Datasets = streamReader.getDatasets();
 
   console.log(`[NISAR Loader] h5chunk discovered ${h5Datasets.length} datasets from URL`);
@@ -3902,23 +3910,43 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   } catch { /* ignore */ }
 
   // Per-chunk cache for streaming (keyed by "cr,cc")
-  // Sized to hold prefetch (16×16=256) + coarse tiles + fine refinement + headroom
+  // L1: in-memory Map (fast, volatile)
+  // L2: persistent Cache API (survives reload, async)
   const chunkCache = new Map();
   const MAX_CHUNK_CACHE = 1000;
   const maskChunkCache = new Map();
+  const persistentCache = resolvedUrl
+    ? createPersistentChunkCache(resolvedUrl, selectedDatasetId)
+    : null;
+
+  /** Insert a chunk into L1 (Map) and L2 (Cache API) caches. */
+  function cacheChunk(key, result) {
+    if (chunkCache.size >= MAX_CHUNK_CACHE) {
+      chunkCache.delete(chunkCache.keys().next().value);
+    }
+    chunkCache.set(key, result);
+    if (persistentCache && result) {
+      const [cr, cc] = key.split(',').map(Number);
+      persistentCache.put(cr, cc, result).catch(() => {});
+    }
+  }
 
   async function getStreamChunk(cr, cc) {
     const key = `${cr},${cc}`;
+    // L1: in-memory
     if (chunkCache.has(key)) return chunkCache.get(key);
+    // L2: persistent cache (survives page reload)
+    if (persistentCache) {
+      const cached = await persistentCache.get(cr, cc);
+      if (cached) {
+        cacheChunk(key, cached);
+        return cached;
+      }
+    }
     try {
       const data = await streamReader.readChunk(selectedDatasetId, cr, cc);
       const result = data?.data || data;
-      if (chunkCache.size >= MAX_CHUNK_CACHE) {
-        // Evict oldest entry
-        const first = chunkCache.keys().next().value;
-        chunkCache.delete(first);
-      }
-      chunkCache.set(key, result);
+      cacheChunk(key, result);
       return result;
     } catch {
       return null;
@@ -3969,6 +3997,88 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     if (_pendingForeground === 0) {
       const waiters = _foregroundWaiters.splice(0);
       for (const w of waiters) w();
+    }
+  }
+
+  // ── Predictive pan-direction prefetch ──
+  // Track recent tile requests to infer pan direction, then prefetch
+  // chunks just beyond the current viewport edge in that direction.
+  const _recentViewports = []; // [{pxLeft, pxTop, pxRight, pxBottom, time}]
+  const MAX_VIEWPORT_HISTORY = 4;
+  let _prefetchInFlight = false;
+
+  function _trackViewport(pxLeft, pxTop, pxRight, pxBottom) {
+    _recentViewports.push({ pxLeft, pxTop, pxRight, pxBottom, time: performance.now() });
+    if (_recentViewports.length > MAX_VIEWPORT_HISTORY) _recentViewports.shift();
+  }
+
+  function _predictPanDirection() {
+    if (_recentViewports.length < 2) return null;
+    const oldest = _recentViewports[0];
+    const newest = _recentViewports[_recentViewports.length - 1];
+    const dt = newest.time - oldest.time;
+    if (dt < 50 || dt > 5000) return null; // too fast (programmatic) or too slow (stale)
+
+    const dx = (newest.pxLeft + newest.pxRight) / 2 - (oldest.pxLeft + oldest.pxRight) / 2;
+    const dy = (newest.pxTop + newest.pxBottom) / 2 - (oldest.pxTop + oldest.pxBottom) / 2;
+    const mag = Math.sqrt(dx * dx + dy * dy);
+    if (mag < chunkW * 0.5) return null; // not enough movement
+    return { dx: dx / mag, dy: dy / mag };
+  }
+
+  async function _prefetchAhead(pxLeft, pxTop, pxRight, pxBottom) {
+    if (_prefetchInFlight) return;
+    const dir = _predictPanDirection();
+    if (!dir) return;
+
+    // Extend viewport by 1 chunk in the predicted direction
+    const extW = (pxRight - pxLeft) * 0.5;
+    const extH = (pxBottom - pxTop) * 0.5;
+    let aheadLeft = pxLeft, aheadTop = pxTop, aheadRight = pxRight, aheadBottom = pxBottom;
+    if (dir.dx > 0.3) aheadRight += extW;
+    if (dir.dx < -0.3) aheadLeft -= extW;
+    if (dir.dy > 0.3) aheadBottom += extH;
+    if (dir.dy < -0.3) aheadTop -= extH;
+
+    // Clamp to image bounds
+    aheadLeft = Math.max(0, aheadLeft);
+    aheadTop = Math.max(0, aheadTop);
+    aheadRight = Math.min(width, aheadRight);
+    aheadBottom = Math.min(height, aheadBottom);
+
+    const startCR = Math.floor(aheadTop / chunkH);
+    const endCR = Math.floor(Math.max(0, aheadBottom - 1) / chunkH);
+    const startCC = Math.floor(aheadLeft / chunkW);
+    const endCC = Math.floor(Math.max(0, aheadRight - 1) / chunkW);
+
+    // Only prefetch chunks not already cached
+    const prefetchCoords = [];
+    for (let cr = startCR; cr <= endCR; cr++) {
+      for (let cc = startCC; cc <= endCC; cc++) {
+        if (!chunkCache.has(`${cr},${cc}`)) {
+          prefetchCoords.push([cr, cc]);
+        }
+      }
+    }
+
+    if (prefetchCoords.length === 0 || prefetchCoords.length > 64) return; // too many = zoom out, skip
+
+    _prefetchInFlight = true;
+    try {
+      // Wait for foreground to finish, then prefetch at low priority
+      await _waitForIdle();
+      if (_pendingForeground > 0) return; // new foreground work started
+      if (streamReader.readChunksBatch) {
+        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, prefetchCoords);
+        for (const [key, data] of batchMap) {
+          const result = data?.data || data;
+          cacheChunk(key, result);
+        }
+      }
+    } catch {
+      // prefetch failure is non-critical
+    } finally {
+      _prefetchInFlight = false;
     }
   }
 
@@ -4057,7 +4167,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   }
 
   // Build getTile function for on-demand chunk reading
-  const getTile = async ({ x, y, z, bbox, multiLook }) => {
+  const getTile = async ({ x, y, z, bbox, multiLook, signal }) => {
     _enterForeground();
     const tileSize = 256;
     try {
@@ -4099,14 +4209,18 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
       if (sliceW <= 0 || sliceH <= 0) return null;
 
+      // Track viewport for predictive prefetch (fire-and-forget)
+      _trackViewport(pxLeft, pxTop, pxRight, pxBottom);
+      _prefetchAhead(pxLeft, pxTop, pxRight, pxBottom);
+
       let tileData;
       let maskData = null;
 
       // Small regions: read directly with readRegion (contiguous, fast)
       const MAX_DIRECT_PIXELS = 1024 * 1024;
       if (sliceW * sliceH <= MAX_DIRECT_PIXELS) {
-        const readPromises = [streamReader.readRegion(selectedDatasetId, pxTop, pxLeft, sliceH, sliceW)];
-        if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, pxTop, pxLeft, sliceH, sliceW));
+        const readPromises = [streamReader.readRegion(selectedDatasetId, pxTop, pxLeft, sliceH, sliceW, { signal })];
+        if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, pxTop, pxLeft, sliceH, sliceW, { signal }));
         const [result, maskRegion] = await Promise.all(readPromises);
         if (!result) return null;
         tileData = result.data || result;
@@ -4185,14 +4299,10 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }
 
       if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
-        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
+        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords, { signal });
         for (const [key, data] of batchMap) {
           const result = data?.data || data;
-          if (chunkCache.size >= MAX_CHUNK_CACHE) {
-            const first = chunkCache.keys().next().value;
-            chunkCache.delete(first);
-          }
-          chunkCache.set(key, result);
+          cacheChunk(key, result);
           if (result) coarseGrid.set(key, result);
         }
       } else if (uncachedCoords.length > 0) {
@@ -4271,11 +4381,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
               const batchMap = await streamReader.readChunksBatch(selectedDatasetId, fineUncached);
               for (const [key, data] of batchMap) {
                 const result = data?.data || data;
-                if (chunkCache.size >= MAX_CHUNK_CACHE) {
-                  const first = chunkCache.keys().next().value;
-                  chunkCache.delete(first);
-                }
-                chunkCache.set(key, result);
+                cacheChunk(key, result);
                 if (result) fineGrid.set(key, result);
               }
             } else if (fineUncached.length > 0) {
@@ -4402,10 +4508,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
       for (const [key, data] of batchMap) {
         const result = data?.data || data;
-        if (chunkCache.size >= MAX_CHUNK_CACHE) {
-          chunkCache.delete(chunkCache.keys().next().value);
-        }
-        chunkCache.set(key, result);
+        cacheChunk(key, result);
       }
     } else if (uncachedCoords.length > 0) {
       // Fallback: individual parallel reads
@@ -4570,11 +4673,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         tasks.push(
           streamReader.readChunksBatch(selectedDatasetId, coords).then(batchMap => {
             for (const [key, data] of batchMap) {
-              if (chunkCache.size >= MAX_CHUNK_CACHE) {
-                const first = chunkCache.keys().next().value;
-                chunkCache.delete(first);
-              }
-              chunkCache.set(key, data);
+              cacheChunk(key, data);
             }
           })
         );

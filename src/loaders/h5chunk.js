@@ -1146,6 +1146,40 @@ export class H5Chunk {
     this.file = null;
     this.url = null;
     this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
+
+    // Adaptive concurrency: start at 12, measure throughput, adjust to 6–50
+    this._concurrency = 12;
+    this._throughputSamples = []; // recent MB/s measurements
+    this._concurrencyMin = 6;
+    this._concurrencyMax = 50;
+  }
+
+  /**
+   * Adjust concurrency based on recent throughput samples.
+   * High throughput → increase parallelism to saturate bandwidth.
+   * Low throughput → reduce parallelism to avoid connection congestion.
+   */
+  _adaptConcurrency() {
+    if (this._throughputSamples.length < 3) return; // need enough samples
+    const avg = this._throughputSamples.reduce((a, b) => a + b, 0) / this._throughputSamples.length;
+    const prev = this._concurrency;
+    if (avg > 20) {
+      // Fast connection (>20 MB/s): push toward max
+      this._concurrency = Math.min(this._concurrencyMax, prev + 4);
+    } else if (avg > 5) {
+      // Medium connection (5-20 MB/s): modest increase
+      this._concurrency = Math.min(this._concurrencyMax, prev + 2);
+    } else if (avg < 1) {
+      // Slow connection (<1 MB/s): reduce to avoid congestion
+      this._concurrency = Math.max(this._concurrencyMin, prev - 4);
+    } else if (avg < 3) {
+      // Slow-ish (<3 MB/s): reduce slightly
+      this._concurrency = Math.max(this._concurrencyMin, prev - 2);
+    }
+    // else: 3-5 MB/s — keep current level
+    if (this._concurrency !== prev) {
+      console.log(`[h5chunk] Adaptive concurrency: ${prev} → ${this._concurrency} (avg ${avg.toFixed(1)} MB/s)`);
+    }
   }
 
   /**
@@ -2499,9 +2533,11 @@ export class H5Chunk {
    * @param {string} datasetId - Dataset identifier
    * @param {number} row - Chunk row index
    * @param {number} col - Chunk column index
+   * @param {object} [options] - Optional settings
+   * @param {AbortSignal} [options.signal] - AbortSignal to cancel in-flight HTTP requests
    * @returns {Promise<Float32Array>}
    */
-  async readChunk(datasetId, row, col) {
+  async readChunk(datasetId, row, col, { signal } = {}) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) {
       throw new Error(`Dataset not found: ${datasetId}`);
@@ -2539,6 +2575,7 @@ export class H5Chunk {
         headers: {
           'Range': `bytes=${chunkInfo.offset}-${chunkInfo.offset + chunkInfo.size - 1}`,
         },
+        signal,
       });
       buffer = await response.arrayBuffer();
     }
@@ -2584,9 +2621,11 @@ export class H5Chunk {
    *
    * @param {string} datasetId - Dataset identifier
    * @param {Array<[number, number]>} coords - Array of [row, col] chunk indices
+   * @param {object} [options] - Optional settings
+   * @param {AbortSignal} [options.signal] - AbortSignal to cancel in-flight HTTP requests
    * @returns {Promise<Map<string, Float32Array|null>>} Map of "row,col" → decoded chunk data
    */
-  async readChunksBatch(datasetId, coords) {
+  async readChunksBatch(datasetId, coords, { signal } = {}) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
 
@@ -2634,7 +2673,7 @@ export class H5Chunk {
     // Phase 2: Sort by file offset and merge nearby ranges
     chunkEntries.sort((a, b) => a.offset - b.offset);
 
-    const MERGE_GAP = 256 * 1024; // Merge ranges within 256 KB gap
+    const MERGE_GAP = 2 * 1024 * 1024; // Merge ranges within 2 MB gap — NISAR chunks are stored sequentially; wider merging coalesces entire chunk rows into fewer HTTP requests
     const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
     let current = null;
 
@@ -2656,21 +2695,33 @@ export class H5Chunk {
     }
     if (current) mergedRanges.push(current);
 
-    // Phase 3: Fetch merged ranges in parallel
-    const MAX_CONCURRENT = 30;
+    // Phase 3: Fetch merged ranges in parallel (adaptive concurrency)
+    const concurrency = this._concurrency;
     const rangeResults = new Array(mergedRanges.length);
 
-    for (let i = 0; i < mergedRanges.length; i += MAX_CONCURRENT) {
-      const batch = mergedRanges.slice(i, i + MAX_CONCURRENT);
+    for (let i = 0; i < mergedRanges.length; i += concurrency) {
+      const batch = mergedRanges.slice(i, i + concurrency);
+      const batchStart = performance.now();
+      let batchBytes = 0;
       const batchResults = await Promise.all(batch.map(async (range, idx) => {
-        const length = range.end - range.start;
         const response = await fetch(this.url, {
           headers: { 'Range': `bytes=${range.start}-${range.end - 1}` },
+          signal,
         });
-        return response.arrayBuffer();
+        const buf = await response.arrayBuffer();
+        batchBytes += buf.byteLength;
+        return buf;
       }));
       for (let j = 0; j < batchResults.length; j++) {
         rangeResults[i + j] = batchResults[j];
+      }
+      // Measure throughput and adapt concurrency
+      const elapsed = (performance.now() - batchStart) / 1000; // seconds
+      if (elapsed > 0.1) { // only measure meaningful intervals
+        const mbps = (batchBytes / (1024 * 1024)) / elapsed;
+        this._throughputSamples.push(mbps);
+        if (this._throughputSamples.length > 8) this._throughputSamples.shift();
+        this._adaptConcurrency();
       }
     }
 
@@ -2731,9 +2782,11 @@ export class H5Chunk {
    * @param {number} startCol - Start column
    * @param {number} numRows - Number of rows
    * @param {number} numCols - Number of columns
+   * @param {object} [options] - Optional settings
+   * @param {AbortSignal} [options.signal] - AbortSignal to cancel in-flight HTTP requests
    * @returns {Promise<{data: Float32Array, width: number, height: number}>}
    */
-  async readRegion(datasetId, startRow, startCol, numRows, numCols) {
+  async readRegion(datasetId, startRow, startCol, numRows, numCols, { signal } = {}) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) {
       throw new Error(`Dataset not found: ${datasetId}`);
@@ -2756,7 +2809,7 @@ export class H5Chunk {
     for (let cr = startChunkRow; cr <= endChunkRow; cr++) {
       for (let cc = startChunkCol; cc <= endChunkCol; cc++) {
         chunkPromises.push(
-          this.readChunk(datasetId, cr, cc)
+          this.readChunk(datasetId, cr, cc, { signal })
             .then(data => ({ cr, cc, data }))
             .catch(e => {
               console.warn(`[h5chunk] Failed to read chunk (${cr}, ${cc}):`, e.message);

@@ -13,7 +13,13 @@ export {
   loadMultiBandCOG,
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
-export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite } from './loaders/nisar-loader.js';
+export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl } from './loaders/nisar-loader.js';
+
+// S3 URL utilities
+export { normalizeS3Url, isS3Url } from './utils/s3-url.js';
+
+// Persistent chunk cache
+export { clearChunkCache } from './utils/chunk-cache.js';
 
 // Layers
 export { SARTileLayer } from './layers/SARTileLayer.js';

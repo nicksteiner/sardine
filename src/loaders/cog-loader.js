@@ -1,23 +1,9 @@
 import GeoTIFF, { fromUrl } from 'geotiff';
+import { normalizeS3Url } from '../utils/s3-url.js';
 
-/**
- * Convert S3 URI to HTTPS URL
- * @param {string} url - S3 URI (s3://bucket/key) or HTTPS URL
- * @returns {string} HTTPS URL
- */
+/** @deprecated Use normalizeS3Url from utils/s3-url.js */
 function normalizeUrl(url) {
-  if (!url) return url;
-  
-  // If it's an S3 URI, convert to HTTPS
-  if (url.startsWith('s3://')) {
-    const parts = url.slice(5).split('/');
-    const bucket = parts[0];
-    const key = parts.slice(1).join('/');
-    return `https://${bucket}.s3.amazonaws.com/${key}`;
-  }
-  
-  // Already an HTTPS URL or other format
-  return url;
+  return normalizeS3Url(url);
 }
 
 /**
