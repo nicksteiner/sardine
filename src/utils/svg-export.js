@@ -304,6 +304,95 @@ ${title ? `<text x="${m.left}" y="${m.top - 5}" font-size="8" font-weight="600">
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CLASSIFICATION MAP SVG
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Generate a publication-quality SVG of the classification overlay.
+ *
+ * Renders the per-pixel class map as an embedded PNG (nearest-neighbor)
+ * with a clean vector legend.
+ *
+ * @param {Uint8Array} classificationMap - 0=unclassified, 1..N class index
+ * @param {{w:number, h:number}} roiDims
+ * @param {Array<{name:string, color:string}>} classRegions
+ * @returns {string|null} SVG markup
+ */
+export function generateClassMapSVG(classificationMap, roiDims, classRegions) {
+  if (!classificationMap || !roiDims || !classRegions?.length) return null;
+  const { w, h } = roiDims;
+  if (w <= 0 || h <= 0) return null;
+
+  // Count pixels per class
+  const counts = new Array(classRegions.length).fill(0);
+  for (let i = 0; i < classificationMap.length; i++) {
+    const cls = classificationMap[i];
+    if (cls > 0 && cls <= classRegions.length) counts[cls - 1]++;
+  }
+
+  // Build RGBA image
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  const colorLUT = classRegions.map(r => {
+    const hex = r.color.replace('#', '');
+    return [
+      parseInt(hex.substring(0, 2), 16),
+      parseInt(hex.substring(2, 4), 16),
+      parseInt(hex.substring(4, 6), 16),
+    ];
+  });
+
+  // White background for unclassified
+  for (let i = 0; i < w * h; i++) {
+    const idx = i * 4;
+    rgba[idx] = 245; rgba[idx + 1] = 245; rgba[idx + 2] = 245; rgba[idx + 3] = 255;
+  }
+  for (let i = 0; i < classificationMap.length; i++) {
+    const cls = classificationMap[i];
+    if (cls === 0 || cls > colorLUT.length) continue;
+    const [r, g, b] = colorLUT[cls - 1];
+    const idx = i * 4;
+    rgba[idx] = r; rgba[idx + 1] = g; rgba[idx + 2] = b; rgba[idx + 3] = 255;
+  }
+
+  // Render to offscreen canvas → PNG data URI
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.putImageData(new ImageData(rgba, w, h), 0, 0);
+  const pngDataUri = canvas.toDataURL('image/png');
+
+  // SVG layout
+  const margin = { top: 14, right: 10, bottom: 10, left: 10 };
+  const legendH = classRegions.length * 14 + 8;
+  const imgW = 220;
+  const imgH = Math.round(imgW * (h / w));
+  const W = margin.left + imgW + margin.right;
+  const H = margin.top + imgH + 8 + legendH + margin.bottom;
+
+  let legend = '';
+  let ly = margin.top + imgH + 12;
+  for (let i = 0; i < classRegions.length; i++) {
+    const r = classRegions[i];
+    legend += `<rect x="${margin.left}" y="${ly}" width="10" height="10" fill="${esc(r.color)}" stroke="#000" stroke-width="0.5"/>`;
+    legend += `<text x="${margin.left + 14}" y="${ly + 8}" font-size="7" fill="#000">${esc(r.name)}  (n=${counts[i].toLocaleString()})</text>`;
+    ly += 14;
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${esc(FONT)}">
+<rect width="${W}" height="${H}" fill="#fff"/>
+<text x="${margin.left}" y="${margin.top - 3}" font-size="8" font-weight="600" fill="#000">Classification Map</text>
+<image x="${margin.left}" y="${margin.top}" width="${imgW}" height="${imgH}"
+       href="${pngDataUri}" image-rendering="pixelated"/>
+<rect x="${margin.left}" y="${margin.top}" width="${imgW}" height="${imgH}"
+      fill="none" stroke="#000" stroke-width="0.5"/>
+${legend}
+</svg>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Download helper
 // ═══════════════════════════════════════════════════════════════════════════
 

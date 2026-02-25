@@ -8,7 +8,7 @@
  */
 
 import React, { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from 'react';
-import { generateScatterSVG, downloadSVG } from '../utils/svg-export.js';
+import { generateScatterSVG, generateClassMapSVG, downloadSVG } from '../utils/svg-export.js';
 
 const CLASS_COLORS = [
   '#3498db',  // blue   (water)
@@ -113,11 +113,15 @@ function classifyCounts(x, y, valid, classRegions) {
 }
 
 export default function ScatterClassifier({
-  scatterData,   // { x: Float32Array, y: Float32Array, valid: Uint8Array }
+  scatterData,   // { x: Float32Array, y: Float32Array, valid: Uint8Array, incidence?: Float32Array }
   xLabel,        // "HHHH (dB)"
   yLabel,        // "HVHV (dB)"
   classRegions,  // [{name, color, xMin, xMax, yMin, yMax}]
   onClassRegionsChange,
+  classificationMap,       // Uint8Array from parent (for export)
+  classifierRoiDims,       // {w, h}
+  incidenceRange,          // [min, max] degrees
+  onIncidenceRangeChange,  // ([min, max]) => void
   onClose,
 }) {
   const canvasRef = useRef(null);
@@ -372,6 +376,11 @@ export default function ScatterClassifier({
     if (svg) downloadSVG(svg, 'scatter_classification.svg');
   }, [scatterData, xLabel, yLabel, classRegions, xRange, yRange]);
 
+  const handleExportClassMap = useCallback(() => {
+    const svg = generateClassMapSVG(classificationMap, classifierRoiDims, classRegions);
+    if (svg) downloadSVG(svg, 'class_map.svg');
+  }, [classificationMap, classifierRoiDims, classRegions]);
+
   const formatCount = (n) => {
     if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
@@ -403,10 +412,16 @@ export default function ScatterClassifier({
           <span style={{ color: '#4ec9d4' }}>Feature Space</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button onClick={handleExportSVG} title="Export SVG" style={{
+          <button onClick={handleExportSVG} title="Export scatter SVG" style={{
             background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
             fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>SVG</button>
+          {classificationMap && (
+            <button onClick={handleExportClassMap} title="Export class map SVG" style={{
+              background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
+              fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
+            }}>Map</button>
+          )}
           <button onClick={onClose} style={{
             background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
             fontSize: 16, padding: '0 4px', lineHeight: 1,
@@ -488,6 +503,54 @@ export default function ScatterClassifier({
           }}>+ Add Class</button>
         )}
       </div>
+
+      {/* Incidence angle filter */}
+      {!scatterData?.incidence && (
+        <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8, fontSize: 9, color: '#5a7099' }}>
+          No incidence angle data (NISAR HDF5 only)
+        </div>
+      )}
+      {scatterData?.incidence && incidenceRange && onIncidenceRangeChange && (() => {
+        const inc = scatterData.incidence;
+        const valid = scatterData.valid;
+        let dataMin = 90, dataMax = 0;
+        for (let i = 0; i < inc.length; i++) {
+          if (valid[i] && !isNaN(inc[i])) {
+            if (inc[i] < dataMin) dataMin = inc[i];
+            if (inc[i] > dataMax) dataMax = inc[i];
+          }
+        }
+        dataMin = Math.floor(dataMin);
+        dataMax = Math.ceil(dataMax);
+        const [curMin, curMax] = incidenceRange;
+        return (
+          <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8 }}>
+            <div style={{ fontSize: 10, color: '#5a7099', marginBottom: 4 }}>
+              Incidence Angle Filter ({curMin}°–{curMax}°)
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 9, color: '#5a7099', width: 22, textAlign: 'right' }}>{curMin}°</span>
+              <input type="range" min={dataMin} max={dataMax} step={1} value={curMin}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  onIncidenceRangeChange([Math.min(v, curMax - 1), curMax]);
+                }}
+                style={{ flex: 1, accentColor: '#4ec9d4', height: 4 }}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 9, color: '#5a7099', width: 22, textAlign: 'right' }}>{curMax}°</span>
+              <input type="range" min={dataMin} max={dataMax} step={1} value={curMax}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  onIncidenceRangeChange([curMin, Math.max(v, curMin + 1)]);
+                }}
+                style={{ flex: 1, accentColor: '#e8833a', height: 4 }}
+              />
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

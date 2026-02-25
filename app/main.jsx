@@ -290,8 +290,9 @@ function App() {
   const [classifierBands, setClassifierBands] = useState({ x: 'HHHH', y: 'HVHV' });
   const [classificationMap, setClassificationMap] = useState(null); // Uint8Array per ROI pixel
   const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
+  const [incidenceRange, setIncidenceRange] = useState([0, 90]); // min/max incidence angle filter (degrees)
 
-  const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
+  const [histogramScope, setHistogramScope] = useState('viewport'); // 'global' | 'viewport'
   const [showHistogramOverlay, setShowHistogramOverlay] = useState(false);
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
@@ -533,10 +534,39 @@ function App() {
           }
         }
 
+        // Evaluate incidence angle over ROI if metadata cube available
+        let incidence = null;
+        console.log('[Classifier] metadataCube:', !!imageData.metadataCube, 'xCoords:', !!imageData.xCoords, 'yCoords:', !!imageData.yCoords);
+        if (imageData.metadataCube && imageData.xCoords && imageData.yCoords) {
+          incidence = new Float32Array(n);
+          for (let oy = 0; oy < exportH; oy++) {
+            const srcRow = Math.min((startRow + oy) * ml, sourceH - 1);
+            const northing = imageData.yCoords[srcRow];
+            for (let ox = 0; ox < exportW; ox++) {
+              const srcCol = Math.min((startCol + ox) * ml, sourceW - 1);
+              const easting = imageData.xCoords[srcCol];
+              const val = imageData.metadataCube.getIncidenceAngle(easting, northing);
+              incidence[oy * exportW + ox] = val ?? NaN;
+            }
+          }
+        }
+
         if (!cancelled) {
-          console.log('[Classifier] Scatter data ready:', { exportW, exportH, validCount: valid.reduce((a, b) => a + b, 0) });
-          setClassifierData({ x, y, valid, w: exportW, h: exportH });
+          const validCount = valid.reduce((a, b) => a + b, 0);
+          console.log('[Classifier] Scatter data ready:', { exportW, exportH, validCount, hasIncidence: !!incidence });
+          setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence });
           setClassifierRoiDims({ w: exportW, h: exportH });
+          // Set initial incidence range from data
+          if (incidence) {
+            let minInc = 90, maxInc = 0;
+            for (let i = 0; i < n; i++) {
+              if (valid[i] && !isNaN(incidence[i])) {
+                if (incidence[i] < minInc) minInc = incidence[i];
+                if (incidence[i] > maxInc) maxInc = incidence[i];
+              }
+            }
+            setIncidenceRange([Math.floor(minInc), Math.ceil(maxInc)]);
+          }
         }
       } catch (e) {
         console.error('[Classifier] Error fetching ROI data:', e);
@@ -547,17 +577,22 @@ function App() {
     return () => { cancelled = true; };
   }, [classifierOpen, roi, imageData, classifierBands]);
 
-  // Recompute classification map when class regions or scatter data changes
+  // Recompute classification map when class regions, scatter data, or incidence range changes
   useEffect(() => {
     if (!classifierData || !classRegions.length) {
       setClassificationMap(null);
       return;
     }
-    const { x, y, valid, w, h } = classifierData;
+    const { x, y, valid, w, h, incidence } = classifierData;
+    const [incMin, incMax] = incidenceRange;
     const map = new Uint8Array(x.length);
 
     for (let i = 0; i < x.length; i++) {
       if (!valid[i]) continue;
+      // Filter by incidence angle if available
+      if (incidence && !isNaN(incidence[i])) {
+        if (incidence[i] < incMin || incidence[i] > incMax) continue;
+      }
       const xv = x[i], yv = y[i];
       for (let c = 0; c < classRegions.length; c++) {
         const r = classRegions[c];
@@ -569,7 +604,7 @@ function App() {
     }
 
     setClassificationMap(map);
-  }, [classifierData, classRegions]);
+  }, [classifierData, classRegions, incidenceRange]);
 
   // Compute WGS84 bounds for overview map and context layers
   const wgs84Bounds = useMemo(() => {
@@ -760,6 +795,17 @@ function App() {
   useEffect(() => {
     if (histogramData) setShowHistogramOverlay(true);
   }, [histogramData]);
+
+  // Auto-recompute histogram when viewport changes (debounced 800ms)
+  const viewCenterX = viewCenter[0];
+  const viewCenterY = viewCenter[1];
+  useEffect(() => {
+    if (!imageData || !showHistogramOverlay) return;
+    const timer = setTimeout(() => {
+      handleRecomputeHistogram();
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [viewCenterX, viewCenterY, viewZoom]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Recompute histogram when switching between dB and linear mode
   const useDecibelsRef = useRef(useDecibels);
@@ -3313,6 +3359,10 @@ function App() {
               yLabel={`${classifierBands.y} (dB)`}
               classRegions={classRegions}
               onClassRegionsChange={setClassRegions}
+              classificationMap={classificationMap}
+              classifierRoiDims={classifierRoiDims}
+              incidenceRange={incidenceRange}
+              onIncidenceRangeChange={setIncidenceRange}
               onClose={() => setClassifierOpen(false)}
             />
           )}
