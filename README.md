@@ -14,6 +14,8 @@
 
 `v1.0.0-beta.2` · `MIT` · `Feb 2026`
 
+![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)
+
 </div>
 
 ---
