@@ -188,6 +188,145 @@ When `STAC_DB_PATH` is set, the server exposes:
 }
 ```
 
+## Serving Data from Private S3 Buckets
+
+When STAC items reference files in private S3 buckets, the sardine server can generate pre-signed URLs server-side so the browser can stream them directly. AWS credentials never leave the server.
+
+### Architecture
+
+```
+Browser → sardine /api/s3/list → S3 ListObjectsV2 (signed server-side)
+                                    ↓
+Browser ← { files: [{ key, presignedUrl }] }
+                                    ↓
+Browser → presignedUrl → S3 GetObject (Range requests for h5chunk/geotiff.js)
+```
+
+### Server Configuration
+
+Set AWS credentials as environment variables on the sardine server:
+
+```bash
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=secret...
+export AWS_SESSION_TOKEN=token...   # optional — for temporary/STS credentials
+export AWS_REGION=us-west-2         # default region
+```
+
+These work with IAM user keys, EC2 instance profiles (via STS), ECS task roles, or any credential chain that produces the standard `AWS_*` env vars.
+
+### S3 API Endpoints
+
+These endpoints are always available when AWS credentials are configured — they do not require `STAC_DB_PATH`.
+
+| Endpoint | Method | Description |
+|:---------|:-------|:------------|
+| `/api/s3/list` | POST | Browse a private S3 bucket; returns directory listing + pre-signed GET URLs for each file |
+| `/api/presign` | POST | Generate a single pre-signed GET URL for one S3 object |
+
+### Browsing a Private Bucket
+
+**`POST /api/s3/list`**
+
+```bash
+curl -X POST http://localhost:8050/api/s3/list \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bucket": "my-sar-data",
+    "prefix": "L2_GCOV/",
+    "region": "us-west-2"
+  }'
+```
+
+Response:
+
+```json
+{
+  "directories": ["L2_GCOV/2025/"],
+  "files": [
+    {
+      "key": "L2_GCOV/NISAR_L2_GCOV_001.h5",
+      "size": 1073741824,
+      "lastModified": "2025-06-15T12:00:00.000Z",
+      "presignedUrl": "https://my-sar-data.s3.us-west-2.amazonaws.com/L2_GCOV/..."
+    }
+  ],
+  "isTruncated": false,
+  "nextToken": null,
+  "prefix": "L2_GCOV/",
+  "bucket": "my-sar-data",
+  "region": "us-west-2"
+}
+```
+
+Each `presignedUrl` supports HTTP Range requests, so h5chunk and geotiff.js can stream chunks directly from S3 without downloading the full file.
+
+| Parameter | Type | Default | Description |
+|:----------|:-----|:--------|:------------|
+| `bucket` | string | *(required)* | S3 bucket name |
+| `prefix` | string | `""` | Key prefix (e.g. `"L2_GCOV/"`) |
+| `delimiter` | string | `"/"` | Directory grouping delimiter |
+| `maxKeys` | number | `200` | Max objects per page |
+| `continuationToken` | string | `null` | Pagination token from previous response |
+| `region` | string | `$AWS_REGION` or `us-west-2` | AWS region |
+| `presignExpires` | number | `43200` | Pre-signed URL lifetime in seconds (default 12 hours) |
+
+### Generating a Single Pre-signed URL
+
+**`POST /api/presign`**
+
+```bash
+curl -X POST http://localhost:8050/api/presign \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bucket": "my-sar-data",
+    "key": "L2_GCOV/NISAR_L2_GCOV_001.h5",
+    "region": "us-west-2",
+    "expires": 3600
+  }'
+```
+
+Response:
+
+```json
+{
+  "url": "https://my-sar-data.s3.us-west-2.amazonaws.com/L2_GCOV/NISAR_L2_GCOV_001.h5?X-Amz-Algorithm=..."
+}
+```
+
+| Parameter | Type | Default | Description |
+|:----------|:-----|:--------|:------------|
+| `bucket` | string | *(required)* | S3 bucket name |
+| `key` | string | *(required)* | S3 object key |
+| `region` | string | `$AWS_REGION` or `us-west-2` | AWS region |
+| `expires` | number | `3600` | URL lifetime in seconds (default 1 hour) |
+
+### STAC Catalog + S3
+
+When combining the STAC catalog with S3-hosted data, store `s3://` URIs or direct presignable references in your STAC item assets:
+
+```json
+{
+  "assets": {
+    "data": {
+      "href": "s3://my-sar-data/L2_GCOV/NISAR_L2_GCOV_001.h5",
+      "type": "application/x-hdf5",
+      "storage:platform": "aws",
+      "storage:region": "us-west-2"
+    }
+  }
+}
+```
+
+The frontend can resolve `s3://` hrefs to pre-signed URLs via `/api/presign` at load time, or your indexer can pre-generate presigned URLs when building the catalog (useful for short-lived catalogs).
+
+### Security Notes
+
+- AWS credentials are **never** sent to the browser — all signing happens server-side
+- Pre-signed URLs are temporary (configurable expiry) and grant read-only GET access to specific objects
+- Uses AWS Signature Version 4 — pure Node.js `crypto` module, zero external dependencies
+- Supports temporary credentials via `AWS_SESSION_TOKEN` (EC2 instance profiles, ECS task roles, `aws sts assume-role`)
+
 ## Docker Compose with Titiler
 
 For COG tile serving, add the titiler sidecar:
@@ -203,6 +342,10 @@ This starts both `sardine` and `titiler`. Configure environment variables:
 environment:
   - STAC_DB_PATH=/data/catalog.duckdb
   - TITILER_URL=http://titiler:8000
+  # For private S3 buckets:
+  - AWS_ACCESS_KEY_ID=AKIA...
+  - AWS_SECRET_ACCESS_KEY=secret...
+  - AWS_REGION=us-west-2
 ```
 
 ## Environment Variables
@@ -211,5 +354,9 @@ environment:
 |:---------|:------------|:--------|
 | `STAC_DB_PATH` | Path to DuckDB catalog database | *(disabled)* |
 | `TITILER_URL` | Titiler tile server URL | *(disabled)* |
+| `AWS_ACCESS_KEY_ID` | AWS access key (enables S3 presigning + bucket listing) | *(disabled)* |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key | *(disabled)* |
+| `AWS_SESSION_TOKEN` | AWS session token (for temporary credentials) | *(optional)* |
+| `AWS_REGION` | Default AWS region | `us-west-2` |
 
 CLI equivalents: `--stac-db <path>`, `--titiler-url <url>`.

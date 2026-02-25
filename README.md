@@ -18,53 +18,42 @@
 
 </div>
 
+> **This project is under active development.** Some features are experimental or incomplete. Known issues include ROI overlay alignment drift during pan/zoom, and incidence angle masking requires NISAR HDF5 files with a metadata cube. Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
+
 ---
 
 ## Overview
 
-SARdine runs SAR analysis in the browser.
+SARdine runs SAR analysis entirely in the browser. No server, no GDAL, no Python.
 
 It reads NISAR L2 GCOV HDF5 (`.h5`) and Cloud Optimized GeoTIFFs from any vendor. Rendering goes through WebGL2 shaders on deck.gl: dB scaling, colormaps, contrast, polarimetric composites — all on the GPU at 60 fps.
 
-- NISAR GCOV HDF5 streaming (local files and HTTP Range)
-- COG loading (ICEYE, Capella, Umbra, Sentinel-1, anything)
-- RGB composites: Pauli, dual-pol, quad-pol, Freeman-Durden
-- Histogram with auto-contrast, stretch modes (sqrt, gamma, sigmoid)
-- GeoTIFF export (raw Float32 with CRS, or rendered RGBA)
-- Figure export (PNG with scale bar, coords, colorbar)
-- Overture Maps overlay, MapLibre basemap
+### Core Capabilities
+
+- **NISAR GCOV HDF5 streaming** — local files and HTTP Range, cloud-optimized chunk reading via h5chunk.js
+- **Cloud Optimized GeoTIFF loading** — ICEYE, Capella, Umbra, Sentinel-1, anything with geotiff.js
+- **GPU-accelerated rendering** — dB scaling, colormaps, and contrast stretching in GLSL shaders
+- **RGB composites** — Pauli, dual-pol, quad-pol, Freeman-Durden with per-channel contrast
+- **Stretch modes** — linear, sqrt, gamma, sigmoid transfer functions
+
+### Analysis Tools
+
+- **Viewport histogram** — floating histogram panel that auto-updates as you pan/zoom, with per-channel stats for RGB composites
+- **Feature space classifier** — draw an ROI, open the 2D scatter plot (e.g. HH dB vs HV dB), define class regions by drawing rectangles, and see the classification overlay on the map in real time
+- **Incidence angle masking** — filter classified pixels by incidence angle range using the NISAR metadata cube (NISAR HDF5 only)
+- **Pixel explorer** — hover to inspect raw values at any pixel location
+
+### Export
+
+- **GeoTIFF** — raw Float32 with CRS + tiepoints, rendered RGBA, or RGB composite
+- **Figure PNG** — canvas capture with scale bar, coordinates, colorbar, and classification overlay
+- **Publication SVG** — Nature/RSE-style vector export of scatter plots, histograms, and classification maps
 
 ---
 
-## Prerequisites
+## Quick Start
 
-SARdine requires **Node.js** (v18 or later) and **npm** (comes with Node).
-
-### Installing Node.js
-
-**macOS** — using [Homebrew](https://brew.sh/):
-
-```bash
-brew install node
-```
-
-Or download the macOS installer from https://nodejs.org/ (LTS recommended).
-
-**Windows** — download the Windows installer from https://nodejs.org/ (LTS recommended). Run it, accept defaults. This installs both `node` and `npm`. After install, open a new terminal (Command Prompt or PowerShell) and verify:
-
-```bash
-node --version
-npm --version
-```
-
-**Linux** (Debian/Ubuntu):
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
-
-### Quick Start
+SARdine requires **Node.js** (v18 or later) and **npm**.
 
 ```bash
 git clone https://github.com/nicksteiner/sardine.git
@@ -75,6 +64,18 @@ npm run dev
 
 Open **http://localhost:5173** in Chrome, Edge, or Firefox (WebGL2 required).
 
+### Installing Node.js
+
+**macOS:** `brew install node` or download from https://nodejs.org/
+
+**Windows:** Download the installer from https://nodejs.org/ (LTS recommended).
+
+**Linux (Debian/Ubuntu):**
+```bash
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
 ---
 
 ## Loading Data
@@ -83,8 +84,6 @@ Pick a mode from the **File Type** dropdown in the left panel.
 
 ### Local HDF5 Files
 
-For NISAR GCOV `.h5` files on your machine.
-
 1. **File Type** → **NISAR GCOV HDF5 (Local File)**
 2. **Choose File** → pick your `.h5`
 3. Pick **Frequency** (`frequencyA` = L-band, `frequencyB` = S-band)
@@ -92,63 +91,61 @@ For NISAR GCOV `.h5` files on your machine.
 5. Optionally switch to **RGB Composite** and pick a preset
 6. **Load Dataset**
 
-Nothing gets uploaded. Chunks are read directly from disk via the browser File API. GCOV files are 2–20 GB but only viewport-intersecting chunks get read, so it works fine without loading the whole file into memory.
+Nothing gets uploaded. Chunks are read directly from disk via the browser File API. GCOV files are 2–20 GB but only viewport-intersecting chunks get read.
 
 ### Presigned URLs (S3 / HTTPS)
 
-For NISAR HDF5 or COG files on S3, GCS, Azure, or any HTTPS server that supports Range requests.
-
 1. **File Type** → **Remote Bucket / S3**
-2. Paste the presigned URL into **Direct URL**:
-   ```
-   https://bucket.s3.us-west-2.amazonaws.com/NISAR_L2_GCOV_001_005_A_219_4020_HH_20250101.h5?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Signature=...
-   ```
-3. **Load from URL** (or hit Enter)
-4. Metadata arrives via Range requests (~8 MB). Pick frequency and polarization.
-5. **Load Remote Dataset**
+2. Paste the presigned URL into **Direct URL**
+3. **Load from URL** — metadata arrives via Range requests (~8 MB)
+4. Pick frequency and polarization → **Load Remote Dataset**
 
-File type is detected from the path (ignoring query params): `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.tiff` → COG.
-
-**Requirements for presigned URLs:**
-- Server must support HTTP Range requests (S3, GCS, and Azure all do by default)
-- Token must stay valid for your session
-- Bucket needs CORS configured to expose `Range` headers — see [CORS Setup](#cors-setup)
+File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.tiff` → COG.
 
 ### COG URLs
 
-For Cloud Optimized GeoTIFFs (any vendor, any source).
-
 1. **File Type** → **Cloud Optimized GeoTIFF (URL)**
-2. Paste URL (presigned or public):
-   ```
-   https://bucket.s3.amazonaws.com/sar-image.tif
-   ```
+2. Paste URL (presigned or public)
 3. **Load COG**
-
-Uses [geotiff.js](https://geotiffjs.github.io/) with Range reads. Overview selection is automatic based on zoom level.
 
 ---
 
 ## Controls
 
-After loading data, the left panel shows:
-
 | Control | Description |
 |:---|:---|
 | **Colormap** | Grayscale, viridis, inferno, plasma, phase, sardine, flood, diverging, polarimetric |
 | **Contrast** | Min/max dB range — drag sliders or use **Auto** for percentile-based stretch |
-| **Stretch** | Linear, sqrt, gamma, sigmoid — changes the transfer function |
-| **Multi-look** | Toggle speckle reduction (box-filter averaging in linear power) |
-| **Histogram** | Per-channel histogram with percentile markers and contrast handles |
-| **Basemap** | Toggle MapLibre basemap under the SAR data |
+| **Stretch** | Linear, sqrt, gamma, sigmoid transfer function |
+| **Multi-look** | Speckle reduction (box-filter averaging in linear power) |
+| **Histogram** | Floating viewport histogram — auto-updates on pan/zoom, SVG export |
+| **Classifier** | 2D feature space scatter with class region drawing and incidence angle filter |
+| **Basemap** | Toggle MapLibre basemap under SAR data |
 | **Overture** | Overlay buildings, roads, or places from Overture Maps |
 
 ### Keyboard Shortcuts
 
 | Key | Action |
 |:---|:---|
+| `H` | Toggle histogram overlay |
+| `C` | Toggle feature space classifier |
 | `F` | Fit view to data bounds |
 | `R` | Reset contrast to auto |
+| `G` | Toggle coordinate grid |
+| `M` | Toggle overview map |
+| `Ctrl+S` | Save figure (PNG) |
+
+---
+
+## Classification Workflow
+
+1. Draw an **ROI** on the map (click and drag)
+2. Press `C` to open the **Feature Space** scatter plot
+3. Click **+ Add Class** to define a land cover class
+4. Draw a rectangle on the scatter plot to assign pixels in that dB range
+5. Pixels within the class region are colored on the map in real time
+6. Adjust the **Incidence Angle Filter** sliders to mask near/far range (NISAR HDF5 only)
+7. Export: **SVG** for the scatter plot, **Map** for the classification raster
 
 ---
 
@@ -156,17 +153,33 @@ After loading data, the left panel shows:
 
 ### GeoTIFF
 
-Three modes:
-
-- **Raw Float32** — linear power values with CRS + tiepoints, for downstream analysis in QGIS/ArcGIS/Python
+- **Raw Float32** — linear power values with CRS + tiepoints
 - **Rendered RGBA** — what you see on screen (dB, colormap, contrast) as a 4-band GeoTIFF
 - **RGB Composite** — 3-band GeoTIFF when in composite mode
 
-Draw an ROI to export a subregion, or export the full extent. Multi-look window (1×, 2×, 4×, 8×, 16×) is independent of the display setting.
+Draw an ROI to export a subregion, or export the full extent.
 
 ### Figure PNG
 
-Canvas capture with optional overlays: scale bar, corner coordinates, colorbar (or RGB triangle for composites).
+Canvas capture with overlays: scale bar, corner coordinates, colorbar (or RGB triangle for composites), and classification overlay.
+
+### Publication SVG
+
+Nature/RSE journal-style vector graphics:
+- **Scatter plot** — density heatmap with class regions, open L-axes, outward ticks, Helvetica
+- **Histogram** — filled distribution with contrast limit markers and legend
+- **Classification map** — embedded raster with vector legend and pixel counts
+
+---
+
+## Known Issues
+
+| Issue | Status |
+|:---|:---|
+| ROI overlay drifts during pan/zoom — classification canvas does not track the viewport correctly | Open |
+| Incidence angle slider only appears for NISAR HDF5 with metadata cube (not COGs) | By design |
+| Large ROIs may be slow to classify (data is downsampled to ~256 px on longest axis) | Expected |
+| Histogram recompute on pan/zoom has 800 ms debounce — may lag during fast navigation | Expected |
 
 ---
 
@@ -186,8 +199,6 @@ Remote files require the bucket to allow cross-origin Range requests. For S3:
 ]
 ```
 
-Set this as the bucket CORS policy. CORS lives on the bucket, not on individual presigned URLs.
-
 **GCS:** `gsutil cors set cors.json gs://your-bucket`
 **Azure Blob:** configure CORS rules in the storage account settings.
 
@@ -195,21 +206,13 @@ Set this as the bucket CORS policy. CORS lives on the bucket, not on individual 
 
 ## Server Mode (JupyterHub / NISAR ODS)
 
-For deployment alongside JupyterHub:
-
 ```bash
 cd ~/sardine
 npm install --legacy-peer-deps && npm run build
 node server/launch.cjs --data-dir /home/jovyan
 ```
 
-Access via the JupyterLab proxy:
-
-```
-https://<hub-host>/user/<username>/proxy/8050/
-```
-
-`/api/files` lists files relative to `--data-dir`, `/data/` serves them. The Remote Bucket / S3 mode in the app can then browse and load server-local files.
+Access via JupyterLab proxy: `https://<hub-host>/user/<username>/proxy/8050/`
 
 ---
 
@@ -232,37 +235,6 @@ File/URL → Loader → Chunks → GPU Texture → GLSL Shader → Screen
 5. Decompress (deflate + shuffle) → Float32Array
 6. Upload as WebGL2 R32F texture
 7. Fragment shader: power → dB → normalize → stretch → colormap → RGBA
-
-### Project Structure
-
-```
-sardine/
-├── app/
-│   ├── index.html              # Entry HTML
-│   └── main.jsx                # React application
-├── src/
-│   ├── loaders/
-│   │   ├── h5chunk.js          # Cloud-optimized HDF5 chunk reader
-│   │   ├── nisar-loader.js     # NISAR GCOV product loader
-│   │   ├── cog-loader.js       # COG loader (geotiff.js wrapper)
-│   │   └── overture-loader.js  # Overture Maps PMTiles/GeoParquet
-│   ├── layers/
-│   │   ├── SARGPULayer.js      # Primary GPU-accelerated layer
-│   │   ├── SARGPUBitmapLayer.js
-│   │   └── shaders.js          # GLSL shaders (dB, colormaps, stretch)
-│   ├── viewers/
-│   │   ├── SARViewer.jsx       # Orthographic viewer
-│   │   ├── MapViewer.jsx       # MapLibre basemap + SAR overlay
-│   │   └── ComparisonViewer.jsx
-│   ├── components/             # Histogram, StatusWindow, ScaleBar, etc.
-│   ├── utils/                  # Composites, colormaps, stats, export
-│   └── theme/
-│       └── sardine-theme.css   # Dark-first design system
-├── server/
-│   └── launch.cjs              # JupyterHub launch server
-├── test/                       # Test suite (100+ checks)
-└── docs/                       # Architecture docs, style guide
-```
 
 ### Tech Stack
 
@@ -300,14 +272,17 @@ npm run benchmark    # GPU vs CPU performance comparison
 | GPU dB scaling + colormaps + stretch modes | Done |
 | RGB polarimetric composites (Pauli, dual-pol, quad-pol) | Done |
 | Freeman-Durden decomposition | Done |
-| Per-channel histogram + auto-contrast | Done |
+| Viewport histogram with auto-update | Done |
+| Feature space scatter classifier | Done |
+| Incidence angle masking (NISAR) | Done |
+| Publication SVG export (scatter, histogram, class map) | Done |
 | GeoTIFF + figure export | Done |
 | Overture Maps vector overlay | Done |
-| State-as-markdown editing | Done |
 | STAC catalog search | Done |
+| ROI overlay alignment fix | In Progress |
 | B-tree v2 parsing | Next |
 | Worker thread decompression | Next |
-| Chat-driven visualization control | Next |
+| Chat-driven visualization control | Planned |
 | Drawing / annotation tools | Planned |
 | GUNW / InSAR phase visualization | Planned |
 
