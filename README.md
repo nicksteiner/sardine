@@ -12,7 +12,7 @@
 
 *Browser-native SAR analysis — cloud-optimized HDF5 and COG streaming to GPU*
 
-`v1.0.0-beta.2` · `MIT` · `Feb 2026`
+`v0.5.0` · `MIT` · `Feb 2026`
 
 ![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)
 
