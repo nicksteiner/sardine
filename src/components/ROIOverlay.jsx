@@ -36,9 +36,11 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
     const [wx, wy] = pixelToWorld(cx, cy, vs, w, h);
 
     // World → image pixel
+    // Y is flipped: world Y increases upward (deck.gl OrthographicView flipY:false)
+    // but image row 0 is at the top (north). So row 0 → maxY, row H → minY.
     const [minX, minY, maxX, maxY] = b;
     const px = Math.round((wx - minX) / (maxX - minX) * iw);
-    const py = Math.round((wy - minY) / (maxY - minY) * ih);
+    const py = Math.round((maxY - wy) / (maxY - minY) * ih);
     return [
       Math.max(0, Math.min(iw, px)),
       Math.max(0, Math.min(ih, py)),
@@ -147,9 +149,10 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
     const [minX, minY, maxX, maxY] = bounds;
 
     // Helper: image pixel → screen pixel
+    // Y is flipped: image row 0 → world maxY (top), row H → world minY (bottom)
     const imgToScreen = (px, py) => {
       const wx = minX + (px / imageWidth) * (maxX - minX);
-      const wy = minY + (py / imageHeight) * (maxY - minY);
+      const wy = maxY - (py / imageHeight) * (maxY - minY);
       return worldToPixel(wx, wy, viewState, w, h);
     };
 

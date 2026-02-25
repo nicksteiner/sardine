@@ -23,6 +23,7 @@ import {
   extractItemFilters,
   formatDatetime,
   resolveAsset,
+  checkLocalStacAvailable,
 } from '../loaders/stac-client.js';
 
 /**
@@ -55,6 +56,15 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
   const [useCustom, setUseCustom] = useState(false);
   const [token, setToken] = useState('');
   const [showAuth, setShowAuth] = useState(false);
+
+  // ─── Local catalog availability ─────────────────────────────────────
+  const [localAvailable, setLocalAvailable] = useState(null); // null = checking, true/false
+
+  useEffect(() => {
+    checkLocalStacAvailable().then(config => {
+      setLocalAvailable(config.stac === true);
+    });
+  }, []);
 
   // ─── Collections ─────────────────────────────────────────────────────
   const [collections, setCollections] = useState([]);
@@ -383,11 +393,15 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
             onChange={e => setEndpointUrl(e.target.value)}
             style={{ fontSize: '0.75rem' }}
           >
-            {STAC_ENDPOINTS.map(ep => (
-              <option key={ep.id} value={ep.url}>
-                {ep.label}{ep.requiresAuth ? ' *' : ''}
-              </option>
-            ))}
+            {STAC_ENDPOINTS.map(ep => {
+              const isLocal = ep.id === 'local';
+              const disabled = isLocal && localAvailable === false;
+              return (
+                <option key={ep.id} value={ep.url} disabled={disabled}>
+                  {ep.label}{ep.requiresAuth ? ' *' : ''}{isLocal && localAvailable === false ? ' (not configured)' : ''}{isLocal && localAvailable === null ? ' (checking...)' : ''}
+                </option>
+              );
+            })}
           </select>
         ) : (
           <input

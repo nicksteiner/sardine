@@ -11,7 +11,26 @@
       "Bash(aws s3 presign:*)",
       "Bash(node test/test-s3-streaming.mjs:*)",
       "Bash(node test/test-chunk-pipeline.mjs:*)",
-      "Bash(node test/test-export-streaming.mjs:*)"
+      "Bash(node test/test-export-streaming.mjs:*)",
+      "Bash(git checkout:*)",
+      "Bash(npm test:*)",
+      "Bash(npm run build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(node test/run-tests.js:*)",
+      "Bash(git rm:*)",
+      "Bash(findstr:*)",
+      "Bash(git log:*)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" log --oneline -5)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" show f486369:package-lock.json)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" ls-files package-lock.json)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" diff package-lock.json)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" diff HEAD -- package-lock.json)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" diff -- package-lock.json)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" status --short)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" add app/main.jsx src/loaders/nisar-loader.js src/viewers/SARViewer.jsx src/components/PixelExplorer.jsx)",
+      "Bash(git -C \"c:/Users/nicks/workspace/sardine\" log --oneline -6)",
+      "Bash(npx vite build)"
     ]
   }
 }

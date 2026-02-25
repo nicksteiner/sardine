@@ -10,6 +10,7 @@ import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
 import { ScaleBar } from '../components/ScaleBar.jsx';
 import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
 import { ROIOverlay } from '../components/ROIOverlay.jsx';
+import ClassificationOverlay from '../components/ClassificationOverlay.jsx';
 import { PixelExplorer } from '../components/PixelExplorer.jsx';
 import { ROIProfilePlot } from '../components/ROIProfilePlot.jsx';
 
@@ -53,6 +54,9 @@ export const SARViewer = forwardRef(function SARViewer({
   yCoords,            // Float64Array northing coords (length = imageHeight)
   roiProfile = null,  // Precomputed profile data from main.jsx for ROIProfilePlot
   profileShow = { v: true, h: true, i: true }, // Which profile views are visible
+  classificationMap = null, // Uint8Array per ROI pixel for feature space classifier
+  classRegions = [],        // [{name, color, ...}] class definitions
+  classifierRoiDims = null, // {w, h} grid dimensions of classification map
 }, ref) {
   const containerRef = useRef(null);
 
@@ -256,6 +260,18 @@ export const SARViewer = forwardRef(function SARViewer({
         roi={roi}
         onROIChange={onROIChange}
       />
+      {classificationMap && roi && classifierRoiDims && (
+        <ClassificationOverlay
+          viewState={viewState}
+          bounds={bounds}
+          imageWidth={imageWidth}
+          imageHeight={imageHeight}
+          roi={roi}
+          classificationMap={classificationMap}
+          classRegions={classRegions}
+          roiDims={classifierRoiDims}
+        />
+      )}
       <PixelExplorer
         viewState={viewState}
         bounds={bounds}

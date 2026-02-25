@@ -17,6 +17,9 @@ services:
       - PORT=8050
       - DATA_DIR=/data/nisar
       - NODE_ENV=production
+      # Uncomment to enable STAC catalog search (requires DuckDB database)
+      # - STAC_DB_PATH=/data/catalog.duckdb
+      # - TITILER_URL=http://titiler:8000
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8050/"]
@@ -33,6 +36,20 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+
+  # Optional: titiler COG tile server for STAC catalog integration
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    container_name: sardine-titiler
+    ports:
+      - "8100:8000"
+    volumes:
+      - /path/to/your/data:/data:ro
+    environment:
+      - TITILER_API_ROOT_PATH=/
+    restart: unless-stopped
+    profiles:
+      - stac
 
   # Optional: nginx reverse proxy for production
   nginx:

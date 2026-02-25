@@ -44,9 +44,10 @@ export function PixelExplorer({
       }
 
       const [wx, wy] = pixelToWorld(cx, cy, viewState, rect.width, rect.height);
+      // Y is flipped: world Y increases upward but image row 0 is at the top
       const [minX, minY, maxX, maxY] = bounds;
       const px = (wx - minX) / (maxX - minX) * imageWidth;
-      const py = (wy - minY) / (maxY - minY) * imageHeight;
+      const py = (maxY - wy) / (maxY - minY) * imageHeight;
       const col = Math.floor(px);
       const row = Math.floor(py);
 

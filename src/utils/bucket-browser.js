@@ -235,6 +235,55 @@ async function listSardineServer(apiUrl, prefix) {
 }
 
 
+// ─── Server-mediated S3 listing (private buckets) ────────────────────
+
+/**
+ * List objects in a private S3 bucket via the sardine-launch server.
+ * The server holds AWS credentials and returns listing + presigned URLs.
+ *
+ * @param {string} serverOrigin — Server origin, e.g. '' (same-origin) or 'http://localhost:8050'
+ * @param {Object} opts
+ * @param {string} opts.bucket — S3 bucket name
+ * @param {string} [opts.prefix=''] — Directory prefix
+ * @param {string} [opts.region='us-west-2'] — AWS region
+ * @param {string} [opts.delimiter='/']
+ * @param {number} [opts.maxKeys=200]
+ * @param {string} [opts.continuationToken]
+ * @returns {Promise<Object>} Same shape as listBucket() but files include .presignedUrl
+ */
+export async function listBucketViaServer(serverOrigin, opts = {}) {
+  const url = `${serverOrigin}/api/s3/list`;
+  console.log(`[Bucket] Server-mediated S3 listing: ${opts.bucket}/${opts.prefix || ''}`);
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bucket: opts.bucket,
+      prefix: opts.prefix || '',
+      delimiter: opts.delimiter || '/',
+      maxKeys: opts.maxKeys || 200,
+      continuationToken: opts.continuationToken || null,
+      region: opts.region || 'us-west-2',
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    let msg = `Server error: ${response.status}`;
+    try { msg = JSON.parse(body).error || msg; } catch {}
+    throw new Error(msg);
+  }
+
+  const result = await response.json();
+  return {
+    ...result,
+    baseUrl: '__SERVER_S3__',
+    _serverMediated: true,
+  };
+}
+
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /**
@@ -256,11 +305,15 @@ function sardineOrigin(apiUrl) {
 /**
  * Build the full URL for a file in a bucket.
  * For sardine-launch servers, routes through /data/ for Range-request support.
+ * If a presigned URL is provided (from server-mediated S3 listing), returns it directly.
  * @param {string} baseUrl — Bucket root URL (or sardine-launch /api/files URL)
  * @param {string} key — Object key (file path within bucket)
+ * @param {string} [presignedUrl] — Server-provided presigned URL (takes priority)
  * @returns {string} Full URL
  */
-export function buildFileUrl(baseUrl, key) {
+export function buildFileUrl(baseUrl, key, presignedUrl) {
+  if (presignedUrl) return presignedUrl;
+
   const base = baseUrl.replace(/\/+$/, '');
   const path = key.replace(/^\/+/, '');
 
@@ -452,6 +505,12 @@ export const PRESET_BUCKETS = [
     label: 'NISAR Oasis (us-west-2)',
     url: 'https://nisar-oasis.s3.us-west-2.amazonaws.com',
     description: 'Personal NISAR bucket in us-west-2',
+  },
+  {
+    label: 'Private S3 (via server)',
+    url: '__SERVER_S3__',
+    description: 'Browse private S3 buckets using server-side AWS credentials',
+    serverS3: true,
   },
   {
     label: 'ASF DAAC (Earthdata)',

@@ -23,6 +23,7 @@
 'use strict';
 
 var http = require('http');
+var https = require('https');
 var fs   = require('fs');
 var path = require('path');
 var url  = require('url');
@@ -37,6 +38,8 @@ function parseArgs() {
     dataDir: '/data/nisar',
     port: 8050,
     host: '0.0.0.0',
+    stacDb: process.env.STAC_DB_PATH || null,
+    titilerUrl: process.env.TITILER_URL || null,
   };
 
   for (var i = 0; i < args.length; i++) {
@@ -46,6 +49,10 @@ function parseArgs() {
       opts.port = parseInt(args[++i]);
     } else if ((args[i] === '--host' || args[i] === '-h') && args[i + 1]) {
       opts.host = args[++i];
+    } else if (args[i] === '--stac-db' && args[i + 1]) {
+      opts.stacDb = path.resolve(args[++i]);
+    } else if (args[i] === '--titiler-url' && args[i + 1]) {
+      opts.titilerUrl = args[++i];
     } else if (args[i] === '--help') {
       console.log([
         '',
@@ -58,6 +65,8 @@ function parseArgs() {
         '  --data-dir, -d <path>   Data directory to serve (default: /data/nisar)',
         '  --port, -p <number>     Port number (default: 8050)',
         '  --host <address>        Bind address (default: 0.0.0.0)',
+        '  --stac-db <path>        DuckDB STAC catalog database (enables /api/stac)',
+        '  --titiler-url <url>     Titiler tile server URL (e.g. http://localhost:8100)',
         '  --help                  Show this help',
         '',
       ].join('\n'));
@@ -400,6 +409,13 @@ function generatePresignedUrl(opts) {
     params['X-Amz-Security-Token'] = sessionToken;
   }
 
+  // Merge any extra query parameters (e.g. S3 API params for ListObjectsV2)
+  var extraParams = opts.queryParams || {};
+  var extraKeys = Object.keys(extraParams);
+  for (var ep = 0; ep < extraKeys.length; ep++) {
+    params[extraKeys[ep]] = extraParams[extraKeys[ep]];
+  }
+
   var sortedKeys = Object.keys(params).sort();
   var canonicalQueryString = sortedKeys
     .map(function(k) { return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]); })
@@ -442,6 +458,218 @@ function generatePresignedUrl(opts) {
   return 'https://' + host + canonicalUri + '?' + canonicalQueryString + '&X-Amz-Signature=' + signature;
 }
 
+// ─── S3 Bucket Listing (server-side, credentials from env) ───────────────
+
+/**
+ * Parse S3 ListObjectsV2 XML response using regex.
+ * No DOMParser in Node.js, so we use simple regex extraction.
+ * The ListObjectsV2 XML structure is well-defined and shallow.
+ */
+function parseS3ListXml(xml, requestedPrefix) {
+  function getTagValue(str, tag) {
+    var re = new RegExp('<' + tag + '>([\\s\\S]*?)</' + tag + '>');
+    var m = str.match(re);
+    return m ? m[1] : '';
+  }
+  function getAllBlocks(str, tag) {
+    var re = new RegExp('<' + tag + '>([\\s\\S]*?)</' + tag + '>', 'g');
+    var results = [];
+    var m;
+    while ((m = re.exec(str)) !== null) results.push(m[1]);
+    return results;
+  }
+
+  // Check for S3 error response
+  if (xml.indexOf('<Error>') >= 0) {
+    var code = getTagValue(xml, 'Code');
+    var message = getTagValue(xml, 'Message');
+    throw new Error('S3 error: ' + code + ' — ' + message);
+  }
+
+  // Directories (CommonPrefixes > Prefix)
+  var directories = [];
+  var cpBlocks = getAllBlocks(xml, 'CommonPrefixes');
+  cpBlocks.forEach(function(block) {
+    var pfx = getTagValue(block, 'Prefix');
+    if (pfx) directories.push(pfx);
+  });
+
+  // Files (Contents blocks)
+  var files = [];
+  var contentBlocks = getAllBlocks(xml, 'Contents');
+  contentBlocks.forEach(function(block) {
+    var key = getTagValue(block, 'Key');
+    var size = parseInt(getTagValue(block, 'Size') || '0');
+    var lastModified = getTagValue(block, 'LastModified');
+    // Skip prefix itself and zero-byte directory markers
+    if (key === requestedPrefix) return;
+    if (key.charAt(key.length - 1) === '/' && size === 0) return;
+    files.push({ key: key, size: size, lastModified: lastModified });
+  });
+
+  var isTruncated = getTagValue(xml, 'IsTruncated') === 'true';
+  var nextToken = getTagValue(xml, 'NextContinuationToken') || null;
+
+  return { directories: directories, files: files, isTruncated: isTruncated, nextToken: nextToken };
+}
+
+/**
+ * List objects in an S3 bucket using a presigned ListObjectsV2 URL.
+ * Uses the existing generatePresignedUrl() with extra query params.
+ *
+ * @param {Object} opts - bucket, prefix, delimiter, maxKeys, continuationToken, region, credentials
+ * @param {function} callback - function(err, result)
+ */
+function s3ListObjects(opts, callback) {
+  var queryParams = {
+    'list-type': '2',
+    'delimiter': opts.delimiter || '/',
+    'max-keys': String(opts.maxKeys || 200),
+  };
+  if (opts.prefix) queryParams['prefix'] = opts.prefix;
+  if (opts.continuationToken) queryParams['continuation-token'] = opts.continuationToken;
+
+  var presignedListUrl = generatePresignedUrl({
+    bucket: opts.bucket,
+    key: '',
+    region: opts.region,
+    accessKeyId: opts.accessKeyId,
+    secretAccessKey: opts.secretAccessKey,
+    sessionToken: opts.sessionToken,
+    expires: 300,
+    queryParams: queryParams,
+  });
+
+  https.get(presignedListUrl, function(s3res) {
+    var body = '';
+    s3res.on('data', function(chunk) { body += chunk; });
+    s3res.on('end', function() {
+      if (s3res.statusCode !== 200) {
+        callback(new Error('S3 ListObjects failed: HTTP ' + s3res.statusCode + ' — ' + body.substring(0, 500)));
+        return;
+      }
+      try {
+        var result = parseS3ListXml(body, opts.prefix || '');
+        callback(null, result);
+      } catch (e) {
+        callback(e);
+      }
+    });
+  }).on('error', function(e) {
+    callback(e);
+  });
+}
+
+/**
+ * Handle POST /api/s3/list
+ * Lists a private S3 bucket using server-side credentials and returns
+ * pre-signed GET URLs for every file.
+ *
+ * Body: { bucket, prefix?, delimiter?, maxKeys?, continuationToken?, region?, presignExpires? }
+ * Returns: { directories, files: [{key, size, lastModified, presignedUrl}], isTruncated, nextToken, prefix, bucket, region }
+ */
+function handleS3ListRequest(req, res) {
+  if (req.method !== 'POST') {
+    res.writeHead(405, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+    return;
+  }
+
+  var accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  var secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  var sessionToken = process.env.AWS_SESSION_TOKEN;
+
+  if (!accessKeyId || !secretAccessKey) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'Server-side AWS credentials not configured. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables.'
+    }));
+    return;
+  }
+
+  var body = '';
+  req.on('data', function(chunk) {
+    body += chunk.toString();
+    if (body.length > 10000) { req.connection.destroy(); }
+  });
+
+  req.on('end', function() {
+    try {
+      var params = JSON.parse(body);
+      var bucket = params.bucket;
+      if (!bucket) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required parameter: bucket' }));
+        return;
+      }
+
+      var region = params.region || process.env.AWS_REGION || 'us-west-2';
+      var prefix = params.prefix || '';
+      var delimiter = params.delimiter || '/';
+      var maxKeys = params.maxKeys || 200;
+      var continuationToken = params.continuationToken || null;
+      var presignExpires = params.presignExpires || 43200; // 12 hours default
+
+      s3ListObjects({
+        bucket: bucket,
+        prefix: prefix,
+        delimiter: delimiter,
+        maxKeys: maxKeys,
+        continuationToken: continuationToken,
+        region: region,
+        accessKeyId: accessKeyId,
+        secretAccessKey: secretAccessKey,
+        sessionToken: sessionToken,
+      }, function(err, result) {
+        if (err) {
+          console.error('S3 list error:', err.message);
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'S3 listing failed: ' + err.message }));
+          return;
+        }
+
+        // Generate presigned GET URLs for each file
+        var filesWithUrls = result.files.map(function(f) {
+          var presignedUrl = generatePresignedUrl({
+            bucket: bucket,
+            key: f.key,
+            region: region,
+            accessKeyId: accessKeyId,
+            secretAccessKey: secretAccessKey,
+            sessionToken: sessionToken,
+            expires: presignExpires,
+          });
+          return {
+            key: f.key,
+            size: f.size,
+            lastModified: f.lastModified,
+            presignedUrl: presignedUrl,
+          };
+        });
+
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(JSON.stringify({
+          directories: result.directories,
+          files: filesWithUrls,
+          isTruncated: result.isTruncated,
+          nextToken: result.nextToken,
+          prefix: prefix,
+          totalKeys: result.directories.length + filesWithUrls.length,
+          bucket: bucket,
+          region: region,
+        }));
+      });
+    } catch (e) {
+      console.error('Error in /api/s3/list:', e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to process request: ' + e.message }));
+    }
+  });
+}
+
 // ─── Main server ─────────────────────────────────────────────────────────
 function main() {
   var opts = parseArgs();
@@ -464,6 +692,19 @@ function main() {
     console.error('Error: Built frontend not found at ' + indexHtml);
     console.error('  Run "npm run build" on a machine with Node >= 16, then copy dist/ here.\n');
     process.exit(1);
+  }
+
+  // ─── Lazy STAC handler ─────────────────────────────────────────────────
+  var stacHandler = null;
+  if (opts.stacDb) {
+    try {
+      var stacApi = require('./stac-api.cjs');
+      stacHandler = stacApi.createStacHandler(opts.stacDb);
+      console.log('  STAC catalog enabled: ' + opts.stacDb);
+    } catch (e) {
+      console.warn('Warning: Could not load STAC API module: ' + e.message);
+      console.warn('  Install duckdb-async for STAC support: npm install duckdb-async\n');
+    }
   }
 
   var loggedProxyUrl = false;
@@ -494,7 +735,23 @@ function main() {
     }
 
     try {
-      if (reqUrl.indexOf('/api/presign') === 0) {
+      if (reqUrl.indexOf('/api/config') === 0) {
+        // Server capability discovery endpoint
+        var configBody = JSON.stringify({
+          stac: !!stacHandler,
+          titiler: opts.titilerUrl || null,
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(configBody),
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(configBody);
+      } else if (reqUrl.indexOf('/api/stac') === 0 && stacHandler) {
+        stacHandler(req, res);
+      } else if (reqUrl.indexOf('/api/s3/list') === 0) {
+        handleS3ListRequest(req, res);
+      } else if (reqUrl.indexOf('/api/presign') === 0) {
         handlePresignRequest(req, res);
       } else if (reqUrl.indexOf('/api/files') === 0) {
         handleFileList(opts.dataDir, reqUrl, res);
@@ -545,10 +802,22 @@ function main() {
       console.log('  Proxy:     *' + proxyPath);
     }
     console.log('  Data dir:  ' + opts.dataDir);
+    if (stacHandler) {
+      console.log('  STAC DB:   ' + opts.stacDb);
+    }
+    if (opts.titilerUrl) {
+      console.log('  Titiler:   ' + opts.titilerUrl);
+    }
     console.log('');
     console.log('  Routes:');
     console.log('    /              SARdine UI');
+    console.log('    /api/config    server capabilities');
     console.log('    /api/files     directory listing API');
+    console.log('    /api/s3/list   S3 bucket listing with presigned URLs');
+    console.log('    /api/presign   single-file presigned URL generation');
+    if (stacHandler) {
+      console.log('    /api/stac/*    STAC catalog search (DuckDB)');
+    }
     console.log('    /data/<path>   file serving (Range OK)');
     console.log('');
     console.log('  Open in browser: ' + (proxyUrl || localUrl));

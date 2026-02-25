@@ -16,6 +16,17 @@ export default defineConfig({
     port: 5173,
     open: false,  // Disable auto-open for headless/Jupyter environments
     allowedHosts: ['.jpl.nasa.gov'],  // Allow JupyterHub proxy domain
+    proxy: {
+      // Forward API requests to sardine-launch server during development
+      '/api': {
+        target: 'http://localhost:8050',
+        changeOrigin: true,
+      },
+      '/data': {
+        target: 'http://localhost:8050',
+        changeOrigin: true,
+      },
+    },
   },
   build: {
     outDir: '../dist',

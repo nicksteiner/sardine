@@ -29,9 +29,10 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy package files and install production dependencies only
+# Copy package files and install production + optional dependencies
+# (duckdb-async is optional — STAC catalog support)
 COPY package*.json ./
-RUN npm install --production --legacy-peer-deps
+RUN npm install --production --include=optional --legacy-peer-deps
 
 # Copy built application from builder
 COPY --from=builder /app/dist ./dist

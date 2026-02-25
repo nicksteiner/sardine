@@ -1200,3 +1200,61 @@ button.btn-danger:hover {
     width: 280px;
   }
 }
+
+/* ═══════════════════════════════════════════════
+   HISTOGRAM INSET (viewport-snapped, publication quality)
+   ═══════════════════════════════════════════════ */
+.histogram-inset {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: min(38vw, 460px);
+  height: min(32vh, 260px);
+  min-width: 300px;
+  min-height: 180px;
+  border-radius: var(--radius-md, 8px);
+  overflow: hidden;
+  z-index: 1010;
+  background: rgba(10, 22, 40, 0.94);
+  border: 1px solid rgba(78, 201, 212, 0.15);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  animation: hist-inset-in 180ms ease-out;
+}
+
+@keyframes hist-inset-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.histogram-inset canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.histogram-inset-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 22, 40, 0.7);
+  border: 1px solid var(--sardine-border-subtle, #162d4a);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--text-muted, #5a7099);
+  font-size: 14px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  z-index: 2;
+  padding: 0;
+  line-height: 1;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.histogram-inset-close:hover {
+  color: var(--sardine-orange, #e8833a);
+  border-color: var(--sardine-orange-dim, #b5642a);
+}

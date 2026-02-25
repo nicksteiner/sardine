@@ -43,9 +43,10 @@ export function ROIProfilePlot({
     const [minX, minY, maxX, maxY] = bounds;
 
     // Convert image pixel → screen coords using measured container dimensions
+    // Y is flipped: image row 0 → world maxY (top), row H → world minY (bottom)
     const imgToScreen = (imgX, imgY) => {
       const wx = minX + (imgX / imageWidth) * (maxX - minX);
-      const wy = minY + (imgY / imageHeight) * (maxY - minY);
+      const wy = maxY - (imgY / imageHeight) * (maxY - minY);
       return worldToPixel(wx, wy, viewState, cw, ch);
     };
 

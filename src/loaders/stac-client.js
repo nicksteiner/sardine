@@ -7,15 +7,42 @@
  * STAC spec: https://github.com/radiantearth/stac-spec
  */
 
+// ─── Local catalog discovery ─────────────────────────────────────────────────
+
+/**
+ * Resolve the local STAC API URL (same-origin, works in dev and Docker).
+ */
+export function resolveLocalStacUrl() {
+  return window.location.origin + '/api/stac';
+}
+
+/**
+ * Check if the sardine server has STAC catalog enabled.
+ * Fetches /api/config and returns { stac: bool, titiler: string|null }.
+ * Returns { stac: false, titiler: null } on any error (e.g. dev server without backend).
+ */
+export async function checkLocalStacAvailable() {
+  try {
+    const resp = await fetch(window.location.origin + '/api/config', {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!resp.ok) return { stac: false, titiler: null };
+    return await resp.json();
+  } catch {
+    return { stac: false, titiler: null };
+  }
+}
+
 // ─── Preset STAC endpoints ───────────────────────────────────────────────────
 
 export const STAC_ENDPOINTS = [
   {
     id: 'local',
-    label: 'Local STAC API',
-    url: 'http://localhost:8000',
-    description: 'Local development STAC API server',
+    label: 'Local Catalog',
+    url: '__local__', // resolved dynamically via resolveLocalStacUrl()
+    description: 'Local DuckDB-backed STAC catalog (requires sardine server with --stac-db)',
     requiresAuth: false,
+    dynamic: true,
   },
   {
     id: 'cmr-stac',
@@ -53,8 +80,10 @@ export const STAC_ENDPOINTS = [
 
 // ─── URL normalization helper ────────────────────────────────────────────────
 
-function normalizeUrl(url) {
-  return url.replace(/\/+$/, ''); // Remove trailing slashes
+function normalizeUrl(apiUrl) {
+  // Resolve dynamic local endpoint
+  if (apiUrl === '__local__') return resolveLocalStacUrl();
+  return apiUrl.replace(/\/+$/, ''); // Remove trailing slashes
 }
 
 /**

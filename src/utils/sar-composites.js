@@ -188,7 +188,7 @@ export const SAR_COMPOSITES = {
   },
   'dual-pol-h': {
     name: 'HH / HV / HH÷HV',
-    description: 'Dual-pol H-transmit (ALOS style)',
+    description: 'Dual-pol H-transmit',
     required: ['HHHH', 'HVHV'],
     channels: {
       R: { dataset: 'HHHH' },

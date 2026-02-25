@@ -13,6 +13,7 @@ import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
+import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
 import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
@@ -21,6 +22,8 @@ import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { STACSearch } from '../src/components/STACSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
+import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
+import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -279,9 +282,20 @@ function App() {
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
   const [roiProfile, setRoiProfile] = useState(null); // Computed profile data for ROIProfilePlot
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
+
+  // Feature space classifier state
+  const [classifierOpen, setClassifierOpen] = useState(false);
+  const [classRegions, setClassRegions] = useState([]); // [{name, color, xMin, xMax, yMin, yMax}]
+  const [classifierData, setClassifierData] = useState(null); // {x: Float32Array, y: Float32Array, valid: Uint8Array, w, h}
+  const [classifierBands, setClassifierBands] = useState({ x: 'HHHH', y: 'HVHV' });
+  const [classificationMap, setClassificationMap] = useState(null); // Uint8Array per ROI pixel
+  const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
+
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport'
+  const [showHistogramOverlay, setShowHistogramOverlay] = useState(false);
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
+  const prevBoundsRef = useRef(null); // Track previous data bounds for view-lock
 
   // Tone mapping settings — hidden, see tone mapping NOTE in JSX below
   // const [toneMapEnabled, setToneMapEnabled] = useState(false);
@@ -325,8 +339,29 @@ function App() {
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
 
-  // Clear ROI when image data changes (new file/dataset loaded)
-  useEffect(() => { setROI(null); setRoiProfile(null); }, [imageData]);
+  // Clear ROI and classifier when image data changes (new file/dataset loaded)
+  useEffect(() => {
+    setROI(null);
+    setRoiProfile(null);
+    setClassifierOpen(false);
+    setClassRegions([]);
+    setClassifierData(null);
+    setClassificationMap(null);
+    setClassifierRoiDims(null);
+  }, [imageData]);
+
+  // Auto-select classifier bands when datasets change
+  useEffect(() => {
+    if (nisarDatasets.length < 2) return;
+    const pols = nisarDatasets.map(d => d.polarization);
+    if (pols.includes('HHHH') && pols.includes('HVHV')) {
+      setClassifierBands({ x: 'HHHH', y: 'HVHV' });
+    } else if (pols.includes('VVVV') && pols.includes('VHVH')) {
+      setClassifierBands({ x: 'VVVV', y: 'VHVH' });
+    } else if (pols.length >= 2) {
+      setClassifierBands({ x: pols[0], y: pols[1] });
+    }
+  }, [nisarDatasets]);
 
   // Compute ROI profile data (row/col means + histogram) when ROI or imageData changes
   useEffect(() => {
@@ -428,6 +463,113 @@ function App() {
     run();
     return () => { cancelled = true; };
   }, [roi, imageData, useDecibels]);
+
+  // Fetch multi-band ROI data for feature space classifier
+  useEffect(() => {
+    if (!classifierOpen || !roi || !imageData?.getExportStripe) {
+      setClassifierData(null);
+      setClassificationMap(null);
+      setClassifierRoiDims(null);
+      return;
+    }
+    let cancelled = false;
+
+    const fetchClassifierData = async () => {
+      try {
+        const sourceW = imageData.width;
+        const sourceH = imageData.height;
+        // Target ~256 output pixels on longest axis for scatter fidelity
+        const ml = Math.max(1, Math.ceil(Math.max(roi.width, roi.height) / 256));
+        const startCol = Math.floor(Math.max(0, roi.left) / ml);
+        const startRow = Math.floor(Math.max(0, roi.top) / ml);
+        const endCol = Math.floor(Math.min(roi.left + roi.width, sourceW) / ml);
+        const endRow = Math.floor(Math.min(roi.top + roi.height, sourceH) / ml);
+        const exportW = Math.max(1, endCol - startCol);
+        const exportH = Math.max(1, endRow - startRow);
+
+        const result = await imageData.getExportStripe({
+          startRow,
+          numRows: exportH,
+          ml,
+          exportWidth: exportW,
+          startCol,
+          numCols: exportW,
+        });
+        if (cancelled) return;
+
+        const bandNames = Object.keys(result.bands);
+        const xBand = classifierBands.x;
+        const yBand = classifierBands.y;
+
+        // Find the requested bands in the result
+        let xData = result.bands[xBand];
+        let yData = result.bands[yBand];
+
+        // Fallback: use first two available bands
+        if (!xData && bandNames.length >= 1) xData = result.bands[bandNames[0]];
+        if (!yData && bandNames.length >= 2) yData = result.bands[bandNames[1]];
+        // If only one band, try using it as both (degenerate but shows the scatter)
+        if (!yData && xData) yData = xData;
+
+        if (!xData || !yData) {
+          console.warn('[Classifier] No band data available:', bandNames);
+          return;
+        }
+        if (xData === yData) {
+          console.warn('[Classifier] Only 1 band available. Switch to RGB composite mode for 2D scatter classification.');
+        }
+
+        const n = xData.length;
+        const x = new Float32Array(n);
+        const y = new Float32Array(n);
+        const valid = new Uint8Array(n);
+
+        for (let i = 0; i < n; i++) {
+          const xr = xData[i], yr = yData[i];
+          if (!isNaN(xr) && xr > 0 && !isNaN(yr) && yr > 0) {
+            x[i] = 10 * Math.log10(xr);
+            y[i] = 10 * Math.log10(yr);
+            valid[i] = 1;
+          }
+        }
+
+        if (!cancelled) {
+          console.log('[Classifier] Scatter data ready:', { exportW, exportH, validCount: valid.reduce((a, b) => a + b, 0) });
+          setClassifierData({ x, y, valid, w: exportW, h: exportH });
+          setClassifierRoiDims({ w: exportW, h: exportH });
+        }
+      } catch (e) {
+        console.error('[Classifier] Error fetching ROI data:', e);
+      }
+    };
+
+    fetchClassifierData();
+    return () => { cancelled = true; };
+  }, [classifierOpen, roi, imageData, classifierBands]);
+
+  // Recompute classification map when class regions or scatter data changes
+  useEffect(() => {
+    if (!classifierData || !classRegions.length) {
+      setClassificationMap(null);
+      return;
+    }
+    const { x, y, valid, w, h } = classifierData;
+    const map = new Uint8Array(x.length);
+
+    for (let i = 0; i < x.length; i++) {
+      if (!valid[i]) continue;
+      const xv = x[i], yv = y[i];
+      for (let c = 0; c < classRegions.length; c++) {
+        const r = classRegions[c];
+        if (xv >= r.xMin && xv <= r.xMax && yv >= r.yMin && yv <= r.yMax) {
+          map[i] = c + 1; // 1-based class index
+          break;
+        }
+      }
+    }
+
+    setClassificationMap(map);
+  }, [classifierData, classRegions]);
 
   // Compute WGS84 bounds for overview map and context layers
   const wgs84Bounds = useMemo(() => {
@@ -934,6 +1076,39 @@ function App() {
     }
   }, []);
 
+  /**
+   * Auto-fit view to bounds ONLY if the scene has changed.
+   * Same track-frame → same bounds → preserve current pan/zoom.
+   * New scene → different bounds → auto-fit.
+   */
+  const autoFitIfNewScene = useCallback((newBounds) => {
+    if (!newBounds) return;
+    const prev = prevBoundsRef.current;
+    if (prev) {
+      // Check if bounds overlap significantly (same track-frame)
+      const [pMinX, pMinY, pMaxX, pMaxY] = prev;
+      const [nMinX, nMinY, nMaxX, nMaxY] = newBounds;
+      const pSpan = Math.max(pMaxX - pMinX, pMaxY - pMinY) || 1;
+      const dx = Math.abs((pMinX + pMaxX) / 2 - (nMinX + nMaxX) / 2);
+      const dy = Math.abs((pMinY + pMaxY) / 2 - (nMinY + nMaxY) / 2);
+      // If centers are within 10% of the span, treat as same scene
+      if (dx < pSpan * 0.1 && dy < pSpan * 0.1) {
+        prevBoundsRef.current = newBounds;
+        return; // Keep current view
+      }
+    }
+    // New scene — auto-fit
+    const [minX, minY, maxX, maxY] = newBounds;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    setViewCenter([cx, cy]);
+    const maxSpan = Math.max(maxX - minX, maxY - minY);
+    const viewportSize = 1000;
+    const zoom = Math.log2(viewportSize / maxSpan);
+    setViewZoom(zoom);
+    prevBoundsRef.current = newBounds;
+  }, []);
+
   // Handle NISAR file selection - read metadata to get available datasets
   const handleNISARFileSelect = useCallback(async (file) => {
     if (!file) return;
@@ -1051,65 +1226,135 @@ function App() {
     handleRemoteFileSelect({ url, name, size: 0, type });
   }, [directUrl, handleRemoteFileSelect, addStatusLog]);
 
-  // Load remote NISAR dataset by URL
+  // Load remote NISAR dataset by URL (single band or RGB composite)
   const handleLoadRemoteNISAR = useCallback(async () => {
     if (!remoteUrl) return;
     const gen = ++loadGenRef.current;
 
     setLoading(true);
     setError(null);
-    addStatusLog('info', `Loading remote NISAR: ${selectedFrequency}/${selectedPolarization}`);
 
     try {
-      const data = await loadNISARGCOVFromUrl(remoteUrl, {
-        frequency: selectedFrequency,
-        polarization: selectedPolarization,
-        _streamReader: handleRemoteFileSelect._cachedReader || null,
-      });
+      let data;
 
-      // Progressive refinement: when background Phase 2 completes, bump version
-      // so SARViewer re-creates its TileLayer and fetches the refined tiles.
-      if (data.mode === 'streaming') {
-        data.onRefine = () => setTileVersion(v => v + 1);
+      if (displayMode === 'rgb' && compositeId) {
+        // RGB composite mode — load multiple polarization bands from URL
+        const requiredPols = getRequiredDatasets(compositeId);
+        const requiredComplexPols = getRequiredComplexDatasets(compositeId);
+        addStatusLog('info', `Loading remote RGB composite: ${compositeId} (${requiredPols.join(', ')}${requiredComplexPols.length ? ' + complex: ' + requiredComplexPols.join(', ') : ''})`);
+
+        data = await loadNISARRGBComposite(remoteUrl, {
+          frequency: selectedFrequency,
+          compositeId,
+          requiredPols,
+          requiredComplexPols,
+          _streamReader: handleRemoteFileSelect._cachedReader || null,
+        });
+
+        // In RGB mode, pass getRGBTile as getTile
+        data.getTile = data.getRGBTile;
+
         // Eagerly warm chunk cache with coarse overview grid
         if (data.prefetchOverviewChunks) {
           data.prefetchOverviewChunks().catch(e =>
-            console.warn('[SARdine] Overview prefetch failed:', e.message)
+            console.warn('[SARdine] RGB overview prefetch failed:', e.message)
           );
         }
+
+        addStatusLog('success', 'Remote RGB composite loaded',
+          `${data.width}x${data.height}, Composite: ${compositeId}`);
+      } else {
+        // Single band mode
+        addStatusLog('info', `Loading remote NISAR: ${selectedFrequency}/${selectedPolarization}`);
+
+        data = await loadNISARGCOVFromUrl(remoteUrl, {
+          frequency: selectedFrequency,
+          polarization: selectedPolarization,
+          _streamReader: handleRemoteFileSelect._cachedReader || null,
+        });
+
+        // Progressive refinement: when background Phase 2 completes, bump version
+        // so SARViewer re-creates its TileLayer and fetches the refined tiles.
+        if (data.mode === 'streaming') {
+          data.onRefine = () => setTileVersion(v => v + 1);
+          // Eagerly warm chunk cache with coarse overview grid
+          if (data.prefetchOverviewChunks) {
+            data.prefetchOverviewChunks().catch(e =>
+              console.warn('[SARdine] Overview prefetch failed:', e.message)
+            );
+          }
+        }
+
+        addStatusLog('success', `Remote NISAR loaded: ${data.width}×${data.height}`,
+          `URL: ${remoteUrl}`);
       }
 
       if (gen !== loadGenRef.current) return; // stale load
       setImageData(data);
 
-      // Auto-fit view
-      const bounds = data.worldBounds || data.bounds;
-      if (bounds) {
-        const cx = (bounds[0] + bounds[2]) / 2;
-        const cy = (bounds[1] + bounds[3]) / 2;
-        setViewCenter([cx, cy]);
-        const span = Math.max(bounds[2] - bounds[0], bounds[3] - bounds[1]);
-        setViewZoom(Math.log2(360 / span) - 1);
-      }
+      // Auto-fit view only if this is a new scene (different track-frame)
+      autoFitIfNewScene(data.bounds);
 
-      addStatusLog('success', `Remote NISAR loaded: ${data.width}×${data.height}`,
-        `URL: ${remoteUrl}`);
-
-      // Compute histogram (same as local path)
-      try {
-        if (data.getTile) {
-          addStatusLog('info', 'Computing histogram from tile samples...');
-          const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
-          if (stats) {
-            setHistogramData({ single: stats });
-            setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
-            setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
-            const unit = useDecibels ? 'dB' : '';
-            addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
+      // Compute histograms in background (don't block loading)
+      if (displayMode === 'rgb' && data.getRGBTile) {
+        // RGB histogram: sample a single center tile (not 3×3 grid) to avoid
+        // hundreds of remote chunk fetches that would block the UI
+        setUseDecibels(false); // Linear for RGB composites
+        addStatusLog('info', 'Computing per-channel histograms in background...');
+        const _histCompositeId = compositeId;
+        (async () => {
+          try {
+            const tileSize = 256;
+            const rawValues = { R: [], G: [], B: [] };
+            // Sample center tile only — fast enough for remote
+            const cx = Math.floor(data.width / 2);
+            const cy = Math.floor(data.height / 2);
+            const half = Math.floor(data.width / 6);
+            const tileData = await data.getRGBTile({
+              x: 0, y: 0, z: 0,
+              bbox: { left: cx - half, top: cy - half, right: cx + half, bottom: cy + half },
+            });
+            if (tileData && tileData.bands) {
+              const rgbBands = computeRGBBands(tileData.bands, _histCompositeId, tileSize);
+              for (const ch of ['R', 'G', 'B']) {
+                const arr = rgbBands[ch];
+                for (let i = 0; i < arr.length; i += 4) {
+                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+                }
+              }
+            }
+            const hists = {};
+            const lims = {};
+            for (const ch of ['R', 'G', 'B']) {
+              const st = computeChannelStats(rawValues[ch], false);
+              hists[ch] = st;
+              lims[ch] = st ? [st.p2, st.p98] : [0, 1];
+            }
+            setHistogramData(hists);
+            setRgbContrastLimits(lims);
+            addStatusLog('success', 'Per-channel contrast set (linear 2–98%)',
+              ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
+          } catch (e) {
+            addStatusLog('warning', 'Background histogram failed', e.message);
           }
-        }
-      } catch (e) {
-        addStatusLog('warning', 'Could not compute histogram', e.message);
+        })();
+      } else if (data.getTile) {
+        // Single-band histogram — also run in background for remote
+        addStatusLog('info', 'Computing histogram in background...');
+        (async () => {
+          try {
+            const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
+            if (stats) {
+              setHistogramData({ single: stats });
+              setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
+              setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
+              const unit = useDecibels ? 'dB' : '';
+              addStatusLog('success', `Auto-contrast: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
+            }
+          } catch (e) {
+            addStatusLog('warning', 'Background histogram failed', e.message);
+          }
+        })();
       }
     } catch (e) {
       setError(`Failed to load remote NISAR: ${e.message}`);
@@ -1117,7 +1362,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, useDecibels, addStatusLog]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, addStatusLog, autoFitIfNewScene]);
 
   // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
@@ -1179,23 +1424,8 @@ function App() {
 
       setImageData(data);
 
-      // Update view to fit bounds
-      if (data.bounds) {
-        const [minX, minY, maxX, maxY] = data.bounds;
-        const centerX = (minX + maxX) / 2;
-        const centerY = (minY + maxY) / 2;
-        setViewCenter([centerX, centerY]);
-
-        const spanX = maxX - minX;
-        const spanY = maxY - minY;
-        const maxSpan = Math.max(spanX, spanY);
-        const viewportSize = 1000;
-        const zoom = Math.log2(viewportSize / maxSpan);
-
-        setViewZoom(zoom);
-        addStatusLog('info', 'View state updated',
-          `Center: [${centerX.toFixed(0)}, ${centerY.toFixed(0)}], Zoom: ${zoom.toFixed(2)}`);
-      }
+      // Auto-fit view only if this is a new scene (different track-frame)
+      autoFitIfNewScene(data.bounds);
 
       // Compute histograms for per-channel contrast
       try {
@@ -1270,7 +1500,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog]);
+  }, [nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog, autoFitIfNewScene]);
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
@@ -1694,6 +1924,9 @@ function App() {
         bounds: imageData?.bounds,
         filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
         crs: imageData?.crs || '',
+        histogramData: showHistogramOverlay ? histogramData : null,
+        polarization: selectedPolarization,
+        identification: imageData?.identification || null,
       });
 
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -1707,7 +1940,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog]);
+  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async () => {
@@ -1740,6 +1973,12 @@ function App() {
         profileShow,
         imageWidth: imageData?.sourceWidth || imageData?.width,
         imageHeight: imageData?.sourceHeight || imageData?.height,
+        histogramData: showHistogramOverlay ? histogramData : null,
+        polarization: selectedPolarization,
+        identification: imageData?.identification || null,
+        classificationMap: classifierOpen ? classificationMap : null,
+        classRegions,
+        classifierRoiDims,
       });
 
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -1752,7 +1991,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog]);
+  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -1779,12 +2018,26 @@ function App() {
           setProfileShow(prev => ({ ...prev, v: !prev.v }));
           return;
         }
-        if (e.key === 'h' || e.key === 'H') {
-          setProfileShow(prev => ({ ...prev, h: !prev.h }));
+        if (e.key === 'h') {
+          // h toggles ROI horizontal profile if ROI active, otherwise histogram
+          if (roi) {
+            setProfileShow(prev => ({ ...prev, h: !prev.h }));
+          } else {
+            setShowHistogramOverlay(prev => !prev);
+          }
+          return;
+        }
+        if (e.key === 'H') {
+          // Shift+H always toggles histogram overlay
+          setShowHistogramOverlay(prev => !prev);
           return;
         }
         if (e.key === 'i' || e.key === 'I') {
           setProfileShow(prev => ({ ...prev, i: !prev.i }));
+          return;
+        }
+        if (e.key === 'c' || e.key === 'C') {
+          if (imageData) setClassifierOpen(prev => !prev);
           return;
         }
       }
@@ -1792,7 +2045,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleSaveFigure, handleSaveFigureWithOverlays]);
+  }, [handleSaveFigure, handleSaveFigureWithOverlays, roi]);
 
   const handleExportColorbar = useCallback(async () => {
     if (displayMode !== 'rgb' || !compositeId) {
@@ -2112,6 +2365,7 @@ function App() {
               <DataDiscovery
                 onSelectFile={handleRemoteFileSelect}
                 onStatus={addStatusLog}
+                serverOrigin=""
               />
 
               {/* Show dataset selectors when remote NISAR metadata is loaded */}
@@ -2153,8 +2407,42 @@ function App() {
                     </select>
                   </div>
 
+                  {/* Display Mode (Single / RGB) */}
+                  <div className="control-group">
+                    <label>Display Mode</label>
+                    <select
+                      value={displayMode}
+                      onChange={(e) => setDisplayMode(e.target.value)}
+                    >
+                      <option value="single">Single Band</option>
+                      <option value="rgb" disabled={availableComposites.length === 0}>
+                        RGB Composite
+                      </option>
+                    </select>
+                  </div>
+
+                  {/* Composite preset selector (only in RGB mode) */}
+                  {displayMode === 'rgb' && availableComposites.length > 0 && (
+                    <div className="control-group">
+                      <label>Composite</label>
+                      <select
+                        value={compositeId || ''}
+                        onChange={(e) => setCompositeId(e.target.value)}
+                      >
+                        {availableComposites.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
+                      </div>
+                    </div>
+                  )}
+
                   <button onClick={handleLoadRemoteNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : 'Load Remote Dataset'}
+                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Remote Dataset'}
                   </button>
                 </>
               )}
@@ -2217,8 +2505,41 @@ function App() {
                     </select>
                   </div>
 
+                  {/* Display Mode (Single / RGB) */}
+                  <div className="control-group">
+                    <label>Display Mode</label>
+                    <select
+                      value={displayMode}
+                      onChange={(e) => setDisplayMode(e.target.value)}
+                    >
+                      <option value="single">Single Band</option>
+                      <option value="rgb" disabled={availableComposites.length === 0}>
+                        RGB Composite
+                      </option>
+                    </select>
+                  </div>
+
+                  {displayMode === 'rgb' && availableComposites.length > 0 && (
+                    <div className="control-group">
+                      <label>Composite</label>
+                      <select
+                        value={compositeId || ''}
+                        onChange={(e) => setCompositeId(e.target.value)}
+                      >
+                        {availableComposites.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
+                      </div>
+                    </div>
+                  )}
+
                   <button onClick={handleLoadRemoteNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : 'Load Dataset'}
+                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
                   </button>
                 </>
               )}
@@ -2343,8 +2664,41 @@ function App() {
                     </select>
                   </div>
 
+                  {/* Display Mode (Single / RGB) */}
+                  <div className="control-group">
+                    <label>Display Mode</label>
+                    <select
+                      value={displayMode}
+                      onChange={(e) => setDisplayMode(e.target.value)}
+                    >
+                      <option value="single">Single Band</option>
+                      <option value="rgb" disabled={availableComposites.length === 0}>
+                        RGB Composite
+                      </option>
+                    </select>
+                  </div>
+
+                  {displayMode === 'rgb' && availableComposites.length > 0 && (
+                    <div className="control-group">
+                      <label>Composite</label>
+                      <select
+                        value={compositeId || ''}
+                        onChange={(e) => setCompositeId(e.target.value)}
+                      >
+                        {availableComposites.map(c => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
+                      </div>
+                    </div>
+                  )}
+
                   <button onClick={handleLoadRemoteNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : 'Load Dataset'}
+                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
                   </button>
                 </>
               )}
@@ -2641,15 +2995,29 @@ function App() {
                     <span style={{ color: '#ffc832' }}>
                       ROI: {roi.width} × {roi.height} px
                     </span>
-                    <button
-                      onClick={() => setROI(null)}
-                      style={{
-                        background: 'none', border: 'none', color: 'var(--text-muted)',
-                        cursor: 'pointer', padding: '0 2px', fontSize: '0.7rem',
-                      }}
-                    >
-                      Clear
-                    </button>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        onClick={() => setClassifierOpen(prev => !prev)}
+                        title="Feature space classifier (C)"
+                        style={{
+                          background: classifierOpen ? 'rgba(78,201,212,0.15)' : 'none',
+                          border: classifierOpen ? '1px solid rgba(78,201,212,0.4)' : '1px solid transparent',
+                          color: classifierOpen ? '#4ec9d4' : 'var(--text-muted)',
+                          cursor: 'pointer', padding: '0 4px', fontSize: '0.65rem', borderRadius: 3,
+                        }}
+                      >
+                        Classify
+                      </button>
+                      <button
+                        onClick={() => setROI(null)}
+                        style={{
+                          background: 'none', border: 'none', color: 'var(--text-muted)',
+                          cursor: 'pointer', padding: '0 2px', fontSize: '0.7rem',
+                        }}
+                      >
+                        Clear
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>
@@ -2675,7 +3043,7 @@ function App() {
                   </button>
                 )}
                 <button
-                  onClick={handleSaveFigure}
+                  onClick={roi ? handleSaveFigureWithOverlays : handleSaveFigure}
                   style={{ flex: 1 }}
                 >
                   Save Figure (PNG)
@@ -2917,6 +3285,9 @@ function App() {
               yCoords={imageData?.yCoords}
               roiProfile={roiProfile}
               profileShow={profileShow}
+              classificationMap={classifierOpen ? classificationMap : null}
+              classRegions={classRegions}
+              classifierRoiDims={classifierRoiDims}
             />
           )}
 
@@ -2933,6 +3304,31 @@ function App() {
             fileType={fileType}
             fileName={nisarFile?.name || cogUrl || null}
           />
+
+          {/* Histogram Inset — viewport-snapped, bottom-right */}
+          {showHistogramOverlay && histogramData && (
+            <HistogramOverlay
+              histograms={histogramData}
+              mode={displayMode}
+              contrastLimits={displayMode === 'rgb' ? rgbContrastLimits : [contrastMin, contrastMax]}
+              useDecibels={useDecibels}
+              polarization={selectedPolarization}
+              compositeId={compositeId}
+              onClose={() => setShowHistogramOverlay(false)}
+            />
+          )}
+
+          {/* Feature Space Classifier */}
+          {classifierOpen && roi && classifierData && (
+            <ScatterClassifier
+              scatterData={classifierData}
+              xLabel={`${classifierBands.x} (dB)`}
+              yLabel={`${classifierBands.y} (dB)`}
+              classRegions={classRegions}
+              onClassRegionsChange={setClassRegions}
+              onClose={() => setClassifierOpen(false)}
+            />
+          )}
         </div>
       </div>
 
@@ -2968,6 +3364,8 @@ function App() {
           deck.gl {multiLook ? '· multi-look' : '· nearest-neighbour'}
         </span>
       </footer>
+
+      {/* Histogram overlay moved inside viewer-container */}
     </div>
   );
 }

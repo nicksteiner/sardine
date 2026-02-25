@@ -3,10 +3,15 @@
  *
  * Simple panel: enter a bucket URL, browse directories, click .h5/.tif files to load.
  * Paged results with "Load More" for large directories.
+ *
+ * Supports two browse modes:
+ *   - "direct"     — public S3 / HTTP buckets (unsigned requests from browser)
+ *   - "server-s3"  — private S3 buckets via sardine-launch server (server holds credentials)
  */
 import React, { useState, useCallback, useRef, useMemo } from 'react';
 import {
   listBucket,
+  listBucketViaServer,
   buildFileUrl,
   displayName,
   formatSize,
@@ -24,10 +29,18 @@ import {
  * @param {Object} props
  * @param {function} props.onSelectFile — Called with {url, name, type} when user clicks a file
  * @param {function} [props.onStatus] — Called with (type, message) for status logging
+ * @param {string} [props.serverOrigin=''] — Server origin for server-mediated S3 ('' = same-origin)
  */
-export function DataDiscovery({ onSelectFile, onStatus }) {
-  // Bucket URL
+export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
+  // Browse mode: 'direct' (public bucket URL) or 'server-s3' (private via server)
+  const [browseMode, setBrowseMode] = useState('direct');
+
+  // Direct mode state
   const [bucketUrl, setBucketUrl] = useState('');
+
+  // Server-s3 mode state
+  const [s3Bucket, setS3Bucket] = useState('');
+  const [s3Region, setS3Region] = useState('us-west-2');
 
   // Current directory state
   const [prefix, setPrefix] = useState('');
@@ -60,17 +73,40 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     if (onStatus) onStatus(type, msg);
   }, [onStatus]);
 
+  // ── Unified listing helper ──
+  const listCurrentBucket = useCallback(async (listPrefix, token) => {
+    if (browseMode === 'server-s3') {
+      return listBucketViaServer(serverOrigin, {
+        bucket: s3Bucket,
+        prefix: listPrefix,
+        maxKeys: 200,
+        region: s3Region,
+        continuationToken: token,
+      });
+    }
+    return listBucket(bucketUrl, {
+      prefix: listPrefix,
+      maxKeys: 100,
+      continuationToken: token,
+    });
+  }, [browseMode, s3Bucket, s3Region, serverOrigin, bucketUrl]);
+
   // ── Connect to bucket ──
   const handleConnect = useCallback(async () => {
-    const url = bucketUrl.trim();
-    if (!url) return;
+    if (browseMode === 'server-s3') {
+      if (!s3Bucket.trim()) return;
+    } else {
+      if (!bucketUrl.trim()) return;
+    }
 
     setLoading(true);
     setError(null);
-    log('info', `Connecting to: ${url}`);
+
+    const label = browseMode === 'server-s3' ? `s3://${s3Bucket}` : bucketUrl;
+    log('info', `Connecting to: ${label}`);
 
     try {
-      const result = await listBucket(url, { prefix: '', maxKeys: 100 });
+      const result = await listCurrentBucket('', null);
       setDirectories(result.directories);
       setFiles(result.files);
       setIsTruncated(result.isTruncated);
@@ -87,7 +123,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     } finally {
       setLoading(false);
     }
-  }, [bucketUrl, log]);
+  }, [browseMode, s3Bucket, bucketUrl, listCurrentBucket, log]);
 
   // ── Navigate into a directory ──
   const handleNavigate = useCallback(async (dirPrefix) => {
@@ -95,7 +131,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     setError(null);
 
     try {
-      const result = await listBucket(bucketUrl, { prefix: dirPrefix, maxKeys: 100 });
+      const result = await listCurrentBucket(dirPrefix, null);
       setDirectories(result.directories);
       setFiles(result.files);
       setIsTruncated(result.isTruncated);
@@ -108,7 +144,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     } finally {
       setLoading(false);
     }
-  }, [bucketUrl, prefix]);
+  }, [listCurrentBucket, prefix]);
 
   // ── Navigate up ──
   const handleBack = useCallback(async () => {
@@ -119,7 +155,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     setError(null);
 
     try {
-      const result = await listBucket(bucketUrl, { prefix: parentPrefix, maxKeys: 100 });
+      const result = await listCurrentBucket(parentPrefix, null);
       setDirectories(result.directories);
       setFiles(result.files);
       setIsTruncated(result.isTruncated);
@@ -132,7 +168,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     } finally {
       setLoading(false);
     }
-  }, [bucketUrl, pathStack]);
+  }, [listCurrentBucket, pathStack]);
 
   // ── Navigate to breadcrumb ──
   const handleBreadcrumb = useCallback(async (targetPrefix, stackIndex) => {
@@ -140,7 +176,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     setError(null);
 
     try {
-      const result = await listBucket(bucketUrl, { prefix: targetPrefix, maxKeys: 100 });
+      const result = await listCurrentBucket(targetPrefix, null);
       setDirectories(result.directories);
       setFiles(result.files);
       setIsTruncated(result.isTruncated);
@@ -153,7 +189,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     } finally {
       setLoading(false);
     }
-  }, [bucketUrl]);
+  }, [listCurrentBucket]);
 
   // ── Load more (pagination) ──
   const handleLoadMore = useCallback(async () => {
@@ -163,11 +199,7 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     setError(null);
 
     try {
-      const result = await listBucket(bucketUrl, {
-        prefix,
-        maxKeys: 100,
-        continuationToken: nextToken,
-      });
+      const result = await listCurrentBucket(prefix, nextToken);
       // Append new results to existing
       setDirectories(prev => [...prev, ...result.directories]);
       setFiles(prev => [...prev, ...result.files]);
@@ -179,11 +211,12 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     } finally {
       setLoading(false);
     }
-  }, [bucketUrl, prefix, nextToken]);
+  }, [listCurrentBucket, prefix, nextToken]);
 
   // ── Select a file for loading ──
   const handleFileClick = useCallback((file) => {
-    const url = buildFileUrl(bucketUrl, file.key);
+    // Use presigned URL from server-mediated listing if available
+    const url = file.presignedUrl || buildFileUrl(bucketUrl, file.key);
     const name = displayName(file.key);
 
     let type = 'unknown';
@@ -196,6 +229,18 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
 
   // ── Apply a preset ──
   const handlePreset = useCallback((preset) => {
+    if (preset.serverS3) {
+      setBrowseMode('server-s3');
+      setS3Bucket('');
+      setS3Region('us-west-2');
+      setConnected(false);
+      setDirectories([]);
+      setFiles([]);
+      setPathStack([]);
+      setPrefix('');
+      return;
+    }
+    setBrowseMode('direct');
     setBucketUrl(resolvePresetUrl(preset.url));
     setConnected(false);
     setDirectories([]);
@@ -281,23 +326,76 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
     }
   }
 
+  // Connected display label
+  const connectedLabel = browseMode === 'server-s3'
+    ? `s3://${s3Bucket}`
+    : bucketUrl.replace(/^https?:\/\//, '').substring(0, 30);
+
+  // Is connect button enabled?
+  const canConnect = browseMode === 'server-s3' ? s3Bucket.trim() : bucketUrl.trim();
+
   return (
     <div className="data-discovery">
       {/* URL input + presets */}
       {!connected ? (
         <>
+          {/* Browse mode selector */}
           <div className="control-group">
-            <label>Bucket / Endpoint URL</label>
-            <input
-              ref={inputRef}
-              type="text"
-              value={bucketUrl}
-              onChange={(e) => setBucketUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
-              placeholder="https://bucket.s3.amazonaws.com"
+            <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Browse Mode</label>
+            <select
+              value={browseMode}
+              onChange={(e) => setBrowseMode(e.target.value)}
               style={{ fontSize: '0.75rem' }}
-            />
+            >
+              <option value="direct">Public Bucket (direct)</option>
+              <option value="server-s3">Private S3 (via server)</option>
+            </select>
           </div>
+
+          {browseMode === 'direct' ? (
+            <>
+              <div className="control-group">
+                <label>Bucket / Endpoint URL</label>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={bucketUrl}
+                  onChange={(e) => setBucketUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
+                  placeholder="https://bucket.s3.amazonaws.com"
+                  style={{ fontSize: '0.75rem' }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="control-group">
+                <label>S3 Bucket Name</label>
+                <input
+                  type="text"
+                  value={s3Bucket}
+                  onChange={(e) => setS3Bucket(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
+                  placeholder="my-private-bucket"
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
+                />
+              </div>
+              <div className="control-group">
+                <label>AWS Region</label>
+                <input
+                  type="text"
+                  value={s3Region}
+                  onChange={(e) => setS3Region(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
+                  placeholder="us-west-2"
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
+                />
+              </div>
+              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                Server uses AWS credentials from environment
+              </div>
+            </>
+          )}
 
           {PRESET_BUCKETS.length > 0 && (
             <div className="control-group" style={{ fontSize: '0.7rem' }}>
@@ -311,12 +409,13 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
                 >
                   {p.label}
                   {p.requiresAuth && <span className="discovery-auth-badge">🔒</span>}
+                  {p.serverS3 && <span className="discovery-auth-badge">🔑</span>}
                 </button>
               ))}
             </div>
           )}
 
-          <button onClick={handleConnect} disabled={loading || !bucketUrl.trim()}>
+          <button onClick={handleConnect} disabled={loading || !canConnect}>
             {loading ? 'Connecting...' : 'Connect'}
           </button>
         </>
@@ -324,9 +423,9 @@ export function DataDiscovery({ onSelectFile, onStatus }) {
         <>
           {/* Connected header */}
           <div className="discovery-header">
-            <span className="discovery-url" title={bucketUrl}>
-              {bucketUrl.replace(/^https?:\/\//, '').substring(0, 30)}
-              {bucketUrl.length > 38 ? '…' : ''}
+            <span className="discovery-url" title={browseMode === 'server-s3' ? `s3://${s3Bucket}` : bucketUrl}>
+              {connectedLabel}
+              {connectedLabel.length > 30 ? '...' : ''}
             </span>
             <button
               className="btn-secondary discovery-disconnect-btn"

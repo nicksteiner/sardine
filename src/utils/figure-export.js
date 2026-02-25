@@ -16,6 +16,7 @@
 import { getColormap } from './colormap.js';
 import { applyStretch } from './stretch.js';
 import { SAR_COMPOSITES } from './sar-composites.js';
+import { drawHistogramCanvas } from '../components/HistogramOverlay.jsx';
 import {
   THEME,
   CHANNEL_COLORS,
@@ -51,6 +52,8 @@ const FONT_SERIF = FONTS.serif;
  * @param {number[]} [options.bounds]          - [minX,minY,maxX,maxY]
  * @param {string}   [options.filename]        - Source filename
  * @param {string}   [options.crs]             - CRS string (e.g. "EPSG:32610")
+ * @param {Object}   [options.histogramData]   - Histogram stats to render as inset
+ * @param {string}   [options.polarization]    - Polarization label for histogram title
  * @returns {Promise<Blob>} PNG blob
  */
 export async function exportFigure(glCanvas, options = {}) {
@@ -63,6 +66,9 @@ export async function exportFigure(glCanvas, options = {}) {
     bounds,
     filename = '',
     crs = '',
+    histogramData = null,
+    polarization = '',
+    identification = null,
   } = options;
 
   const W = glCanvas.width;
@@ -103,11 +109,18 @@ export async function exportFigure(glCanvas, options = {}) {
 
   // 6. Metadata panel (bottom-right)
   drawMetadata(ctx, W, H, {
-    filename, crs, compositeId, useDecibels, viewState, bounds, projected,
+    filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
   }, s);
 
   // 7. SARdine branding (top-left)
   drawBranding(ctx, W, H, s);
+
+  // 8. Histogram inset (top-left, below branding)
+  if (histogramData) {
+    drawHistogramInset(ctx, W, H, {
+      histogramData, compositeId, contrastLimits, useDecibels, polarization,
+    }, dpr);
+  }
 
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');
@@ -143,6 +156,12 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     profileShow = { v: true, h: true, i: true },
     imageWidth = 0,
     imageHeight = 0,
+    histogramData = null,
+    polarization = '',
+    identification = null,
+    classificationMap = null,
+    classRegions = [],
+    classifierRoiDims = null,
   } = options;
 
   const W = glCanvas.width;
@@ -158,6 +177,10 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   ctx.drawImage(glCanvas, 0, 0);
 
   // 2. Draw data overlays directly on canvas
+  if (classificationMap && classifierRoiDims && classRegions?.length && roi && bounds && imageWidth && imageHeight && viewState) {
+    drawClassificationOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, classificationMap, classRegions, classifierRoiDims);
+  }
+
   if (roi && bounds && imageWidth && imageHeight && viewState) {
     drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr);
   }
@@ -182,9 +205,16 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   }
 
   drawMetadata(ctx, W, H, {
-    filename, crs, compositeId, useDecibels, viewState, bounds, projected,
+    filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
   }, s);
   drawBranding(ctx, W, H, s);
+
+  // Histogram inset (top-left, below branding)
+  if (histogramData) {
+    drawHistogramInset(ctx, W, H, {
+      histogramData, compositeId, contrastLimits, useDecibels, polarization,
+    }, dpr);
+  }
 
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');
@@ -198,8 +228,56 @@ import { worldToPixel } from './geo-overlays.js';
 function _imgToScreen(imgX, imgY, viewState, bounds, imageWidth, imageHeight, W, H) {
   const [minX, minY, maxX, maxY] = bounds;
   const wx = minX + (imgX / imageWidth) * (maxX - minX);
-  const wy = minY + (imgY / imageHeight) * (maxY - minY);
+  // Y is flipped: image row 0 → world maxY (top), row H → world minY (bottom)
+  const wy = maxY - (imgY / imageHeight) * (maxY - minY);
   return worldToPixel(wx, wy, viewState, W, H);
+}
+
+/** Draw classification overlay on the export canvas (mirrors ClassificationOverlay.jsx). */
+function drawClassificationOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, classificationMap, classRegions, roiDims) {
+  const { w, h } = roiDims;
+  if (w <= 0 || h <= 0) return;
+
+  // Build RGBA ImageData from classificationMap + class colors
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  const colorLUT = classRegions.map(r => {
+    const hex = r.color.replace('#', '');
+    return [
+      parseInt(hex.substring(0, 2), 16),
+      parseInt(hex.substring(2, 4), 16),
+      parseInt(hex.substring(4, 6), 16),
+    ];
+  });
+
+  for (let i = 0; i < classificationMap.length; i++) {
+    const cls = classificationMap[i];
+    if (cls === 0 || cls > colorLUT.length) continue;
+    const [r, g, b] = colorLUT[cls - 1];
+    const idx = i * 4;
+    rgba[idx]     = r;
+    rgba[idx + 1] = g;
+    rgba[idx + 2] = b;
+    rgba[idx + 3] = 200;
+  }
+
+  const classImage = new ImageData(rgba, w, h);
+  const tmpCanvas = document.createElement('canvas');
+  tmpCanvas.width = w;
+  tmpCanvas.height = h;
+  tmpCanvas.getContext('2d').putImageData(classImage, 0, 0);
+
+  const [sx0, sy0] = _imgToScreen(roi.left, roi.top, viewState, bounds, imageWidth, imageHeight, W, H);
+  const [sx1, sy1] = _imgToScreen(roi.left + roi.width, roi.top + roi.height, viewState, bounds, imageWidth, imageHeight, W, H);
+  const rx = Math.min(sx0, sx1);
+  const ry = Math.min(sy0, sy1);
+  const rw = Math.abs(sx1 - sx0);
+  const rh = Math.abs(sy1 - sy0);
+
+  if (rw < 2 || rh < 2) return;
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(tmpCanvas, rx, ry, rw, rh);
+  ctx.imageSmoothingEnabled = true;
 }
 
 /** Draw a gold dashed ROI rectangle on the export canvas. */
@@ -449,13 +527,13 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
   const toX = (wx) => (wx - cx) * ppu + W / 2;
   const toY = (wy) => (wy - cy) * ppu + H / 2;
 
-  const dx = niceInterval(extent.width, 5);
-  const dy = niceInterval(extent.height, 5);
+  const dx = niceInterval(extent.width, 3);
+  const dy = niceInterval(extent.height, 3);
 
-  // Gridlines — dashed to match style guide
-  ctx.strokeStyle = 'rgba(30, 58, 95, 0.35)';
-  ctx.lineWidth = s(1);
-  ctx.setLineDash([s(6), s(4)]);
+  // Gridlines — sparse, subtle dashed lines
+  ctx.strokeStyle = 'rgba(30, 58, 95, 0.20)';
+  ctx.lineWidth = s(0.5);
+  ctx.setLineDash([s(6), s(6)]);
 
   const tickFontSize = s(10);
   const tickPad = s(5);
@@ -474,7 +552,7 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
     ctx.save();
     ctx.setLineDash([]);
     ctx.font = `${tickFontSize}px ${FONT_MONO}`;
-    ctx.fillStyle = 'rgba(90, 112, 153, 0.70)';
+    ctx.fillStyle = 'rgba(90, 112, 153, 0.50)';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillText(formatTickValue(wx, projected), px, H - tickPad);
@@ -495,7 +573,7 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
     ctx.save();
     ctx.setLineDash([]);
     ctx.font = `${tickFontSize}px ${FONT_MONO}`;
-    ctx.fillStyle = 'rgba(90, 112, 153, 0.70)';
+    ctx.fillStyle = 'rgba(90, 112, 153, 0.50)';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(formatTickValue(wy, projected), tickPad, py);
@@ -714,7 +792,8 @@ function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s
 // ── 6. Metadata panel ───────────────────────────────────────────────────────
 
 function drawMetadata(ctx, W, H, meta, s) {
-  const { filename, crs, compositeId, useDecibels, viewState, bounds, projected } = meta;
+  const { filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification } = meta;
+  const id = identification || {};
 
   // Build label:value pairs with semantic colors
   const entries = [];
@@ -722,23 +801,37 @@ function drawMetadata(ctx, W, H, meta, s) {
   if (filename) {
     entries.push({ label: 'SOURCE', value: filename, color: THEME.textPrimary, serif: true });
   }
-  if (compositeId) {
-    const preset = SAR_COMPOSITES[compositeId];
-    entries.push({ label: 'COMPOSITE', value: preset?.name || compositeId, color: THEME.cyan });
-  }
-  if (crs) {
-    entries.push({ label: 'CRS', value: crs, color: THEME.orange });
-  }
-  entries.push({ label: 'SCALE', value: useDecibels ? 'dB' : 'linear', color: THEME.textSecondary });
 
-  // Visible extent
-  if (viewState && bounds) {
-    const ext = computeVisibleExtent(viewState, W, H);
-    entries.push({
-      label: 'EXTENT',
-      value: formatExtent(ext.width, ext.height, projected),
-      color: THEME.cyan,
-    });
+  // NISAR identification fields
+  if (id.zeroDopplerStartTime) {
+    const t = id.zeroDopplerStartTime;
+    // Format: "2025-11-27T10:56:34" → "2025-11-27 10:56 UTC"
+    const timeStr = typeof t === 'string' ? t.replace('T', ' ').slice(0, 16) + ' UTC' : String(t);
+    entries.push({ label: 'TIME', value: timeStr, color: THEME.textSecondary });
+  }
+  if (id.orbitPassDirection) {
+    entries.push({ label: 'ORBIT DIR', value: id.orbitPassDirection, color: THEME.cyan });
+  }
+  if (id.trackNumber != null) {
+    entries.push({ label: 'TRACK', value: String(id.trackNumber), color: THEME.textSecondary });
+  }
+  if (id.frameNumber != null) {
+    entries.push({ label: 'FRAME', value: String(id.frameNumber), color: THEME.textSecondary });
+  }
+  if (id.absoluteOrbitNumber != null) {
+    entries.push({ label: 'ORBIT', value: String(id.absoluteOrbitNumber), color: THEME.textSecondary });
+  }
+
+  // Fallback fields for non-NISAR data
+  if (!id.zeroDopplerStartTime) {
+    if (compositeId) {
+      const preset = SAR_COMPOSITES[compositeId];
+      entries.push({ label: 'COMPOSITE', value: preset?.name || compositeId, color: THEME.cyan });
+    }
+    if (crs) {
+      entries.push({ label: 'CRS', value: crs, color: THEME.orange });
+    }
+    entries.push({ label: 'SCALE', value: useDecibels ? 'dB' : 'linear', color: THEME.textSecondary });
   }
 
   const labelFontSize = s(9);
@@ -822,6 +915,59 @@ function formatLimit(contrastLimits, ch, useDecibels) {
   return useDecibels
     ? `${lim[0].toFixed(1)}–${lim[1].toFixed(1)} dB`
     : `${lim[0].toExponential(1)}–${lim[1].toExponential(1)}`;
+}
+
+// ── 8. Histogram inset ───────────────────────────────────────────────────────
+
+/**
+ * Draw the histogram as an inset panel on the export canvas (top-left, below branding).
+ */
+function drawHistogramInset(ctx, W, H, opts, dpr) {
+  const { histogramData, compositeId, contrastLimits, useDecibels, polarization } = opts;
+  const mode = (histogramData.R || histogramData.G || histogramData.B) ? 'rgb' : 'single';
+
+  const s = (v) => Math.round(v * dpr);
+  const insetW = Math.min(s(400), Math.round(W * 0.35));
+  const insetH = Math.min(s(240), Math.round(H * 0.3));
+  const pad = s(12);
+  const ix = pad;
+  const iy = s(28); // below SARdine branding badge
+
+  ctx.save();
+
+  // Background with rounded border
+  ctx.fillStyle = 'rgba(10, 22, 40, 0.94)';
+  ctx.strokeStyle = 'rgba(78, 201, 212, 0.2)';
+  ctx.lineWidth = dpr;
+  roundRect(ctx, ix, iy, insetW, insetH, s(6));
+  ctx.fill();
+  ctx.stroke();
+
+  // Clip to inset bounds and draw histogram
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(ix, iy, insetW, insetH);
+  ctx.clip();
+  ctx.translate(ix, iy);
+
+  // The drawHistogramCanvas expects logical (unscaled) coordinates,
+  // but here we're working in physical pixels. Scale down by dpr.
+  const logW = insetW / dpr;
+  const logH = insetH / dpr;
+  ctx.scale(dpr, dpr);
+
+  drawHistogramCanvas(ctx, logW, logH, {
+    histograms: histogramData,
+    mode,
+    contrastLimits,
+    useDecibels,
+    polarization,
+    compositeId,
+    compact: true,
+  });
+
+  ctx.restore();
+  ctx.restore();
 }
 
 // ── Standalone RGB colorbar (triangle) ───────────────────────────────────────

@@ -2715,12 +2715,13 @@ export async function loadNISARGCOVFullImage(file, options = {}, maxSize = 2048)
  * @param {string[]} options.requiredPols - Polarization names needed (e.g. ['HHHH','HVHV','VVVV'])
  * @returns {Promise<{getRGBTile, bounds, crs, width, height, composite, availableDatasets}>}
  */
-export async function loadNISARRGBComposite(file, options = {}) {
+export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
   const {
     frequency = 'A',
     compositeId = 'hh-hv-vv',
     requiredPols = ['HHHH', 'HVHV', 'VVVV'],
     requiredComplexPols = [],
+    _streamReader: existingReader = null,
   } = options;
 
   console.log(`[NISAR Loader] Loading RGB composite: ${compositeId}`);
@@ -2729,8 +2730,11 @@ export async function loadNISARRGBComposite(file, options = {}) {
     console.log(`[NISAR Loader] Required complex terms: ${requiredComplexPols.join(', ')}`);
   }
 
-  // Open with h5chunk streaming with lazy tree-walking (fast for all file sizes)
-  const streamReader = await openH5ChunkFile(file); // Use lazy mode default
+  // Open with h5chunk streaming — supports both local File and remote URL
+  const streamReader = existingReader
+    || (typeof fileOrUrl === 'string'
+      ? await openH5ChunkUrl(fileOrUrl)
+      : await openH5ChunkFile(fileOrUrl));
   const h5Datasets = streamReader.getDatasets();
 
   console.log(`[NISAR Loader] h5chunk found ${h5Datasets.length} datasets`);
@@ -2806,153 +2810,136 @@ export async function loadNISARRGBComposite(file, options = {}) {
   const chunkH = matchingDatasets[0].chunkDims?.[0] || 512;
   const chunkW = matchingDatasets[0].chunkDims?.[1] || 512;
 
-  // ── Extract CRS from projection dataset + attributes (NISAR spec §3.2.5) ──
-  let crs = null;
-  let utmZoneFromAttr = null;
-  try {
-    const projId = streamReader.findDatasetByPath(paths.projection(activeFreq));
-    if (projId != null) {
-      const projData = await streamReader.readSmallDataset(projId);
-      if (projData?.data?.[0] > 0) {
-        const epsgVal = Math.round(projData.data[0]);
-        if (epsgVal > 1000 && epsgVal < 100000) {
-          crs = `EPSG:${epsgVal}`;
-          console.log(`[NISAR Loader] RGB CRS from projection value: ${crs}`);
-        }
-      }
-      const projAttrs = streamReader.getDatasetAttributes(projId);
-      if (projAttrs) {
-        if (!crs && projAttrs.epsg_code > 0) {
-          crs = `EPSG:${Math.round(projAttrs.epsg_code)}`;
-          console.log(`[NISAR Loader] RGB CRS from epsg_code attribute: ${crs}`);
-        }
-        if (!crs && projAttrs.spatial_ref) {
-          const epsgFromWkt = parseEpsgFromWkt(String(projAttrs.spatial_ref));
-          if (epsgFromWkt) {
-            crs = `EPSG:${epsgFromWkt}`;
-            console.log(`[NISAR Loader] RGB CRS from spatial_ref WKT: ${crs}`);
-          }
-        }
-        if (projAttrs.utm_zone_number > 0) {
-          utmZoneFromAttr = Math.round(projAttrs.utm_zone_number);
-        }
-      }
-    } else {
-      console.warn(`[NISAR Loader] RGB: Projection dataset not found at: ${paths.projection(activeFreq)}`);
-    }
-  } catch (e) {
-    console.warn(`[NISAR Loader] RGB: Could not read projection:`, e.message);
-  }
-  // CRS finalized after bounds extraction (UTM inference needs coordinates)
-
-  // ── Extract bounds using 3-tier fallback (same as single-band) ──
-  let bounds = [0, 0, width, height];
-  let worldBounds = null;
-  let xCoords = null;
-  let yCoords = null;
-
+  // ── Parallel metadata reads: CRS, coordinates, spacing, identification ──
+  // Fire all reads concurrently to minimize sequential HTTP round-trips
+  const projId = streamReader.findDatasetByPath(paths.projection(activeFreq));
   const xCoordId = streamReader.findDatasetByPath(paths.xCoordinates(activeFreq));
   const yCoordId = streamReader.findDatasetByPath(paths.yCoordinates(activeFreq));
-  console.log(`[NISAR Loader] RGB coordinate dataset IDs: x=${xCoordId}, y=${yCoordId}, paths: ${paths.xCoordinates(activeFreq)}, ${paths.yCoordinates(activeFreq)}`);
+  const xSpId = streamReader.findDatasetByPath(paths.xCoordinateSpacing(activeFreq));
+  const ySpId = streamReader.findDatasetByPath(paths.yCoordinateSpacing(activeFreq));
 
-  // ── Authoritative pixel spacing from xCoordinateSpacing / yCoordinateSpacing ──
-  let pixelSizeX = 1;
-  let pixelSizeY = 1;
-  let spacingFromFile = false;
-  try {
-    const xSpId = streamReader.findDatasetByPath(paths.xCoordinateSpacing(activeFreq));
-    const ySpId = streamReader.findDatasetByPath(paths.yCoordinateSpacing(activeFreq));
-    if (xSpId != null && ySpId != null) {
-      const xSpData = await streamReader.readSmallDataset(xSpId);
-      const ySpData = await streamReader.readSmallDataset(ySpId);
-      if (xSpData?.data?.[0] && ySpData?.data?.[0]) {
-        pixelSizeX = Math.abs(xSpData.data[0]);
-        pixelSizeY = Math.abs(ySpData.data[0]);
-        spacingFromFile = true;
-        console.log(`[NISAR Loader] RGB pixel spacing from file: ${pixelSizeX.toFixed(1)}m x ${pixelSizeY.toFixed(1)}m`);
-      }
+  console.log(`[NISAR Loader] RGB: firing parallel metadata reads...`);
+
+  const [projResult, xCoordsResult, yCoordsResult, xSpResult, ySpResult] = await Promise.all([
+    // Projection
+    (async () => {
+      if (projId == null) return null;
+      try { return await streamReader.readSmallDataset(projId); } catch { return null; }
+    })(),
+    // X coordinates (full array or endpoints)
+    (async () => {
+      if (xCoordId == null) return null;
+      try {
+        const full = await streamReader.readSmallDataset(xCoordId);
+        if (full?.data) return full;
+      } catch { /* ignore */ }
+      try {
+        const ep = await streamReader.readDatasetEndpoints(xCoordId);
+        if (ep) return { data: new Float64Array([ep.first, ep.last]), _endpoint: true, _length: ep.length };
+      } catch { /* ignore */ }
+      return null;
+    })(),
+    // Y coordinates (full array or endpoints)
+    (async () => {
+      if (yCoordId == null) return null;
+      try {
+        const full = await streamReader.readSmallDataset(yCoordId);
+        if (full?.data) return full;
+      } catch { /* ignore */ }
+      try {
+        const ep = await streamReader.readDatasetEndpoints(yCoordId);
+        if (ep) return { data: new Float64Array([ep.first, ep.last]), _endpoint: true, _length: ep.length };
+      } catch { /* ignore */ }
+      return null;
+    })(),
+    // X spacing
+    (async () => {
+      if (xSpId == null) return null;
+      try { return await streamReader.readSmallDataset(xSpId); } catch { return null; }
+    })(),
+    // Y spacing
+    (async () => {
+      if (ySpId == null) return null;
+      try { return await streamReader.readSmallDataset(ySpId); } catch { return null; }
+    })(),
+  ]);
+
+  // ── Process CRS from projection ──
+  let crs = null;
+  let utmZoneFromAttr = null;
+  if (projResult?.data?.[0] > 0) {
+    const epsgVal = Math.round(projResult.data[0]);
+    if (epsgVal > 1000 && epsgVal < 100000) {
+      crs = `EPSG:${epsgVal}`;
+      console.log(`[NISAR Loader] RGB CRS from projection value: ${crs}`);
     }
-  } catch (e) {
-    console.warn(`[NISAR Loader] RGB: Could not read spacing datasets:`, e.message);
+  }
+  if (projId != null) {
+    const projAttrs = streamReader.getDatasetAttributes(projId);
+    if (projAttrs) {
+      if (!crs && projAttrs.epsg_code > 0) {
+        crs = `EPSG:${Math.round(projAttrs.epsg_code)}`;
+      }
+      if (!crs && projAttrs.spatial_ref) {
+        const epsgFromWkt = parseEpsgFromWkt(String(projAttrs.spatial_ref));
+        if (epsgFromWkt) crs = `EPSG:${epsgFromWkt}`;
+      }
+      if (projAttrs.utm_zone_number > 0) utmZoneFromAttr = Math.round(projAttrs.utm_zone_number);
+    }
   }
 
-  // Tier 1: Full coordinate arrays
-  try {
-    if (xCoordId != null && yCoordId != null) {
-      const xCoordsResult = await streamReader.readSmallDataset(xCoordId);
-      const yCoordsResult = await streamReader.readSmallDataset(yCoordId);
-      if (xCoordsResult?.data?.length > 0 && yCoordsResult?.data?.length > 0) {
-        xCoords = xCoordsResult.data;
-        yCoords = yCoordsResult.data;
-        const minX = Math.min(xCoords[0], xCoords[xCoords.length - 1]);
-        const maxX = Math.max(xCoords[0], xCoords[xCoords.length - 1]);
-        const minY = Math.min(yCoords[0], yCoords[yCoords.length - 1]);
-        const maxY = Math.max(yCoords[0], yCoords[yCoords.length - 1]);
-        worldBounds = [minX, minY, maxX, maxY];
-        if (!spacingFromFile) {
-          pixelSizeX = (maxX - minX) / (xCoords.length - 1 || 1);
-          pixelSizeY = (maxY - minY) / (yCoords.length - 1 || 1);
-        }
-        console.log(`[NISAR Loader] RGB bounds from full arrays: [${worldBounds.join(', ')}]`);
-        if (xCoords.length !== width || yCoords.length !== height) {
-          console.warn(`[NISAR Loader] RGB: Coordinate/data dimension mismatch: coords=${xCoords.length}x${yCoords.length}, data=${width}x${height}`);
-        }
-      }
-    }
-  } catch (e) {
-    console.warn(`[NISAR Loader] RGB Tier 1 failed:`, e.message);
+  // ── Process pixel spacing ──
+  let pixelSizeX = 1, pixelSizeY = 1, spacingFromFile = false;
+  if (xSpResult?.data?.[0] && ySpResult?.data?.[0]) {
+    pixelSizeX = Math.abs(xSpResult.data[0]);
+    pixelSizeY = Math.abs(ySpResult.data[0]);
+    spacingFromFile = true;
+    console.log(`[NISAR Loader] RGB pixel spacing: ${pixelSizeX.toFixed(1)}m x ${pixelSizeY.toFixed(1)}m`);
   }
 
-  // Tier 2: Endpoint reading
-  if (!worldBounds && xCoordId != null && yCoordId != null) {
+  // ── Process bounds from coordinates ──
+  let bounds = [0, 0, width, height];
+  let worldBounds = null;
+  let xCoords = xCoordsResult?.data || null;
+  let yCoords = yCoordsResult?.data || null;
+
+  if (xCoords && yCoords) {
+    const minX = Math.min(xCoords[0], xCoords[xCoords.length - 1]);
+    const maxX = Math.max(xCoords[0], xCoords[xCoords.length - 1]);
+    const minY = Math.min(yCoords[0], yCoords[yCoords.length - 1]);
+    const maxY = Math.max(yCoords[0], yCoords[yCoords.length - 1]);
+    worldBounds = [minX, minY, maxX, maxY];
+    if (!spacingFromFile) {
+      const xLen = xCoordsResult._length || xCoords.length;
+      const yLen = yCoordsResult._length || yCoords.length;
+      pixelSizeX = (maxX - minX) / (xLen - 1 || 1);
+      pixelSizeY = (maxY - minY) / (yLen - 1 || 1);
+    }
+    console.log(`[NISAR Loader] RGB bounds: [${worldBounds.join(', ')}]`);
+  } else if (spacingFromFile) {
+    // Tier 3: spacing + endpoints
     try {
-      const xEp = await streamReader.readDatasetEndpoints(xCoordId);
-      const yEp = await streamReader.readDatasetEndpoints(yCoordId);
-      if (xEp && yEp) {
-        worldBounds = [
-          Math.min(xEp.first, xEp.last), Math.min(yEp.first, yEp.last),
-          Math.max(xEp.first, xEp.last), Math.max(yEp.first, yEp.last),
-        ];
-        if (!spacingFromFile) {
-          pixelSizeX = (worldBounds[2] - worldBounds[0]) / (xEp.length - 1 || 1);
-          pixelSizeY = (worldBounds[3] - worldBounds[1]) / (yEp.length - 1 || 1);
+      if (xCoordId && yCoordId) {
+        const [xEp, yEp] = await Promise.all([
+          streamReader.readDatasetEndpoints(xCoordId).catch(() => null),
+          streamReader.readDatasetEndpoints(yCoordId).catch(() => null),
+        ]);
+        if (xEp && yEp) {
+          const xEnd = xEp.first + (xEp.length - 1) * pixelSizeX;
+          const yEnd = yEp.first - (yEp.length - 1) * pixelSizeY;
+          worldBounds = [Math.min(xEp.first, xEnd), Math.min(yEp.first, yEnd), Math.max(xEp.first, xEnd), Math.max(yEp.first, yEnd)];
+          console.log(`[NISAR Loader] RGB bounds from spacing: [${worldBounds.join(', ')}]`);
         }
-        console.log(`[NISAR Loader] RGB bounds from endpoints: [${worldBounds.join(', ')}]`);
-        if (xEp.length !== width || yEp.length !== height) {
-          console.warn(`[NISAR Loader] RGB: Coordinate/data dimension mismatch: coords=${xEp.length}x${yEp.length}, data=${width}x${height}`);
-        }
-      }
-    } catch (e) {
-      console.warn(`[NISAR Loader] RGB Tier 2 failed:`, e.message);
-    }
-  }
-
-  // Tier 3: Use first coordinate + spacing for bounds
-  if (!worldBounds && spacingFromFile) {
-    try {
-      let x0 = null, y0 = null;
-      let xLen = width, yLen = height;
-      if (xCoordId) { const ep = await streamReader.readDatasetEndpoints(xCoordId); if (ep) { x0 = ep.first; xLen = ep.length; } }
-      if (yCoordId) { const ep = await streamReader.readDatasetEndpoints(yCoordId); if (ep) { y0 = ep.first; yLen = ep.length; } }
-      if (x0 != null && y0 != null) {
-        const xEnd = x0 + (xLen - 1) * pixelSizeX;
-        const yEnd = y0 - (yLen - 1) * pixelSizeY;
-        worldBounds = [Math.min(x0, xEnd), Math.min(y0, yEnd), Math.max(x0, xEnd), Math.max(y0, yEnd)];
-        console.log(`[NISAR Loader] RGB bounds from spacing: [${worldBounds.join(', ')}]`);
       }
     } catch (e) {
       console.warn(`[NISAR Loader] RGB Tier 3 failed:`, e.message);
     }
   }
 
-  // Note: Keep bounds as pixel coordinates [0,0,width,height] like single-band mode
-  // worldBounds contains world coordinates (meters) for georeferencing
-
-  // ── Finalize CRS: infer from UTM zone + coordinates if not yet determined ──
+  // ── Finalize CRS ──
   if (!crs && utmZoneFromAttr && worldBounds) {
     const epsg = inferUtmEpsg(utmZoneFromAttr, worldBounds);
     crs = `EPSG:${epsg}`;
-    console.log(`[NISAR Loader] RGB CRS inferred from utm_zone=${utmZoneFromAttr}: ${crs}`);
   }
   if (!crs) {
     crs = 'EPSG:4326';
@@ -2962,14 +2949,18 @@ export async function loadNISARRGBComposite(file, options = {}) {
         console.warn(`[NISAR Loader] RGB: Coordinates appear UTM but no CRS detected!`);
       }
     }
-    console.warn(`[NISAR Loader] RGB: No projection found, using fallback: ${crs}`);
   }
-  console.log(`[NISAR Loader] RGB composite CRS: ${crs}`);
+  console.log(`[NISAR Loader] RGB CRS: ${crs}`);
+
+  // Use world coordinates as bounds (same as single-band loader) so that
+  // deck.gl tile bbox values are in world-coordinate space and getRGBTile's
+  // auto-detect logic works correctly at all zoom levels.
+  if (worldBounds) {
+    bounds = worldBounds;
+  }
 
   console.log(`[NISAR Loader] RGB composite metadata:`, {
-    bounds,
-    worldBounds,
-    crs,
+    bounds, worldBounds, crs,
     pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) }
   });
 
@@ -2984,12 +2975,44 @@ export async function loadNISARRGBComposite(file, options = {}) {
   const MAX_CHUNK_CACHE_PER_BAND = 300;
   const hasComplexData = requiredComplexPols.length > 0 && Object.keys(complexPolMap).length > 0;
 
+  // ── Concurrency limiter for HTTP Range requests ──
+  // Without throttling, fetching N chunks × M bands saturates browser connections
+  // causing ERR_INSUFFICIENT_RESOURCES.  HTTP/2 (S3) supports multiplexing,
+  // so we can go higher than Chrome's HTTP/1.1 per-host limit of 6.
+  // Local File objects bypass HTTP entirely so the limit just gates CPU work.
+  const MAX_CONCURRENT = 12;
+  let _activeRequests = 0;
+  const _requestQueue = [];
+
+  function _acquireSlot() {
+    if (_activeRequests < MAX_CONCURRENT) {
+      _activeRequests++;
+      return Promise.resolve();
+    }
+    return new Promise(resolve => _requestQueue.push(resolve));
+  }
+  function _releaseSlot() {
+    _activeRequests--;
+    if (_requestQueue.length > 0) {
+      _activeRequests++;
+      _requestQueue.shift()();
+    }
+  }
+
+  /** Throttled wrapper — waits for a connection slot before calling fn */
+  async function _throttled(fn) {
+    await _acquireSlot();
+    try { return await fn(); }
+    finally { _releaseSlot(); }
+  }
+
   // Tile cache
   const tileCache = new Map();
   const MAX_TILE_CACHE = 100;
 
   /**
-   * Read a chunk with caching for a specific polarization dataset
+   * Read a chunk with caching for a specific polarization dataset.
+   * Uses concurrency throttle for HTTP requests to avoid exhausting browser connections.
    */
   async function getCachedChunk(pol, chunkRow, chunkCol) {
     const dsId = polMap[pol];
@@ -3001,11 +3024,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
     let chunk;
     try {
-      chunk = await streamReader.readChunk(dsId, chunkRow, chunkCol);
-      // Debug: log first chunk read
-      if (chunkRow === 0 && chunkCol === 0 && chunk) {
-        console.log(`[NISAR RGB Export] First chunk ${pol}(0,0): length=${chunk.length}, expected=${chunkW * chunkH}`);
-      }
+      chunk = await _throttled(() => streamReader.readChunk(dsId, chunkRow, chunkCol));
     } catch (e) {
       // Chunk read failed — do NOT cache the error so it can be retried
       console.warn(`[NISAR RGB] Chunk ${pol}(${chunkRow},${chunkCol}) read failed:`, e.message);
@@ -3050,10 +3069,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
 
     let chunk;
     try {
-      chunk = await streamReader.readChunk(dsId, chunkRow, chunkCol);
-      if (chunkRow === 0 && chunkCol === 0 && chunk) {
-        console.log(`[NISAR RGB] Complex chunk ${cpol}(0,0): length=${chunk.length}, expected=${chunkW * chunkH * 2} (interleaved)`);
-      }
+      chunk = await _throttled(() => streamReader.readChunk(dsId, chunkRow, chunkCol));
     } catch (e) {
       console.warn(`[NISAR RGB] Complex chunk ${cpol}(${chunkRow},${chunkCol}) failed:`, e.message);
       return null;
@@ -3109,56 +3125,29 @@ export async function loadNISARRGBComposite(file, options = {}) {
     try {
       const tileSize = 256;
 
-      // Compute pixel region from bbox
-      // bbox can be in either pixel or world coordinates - auto-detect
+      // Compute pixel region from bbox (same logic as single-band getTile)
       let left, top, right, bottom;
-      if (bbox) {
-        if (bbox.left !== undefined) {
-          // Auto-detect coordinate system based on magnitude
-          // If values >> image dimensions, assume world coords (UTM meters)
-          const isWorldCoords = bbox.left > width * 2 || bbox.right > width * 2 ||
-                                Math.abs(bbox.top) > height * 2 || Math.abs(bbox.bottom) > height * 2;
+      if (bbox && bbox.left !== undefined) {
+        // Auto-detect: if all bbox values fit within image pixel dimensions → pixel coords
+        const isPixelCoords = (
+          bbox.left >= 0 && bbox.left <= width &&
+          bbox.right >= 0 && bbox.right <= width &&
+          bbox.top >= 0 && bbox.top <= height &&
+          bbox.bottom >= 0 && bbox.bottom <= height
+        );
 
-          if (isWorldCoords) {
-            // World coordinates from deck.gl (UTM meters)
-            // bbox.top = min world Y, bbox.bottom = max world Y (confusing naming!)
-            const [minX, minY, maxX, maxY] = bounds;
-            const worldLeft = bbox.left;
-            const worldRight = bbox.right;
-            const worldMinY = bbox.top;      // min Y in world (despite "top" name)
-            const worldMaxY = bbox.bottom;   // max Y in world (despite "bottom" name)
-
-            // Convert to pixel coordinates
-            // Y axis is flipped: world Y increases upward, pixel row increases downward
-            const pixelLeft = (worldLeft - minX) / pixelSizeX;
-            const pixelRight = (worldRight - minX) / pixelSizeX;
-            const pixelTop = (maxY - worldMaxY) / pixelSizeY;     // top of image (row 0)
-            const pixelBottom = (maxY - worldMinY) / pixelSizeY;  // bottom of image
-
-            left = Math.max(0, Math.floor(pixelLeft));
-            right = Math.min(width, Math.ceil(pixelRight));
-            top = Math.max(0, Math.floor(pixelTop));
-            bottom = Math.min(height, Math.ceil(pixelBottom));
-          } else {
-            // Pixel coordinates - flip Y axis to match OrthographicView
-            // bbox.top = min world Y (bottom), bbox.bottom = max world Y (top)
-            left = Math.max(0, Math.floor(bbox.left));
-            right = Math.min(width, Math.ceil(bbox.right));
-            top = Math.max(0, height - Math.ceil(bbox.bottom));
-            bottom = Math.min(height, height - Math.floor(bbox.top));
-          }
+        if (isPixelCoords) {
+          left = Math.max(0, Math.floor(bbox.left));
+          right = Math.min(width, Math.ceil(bbox.right));
+          top = Math.max(0, Math.floor(Math.min(bbox.top, bbox.bottom)));
+          bottom = Math.min(height, Math.ceil(Math.max(bbox.top, bbox.bottom)));
         } else {
-          // Geographic coordinates (west, south, east, north)
+          // World coordinates (UTM meters, etc.) — convert to pixels using bounds
           const [minX, minY, maxX, maxY] = bounds;
-          const pixelLeft = (bbox.west - minX) / pixelSizeX;
-          const pixelRight = (bbox.east - minX) / pixelSizeX;
-          const pixelTop = (maxY - bbox.north) / pixelSizeY;
-          const pixelBottom = (maxY - bbox.south) / pixelSizeY;
-
-          left = Math.max(0, Math.floor(pixelLeft));
-          top = Math.max(0, Math.floor(pixelTop));
-          right = Math.min(width, Math.ceil(pixelLeft + pixelWidth));
-          bottom = Math.min(height, Math.ceil(pixelBottom + pixelHeight));
+          left = Math.max(0, Math.round(((bbox.left - minX) / (maxX - minX)) * width));
+          right = Math.min(width, Math.round(((bbox.right - minX) / (maxX - minX)) * width));
+          top = Math.max(0, Math.round(((maxY - bbox.bottom) / (maxY - minY)) * height));
+          bottom = Math.min(height, Math.round(((maxY - bbox.top) / (maxY - minY)) * height));
         }
       } else {
         const scale = Math.pow(2, z);
@@ -3171,6 +3160,8 @@ export async function loadNISARRGBComposite(file, options = {}) {
         right = Math.min(width, Math.ceil(pixelX + pixelW));
         bottom = Math.min(height, Math.ceil(pixelY + pixelH));
       }
+
+      console.log(`[NISAR RGB Tile] pixel region: [${left},${top}]-[${right},${bottom}] (${right-left}x${bottom-top})`);
 
       if (left >= width || top >= height || right <= 0 || bottom <= 0) return null;
 
@@ -3187,30 +3178,40 @@ export async function loadNISARRGBComposite(file, options = {}) {
         ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
         : 1;
 
-      // --- Phase 1: determine which chunks cover this tile region ---
-      const minChunkRow = Math.floor(top / chunkH);
-      const maxChunkRow = Math.floor(Math.min(bottom - 1, height - 1) / chunkH);
-      const minChunkCol = Math.floor(left / chunkW);
-      const maxChunkCol = Math.floor(Math.min(right - 1, width - 1) / chunkW);
+      // --- Phase 1+2: determine which chunks are actually sampled and fetch them ---
+      // At overview zoom, stepX/stepY >> 1, so we only sample every Nth pixel.
+      // Compute the set of unique chunk coordinates that our sample points touch,
+      // instead of fetching ALL chunks in the bounding box.
+      const neededChunks = new Set();
+      for (let ty = 0; ty < tileSize; ty++) {
+        const srcY = top + Math.floor((ty + 0.5) * stepY);
+        if (srcY < 0 || srcY >= height) continue;
+        const cr = Math.floor(srcY / chunkH);
+        for (let tx = 0; tx < tileSize; tx++) {
+          const srcX = left + Math.floor((tx + 0.5) * stepX);
+          if (srcX < 0 || srcX >= width) continue;
+          const cc = Math.floor(srcX / chunkW);
+          neededChunks.add(`${cr},${cc}`);
+        }
+      }
 
-      // --- Phase 2: pre-fetch ALL chunks for ALL bands concurrently ---
       const chunkFetches = [];
       const chunkKeys = [];
-      for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
-        for (let cc = minChunkCol; cc <= maxChunkCol; cc++) {
-          for (const pol of requiredPols) {
-            chunkKeys.push({ pol, cr, cc, complex: false });
-            chunkFetches.push(getCachedChunk(pol, cr, cc));
-          }
-          // Also pre-fetch complex (off-diagonal) chunks
-          for (const cpol of requiredComplexPols) {
-            if (complexPolMap[cpol]) {
-              chunkKeys.push({ pol: cpol, cr, cc, complex: true });
-              chunkFetches.push(getCachedComplexChunk(cpol, cr, cc));
-            }
+      for (const key of neededChunks) {
+        const [cr, cc] = key.split(',').map(Number);
+        for (const pol of requiredPols) {
+          chunkKeys.push({ pol, cr, cc, complex: false });
+          chunkFetches.push(getCachedChunk(pol, cr, cc));
+        }
+        for (const cpol of requiredComplexPols) {
+          if (complexPolMap[cpol]) {
+            chunkKeys.push({ pol: cpol, cr, cc, complex: true });
+            chunkFetches.push(getCachedComplexChunk(cpol, cr, cc));
           }
         }
       }
+
+      console.log(`[NISAR RGB Tile] Fetching ${neededChunks.size} unique chunks × ${requiredPols.length} bands = ${chunkFetches.length} requests`);
 
       const fetchedChunks = await Promise.all(chunkFetches);
 
@@ -3460,8 +3461,11 @@ export async function loadNISARRGBComposite(file, options = {}) {
     band,
   }));
 
-  // Read product identification metadata
-  const identification = await readProductIdentification(streamReader, paths, activeFreq, 'streaming');
+  // Read product identification metadata (fire in background, don't block tile serving)
+  let identification = null;
+  const identPromise = readProductIdentification(streamReader, paths, activeFreq, 'streaming')
+    .then(id => { identification = id; })
+    .catch(() => {});
 
   /**
    * Read pixel values for all polarization bands at (row, col).
@@ -3514,10 +3518,36 @@ export async function loadNISARRGBComposite(file, options = {}) {
     return result;
   }
 
+  /**
+   * Prefetch a sparse grid of overview chunks for all bands.
+   * Warms the cache so the first full-extent render is fast.
+   */
+  async function prefetchOverviewChunks() {
+    const nChunkRows = Math.ceil(height / chunkH);
+    const nChunkCols = Math.ceil(width / chunkW);
+    // Sample every Nth chunk to cover the full extent without flooding
+    const step = Math.max(1, Math.floor(Math.sqrt(nChunkRows * nChunkCols / 16)));
+    const fetches = [];
+    for (let cr = 0; cr < nChunkRows; cr += step) {
+      for (let cc = 0; cc < nChunkCols; cc += step) {
+        for (const pol of requiredPols) {
+          fetches.push(getCachedChunk(pol, cr, cc));
+        }
+      }
+    }
+    console.log(`[NISAR RGB] Prefetching ${fetches.length} overview chunks (step=${step})...`);
+    await Promise.all(fetches);
+    console.log(`[NISAR RGB] Overview prefetch complete`);
+  }
+
+  // Wait for identification to resolve (should be done by now)
+  await identPromise;
+
   const result = {
     getRGBTile,
     getExportStripe,
     getPixelValue,
+    prefetchOverviewChunks,
     bounds,
     worldBounds,
     crs,
@@ -3530,6 +3560,7 @@ export async function loadNISARRGBComposite(file, options = {}) {
     band,
     identification,
     availableDatasets,
+    mode: 'streaming',
     _streaming: true,
     _h5chunk: streamReader,
   };
