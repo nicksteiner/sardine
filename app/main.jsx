@@ -1974,8 +1974,8 @@ function App() {
         filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
         crs: imageData?.crs || '',
         roi,
-        profileData: roiProfile,
-        profileShow,
+        profileData: null,
+        profileShow: { v: false, h: false, i: false },
         imageWidth: imageData?.sourceWidth || imageData?.width,
         imageHeight: imageData?.sourceHeight || imageData?.height,
         histogramData: showHistogramOverlay ? histogramData : null,
@@ -2017,19 +2017,10 @@ function App() {
         return;
       }
 
-      // V/H/I — Toggle ROI profile views (only when no modifier keys)
+      // Keyboard shortcuts (only when no modifier keys)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (e.key === 'v' || e.key === 'V') {
-          setProfileShow(prev => ({ ...prev, v: !prev.v }));
-          return;
-        }
         if (e.key === 'h' || e.key === 'H') {
-          // h/H always toggles histogram overlay
           setShowHistogramOverlay(prev => !prev);
-          return;
-        }
-        if (e.key === 'i' || e.key === 'I') {
-          setProfileShow(prev => ({ ...prev, i: !prev.i }));
           return;
         }
         if (e.key === 'c' || e.key === 'C') {
@@ -3279,8 +3270,8 @@ function App() {
               pixelWindowSize={pixelWindowSize}
               xCoords={imageData?.xCoords}
               yCoords={imageData?.yCoords}
-              roiProfile={roiProfile}
-              profileShow={profileShow}
+              roiProfile={null}
+              profileShow={{ v: false, h: false, i: false }}
               classificationMap={classifierOpen ? classificationMap : null}
               classRegions={classRegions}
               classifierRoiDims={classifierRoiDims}
