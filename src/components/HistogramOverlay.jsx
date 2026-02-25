@@ -391,12 +391,6 @@ export function HistogramOverlay({
       polarization, compositeId, compact: true,
     });
 
-    // ── Dismiss hint (component only, not in export) ──
-    ctx.fillStyle = 'rgba(232, 237, 245, 0.35)';
-    ctx.font = `400 9px 'Inter', 'Helvetica Neue', sans-serif`;
-    ctx.textAlign = 'right';
-    ctx.fillText('H / Esc to close', W - 16, H - 6);
-
   }, [histograms, mode, contrastLimits, useDecibels, polarization, compositeId]);
 
   // ── Render on mount / data change / resize ──
@@ -426,26 +420,42 @@ export function HistogramOverlay({
   }, [histograms, mode, contrastLimits, useDecibels, polarization, compositeId]);
 
   return (
-    <div className="histogram-inset" onClick={(e) => e.stopPropagation()}>
-      <button
-        onClick={handleExportSVG}
-        title="Export publication SVG"
-        style={{
-          position: 'absolute', top: 4, right: 28, zIndex: 2,
-          width: 32, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'rgba(10, 22, 40, 0.7)',
-          border: '1px solid var(--sardine-border-subtle, #162d4a)',
-          borderRadius: 'var(--radius-sm, 4px)',
-          color: 'var(--text-muted, #5a7099)',
-          fontSize: 9, fontFamily: 'var(--font-mono)', cursor: 'pointer', padding: 0,
-        }}
-      >SVG</button>
-      <button
-        className="histogram-inset-close"
-        onClick={onClose}
-        title="Close histogram (H)"
-      >×</button>
-      <canvas ref={canvasRef} />
+    <div style={{
+      position: 'absolute',
+      bottom: 16,
+      left: 16,
+      width: 460,
+      height: 260,
+      background: 'rgba(10, 22, 40, 0.94)',
+      border: '1px solid #1e3a5f',
+      borderRadius: 8,
+      zIndex: 30,
+      fontFamily: "'JetBrains Mono', monospace",
+      color: '#e8edf5',
+      boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+    }} onClick={(e) => e.stopPropagation()}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px 0 12px', flexShrink: 0 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.5px' }}>
+          <span style={{ color: '#4ec9d4' }}>Histogram</span>
+        </span>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <button onClick={handleExportSVG} title="Export SVG" style={{
+            background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
+            fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
+          }}>SVG</button>
+          <button onClick={onClose} style={{
+            background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
+            fontSize: 16, padding: '0 4px', lineHeight: 1,
+          }}>&times;</button>
+        </div>
+      </div>
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
+      </div>
     </div>
   );
 }

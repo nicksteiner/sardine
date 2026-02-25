@@ -756,6 +756,11 @@ function App() {
     }
   }, [histogramScope, imageData, handleRecomputeHistogram]);
 
+  // Auto-show histogram overlay when histogram data becomes available
+  useEffect(() => {
+    if (histogramData) setShowHistogramOverlay(true);
+  }, [histogramData]);
+
   // Recompute histogram when switching between dB and linear mode
   const useDecibelsRef = useRef(useDecibels);
   useEffect(() => {
@@ -2018,17 +2023,8 @@ function App() {
           setProfileShow(prev => ({ ...prev, v: !prev.v }));
           return;
         }
-        if (e.key === 'h') {
-          // h toggles ROI horizontal profile if ROI active, otherwise histogram
-          if (roi) {
-            setProfileShow(prev => ({ ...prev, h: !prev.h }));
-          } else {
-            setShowHistogramOverlay(prev => !prev);
-          }
-          return;
-        }
-        if (e.key === 'H') {
-          // Shift+H always toggles histogram overlay
+        if (e.key === 'h' || e.key === 'H') {
+          // h/H always toggles histogram overlay
           setShowHistogramOverlay(prev => !prev);
           return;
         }
