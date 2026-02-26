@@ -115,12 +115,17 @@ export {
   parseS3Uri,
 } from './utils/s3-presign.js';
 
+// WKT / ROI
+export { parseWKT, wktToBbox, bboxToWKT, validateWKT, wktToGeoJSON } from './utils/wkt.js';
+export { bboxToPixelRange, computeSubsetBounds, reprojectBbox, roiIntersectsFile } from './utils/roi-subset.js';
+
 // Components
 export { MetadataPanel } from './components/MetadataPanel.jsx';
 export { OverviewMap } from './components/OverviewMap.jsx';
 export { StatusWindow } from './components/StatusWindow.jsx';
 export { SceneCatalog } from './components/SceneCatalog.jsx';
 export { STACSearch } from './components/STACSearch.jsx';
+export { ROIWorkflow } from './components/ROIWorkflow.jsx';
 
 // STAC Catalog
 export {
@@ -136,6 +141,12 @@ export {
   formatDatetime,
   itemBbox,
 } from './loaders/stac-client.js';
+
+// Workflow Engine
+export { WorkflowCanvas } from './workflow/WorkflowCanvas.jsx';
+export { executeGraph, serializeWorkflow, deserializeWorkflow, PORT_TYPES } from './workflow/engine.js';
+export { registerAllNodes } from './workflow/nodes/index.js';
+export { PRESET_WORKFLOWS } from './workflow/presets.js';
 
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';

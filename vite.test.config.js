@@ -12,5 +12,11 @@ export default defineConfig({
   server: {
     port: 5175,
     open: '/test/benchmarks/gpu-vs-cpu.html',
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8050',
+        changeOrigin: true,
+      },
+    },
   },
 });

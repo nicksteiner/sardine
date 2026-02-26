@@ -168,6 +168,82 @@ body::after {
   transition: padding-bottom 0.3s ease;
 }
 
+/* ─── PANEL RESIZER (draggable divider) ─── */
+.panel-resizer {
+  width: 12px;
+  cursor: col-resize;
+  background: var(--sardine-bg);
+  border-left: 1px solid var(--sardine-border-subtle);
+  border-right: 1px solid var(--sardine-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  z-index: 20;
+  transition: background 0.2s ease, width 0.2s ease;
+  position: relative;
+}
+
+.panel-resizer:hover,
+.panel-resizer:active {
+  width: 16px;
+  background: var(--sardine-bg-hover);
+  border-color: var(--sardine-cyan-dim);
+}
+
+.panel-resizer-grip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.3;
+  transition: opacity 0.2s ease;
+}
+
+.panel-resizer:hover .panel-resizer-grip {
+  opacity: 1;
+}
+
+/* Left arrow */
+.panel-resizer-grip::before {
+  content: '\25C0';
+  font-size: 8px;
+  color: var(--sardine-cyan-dim);
+  transition: color 0.15s ease;
+}
+
+/* Dots grip pattern */
+.panel-resizer-grip::after {
+  content: '\2022\a\2022\a\2022';
+  white-space: pre;
+  font-size: 6px;
+  line-height: 6px;
+  color: var(--sardine-border);
+  transition: color 0.15s ease;
+}
+
+/* Right arrow via a sibling element */
+.panel-resizer-arrow-right {
+  position: absolute;
+  bottom: calc(50% - 24px);
+  font-size: 8px;
+  color: var(--sardine-cyan-dim);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.panel-resizer:hover .panel-resizer-grip::before {
+  color: var(--sardine-cyan);
+}
+
+.panel-resizer:hover .panel-resizer-grip::after {
+  color: var(--sardine-cyan-dim);
+}
+
+.panel-resizer:hover .panel-resizer-arrow-right {
+  opacity: 1;
+}
+
 
 /* ─── CONTROLS PANEL (Left Sidebar) ─── */
 .controls-panel {
@@ -180,6 +256,122 @@ body::after {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
+}
+
+/* ─── WORKFLOW EDITOR (litegraph.js Canvas2D) ─── */
+.workflow-editor {
+  width: 45%;
+  min-width: 400px;
+  max-width: 55%;
+  background: #080e1a;
+  border-right: 1px dashed var(--sardine-border);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.workflow-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--sardine-bg-panel);
+  border-bottom: 1px solid var(--sardine-border);
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.workflow-btn {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 4px 10px;
+  background: var(--sardine-bg-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: all 0.15s ease;
+}
+
+.workflow-btn:hover {
+  background: var(--sardine-bg-hover);
+  color: var(--text-primary);
+  border-color: var(--sardine-cyan-dim);
+}
+
+.workflow-btn-run {
+  background: rgba(78, 201, 212, 0.12);
+  color: var(--sardine-cyan);
+  border-color: var(--sardine-cyan-dim);
+  font-weight: 600;
+}
+
+.workflow-btn-run:hover {
+  background: rgba(78, 201, 212, 0.25);
+  border-color: var(--sardine-cyan);
+}
+
+.workflow-toolbar-separator {
+  width: 1px;
+  height: 16px;
+  background: var(--sardine-border);
+  margin: 0 2px;
+}
+
+.workflow-preset-select {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  padding: 3px 6px;
+  background: var(--sardine-bg-raised);
+  color: var(--text-secondary);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.workflow-canvas {
+  flex: 1;
+  width: 100%;
+  display: block;
+}
+
+/* Override litegraph.js default styles for SARdine dark theme */
+.litegraph.litecontextmenu {
+  background: var(--sardine-bg-panel) !important;
+  border: 1px solid var(--sardine-border) !important;
+  color: var(--text-primary) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.75rem !important;
+}
+
+.litegraph.litecontextmenu .litemenu-entry {
+  color: var(--text-secondary) !important;
+  padding: 4px 12px !important;
+}
+
+.litegraph.litecontextmenu .litemenu-entry:hover {
+  background: var(--sardine-bg-hover) !important;
+  color: var(--sardine-cyan) !important;
+}
+
+.litegraph.litecontextmenu .litemenu-entry.separator {
+  border-bottom-color: var(--sardine-border) !important;
+}
+
+.litegraph .litegraph-dialog {
+  background: var(--sardine-bg-panel) !important;
+  border: 1px solid var(--sardine-border) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Responsive — workflow editor on small screens */
+@media (max-width: 1024px) {
+  .workflow-editor {
+    width: 35%;
+    min-width: 320px;
+  }
 }
 
 .control-section {

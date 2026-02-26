@@ -15,6 +15,7 @@
     "test:quick": "node test/quick-validation.js",
     "test:watch": "nodemon -w src -x 'npm run test:quick'",
     "debug:gpu": "vite --config vite.test.config.js --open /test/gpu-debug.html --force",
+    "test:shards": "vite --config vite.test.config.js --open /test/shard-throughput-test.html --force",
     "benchmark": "vite --config vite.test.config.js --open /test/benchmarks/gpu-vs-cpu.html --force",
     "launch": "node server/launch.cjs",
     "launch:dev": "npm run build && node server/launch.cjs"
@@ -44,6 +45,7 @@
     "@loaders.gl/parquet": "^3.4.14",
     "geotiff": "^2.1.0",
     "h5wasm": "^0.8.11",
+    "litegraph.js": "^0.7.18",
     "maplibre-gl": "^4.0.0",
     "pako": "^2.1.0",
     "parquet-wasm": "^0.6.1",

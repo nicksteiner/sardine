@@ -5,7 +5,7 @@ import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
-import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
+import { isNISARFile, isCOGFile, presignShardedViaServer } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
@@ -21,9 +21,71 @@ import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../sr
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { STACSearch } from '../src/components/STACSearch.jsx';
+import { ROIWorkflow } from '../src/components/ROIWorkflow.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
+import { WorkflowCanvas } from '../src/workflow/WorkflowCanvas.jsx';
+
+/**
+ * PanelResizer — draggable divider between two flex panels.
+ * Stores the left panel width as a CSS custom property on the parent .main-layout.
+ */
+function PanelResizer() {
+  const dragging = useRef(false);
+  const startX = useRef(0);
+  const startWidth = useRef(0);
+
+  const onPointerDown = useCallback((e) => {
+    e.preventDefault();
+    dragging.current = true;
+    startX.current = e.clientX;
+    const layout = e.target.closest('.main-layout');
+    const editor = layout?.querySelector('.workflow-editor');
+    startWidth.current = editor?.offsetWidth || 400;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onPointerMove = (ev) => {
+      if (!dragging.current) return;
+      const delta = ev.clientX - startX.current;
+      const newWidth = Math.max(280, Math.min(startWidth.current + delta, window.innerWidth * 0.75));
+      const editor = layout?.querySelector('.workflow-editor');
+      if (editor) {
+        editor.style.width = `${newWidth}px`;
+        editor.style.minWidth = `${newWidth}px`;
+        editor.style.maxWidth = `${newWidth}px`;
+      }
+      // Trigger litegraph canvas resize
+      const canvas = editor?.querySelector('canvas');
+      if (canvas && canvas.width !== editor.clientWidth) {
+        canvas.width = editor.clientWidth;
+        canvas.height = editor.clientHeight - 34; // toolbar height
+      }
+    };
+
+    const onPointerUp = () => {
+      dragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+  }, []);
+
+  return (
+    <div
+      className="panel-resizer"
+      onPointerDown={onPointerDown}
+    >
+      <div className="panel-resizer-grip" />
+      <span className="panel-resizer-arrow-right">{'\u25B6'}</span>
+    </div>
+  );
+}
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -314,6 +376,9 @@ function App() {
   // STAC search overlay layers
   const [stacLayers, setStacLayers] = useState([]);
 
+  // ROI workflow overlay layers
+  const [roiLayers, setROILayers] = useState([]);
+
   // Overture Maps overlay state
   const [overtureEnabled, setOvertureEnabled] = useState(false);
   const [overtureThemes, setOvertureThemes] = useState(['buildings']); // enabled themes
@@ -339,6 +404,29 @@ function App() {
 
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
+
+  // Workflow viewer callback — bridges litegraph Viewer node to SARViewer props
+  const handleWorkflowViewerUpdate = useCallback((output) => {
+    if (!output) return;
+    const { imageData: wfImageData, renderParams, showGrid: wfShowGrid, pixelExplorer: wfPixelExplorer } = output;
+
+    if (wfImageData) {
+      setImageData(wfImageData);
+    }
+    if (renderParams) {
+      if (renderParams.colormap) setColormap(renderParams.colormap);
+      if (renderParams.useDecibels !== undefined) setUseDecibels(renderParams.useDecibels);
+      if (renderParams.stretchMode) setStretchMode(renderParams.stretchMode);
+      if (renderParams.gamma !== undefined) setGamma(renderParams.gamma);
+      if (renderParams.contrastMin !== undefined) setContrastMin(renderParams.contrastMin);
+      if (renderParams.contrastMax !== undefined) setContrastMax(renderParams.contrastMax);
+      if (renderParams.contrastLimits && renderParams.contrastLimits.R) {
+        setRgbContrastLimits(renderParams.contrastLimits);
+      }
+    }
+    if (wfShowGrid !== undefined) setShowGrid(wfShowGrid);
+    if (wfPixelExplorer !== undefined) setPixelExplorer(wfPixelExplorer);
+  }, []);
 
   // Clear ROI and classifier when image data changes (new file/dataset loaded)
   useEffect(() => {
@@ -1206,7 +1294,7 @@ function App() {
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
-    const { url, name, size, type } = fileInfo;
+    const { url, name, size, type, s3Bucket, s3Region, key } = fileInfo;
     addStatusLog('info', `Remote file selected: ${name}`);
 
     if (type === 'cog') {
@@ -1231,6 +1319,19 @@ function App() {
       // Store the stream reader to reuse when loading (avoids re-downloading metadata)
       if (result._streamReader) {
         handleRemoteFileSelect._cachedReader = result._streamReader;
+
+        // Set up connection sharding: presign for multiple S3 hostnames
+        // so the browser opens separate TCP connections (~2x throughput)
+        if (s3Bucket && key) {
+          presignShardedViaServer('', s3Bucket, key, s3Region || 'us-west-2')
+            .then(shardUrls => {
+              if (shardUrls.length > 1) {
+                result._streamReader.setShardUrls(shardUrls);
+                addStatusLog('info', `Shard URLs set: ${shardUrls.length} connections`);
+              }
+            })
+            .catch(e => console.warn('[SARdine] Shard presign failed:', e.message));
+        }
       }
       setNisarDatasets(datasets);
 
@@ -1414,6 +1515,47 @@ function App() {
       setLoading(false);
     }
   }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, addStatusLog, autoFitIfNewScene]);
+
+  // Load ROI subset from a remote NISAR file
+  const handleROILoadSubset = useCallback(async ({ url, name, type, roiBounds, roiCrs, frequency, polarization }) => {
+    if (!url || !roiBounds) return;
+    const gen = ++loadGenRef.current;
+
+    setLoading(true);
+    setError(null);
+    addStatusLog('info', `Loading ROI subset from ${name || url}`);
+
+    try {
+      const data = await loadNISARGCOVFromUrl(url, {
+        frequency: frequency || 'A',
+        polarization: polarization || 'HHHH',
+        roiBounds,
+        roiCrs: roiCrs || 'EPSG:4326',
+      });
+
+      if (data.mode === 'streaming') {
+        data.onRefine = () => setTileVersion(v => v + 1);
+        if (data.prefetchOverviewChunks) {
+          data.prefetchOverviewChunks().catch(e =>
+            console.warn('[SARdine] ROI overview prefetch failed:', e.message)
+          );
+        }
+      }
+
+      addStatusLog('success', `ROI subset loaded: ${data.width}×${data.height}`,
+        `Source: ${name || url}`);
+
+      if (gen !== loadGenRef.current) return;
+      setImageData(data);
+      autoFitIfNewScene(data.bounds);
+    } catch (e) {
+      if (gen !== loadGenRef.current) return;
+      setError(e.message);
+      addStatusLog('error', 'ROI subset load failed', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog, autoFitIfNewScene]);
 
   // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
@@ -2226,8 +2368,17 @@ function App() {
 
       {/* Main Layout */}
       <div className="main-layout">
-        {/* Controls Panel */}
-        <div className="controls-panel">
+        {/* Workflow Editor (litegraph.js Canvas2D) */}
+        <WorkflowCanvas
+          onViewerUpdate={handleWorkflowViewerUpdate}
+          onStatusLog={addStatusLog}
+        />
+
+        {/* Draggable resize handle between workflow editor and viewer */}
+        <PanelResizer />
+
+        {/* Legacy Controls Panel — hidden, kept for reference */}
+        <div className="controls-panel" style={{ display: 'none' }}>
           {/* Data Source Selection */}
           <CollapsibleSection title="Data Source">
             <div className="control-group">
@@ -2238,6 +2389,7 @@ function App() {
                 <option value="remote">Remote Bucket / S3</option>
                 <option value="catalog">Scene Catalog (GeoJSON)</option>
                 <option value="stac">STAC Catalog Search</option>
+                <option value="roi">ROI Workflow (WKT)</option>
               </select>
             </div>
           </CollapsibleSection>
@@ -2735,6 +2887,21 @@ function App() {
                   </button>
                 </>
               )}
+            </CollapsibleSection>
+          )}
+
+          {/* ROI Workflow (WKT) */}
+          {fileType === 'roi' && (
+            <CollapsibleSection title="ROI Workflow">
+              <ROIWorkflow
+                onLoadSubset={handleROILoadSubset}
+                onStatus={addStatusLog}
+                onLayersChange={setROILayers}
+                onZoomToBounds={(bbox) => {
+                  // Trigger view fit to ROI bounds
+                  if (bbox) autoFitIfNewScene(bbox);
+                }}
+              />
             </CollapsibleSection>
           )}
 
@@ -3306,7 +3473,7 @@ function App() {
               height="100%"
               onViewStateChange={handleViewStateChange}
               initialViewState={initialViewState}
-              extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
+              extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers, ...roiLayers]}
               roi={roi}
               onROIChange={setROI}
               imageWidth={imageData?.sourceWidth || imageData?.width}

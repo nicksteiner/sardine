@@ -1782,7 +1782,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
    * For small regions (high zoom): reads full region via readRegion.
    * For large regions (low zoom): samples individual chunks for efficiency.
    */
-  async function getTile({ x, y, z, bbox, multiLook = false }) {
+  async function getTile({ x, y, z, bbox, multiLook = false, signal }) {
     const ml = multiLook ? 'ml' : 'nn';
     const tileKey = `${x},${y},${z},${ml}`;
 
@@ -1806,10 +1806,10 @@ async function loadNISARGCOVStreaming(file, options = {}) {
           // OrthographicView: Y increases upward in world, but image rows increase downward.
           // bbox.top = min world Y (bottom of view), bbox.bottom = max world Y (top of view).
           // Flip Y: imageRow = height - worldY
-          left = Math.max(0, Math.floor(bbox.left));
-          right = Math.min(width, Math.ceil(bbox.right));
-          top = Math.max(0, height - Math.ceil(bbox.bottom));
-          bottom = Math.min(height, height - Math.floor(bbox.top));
+          left = Math.max(0, Math.min(width, Math.floor(bbox.left)));
+          right = Math.max(0, Math.min(width, Math.ceil(bbox.right)));
+          top = Math.max(0, Math.min(height, height - Math.ceil(bbox.bottom)));
+          bottom = Math.max(0, Math.min(height, height - Math.floor(bbox.top)));
         } else {
           left = Math.max(0, Math.floor(bbox.west));
           top = Math.max(0, Math.floor(bbox.south));
@@ -1912,7 +1912,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         const batchPromises = [];
         if (uncachedData.length > 0 && streamReader.readChunksBatch) {
           batchPromises.push(
-            streamReader.readChunksBatch(selectedDatasetId, uncachedData)
+            streamReader.readChunksBatch(selectedDatasetId, uncachedData, signal)
               .then(batchMap => {
                 for (const [key, data] of batchMap) {
                   if (chunkCache.size >= MAX_CHUNK_CACHE) {
@@ -1923,6 +1923,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
                 }
               })
               .catch(e => {
+                if (e.name === 'AbortError') return; // tile cancelled, expected
                 console.warn('[NISAR Loader] Batch chunk read failed, falling back:', e.message);
               })
           );
@@ -1932,7 +1933,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
         }
         if (uncachedMask.length > 0 && maskDatasetId && streamReader.readChunksBatch) {
           batchPromises.push(
-            streamReader.readChunksBatch(maskDatasetId, uncachedMask)
+            streamReader.readChunksBatch(maskDatasetId, uncachedMask, signal)
               .then(batchMap => {
                 for (const [key, data] of batchMap) {
                   if (maskChunkCache.size >= MAX_CHUNK_CACHE) {
@@ -3014,7 +3015,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
    * Read a chunk with caching for a specific polarization dataset.
    * Uses concurrency throttle for HTTP requests to avoid exhausting browser connections.
    */
-  async function getCachedChunk(pol, chunkRow, chunkCol) {
+  async function getCachedChunk(pol, chunkRow, chunkCol, signal) {
     const dsId = polMap[pol];
     if (!dsId) return null;
 
@@ -3024,9 +3025,9 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
 
     let chunk;
     try {
-      chunk = await _throttled(() => streamReader.readChunk(dsId, chunkRow, chunkCol));
+      chunk = await _throttled(() => streamReader.readChunk(dsId, chunkRow, chunkCol, signal));
     } catch (e) {
-      // Chunk read failed — do NOT cache the error so it can be retried
+      if (e.name === 'AbortError') throw e; // propagate abort so tile fails fast
       console.warn(`[NISAR RGB] Chunk ${pol}(${chunkRow},${chunkCol}) read failed:`, e.message);
       return null;
     }
@@ -3059,7 +3060,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
    * Read a complex (CFloat32) chunk with caching.
    * Returns interleaved Float32Array [re, im, re, im, ...] of length 2×chunkH×chunkW.
    */
-  async function getCachedComplexChunk(cpol, chunkRow, chunkCol) {
+  async function getCachedComplexChunk(cpol, chunkRow, chunkCol, signal) {
     const dsId = complexPolMap[cpol];
     if (!dsId) return null;
 
@@ -3069,8 +3070,9 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
 
     let chunk;
     try {
-      chunk = await _throttled(() => streamReader.readChunk(dsId, chunkRow, chunkCol));
+      chunk = await _throttled(() => streamReader.readChunk(dsId, chunkRow, chunkCol, signal));
     } catch (e) {
+      if (e.name === 'AbortError') throw e; // propagate abort so tile fails fast
       console.warn(`[NISAR RGB] Complex chunk ${cpol}(${chunkRow},${chunkCol}) failed:`, e.message);
       return null;
     }
@@ -3107,7 +3109,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
    * Performance: pre-fetches all needed chunks for all bands concurrently,
    * then samples pixels synchronously from the pre-fetched data.
    */
-  async function getRGBTile({ x, y, z, bbox, multiLook = false }) {
+  async function getRGBTile({ x, y, z, bbox, multiLook = false, signal }) {
     const ml = multiLook ? 'ml' : 'nn';
     const tileKey = `rgb_${x},${y},${z},${ml}`;
 
@@ -3144,10 +3146,10 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         } else {
           // World coordinates (UTM meters, etc.) — convert to pixels using bounds
           const [minX, minY, maxX, maxY] = bounds;
-          left = Math.max(0, Math.round(((bbox.left - minX) / (maxX - minX)) * width));
-          right = Math.min(width, Math.round(((bbox.right - minX) / (maxX - minX)) * width));
-          top = Math.max(0, Math.round(((maxY - bbox.bottom) / (maxY - minY)) * height));
-          bottom = Math.min(height, Math.round(((maxY - bbox.top) / (maxY - minY)) * height));
+          left = Math.max(0, Math.min(width, Math.round(((bbox.left - minX) / (maxX - minX)) * width)));
+          right = Math.max(0, Math.min(width, Math.round(((bbox.right - minX) / (maxX - minX)) * width)));
+          top = Math.max(0, Math.min(height, Math.round(((maxY - bbox.bottom) / (maxY - minY)) * height)));
+          bottom = Math.max(0, Math.min(height, Math.round(((maxY - bbox.top) / (maxY - minY)) * height)));
         }
       } else {
         const scale = Math.pow(2, z);
@@ -3201,12 +3203,12 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         const [cr, cc] = key.split(',').map(Number);
         for (const pol of requiredPols) {
           chunkKeys.push({ pol, cr, cc, complex: false });
-          chunkFetches.push(getCachedChunk(pol, cr, cc));
+          chunkFetches.push(getCachedChunk(pol, cr, cc, signal));
         }
         for (const cpol of requiredComplexPols) {
           if (complexPolMap[cpol]) {
             chunkKeys.push({ pol: cpol, cr, cc, complex: true });
-            chunkFetches.push(getCachedComplexChunk(cpol, cr, cc));
+            chunkFetches.push(getCachedComplexChunk(cpol, cr, cc, signal));
           }
         }
       }
@@ -4376,10 +4378,11 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   //   numCols    — (optional) number of output columns, default exportWidth
   async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
     const outCols = numCols || exportWidth;
-    const srcTop = startRow * ml;
-    const srcBottom = Math.min((startRow + numRows) * ml, height);
-    const srcLeft = startCol * ml;
-    const srcRight = Math.min((startCol + outCols) * ml, width);
+    // ROI offset: caller operates in subset pixel space, convert to absolute
+    const srcTop = startRow * ml + rowOffset;
+    const srcBottom = Math.min((startRow + numRows) * ml + rowOffset, rowOffset + subsetHeight);
+    const srcLeft = startCol * ml + colOffset;
+    const srcRight = Math.min((startCol + outCols) * ml + colOffset, colOffset + subsetWidth);
 
     // Identify chunks covering just the requested row/column range
     const minChunkRow = Math.floor(srcTop / chunkH);
@@ -4418,10 +4421,10 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     // Exact box-filter averaging: each output pixel averages ALL ml×ml source pixels
     for (let oy = 0; oy < numRows; oy++) {
       for (let ox = 0; ox < outCols; ox++) {
-        const sx0 = (startCol + ox) * ml;
-        const sy0 = (startRow + oy) * ml;
-        const sx1 = Math.min(sx0 + ml, width);
-        const sy1 = Math.min(sy0 + ml, height);
+        const sx0 = (startCol + ox) * ml + colOffset;
+        const sy0 = (startRow + oy) * ml + rowOffset;
+        const sx1 = Math.min(sx0 + ml, colOffset + subsetWidth);
+        const sy1 = Math.min(sy0 + ml, rowOffset + subsetHeight);
 
         let sum = 0;
         let count = 0;
@@ -4462,25 +4465,28 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
    * Pass windowSize (odd int) to average a windowSize×windowSize area.
    */
   async function getPixelValue(row, col, windowSize = 1) {
-    if (row < 0 || row >= height || col < 0 || col >= width) return NaN;
+    // Caller passes coords in subset space; convert to absolute for h5chunk
+    const absRow = row + rowOffset;
+    const absCol = col + colOffset;
+    if (absRow < 0 || absRow >= height || absCol < 0 || absCol >= width) return NaN;
 
     if (windowSize <= 1) {
-      const cr = Math.floor(row / chunkH);
-      const cc = Math.floor(col / chunkW);
+      const cr = Math.floor(absRow / chunkH);
+      const cc = Math.floor(absCol / chunkW);
       const chunk = await getStreamChunk(cr, cc);
       if (!chunk) return NaN;
-      const localY = row - cr * chunkH;
-      const localX = col - cc * chunkW;
+      const localY = absRow - cr * chunkH;
+      const localX = absCol - cc * chunkW;
       const idx = localY * chunkW + localX;
       if (idx < 0 || idx >= chunk.length) return NaN;
       return chunk[idx];
     }
 
     const half = Math.floor(windowSize / 2);
-    const r0 = Math.max(0, row - half);
-    const r1 = Math.min(height, row + half + 1);
-    const c0 = Math.max(0, col - half);
-    const c1 = Math.min(width, col + half + 1);
+    const r0 = Math.max(rowOffset, absRow - half);
+    const r1 = Math.min(rowOffset + subsetHeight, absRow + half + 1);
+    const c0 = Math.max(colOffset, absCol - half);
+    const c1 = Math.min(colOffset + subsetWidth, absCol + half + 1);
 
     const neededChunks = new Set();
     for (let r = r0; r < r1; r++) {
@@ -4512,10 +4518,10 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   }
 
   const result = {
-    width,
-    height,
-    bounds,
-    worldBounds,
+    width: subsetWidth,
+    height: subsetHeight,
+    bounds: subsetBounds,
+    worldBounds: subsetWorldBounds,
     crs,
     epsgCode,
     getTile,
@@ -4527,8 +4533,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     band,
     frequency: activeFreq,
     polarization,
-    xCoords,
-    yCoords,
+    xCoords: roiPixelSubset && xCoords ? xCoords.slice(colOffset, colOffset + subsetWidth) : xCoords,
+    yCoords: roiPixelSubset && yCoords ? yCoords.slice(rowOffset, rowOffset + subsetHeight) : yCoords,
+    roiSubset: roiPixelSubset ? { rowOffset, colOffset, subsetWidth, subsetHeight } : null,
     get identification() { return identification; },
     identificationReady,
     hasMask: maskDatasetId != null,
@@ -4541,8 +4548,13 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
      * Returns a promise that resolves when all overview chunks are cached.
      */
     async prefetchOverviewChunks() {
-      const totalCR = Math.ceil(height / chunkH);
-      const totalCC = Math.ceil(width / chunkW);
+      // When ROI subset is active, only prefetch chunks covering the subset
+      const firstCR = Math.floor(rowOffset / chunkH);
+      const lastCR = Math.floor((rowOffset + subsetHeight - 1) / chunkH);
+      const firstCC = Math.floor(colOffset / chunkW);
+      const lastCC = Math.floor((colOffset + subsetWidth - 1) / chunkW);
+      const totalCR = lastCR - firstCR + 1;
+      const totalCC = lastCC - firstCC + 1;
       // Prefetch an 8×8 grid — same as the tile coarse grid — so the z0
       // overview tile is instant from cache. Kept at 8 for fast initial load.
       const COARSE_MAX = 8;
@@ -4551,8 +4563,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
       // Collect chunk coordinates for batch read
       const coords = [];
-      for (let cr = 0; cr < totalCR; cr += strideR) {
-        for (let cc = 0; cc < totalCC; cc += strideC) {
+      for (let cr = firstCR; cr <= lastCR; cr += strideR) {
+        for (let cc = firstCC; cc <= lastCC; cc += strideC) {
           coords.push([cr, cc]);
         }
       }

@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>S3 Shard Throughput Test — SARdine</title>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Courier New', monospace;
+      background: #0a1628;
+      color: #c0d0e0;
+      padding: 20px;
+    }
+    h1 { color: #4ec9d4; margin: 0 0 10px; }
+    h2 { color: #4ec9d4; margin: 20px 0 8px; font-size: 1.1em; }
+    .desc { color: #8090a0; margin-bottom: 20px; }
+    .controls { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    label { font-size: 0.85em; color: #8090a0; }
+    input, select {
+      background: #1a2a3e; color: #c0d0e0; border: 1px solid #2a4a6e;
+      padding: 6px 10px; border-radius: 4px; font-family: inherit; font-size: 13px;
+    }
+    input[type=text] { width: 320px; }
+    input[type=number] { width: 80px; }
+    button {
+      background: #2a8a93; color: #e0f0ff; border: none;
+      padding: 8px 18px; border-radius: 4px; cursor: pointer;
+      font-family: inherit; font-size: 13px; font-weight: bold;
+    }
+    button:hover { background: #3aa0a8; }
+    button:disabled { background: #1a3a4e; color: #506070; cursor: default; }
+    .results {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 15px;
+      margin-top: 15px;
+    }
+    .card {
+      background: #0f1e30; border: 1px solid #1a3a5e; border-radius: 6px;
+      padding: 15px;
+    }
+    .card.pass { border-color: #2a8a50; }
+    .card.fail { border-color: #a04040; }
+    .card h3 { margin: 0 0 8px; font-size: 0.95em; }
+    .card .value { font-size: 1.8em; font-weight: bold; color: #4ec9d4; }
+    .card .unit { color: #607080; font-size: 0.8em; }
+    .card .detail { color: #607080; font-size: 0.8em; margin-top: 6px; }
+    .progress-bar {
+      height: 4px; background: #1a3a5e; border-radius: 2px; margin-top: 8px;
+    }
+    .progress-bar .fill {
+      height: 100%; background: #4ec9d4; border-radius: 2px; transition: width 0.3s;
+    }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+    th, td {
+      padding: 6px 12px; text-align: left; border-bottom: 1px solid #1a3a5e;
+      font-size: 0.85em;
+    }
+    th { color: #4ec9d4; }
+    .status-icon { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+    .status-ok { background: #2a8a50; }
+    .status-fail { background: #a04040; }
+    .status-pending { background: #606060; }
+    #log {
+      background: #0a0f1a; border: 1px solid #1a3a5e; border-radius: 4px;
+      padding: 10px; max-height: 300px; overflow-y: auto;
+      font-size: 0.8em; margin-top: 15px; white-space: pre-wrap;
+    }
+    .log-info { color: #6090b0; }
+    .log-ok { color: #4ec9b0; }
+    .log-warn { color: #dca060; }
+    .log-err { color: #e06060; }
+    .full-width { grid-column: 1 / -1; }
+    .hint { color: #506070; font-size: 0.75em; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <h1>S3 Shard Throughput Diagnostic</h1>
+  <p class="desc">
+    Tests whether domain sharding works — fetches the same byte range from
+    each S3 hostname to verify separate TCP connections and compare throughput.
+  </p>
+
+  <div class="controls">
+    <label>S3 Bucket:
+      <input type="text" id="bucket" placeholder="my-bucket-name" value="">
+    </label>
+    <label>Region:
+      <input type="text" id="region" value="us-west-2" style="width: 120px;">
+    </label>
+  </div>
+  <div class="controls">
+    <label>Chunk size:
+      <select id="chunkSize">
+        <option value="262144">256 KB</option>
+        <option value="524288">512 KB</option>
+        <option value="1048576">1 MB</option>
+        <option value="4194304" selected>4 MB</option>
+        <option value="8388608">8 MB</option>
+        <option value="16777216">16 MB</option>
+      </select>
+    </label>
+    <label>Iterations:
+      <input type="number" id="iterations" value="5" min="1" max="20">
+    </label>
+    <button id="runBtn" onclick="runTest()">Run Test</button>
+    <button id="stopBtn" onclick="stopTest()" disabled>Stop</button>
+  </div>
+  <p class="hint">
+    Requires sardine-launch server running (port 8050) and vite dev server (port 5173).
+    API calls go through vite proxy: /api/* → localhost:8050
+  </p>
+
+  <div class="results" id="results" style="display: none;">
+    <!-- Shard status cards -->
+    <div class="card" id="shard0Card">
+      <h3><span class="status-icon status-pending" id="shard0Icon"></span>Shard 0: Regional</h3>
+      <div class="value" id="shard0Mbps">—</div>
+      <div class="unit">MB/s average</div>
+      <div class="detail" id="shard0Detail"></div>
+      <div class="progress-bar"><div class="fill" id="shard0Progress" style="width: 0%"></div></div>
+    </div>
+    <div class="card" id="shard1Card">
+      <h3><span class="status-icon status-pending" id="shard1Icon"></span>Shard 1: Dualstack</h3>
+      <div class="value" id="shard1Mbps">—</div>
+      <div class="unit">MB/s average</div>
+      <div class="detail" id="shard1Detail"></div>
+      <div class="progress-bar"><div class="fill" id="shard1Progress" style="width: 0%"></div></div>
+    </div>
+
+    <!-- Combined throughput -->
+    <div class="card full-width" id="combinedCard">
+      <h3>Combined Throughput (Parallel Shards)</h3>
+      <div class="value" id="combinedMbps">—</div>
+      <div class="unit">MB/s (both shards fetching in parallel)</div>
+      <div class="detail" id="combinedDetail"></div>
+    </div>
+
+    <!-- DNS info -->
+    <div class="card full-width" id="dnsCard" style="display: none;">
+      <h3>DNS Resolution</h3>
+      <div class="detail" id="dnsDetail"></div>
+    </div>
+
+    <!-- Detailed results table -->
+    <div class="card full-width">
+      <h3>Per-Request Detail</h3>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Shard</th><th>Host</th><th>Status</th><th>Bytes</th><th>Time (ms)</th><th>MB/s</th></tr>
+        </thead>
+        <tbody id="detailTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <h2>Log</h2>
+  <div id="log"></div>
+
+  <script>
+    // ── State ──
+    let abortController = null;
+
+    function log(msg, cls = 'info') {
+      const el = document.getElementById('log');
+      const line = document.createElement('div');
+      line.className = `log-${cls}`;
+      line.textContent = `[${new Date().toISOString().slice(11, 23)}] ${msg}`;
+      el.appendChild(line);
+      el.scrollTop = el.scrollHeight;
+    }
+
+    // ── Find a test file via sardine-launch /api/s3/list ──
+    async function findTestFile(bucket, region, signal) {
+      log(`Listing bucket "${bucket}" via /api/s3/list...`);
+
+      const resp = await fetch('/api/s3/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bucket, region, prefix: '', delimiter: '/', maxKeys: 200 }),
+        signal,
+      });
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        let msg = `HTTP ${resp.status}`;
+        try { msg = JSON.parse(body).error || msg; } catch {}
+        throw new Error(`/api/s3/list failed: ${msg}`);
+      }
+      const data = await resp.json();
+      log(`Found ${(data.files || []).length} files, ${(data.directories || []).length} directories`);
+
+      // Look for an HDF5 file in root
+      let testFile = (data.files || []).find(f =>
+        f.key && (f.key.endsWith('.h5') || f.key.endsWith('.hdf5'))
+      );
+
+      // If none in root, try the first directory
+      if (!testFile && data.directories?.length > 0) {
+        const dirPrefix = data.directories[0];
+        log(`No .h5 in root, trying directory: ${dirPrefix}`);
+        const dirResp = await fetch('/api/s3/list', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bucket, region, prefix: dirPrefix, delimiter: '/', maxKeys: 200 }),
+          signal,
+        });
+        if (dirResp.ok) {
+          const dirData = await dirResp.json();
+          testFile = (dirData.files || []).find(f =>
+            f.key && (f.key.endsWith('.h5') || f.key.endsWith('.hdf5'))
+          );
+        }
+      }
+
+      // Fallback: use any file > 1 MB
+      if (!testFile) {
+        testFile = (data.files || []).find(f => f.size > 1024 * 1024);
+      }
+
+      if (!testFile) throw new Error('No suitable test file found in bucket');
+
+      log(`Test file: ${testFile.key} (${(testFile.size / (1024 * 1024)).toFixed(1)} MB)`, 'ok');
+      return testFile.key;
+    }
+
+    // ── Get presigned shard URLs from server ──
+    async function getShardUrls(bucket, region, key, signal) {
+      const hosts = [
+        `${bucket}.s3.${region}.amazonaws.com`,
+        `${bucket}.s3.dualstack.${region}.amazonaws.com`,
+      ];
+
+      log('Requesting presigned shard URLs...');
+      const urls = [];
+      for (const host of hosts) {
+        try {
+          const resp = await fetch('/api/presign', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bucket, key, region, host, expires: 3600 }),
+            signal,
+          });
+          if (!resp.ok) {
+            log(`Presign failed for ${host}: HTTP ${resp.status}`, 'warn');
+            urls.push({ host, url: null, error: `HTTP ${resp.status}` });
+            continue;
+          }
+          const { url } = await resp.json();
+          urls.push({ host, url });
+          log(`Shard: ${host}`, 'ok');
+        } catch (e) {
+          log(`Presign error for ${host}: ${e.message}`, 'err');
+          urls.push({ host, url: null, error: e.message });
+        }
+      }
+
+      return urls;
+    }
+
+    // ── Fetch a byte range and measure throughput ──
+    async function fetchAndMeasure(url, start, end, signal) {
+      const t0 = performance.now();
+      const resp = await fetch(url, {
+        headers: { 'Range': `bytes=${start}-${end}` },
+        signal,
+      });
+      if (!resp.ok && resp.status !== 206) {
+        const text = await resp.text().catch(() => '');
+        return { ok: false, status: resp.status, error: text.slice(0, 200), elapsed: 0, bytes: 0 };
+      }
+      const buf = await resp.arrayBuffer();
+      const elapsed = performance.now() - t0;
+      return { ok: true, status: resp.status, elapsed, bytes: buf.byteLength };
+    }
+
+    // ── Main test runner ──
+    async function runTest() {
+      const bucket = document.getElementById('bucket').value.trim();
+      const region = document.getElementById('region').value.trim() || 'us-west-2';
+      const chunkSize = parseInt(document.getElementById('chunkSize').value);
+      const iterations = parseInt(document.getElementById('iterations').value);
+
+      if (!bucket) {
+        log('Please enter an S3 bucket name.', 'err');
+        return;
+      }
+
+      document.getElementById('runBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+      document.getElementById('results').style.display = 'grid';
+      document.getElementById('detailTable').innerHTML = '';
+      document.getElementById('log').innerHTML = '';
+
+      // Reset cards
+      for (let i = 0; i < 2; i++) {
+        document.getElementById(`shard${i}Mbps`).textContent = '...';
+        document.getElementById(`shard${i}Detail`).textContent = '';
+        document.getElementById(`shard${i}Progress`).style.width = '0%';
+        document.getElementById(`shard${i}Icon`).className = 'status-icon status-pending';
+        document.getElementById(`shard${i}Card`).className = 'card';
+      }
+      document.getElementById('combinedMbps').textContent = '...';
+      document.getElementById('combinedDetail').textContent = '';
+
+      abortController = new AbortController();
+      const signal = abortController.signal;
+
+      try {
+        // Step 1: Find a test file
+        const testKey = await findTestFile(bucket, region, signal);
+
+        // Step 2: Get presigned URLs for both shards
+        const urls = await getShardUrls(bucket, region, testKey, signal);
+
+        const shardResults = [[], []]; // per-shard results
+
+        // Step 3: Test each shard individually (sequential)
+        log('\n── Individual Shard Tests ──');
+        for (let si = 0; si < urls.length; si++) {
+          const shard = urls[si];
+          if (!shard.url) {
+            log(`Shard ${si} (${shard.host}): SKIP — no presigned URL`, 'warn');
+            document.getElementById(`shard${si}Icon`).className = 'status-icon status-fail';
+            document.getElementById(`shard${si}Mbps`).textContent = 'FAIL';
+            document.getElementById(`shard${si}Detail`).textContent = shard.error || 'No URL';
+            document.getElementById(`shard${si}Card`).className = 'card fail';
+            continue;
+          }
+
+          log(`\nShard ${si}: ${shard.host}`);
+          for (let i = 0; i < iterations; i++) {
+            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+            // Vary the byte range slightly to avoid HTTP caching
+            const offset = i * chunkSize;
+            const result = await fetchAndMeasure(shard.url, offset, offset + chunkSize - 1, signal);
+
+            if (result.ok) {
+              const mbps = (result.bytes / (1024 * 1024)) / (result.elapsed / 1000);
+              shardResults[si].push({ ...result, mbps, iteration: i });
+              log(`  [${i + 1}/${iterations}] ${result.bytes} bytes in ${result.elapsed.toFixed(0)}ms = ${mbps.toFixed(2)} MB/s`, 'ok');
+
+              // Add to table
+              addTableRow(i + 1, si, shard.host, result.status, result.bytes, result.elapsed, mbps);
+            } else {
+              shardResults[si].push({ ...result, mbps: 0, iteration: i });
+              log(`  [${i + 1}/${iterations}] FAILED: HTTP ${result.status} — ${result.error}`, 'err');
+              addTableRow(i + 1, si, shard.host, result.status, 0, 0, 0);
+            }
+
+            // Update progress
+            const pct = ((i + 1) / iterations * 100).toFixed(0);
+            document.getElementById(`shard${si}Progress`).style.width = `${pct}%`;
+          }
+
+          // Update shard card
+          const okResults = shardResults[si].filter(r => r.ok);
+          if (okResults.length > 0) {
+            const avgMbps = okResults.reduce((s, r) => s + r.mbps, 0) / okResults.length;
+            const minMbps = Math.min(...okResults.map(r => r.mbps));
+            const maxMbps = Math.max(...okResults.map(r => r.mbps));
+            document.getElementById(`shard${si}Mbps`).textContent = avgMbps.toFixed(2);
+            document.getElementById(`shard${si}Detail`).textContent =
+              `min: ${minMbps.toFixed(2)} / max: ${maxMbps.toFixed(2)} MB/s — ${okResults.length}/${iterations} OK`;
+            document.getElementById(`shard${si}Icon`).className = 'status-icon status-ok';
+            document.getElementById(`shard${si}Card`).className = 'card pass';
+          } else {
+            document.getElementById(`shard${si}Mbps`).textContent = 'FAIL';
+            document.getElementById(`shard${si}Detail`).textContent = 'All requests failed';
+            document.getElementById(`shard${si}Icon`).className = 'status-icon status-fail';
+            document.getElementById(`shard${si}Card`).className = 'card fail';
+          }
+        }
+
+        // Step 4: Parallel shard test — fetch from BOTH shards simultaneously
+        log('\n── Parallel Shard Test (both shards at once) ──');
+        const validShards = urls.filter((s, i) => shardResults[i].some(r => r.ok));
+        if (validShards.length >= 2) {
+          const parallelResults = [];
+          for (let i = 0; i < iterations; i++) {
+            if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+            const offset = (iterations + i) * chunkSize; // different range from individual tests
+            const t0 = performance.now();
+            const results = await Promise.all(
+              validShards.map(s => fetchAndMeasure(s.url, offset, offset + chunkSize - 1, signal))
+            );
+            const elapsed = performance.now() - t0;
+            const totalBytes = results.reduce((s, r) => s + (r.ok ? r.bytes : 0), 0);
+            const combinedMbps = (totalBytes / (1024 * 1024)) / (elapsed / 1000);
+            parallelResults.push({ elapsed, totalBytes, combinedMbps, results });
+
+            log(`  [${i + 1}/${iterations}] ${validShards.length} shards × ${chunkSize / 1024}KB in ${elapsed.toFixed(0)}ms = ${combinedMbps.toFixed(2)} MB/s`, 'ok');
+          }
+
+          const avgCombined = parallelResults.reduce((s, r) => s + r.combinedMbps, 0) / parallelResults.length;
+          const shard0Avg = shardResults[0].filter(r => r.ok).reduce((s, r) => s + r.mbps, 0) / (shardResults[0].filter(r => r.ok).length || 1);
+          const speedup = avgCombined / (shard0Avg || 1);
+
+          document.getElementById('combinedMbps').textContent = avgCombined.toFixed(2);
+          document.getElementById('combinedDetail').textContent =
+            `Single-shard: ~${shard0Avg.toFixed(2)} MB/s | Parallel: ${avgCombined.toFixed(2)} MB/s | Speedup: ${speedup.toFixed(1)}x`;
+          document.getElementById('combinedCard').className = `card ${speedup > 1.3 ? 'pass' : 'fail'}`;
+
+          log(`\n── Summary ──`, 'ok');
+          log(`Shard 0 (regional):  ${(shardResults[0].filter(r => r.ok).reduce((s, r) => s + r.mbps, 0) / (shardResults[0].filter(r => r.ok).length || 1)).toFixed(2)} MB/s avg`, 'ok');
+          if (shardResults[1].some(r => r.ok)) {
+            log(`Shard 1 (dualstack): ${(shardResults[1].filter(r => r.ok).reduce((s, r) => s + r.mbps, 0) / (shardResults[1].filter(r => r.ok).length || 1)).toFixed(2)} MB/s avg`, 'ok');
+          } else {
+            log(`Shard 1 (dualstack): FAILED — all requests errored`, 'err');
+          }
+          log(`Combined parallel:   ${avgCombined.toFixed(2)} MB/s (${speedup.toFixed(1)}x speedup)`, speedup > 1.3 ? 'ok' : 'warn');
+
+          if (speedup < 1.3) {
+            log(`\nDiagnosis: Sharding is NOT providing meaningful speedup.`, 'warn');
+            log(`  Possible causes:`, 'warn');
+            log(`  1. Both hostnames resolve to the same IP (check DNS)`, 'warn');
+            log(`  2. HTTP/2 is multiplexing both over one TCP connection`, 'warn');
+            log(`  3. Bandwidth is limited by your ISP, not by TCP congestion`, 'warn');
+          } else {
+            log(`\nDiagnosis: Sharding is working — ${speedup.toFixed(1)}x speedup from parallel connections.`, 'ok');
+          }
+        } else {
+          document.getElementById('combinedMbps').textContent = 'N/A';
+          document.getElementById('combinedDetail').textContent =
+            `Need 2 working shards for parallel test (got ${validShards.length})`;
+          document.getElementById('combinedCard').className = 'card fail';
+
+          if (validShards.length === 1) {
+            log(`\nDiagnosis: Only 1 shard works — dualstack is failing.`, 'err');
+            log(`  The dualstack hostname may not resolve or S3 returns errors.`, 'err');
+            log(`  All traffic goes over a single TCP connection.`, 'err');
+          } else {
+            log(`\nDiagnosis: No shards worked. Check bucket name, region, and server credentials.`, 'err');
+          }
+        }
+
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          log('Test aborted.', 'warn');
+        } else {
+          log(`Error: ${e.message}`, 'err');
+          console.error(e);
+        }
+      } finally {
+        document.getElementById('runBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = true;
+        abortController = null;
+      }
+    }
+
+    function stopTest() {
+      if (abortController) abortController.abort();
+    }
+
+    function addTableRow(num, shardIdx, host, status, bytes, elapsed, mbps) {
+      const tr = document.createElement('tr');
+      const ok = status === 200 || status === 206;
+      tr.innerHTML = `
+        <td>${num}</td>
+        <td>Shard ${shardIdx}</td>
+        <td style="font-size:0.75em">${host.length > 40 ? host.slice(0, 20) + '...' + host.slice(-18) : host}</td>
+        <td style="color: ${ok ? '#4ec9b0' : '#e06060'}">${status}</td>
+        <td>${(bytes / 1024).toFixed(0)} KB</td>
+        <td>${elapsed.toFixed(0)}</td>
+        <td style="color: ${mbps > 1 ? '#4ec9b0' : '#dca060'}">${mbps.toFixed(2)}</td>
+      `;
+      document.getElementById('detailTable').appendChild(tr);
+    }
+  </script>
+</body>
+</html>

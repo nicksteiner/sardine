@@ -30,7 +30,11 @@
       "Bash(git -C \"c:/Users/nicks/workspace/sardine\" status --short)",
       "Bash(git -C \"c:/Users/nicks/workspace/sardine\" add app/main.jsx src/loaders/nisar-loader.js src/viewers/SARViewer.jsx src/components/PixelExplorer.jsx)",
       "Bash(git -C \"c:/Users/nicks/workspace/sardine\" log --oneline -6)",
-      "Bash(npx vite build)"
+      "Bash(npx vite build)",
+      "Bash(npm info:*)",
+      "Bash(timeout 8 npx vite:*)",
+      "Bash(node -e:*)",
+      "Bash(timeout 15 npm run dev:*)"
     ]
   }
 }

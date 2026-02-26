@@ -526,3 +526,38 @@ export const PRESET_BUCKETS = [
 export function resolvePresetUrl(url) {
   return url === '__AUTO__' ? autoDetectServerUrl() : url;
 }
+
+/**
+ * Request pre-signed URLs for multiple S3 hostnames (connection sharding).
+ * Presigns the same object key for different S3 endpoints so the browser
+ * opens separate TCP connections for each — dramatically improving throughput.
+ *
+ * @param {string} serverOrigin — Server origin ('' for same-origin)
+ * @param {string} bucket — S3 bucket name
+ * @param {string} key — Object key
+ * @param {string} [region='us-west-2'] — AWS region
+ * @returns {Promise<string[]>} Array of presigned URLs (one per shard), or empty on failure
+ */
+export async function presignShardedViaServer(serverOrigin, bucket, key, region = 'us-west-2') {
+  const hosts = [
+    `${bucket}.s3.${region}.amazonaws.com`,
+    `${bucket}.s3.dualstack.${region}.amazonaws.com`,
+  ];
+
+  const results = await Promise.all(hosts.map(async (host) => {
+    try {
+      const resp = await fetch(`${serverOrigin}/api/presign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bucket, key, region, host, expires: 43200 }),
+      });
+      if (!resp.ok) return null;
+      const { url } = await resp.json();
+      return url || null;
+    } catch {
+      return null;
+    }
+  }));
+
+  return results.filter(Boolean);
+}

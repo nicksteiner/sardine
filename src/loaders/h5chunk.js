@@ -1145,6 +1145,15 @@ export class H5Chunk {
     this.metadataBuffer = null;
     this.file = null;
     this.url = null;
+    this._shardUrls = null; // Array of presigned URLs for connection sharding
+    this._shardIdx = 0;     // Round-robin index for shard rotation
+    // Global fetch semaphore — limits total in-flight HTTP requests across
+    // ALL concurrent readChunksBatch/readChunk calls sharing this instance.
+    // Without this, dozens of tile requests compete for 2 TCP connections,
+    // causing tile starvation (no single tile can complete).
+    this._fetchActive = 0;
+    this._fetchLimit = 8;   // max concurrent HTTP requests (across all tiles)
+    this._fetchQueue = [];  // pending resolve callbacks
     this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
   }
 
@@ -1205,6 +1214,81 @@ export class H5Chunk {
     this.metadataBuffer = await response.arrayBuffer();
 
     await this._parseMetadata();
+  }
+
+  /**
+   * Set shard URLs for connection sharding.
+   * Presigned URLs for different S3 hostnames force separate TCP connections.
+   * @param {string[]} urls — Array of presigned URLs (one per shard)
+   */
+  setShardUrls(urls) {
+    if (urls && urls.length > 0) {
+      this._shardUrls = urls;
+      this._shardIdx = 0;
+      console.log(`[h5chunk] Shard URLs set: ${urls.length} shards`);
+    }
+  }
+
+  /** Acquire a fetch slot (blocks if at limit). Throws if signal is aborted. */
+  async _acquireSlot(signal) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (this._fetchActive < this._fetchLimit) {
+      this._fetchActive++;
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      if (signal) {
+        const onAbort = () => {
+          const idx = this._fetchQueue.indexOf(resolve);
+          if (idx >= 0) this._fetchQueue.splice(idx, 1);
+          reject(new DOMException('Aborted', 'AbortError'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        this._fetchQueue.push(() => {
+          signal.removeEventListener('abort', onAbort);
+          resolve();
+        });
+      } else {
+        this._fetchQueue.push(resolve);
+      }
+    });
+    this._fetchActive++;
+  }
+
+  /** Release a fetch slot */
+  _releaseSlot() {
+    this._fetchActive--;
+    if (this._fetchQueue.length > 0) {
+      this._fetchQueue.shift()();
+    }
+  }
+
+  /** Gated fetch: acquires slot, fetches, releases slot. Supports AbortSignal. */
+  async _gatedFetch(url, start, end, signal) {
+    await this._acquireSlot(signal);
+    try {
+      const response = await fetch(url, {
+        headers: { 'Range': `bytes=${start}-${end}` },
+        signal,
+      });
+      if (!response.ok && response.status !== 206) {
+        console.warn(`[h5chunk] Range fetch failed: ${response.status}`);
+        return null;
+      }
+      return await response.arrayBuffer();
+    } finally {
+      this._releaseSlot();
+    }
+  }
+
+  /** Get next URL via round-robin shard rotation */
+  _nextUrl() {
+    if (this._shardUrls && this._shardUrls.length > 1) {
+      const url = this._shardUrls[this._shardIdx % this._shardUrls.length];
+      this._shardIdx++;
+      return url;
+    }
+    return (this._shardUrls && this._shardUrls[0]) || this.url;
   }
 
   /**
@@ -2499,9 +2583,10 @@ export class H5Chunk {
    * @param {string} datasetId - Dataset identifier
    * @param {number} row - Chunk row index
    * @param {number} col - Chunk column index
+   * @param {AbortSignal} [signal] - Optional abort signal to cancel the fetch
    * @returns {Promise<Float32Array>}
    */
-  async readChunk(datasetId, row, col) {
+  async readChunk(datasetId, row, col, signal) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) {
       throw new Error(`Dataset not found: ${datasetId}`);
@@ -2534,13 +2619,13 @@ export class H5Chunk {
     if (this.file) {
       const slice = this.file.slice(chunkInfo.offset, chunkInfo.offset + chunkInfo.size);
       buffer = await slice.arrayBuffer();
-    } else if (this.url) {
-      const response = await fetch(this.url, {
-        headers: {
-          'Range': `bytes=${chunkInfo.offset}-${chunkInfo.offset + chunkInfo.size - 1}`,
-        },
-      });
-      buffer = await response.arrayBuffer();
+    } else if (this.url || this._shardUrls) {
+      buffer = await this._gatedFetch(
+        this._nextUrl(),
+        chunkInfo.offset,
+        chunkInfo.offset + chunkInfo.size - 1,
+        signal
+      );
     }
 
     // Decompress if needed
@@ -2584,9 +2669,10 @@ export class H5Chunk {
    *
    * @param {string} datasetId - Dataset identifier
    * @param {Array<[number, number]>} coords - Array of [row, col] chunk indices
+   * @param {AbortSignal} [signal] - Optional abort signal to cancel fetches
    * @returns {Promise<Map<string, Float32Array|null>>} Map of "row,col" → decoded chunk data
    */
-  async readChunksBatch(datasetId, coords) {
+  async readChunksBatch(datasetId, coords, signal) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
 
@@ -2631,16 +2717,21 @@ export class H5Chunk {
       return results;
     }
 
-    // Phase 2: Sort by file offset and merge nearby ranges
+    // Phase 2: Sort by file offset and merge nearby ranges.
+    // 1 MB merge gap: allows merging adjacent chunks into larger requests (4-8 MB),
+    // which amortizes S3 first-byte latency (~100ms). Shard throughput testing showed
+    // 8 MB requests achieve 40 MB/s vs 10 MB/s at 1 MB.
     chunkEntries.sort((a, b) => a.offset - b.offset);
 
-    const MERGE_GAP = 256 * 1024; // Merge ranges within 256 KB gap
+    const MERGE_GAP = 1024 * 1024; // 1 MB — merge chunks within this gap
+    const MAX_RANGE_BYTES = 8 * 1024 * 1024; // 8 MB — cap merged range size
     const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
     let current = null;
 
     for (const entry of chunkEntries) {
       const entryEnd = entry.offset + entry.size;
-      if (current && entry.offset <= current.end + MERGE_GAP) {
+      if (current && entry.offset <= current.end + MERGE_GAP
+          && (entryEnd - current.start) <= MAX_RANGE_BYTES) {
         // Extend current range
         current.chunks.push({ entry, localOffset: entry.offset - current.start });
         current.end = Math.max(current.end, entryEnd);
@@ -2656,39 +2747,23 @@ export class H5Chunk {
     }
     if (current) mergedRanges.push(current);
 
-    // Phase 3: Fetch merged ranges in parallel
-    const MAX_CONCURRENT = 30;
-    const rangeResults = new Array(mergedRanges.length);
+    // Phase 3: Fetch + decode pipelined with shard URL rotation.
+    // Each merged range uses _nextUrl() for round-robin across shard hostnames,
+    // forcing separate TCP connections for ~2x throughput.
+    // _gatedFetch limits total in-flight requests globally (across all tiles)
+    // to prevent tile starvation. Decode starts as each fetch completes.
+    await Promise.all(mergedRanges.map(async (range) => {
+      const url = this._nextUrl();
+      const mergedBuffer = await this._gatedFetch(url, range.start, range.end - 1, signal);
+      if (!mergedBuffer) return;
 
-    for (let i = 0; i < mergedRanges.length; i += MAX_CONCURRENT) {
-      const batch = mergedRanges.slice(i, i + MAX_CONCURRENT);
-      const batchResults = await Promise.all(batch.map(async (range, idx) => {
-        const length = range.end - range.start;
-        const response = await fetch(this.url, {
-          headers: { 'Range': `bytes=${range.start}-${range.end - 1}` },
-        });
-        return response.arrayBuffer();
+      // Decode immediately while other fetches are still in flight
+      await Promise.all(range.chunks.map(async ({ entry, localOffset }) => {
+        const chunkBuffer = mergedBuffer.slice(localOffset, localOffset + entry.size);
+        const decoded = await this._decompressAndDecode(chunkBuffer, dataset, entry.filterMask);
+        results.set(entry.key, decoded);
       }));
-      for (let j = 0; j < batchResults.length; j++) {
-        rangeResults[i + j] = batchResults[j];
-      }
-    }
-
-    // Phase 4: Extract and decompress individual chunks from merged buffers
-    const decodePromises = [];
-    for (let ri = 0; ri < mergedRanges.length; ri++) {
-      const range = mergedRanges[ri];
-      const mergedBuffer = rangeResults[ri];
-
-      for (const { entry, localOffset } of range.chunks) {
-        decodePromises.push((async () => {
-          const chunkBuffer = mergedBuffer.slice(localOffset, localOffset + entry.size);
-          const decoded = await this._decompressAndDecode(chunkBuffer, dataset, entry.filterMask);
-          results.set(entry.key, decoded);
-        })());
-      }
-    }
-    await Promise.all(decodePromises);
+    }));
 
     return results;
   }

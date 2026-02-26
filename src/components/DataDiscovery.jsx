@@ -224,8 +224,12 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
     else if (isCOGFile(file.key)) type = 'cog';
 
     log('info', `Selected: ${name} (${formatSize(file.size)})`);
-    onSelectFile({ url, name, size: file.size, type, key: file.key });
-  }, [bucketUrl, onSelectFile, log]);
+    onSelectFile({
+      url, name, size: file.size, type, key: file.key,
+      // Pass bucket/region for shard presigning (server-s3 mode only)
+      ...(browseMode === 'server-s3' && s3Bucket ? { s3Bucket, s3Region } : {}),
+    });
+  }, [bucketUrl, browseMode, s3Bucket, s3Region, onSelectFile, log]);
 
   // ── Apply a preset ──
   const handlePreset = useCallback((preset) => {
