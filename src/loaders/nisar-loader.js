@@ -2706,6 +2706,132 @@ export async function loadNISARGCOVFullImage(file, options = {}, maxSize = 2048)
   };
 }
 
+// ─── Lanczos (sinc) interpolation kernel ─────────────────────────────────
+const LANCZOS_A = 3;
+
+function lanczosKernel(x) {
+  if (x === 0) return 1;
+  if (x >= LANCZOS_A || x <= -LANCZOS_A) return 0;
+  const px = Math.PI * x;
+  return (LANCZOS_A * Math.sin(px) * Math.sin(px / LANCZOS_A)) / (px * px);
+}
+
+/**
+ * Build a 256×256 tile from a sparse chunk grid via mosaic + Lanczos-3 interpolation.
+ *
+ * Phase A: Sample sub-blocks from each cached chunk, building a coarse mosaic grid.
+ * Phase B: Interpolate the mosaic to fill the output tile using a Lanczos-3 kernel,
+ *          which provides near-ideal sinc interpolation with minimal aliasing.
+ *
+ * @param {Map} grid - Map of "row,col" → Float32Array chunk data
+ * @param {number[]} rows - Sorted chunk row indices in the grid
+ * @param {number[]} cols - Sorted chunk col indices in the grid
+ * @param {number} pxTop - Top pixel coordinate of the tile region
+ * @param {number} pxLeft - Left pixel coordinate of the tile region
+ * @param {number} sliceH - Height of the tile region in pixels
+ * @param {number} sliceW - Width of the tile region in pixels
+ * @param {number} tileSize - Output tile dimension (typically 256)
+ * @param {number} chunkH - Chunk height in pixels
+ * @param {number} chunkW - Chunk width in pixels
+ */
+function buildMosaicTile(grid, rows, cols, pxTop, pxLeft, sliceH, sliceW, tileSize, chunkH, chunkW) {
+  const gR = rows.length, gC = cols.length;
+  if (gR === 0 || gC === 0) return new Float32Array(tileSize * tileSize);
+
+  // Phase A: build coarse mosaic from chunk sub-blocks
+  const subN = Math.min(16, Math.max(4,
+    Math.ceil(tileSize / Math.max(gR, gC))));
+  const bH = Math.floor(chunkH / subN);
+  const bW = Math.floor(chunkW / subN);
+  const mH = gR * subN, mW = gC * subN;
+  const mosaic = new Float32Array(mH * mW);
+  const mY = new Float64Array(mH);
+  const mX = new Float64Array(mW);
+
+  for (let ri = 0; ri < gR; ri++) {
+    const cr = rows[ri];
+    for (let si = 0; si < subN; si++)
+      mY[ri * subN + si] = cr * chunkH + (si + 0.5) * bH;
+  }
+  for (let ci = 0; ci < gC; ci++) {
+    const cc = cols[ci];
+    for (let sj = 0; sj < subN; sj++)
+      mX[ci * subN + sj] = cc * chunkW + (sj + 0.5) * bW;
+  }
+
+  for (let ri = 0; ri < gR; ri++) {
+    for (let ci = 0; ci < gC; ci++) {
+      const chunk = grid.get(`${rows[ri]},${cols[ci]}`);
+      if (!chunk) continue;
+      for (let si = 0; si < subN; si++) {
+        const y0 = si * bH, y1 = y0 + bH;
+        for (let sj = 0; sj < subN; sj++) {
+          const x0 = sj * bW, x1 = x0 + bW;
+          let sum = 0, cnt = 0;
+          for (let yy = y0; yy < y1; yy++) {
+            const row = yy * chunkW;
+            for (let xx = x0; xx < x1; xx++) {
+              const v = chunk[row + xx];
+              if (v > 0 && v === v) { sum += v; cnt++; }
+            }
+          }
+          mosaic[(ri * subN + si) * mW + (ci * subN + sj)] =
+            cnt > 0 ? sum / cnt : 0;
+        }
+      }
+    }
+  }
+
+  // Phase B: Lanczos-3 interpolation from mosaic to output tile.
+  // Uses local fractional grid indices via binary search to handle
+  // non-uniform spacing from strided chunk grids.
+  const out = new Float32Array(tileSize * tileSize);
+  let ySearch = 0;
+  for (let ty = 0; ty < tileSize; ty++) {
+    const srcY = pxTop + (ty + 0.5) * sliceH / tileSize;
+
+    // Find interval: mY[ySearch] <= srcY < mY[ySearch+1]
+    while (ySearch < mH - 2 && mY[ySearch + 1] <= srcY) ySearch++;
+    const yNext = Math.min(ySearch + 1, mH - 1);
+    const fyi = ySearch === yNext ? ySearch :
+      ySearch + Math.max(0, Math.min(1, (srcY - mY[ySearch]) / (mY[yNext] - mY[ySearch])));
+    const cyI = Math.round(fyi);
+
+    let xSearch = 0;
+    for (let tx = 0; tx < tileSize; tx++) {
+      const srcX = pxLeft + (tx + 0.5) * sliceW / tileSize;
+
+      while (xSearch < mW - 2 && mX[xSearch + 1] <= srcX) xSearch++;
+      const xNext = Math.min(xSearch + 1, mW - 1);
+      const fxi = xSearch === xNext ? xSearch :
+        xSearch + Math.max(0, Math.min(1, (srcX - mX[xSearch]) / (mX[xNext] - mX[xSearch])));
+      const cxI = Math.round(fxi);
+
+      let vS = 0, wS = 0;
+      for (let dy = -LANCZOS_A + 1; dy <= LANCZOS_A; dy++) {
+        const yi = cyI + dy;
+        if (yi < 0 || yi >= mH) continue;
+        const ly = lanczosKernel(fyi - yi);
+        if (ly === 0) continue;
+        const rowOff = yi * mW;
+
+        for (let dx = -LANCZOS_A + 1; dx <= LANCZOS_A; dx++) {
+          const xi = cxI + dx;
+          if (xi < 0 || xi >= mW) continue;
+          const v = mosaic[rowOff + xi];
+          if (v > 0 && v === v) {
+            const w = ly * lanczosKernel(fxi - xi);
+            vS += v * w;
+            wS += w;
+          }
+        }
+      }
+      out[ty * tileSize + tx] = wS > 0 ? vS / wS : 0;
+    }
+  }
+  return out;
+}
+
 /**
  * Load NISAR GCOV as an RGB composite using multiple polarization datasets.
  * Opens the file once and reads tiles from multiple datasets in parallel.
@@ -3171,6 +3297,119 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
       const sliceH = bottom - top;
       if (sliceW <= 0 || sliceH <= 0) return null;
 
+      // ── Coarse mosaic fast path for overview zoom ──
+      // At overview zoom, the tile covers many chunks. Instead of fetching them
+      // all (50+ chunks × N bands = minutes over S3), use a sparse 8×8 grid
+      // per band and build a mosaic with Lanczos interpolation — same approach
+      // as single-band buildMosaicTile. Shows data in seconds, not minutes.
+      const startCR = Math.floor(top / chunkH);
+      const endCR = Math.floor(Math.max(0, bottom - 1) / chunkH);
+      const startCC = Math.floor(left / chunkW);
+      const endCC = Math.floor(Math.max(0, right - 1) / chunkW);
+      const totalCR = endCR - startCR + 1;
+      const totalCC = endCC - startCC + 1;
+      const totalChunksPerBand = totalCR * totalCC;
+
+      // Threshold: if we need more than 16 chunks per band, use coarse mosaic
+      if (totalChunksPerBand > 16) {
+        const COARSE_MAX = 8;
+        const coarseStrideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
+        const coarseStrideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
+        const coarseRows = [];
+        for (let cr = startCR; cr <= endCR; cr += coarseStrideR) coarseRows.push(cr);
+        const coarseCols = [];
+        for (let cc = startCC; cc <= endCC; cc += coarseStrideC) coarseCols.push(cc);
+
+        const coarseCoords = [];
+        for (const cr of coarseRows) {
+          for (const cc of coarseCols) {
+            coarseCoords.push([cr, cc]);
+          }
+        }
+
+        console.log(`[NISAR RGB Tile] Coarse mosaic: ${coarseRows.length}×${coarseCols.length} grid (${coarseCoords.length} chunks × ${requiredPols.length} bands) instead of ${totalChunksPerBand} chunks`);
+
+        // Fetch coarse grid for all real polarization bands
+        const bandGrids = {};
+        const batchFetches = [];
+        for (const pol of requiredPols) {
+          bandGrids[pol] = new Map();
+          const dsId = polMap[pol];
+          if (!dsId) continue;
+
+          const uncached = [];
+          for (const [cr, cc] of coarseCoords) {
+            const key = `${cr},${cc}`;
+            const cache = chunkCaches[pol];
+            if (cache && cache.has(key)) {
+              bandGrids[pol].set(key, cache.get(key));
+            } else {
+              uncached.push([cr, cc]);
+            }
+          }
+
+          if (uncached.length > 0 && streamReader.readChunksBatch) {
+            batchFetches.push(
+              streamReader.readChunksBatch(dsId, uncached).then(batchMap => {
+                for (const [key, data] of batchMap) {
+                  const result = data?.data || data;
+                  bandGrids[pol].set(key, result);
+                  const cache = chunkCaches[pol];
+                  if (cache) {
+                    if (cache.size >= MAX_CHUNK_CACHE_PER_BAND) {
+                      const keys = Array.from(cache.keys()).slice(0, 50);
+                      keys.forEach(k => cache.delete(k));
+                    }
+                    cache.set(key, result);
+                  }
+                }
+              })
+            );
+          } else if (uncached.length > 0) {
+            for (const [cr, cc] of uncached) {
+              batchFetches.push(
+                getCachedChunk(pol, cr, cc).then(data => {
+                  bandGrids[pol].set(`${cr},${cc}`, data);
+                })
+              );
+            }
+          }
+        }
+        await Promise.all(batchFetches);
+
+        // Build mosaic tile per band using Lanczos interpolation
+        const bandArrays = {};
+        for (const pol of requiredPols) {
+          bandArrays[pol] = buildMosaicTile(
+            bandGrids[pol], coarseRows, coarseCols,
+            top, left, sliceH, sliceW, tileSize, chunkH, chunkW
+          );
+        }
+
+        // Complex bands: not supported in coarse mode (rare, require NN sampling)
+        for (const cpol of requiredComplexPols) {
+          if (complexPolMap[cpol]) {
+            bandArrays[`${cpol}_re`] = new Float32Array(tileSize * tileSize);
+            bandArrays[`${cpol}_im`] = new Float32Array(tileSize * tileSize);
+          }
+        }
+
+        const tile = {
+          bands: bandArrays,
+          width: tileSize,
+          height: tileSize,
+          compositeId,
+        };
+
+        if (tileCache.size >= MAX_TILE_CACHE) {
+          const oldestKeys = Array.from(tileCache.keys()).slice(0, 25);
+          oldestKeys.forEach(k => tileCache.delete(k));
+        }
+        tileCache.set(tileKey, tile);
+        return tile;
+      }
+
+      // ── Full-resolution path (small tiles / zoomed in) ──
       const stepX = sliceW / tileSize;
       const stepY = sliceH / tileSize;
 
@@ -3197,38 +3436,82 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         }
       }
 
-      const chunkFetches = [];
-      const chunkKeys = [];
+      // Convert needed chunk set to coordinate array
+      const chunkCoords = [];
       for (const key of neededChunks) {
         const [cr, cc] = key.split(',').map(Number);
-        for (const pol of requiredPols) {
-          chunkKeys.push({ pol, cr, cc, complex: false });
-          chunkFetches.push(getCachedChunk(pol, cr, cc));
+        chunkCoords.push([cr, cc]);
+      }
+
+      // Build lookup: prefetched[pol][`row,col`] = chunk
+      const prefetched = {};
+
+      // Batch-fetch real polarization bands via readChunksBatch (coalesced Range reads)
+      const batchFetches = [];
+      for (const pol of requiredPols) {
+        prefetched[pol] = {};
+        const dsId = polMap[pol];
+        if (!dsId) continue;
+
+        // Check cache first, collect uncached coords
+        const uncached = [];
+        for (const [cr, cc] of chunkCoords) {
+          const key = `${cr},${cc}`;
+          const cache = chunkCaches[pol];
+          if (cache && cache.has(key)) {
+            prefetched[pol][key] = cache.get(key);
+          } else {
+            uncached.push([cr, cc]);
+          }
         }
-        for (const cpol of requiredComplexPols) {
-          if (complexPolMap[cpol]) {
-            chunkKeys.push({ pol: cpol, cr, cc, complex: true });
-            chunkFetches.push(getCachedComplexChunk(cpol, cr, cc));
+
+        if (uncached.length > 0 && streamReader.readChunksBatch) {
+          batchFetches.push(
+            streamReader.readChunksBatch(dsId, uncached).then(batchMap => {
+              for (const [key, data] of batchMap) {
+                const result = data?.data || data;
+                prefetched[pol][key] = result;
+                // Populate per-band cache
+                const cache = chunkCaches[pol];
+                if (cache) {
+                  if (cache.size >= MAX_CHUNK_CACHE_PER_BAND) {
+                    const keys = Array.from(cache.keys()).slice(0, 50);
+                    keys.forEach(k => cache.delete(k));
+                  }
+                  cache.set(key, result);
+                }
+              }
+            })
+          );
+        } else if (uncached.length > 0) {
+          // Fallback: individual reads
+          for (const [cr, cc] of uncached) {
+            batchFetches.push(
+              getCachedChunk(pol, cr, cc).then(data => {
+                prefetched[pol][`${cr},${cc}`] = data;
+              })
+            );
           }
         }
       }
 
-      console.log(`[NISAR RGB Tile] Fetching ${neededChunks.size} unique chunks × ${requiredPols.length} bands = ${chunkFetches.length} requests`);
-
-      const fetchedChunks = await Promise.all(chunkFetches);
-
-      // Build lookup: prefetched[pol][`row,col`] = chunk
-      const prefetched = {};
-      for (const pol of requiredPols) {
-        prefetched[pol] = {};
-      }
+      // Complex polarizations still use individual reads (less common, smaller count)
       for (const cpol of requiredComplexPols) {
         prefetched[cpol] = {};
+        if (complexPolMap[cpol]) {
+          for (const [cr, cc] of chunkCoords) {
+            batchFetches.push(
+              getCachedComplexChunk(cpol, cr, cc).then(data => {
+                prefetched[cpol][`${cr},${cc}`] = data;
+              })
+            );
+          }
+        }
       }
-      for (let i = 0; i < chunkKeys.length; i++) {
-        const { pol, cr, cc } = chunkKeys[i];
-        prefetched[pol][`${cr},${cc}`] = fetchedChunks[i];
-      }
+
+      console.log(`[NISAR RGB Tile] Batch-fetching ${chunkCoords.length} chunks × ${requiredPols.length} bands`);
+
+      await Promise.all(batchFetches);
 
       // --- Phase 3: sample pixels synchronously from pre-fetched chunks ---
       const bandArrays = {};
@@ -3317,7 +3600,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
       }
       tileCache.set(tileKey, tile);
 
-      // console.log(`[NISAR Tile] Success: ${tileKey}, region=[${left},${top},${right},${bottom}], samples=${Object.keys(bandArrays)[0] ? bandArrays[Object.keys(bandArrays)[0]].length : 0}`);
+      // console.log(`[NISAR Tile] Success: ${tileKey}, compositeId=${compositeId}`);
 
       return tile;
 
@@ -3527,19 +3810,54 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
   async function prefetchOverviewChunks() {
     const nChunkRows = Math.ceil(height / chunkH);
     const nChunkCols = Math.ceil(width / chunkW);
-    // Sample every Nth chunk to cover the full extent without flooding
-    const step = Math.max(1, Math.floor(Math.sqrt(nChunkRows * nChunkCols / 16)));
-    const fetches = [];
-    for (let cr = 0; cr < nChunkRows; cr += step) {
-      for (let cc = 0; cc < nChunkCols; cc += step) {
-        for (const pol of requiredPols) {
-          fetches.push(getCachedChunk(pol, cr, cc));
+    // 8×8 grid (same as single-band prefetch) — enough for initial overview
+    const COARSE_MAX = 8;
+    const strideR = Math.max(1, Math.ceil(nChunkRows / COARSE_MAX));
+    const strideC = Math.max(1, Math.ceil(nChunkCols / COARSE_MAX));
+
+    const coords = [];
+    for (let cr = 0; cr < nChunkRows; cr += strideR) {
+      for (let cc = 0; cc < nChunkCols; cc += strideC) {
+        coords.push([cr, cc]);
+      }
+    }
+
+    console.log(`[NISAR RGB] Prefetching ${coords.length} overview chunks × ${requiredPols.length} bands (${nChunkRows}×${nChunkCols} grid, stride ${strideR}×${strideC})...`);
+
+    // Batch-read per polarization (coalesced range reads — far fewer HTTP requests)
+    const batchTasks = [];
+    for (const pol of requiredPols) {
+      const dsId = polMap[pol];
+      if (!dsId) continue;
+      // Filter out chunks already in cache
+      const uncached = coords.filter(([cr, cc]) => !chunkCaches[pol].has(`${cr},${cc}`));
+      if (uncached.length === 0) continue;
+
+      if (streamReader.readChunksBatch) {
+        batchTasks.push(
+          streamReader.readChunksBatch(dsId, uncached).then(batchMap => {
+            for (const [key, data] of batchMap) {
+              const result = data?.data || data;
+              const cache = chunkCaches[pol];
+              if (cache.size >= MAX_CHUNK_CACHE_PER_BAND) {
+                const keys = Array.from(cache.keys()).slice(0, 50);
+                keys.forEach(k => cache.delete(k));
+              }
+              cache.set(key, result);
+            }
+          })
+        );
+      } else {
+        // Fallback: individual reads
+        for (const [cr, cc] of uncached) {
+          batchTasks.push(getCachedChunk(pol, cr, cc));
         }
       }
     }
-    console.log(`[NISAR RGB] Prefetching ${fetches.length} overview chunks (step=${step})...`);
-    await Promise.all(fetches);
-    console.log(`[NISAR RGB] Overview prefetch complete`);
+
+    await Promise.all(batchTasks);
+    const totalCached = requiredPols.reduce((sum, pol) => sum + chunkCaches[pol].size, 0);
+    console.log(`[NISAR RGB] Overview prefetch complete (${totalCached} chunks cached across ${requiredPols.length} bands)`);
   }
 
   // Wait for identification to resolve (should be done by now)
@@ -4086,88 +4404,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   const tileResultCache = new Map();
   const MAX_TILE_CACHE = 64;
 
-  // Helper: build a 256×256 tile from a sparse chunk grid via mosaic + bilinear
-  function buildMosaicTile(grid, rows, cols, pxTop, pxLeft, sliceH, sliceW, tileSize) {
-    const gR = rows.length, gC = cols.length;
-    if (gR === 0 || gC === 0) return new Float32Array(tileSize * tileSize);
-
-    const subN = Math.min(16, Math.max(4,
-      Math.ceil(tileSize / Math.max(gR, gC))));
-    const bH = Math.floor(chunkH / subN);
-    const bW = Math.floor(chunkW / subN);
-    const mH = gR * subN, mW = gC * subN;
-    const mosaic = new Float32Array(mH * mW);
-    const mY = new Float64Array(mH);
-    const mX = new Float64Array(mW);
-
-    for (let ri = 0; ri < gR; ri++) {
-      const cr = rows[ri];
-      for (let si = 0; si < subN; si++)
-        mY[ri * subN + si] = cr * chunkH + (si + 0.5) * bH;
-    }
-    for (let ci = 0; ci < gC; ci++) {
-      const cc = cols[ci];
-      for (let sj = 0; sj < subN; sj++)
-        mX[ci * subN + sj] = cc * chunkW + (sj + 0.5) * bW;
-    }
-
-    for (let ri = 0; ri < gR; ri++) {
-      for (let ci = 0; ci < gC; ci++) {
-        const chunk = grid.get(`${rows[ri]},${cols[ci]}`);
-        if (!chunk) continue;
-        for (let si = 0; si < subN; si++) {
-          const y0 = si * bH, y1 = y0 + bH;
-          for (let sj = 0; sj < subN; sj++) {
-            const x0 = sj * bW, x1 = x0 + bW;
-            let sum = 0, cnt = 0;
-            for (let yy = y0; yy < y1; yy++) {
-              const row = yy * chunkW;
-              for (let xx = x0; xx < x1; xx++) {
-                const v = chunk[row + xx];
-                if (v > 0 && v === v) { sum += v; cnt++; }
-              }
-            }
-            mosaic[(ri * subN + si) * mW + (ci * subN + sj)] =
-              cnt > 0 ? sum / cnt : 0;
-          }
-        }
-      }
-    }
-
-    const out = new Float32Array(tileSize * tileSize);
-    let yi0 = 0;
-    for (let ty = 0; ty < tileSize; ty++) {
-      const srcY = pxTop + (ty + 0.5) * sliceH / tileSize;
-      while (yi0 < mH - 2 && mY[yi0 + 1] <= srcY) yi0++;
-      const yi1 = Math.min(yi0 + 1, mH - 1);
-      const fy = yi0 === yi1 ? 0 :
-        Math.max(0, Math.min(1, (srcY - mY[yi0]) / (mY[yi1] - mY[yi0])));
-      let xi0 = 0;
-      for (let tx = 0; tx < tileSize; tx++) {
-        const srcX = pxLeft + (tx + 0.5) * sliceW / tileSize;
-        while (xi0 < mW - 2 && mX[xi0 + 1] <= srcX) xi0++;
-        const xi1 = Math.min(xi0 + 1, mW - 1);
-        const fx = xi0 === xi1 ? 0 :
-          Math.max(0, Math.min(1, (srcX - mX[xi0]) / (mX[xi1] - mX[xi0])));
-        const v00 = mosaic[yi0 * mW + xi0];
-        const v01 = mosaic[yi0 * mW + xi1];
-        const v10 = mosaic[yi1 * mW + xi0];
-        const v11 = mosaic[yi1 * mW + xi1];
-        const w00 = (1 - fx) * (1 - fy), w01 = fx * (1 - fy);
-        const w10 = (1 - fx) * fy, w11 = fx * fy;
-        let wS = 0, vS = 0;
-        if (v00 > 0) { vS += v00 * w00; wS += w00; }
-        if (v01 > 0) { vS += v01 * w01; wS += w01; }
-        if (v10 > 0) { vS += v10 * w10; wS += w10; }
-        if (v11 > 0) { vS += v11 * w11; wS += w11; }
-        out[ty * tileSize + tx] = wS > 0 ? vS / wS : 0;
-      }
-    }
-    return out;
-  }
-
   // Build getTile function for on-demand chunk reading
-  const getTile = async ({ x, y, z, bbox, multiLook, signal }) => {
+  const getTile = async ({ x, y, z, bbox, multiLook }) => {
     _enterForeground();
     const tileSize = 256;
     try {
@@ -4219,8 +4457,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       // Small regions: read directly with readRegion (contiguous, fast)
       const MAX_DIRECT_PIXELS = 1024 * 1024;
       if (sliceW * sliceH <= MAX_DIRECT_PIXELS) {
-        const readPromises = [streamReader.readRegion(selectedDatasetId, pxTop, pxLeft, sliceH, sliceW, { signal })];
-        if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, pxTop, pxLeft, sliceH, sliceW, { signal }));
+        const readPromises = [streamReader.readRegion(selectedDatasetId, pxTop, pxLeft, sliceH, sliceW)];
+        if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, pxTop, pxLeft, sliceH, sliceW));
         const [result, maskRegion] = await Promise.all(readPromises);
         if (!result) return null;
         tileData = result.data || result;
@@ -4299,7 +4537,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }
 
       if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
-        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords, { signal });
+        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
         for (const [key, data] of batchMap) {
           const result = data?.data || data;
           cacheChunk(key, result);
@@ -4315,7 +4553,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }
 
       tileData = buildMosaicTile(coarseGrid, coarseRows, coarseCols,
-        pxTop, pxLeft, sliceH, sliceW, tileSize);
+        pxTop, pxLeft, sliceH, sliceW, tileSize, chunkH, chunkW);
 
       // Mask deferred to Phase 2 refinement to reduce foreground HTTP requests.
       // Use any already-cached mask chunks for the coarse phase (no new fetches).
@@ -4393,7 +4631,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
             }
 
             const fineData = buildMosaicTile(fineGrid, fineRows, fineCols,
-              pxTop, pxLeft, sliceH, sliceW, tileSize);
+              pxTop, pxLeft, sliceH, sliceW, tileSize, chunkH, chunkW);
             const refinedTile = { data: fineData, width: tileSize, height: tileSize };
 
             // Fetch mask chunks for the fine grid (deferred from Phase 1)

@@ -1305,7 +1305,8 @@ function App() {
         // In RGB mode, pass getRGBTile as getTile
         data.getTile = data.getRGBTile;
 
-        // Eagerly warm chunk cache with coarse overview grid
+        // Eagerly warm chunk cache (fire-and-forget — tiles use coarse mosaic
+        // from cached chunks while remaining chunks load in background)
         if (data.prefetchOverviewChunks) {
           data.prefetchOverviewChunks().catch(e =>
             console.warn('[SARdine] RGB overview prefetch failed:', e.message)
@@ -1328,7 +1329,8 @@ function App() {
         // so SARViewer re-creates its TileLayer and fetches the refined tiles.
         if (data.mode === 'streaming') {
           data.onRefine = () => setTileVersion(v => v + 1);
-          // Eagerly warm chunk cache with coarse overview grid
+          // Eagerly warm chunk cache (fire-and-forget — tiles use coarse mosaic
+          // from cached chunks while remaining chunks load in background)
           if (data.prefetchOverviewChunks) {
             data.prefetchOverviewChunks().catch(e =>
               console.warn('[SARdine] Overview prefetch failed:', e.message)

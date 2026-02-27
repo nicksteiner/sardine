@@ -2704,10 +2704,9 @@ export class H5Chunk {
       const batchStart = performance.now();
       let batchBytes = 0;
       const batchResults = await Promise.all(batch.map(async (range, idx) => {
-        const response = await fetch(this.url, {
-          headers: { 'Range': `bytes=${range.start}-${range.end - 1}` },
-          signal,
-        });
+        const fetchOpts = { headers: { 'Range': `bytes=${range.start}-${range.end - 1}` } };
+        if (signal) fetchOpts.signal = signal;
+        const response = await fetch(this.url, fetchOpts);
         const buf = await response.arrayBuffer();
         batchBytes += buf.byteLength;
         return buf;
@@ -2716,8 +2715,9 @@ export class H5Chunk {
         rangeResults[i + j] = batchResults[j];
       }
       // Measure throughput and adapt concurrency
+      // Skip measurement if batch was very fast (likely cached or aborted)
       const elapsed = (performance.now() - batchStart) / 1000; // seconds
-      if (elapsed > 0.1) { // only measure meaningful intervals
+      if (elapsed > 0.1 && batchBytes > 0) {
         const mbps = (batchBytes / (1024 * 1024)) / elapsed;
         this._throughputSamples.push(mbps);
         if (this._throughputSamples.length > 8) this._throughputSamples.shift();

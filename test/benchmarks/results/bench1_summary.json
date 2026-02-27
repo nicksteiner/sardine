@@ -1,0 +1,15 @@
+{
+  "benchmark": "1_primitive_coverage",
+  "post_slc_coverage_pct": 82.1,
+  "post_slc_total": 28,
+  "post_slc_covered": 23,
+  "by_status": {
+    "equivalent": 12,
+    "exact": 10,
+    "partial": 1,
+    "not-implemented": 5,
+    "out-of-scope": 4,
+    "fft-dependent": 5
+  },
+  "pass": true
+}

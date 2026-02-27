@@ -1,0 +1,18 @@
+{
+  "sizes": [512, 2048, 8192, 16384],
+  "trials": 5,
+  "warmup": 2,
+  "multilook_factor": 4,
+  "gamma": 0.5,
+  "operations": [
+    "dB_conversion",
+    "sqrt_stretch",
+    "gamma_stretch",
+    "sigmoid_stretch",
+    "viridis_colormap",
+    "multilook_4x4",
+    "rgb_composite_pauli"
+  ],
+  "backends": ["numpy", "cupy", "webgl2"],
+  "test_data": "test/data/NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5"
+}

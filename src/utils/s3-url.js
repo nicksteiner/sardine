@@ -19,6 +19,12 @@
 export function normalizeS3Url(url, { useTransferAcceleration = false, cloudfrontDomain } = {}) {
   if (!url) return url;
 
+  // Pre-signed URLs contain a cryptographic signature over the exact host+path+query.
+  // Any rewrite (host change, query strip) invalidates the signature → 403.
+  if (url.includes('X-Amz-Signature') || url.includes('x-amz-signature')) {
+    return url;
+  }
+
   let bucket, key;
 
   // s3://bucket/key → extract parts

@@ -315,6 +315,8 @@ export class SARGPULayer extends Layer {
           if (this.state.textureB) gl.deleteTexture(this.state.textureB);
 
           this.setState({ texture: texR, textureG: texG, textureB: texB });
+        } else {
+          console.error('[SARGPULayer] Failed to create one or more RGB textures');
         }
       }
     } else if (data && (data !== oldProps.data || width !== oldProps.width || height !== oldProps.height)) {

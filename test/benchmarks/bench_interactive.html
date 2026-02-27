@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SARdine Interactive Responsiveness Benchmark</title>
+  <style>
+    body { font-family: monospace; background: #0a1628; color: #e0e0e0; padding: 20px; }
+    h1 { color: #4ec9d4; }
+    #status { color: #a0a0a0; margin: 10px 0; }
+    #log { white-space: pre-wrap; font-size: 12px; line-height: 1.6; max-height: 80vh; overflow-y: auto; }
+    .pass { color: #4ec9d4; } .fail { color: #e05858; } .dim { color: #888; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Interactive Responsiveness Benchmark</h1>
+  <div id="status">Initializing...</div>
+  <pre id="log"></pre>
+  <canvas id="canvas" width="1024" height="1024"></canvas>
+
+  <script type="module">
+    /**
+     * Benchmark 5: Interactive Responsiveness
+     *
+     * Measures frame rendering time for interactive parameter changes.
+     * Uses a standalone WebGL2 shader pipeline (same as SARGPULayer)
+     * without React/deck.gl overhead.
+     *
+     * Target: p95 frame time < 16ms (60 fps)
+     */
+
+    const SIZE = 2048; // 2048x2048 = 4MP (typical viewport)
+    const FRAMES_PER_TEST = 100;
+
+    const log = (msg, cls) => {
+      const el = document.getElementById('log');
+      if (cls) el.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+      else el.textContent += msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    };
+    const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
+
+    function generateData(size) {
+      const data = new Float32Array(size * size);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = Math.exp(Math.random() * 6 - 3) * 0.01;
+      }
+      return data;
+    }
+
+    function setupGL(size) {
+      const canvas = document.getElementById('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const gl = canvas.getContext('webgl2', { antialias: false });
+      if (!gl) throw new Error('WebGL2 not available');
+      gl.getExtension('EXT_color_buffer_float');
+      gl.getExtension('OES_texture_float_linear');
+      return gl;
+    }
+
+    function buildPipeline(gl, size) {
+      const vsSource = `#version 300 es
+        in vec2 aPosition;
+        in vec2 aTexCoord;
+        out vec2 vTexCoord;
+        void main() { gl_Position = vec4(aPosition, 0.0, 1.0); vTexCoord = aTexCoord; }
+      `;
+
+      const fsSource = `#version 300 es
+        precision highp float;
+        uniform sampler2D uTexture;
+        uniform float uMin;
+        uniform float uMax;
+        uniform float uUseDecibels;
+        uniform int uColormap;
+        uniform int uStretchMode;
+        uniform float uGamma;
+        uniform vec2 uOffset;  // For simulated pan
+        uniform float uScale;  // For simulated zoom
+        in vec2 vTexCoord;
+        out vec4 fragColor;
+
+        vec3 viridis(float t) {
+          const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+          const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
+          const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
+          const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+          const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
+          const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+          const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+          t = clamp(t, 0.0, 1.0);
+          return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+        }
+        vec3 inferno(float t) {
+          const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
+          const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
+          const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
+          const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
+          const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
+          const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
+          const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
+          t = clamp(t, 0.0, 1.0);
+          return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+        }
+        vec3 plasma(float t) {
+          const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
+          const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
+          const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
+          const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
+          const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
+          const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
+          const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
+          t = clamp(t, 0.0, 1.0);
+          return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+        }
+        vec3 grayscale(float t) { t = clamp(t, 0.0, 1.0); return vec3(t); }
+        vec3 phaseMap(float t) {
+          t = clamp(t, 0.0, 1.0);
+          float a = t * 6.28318;
+          return vec3(0.5 + 0.5*cos(a), 0.5 + 0.5*cos(a+2.094), 0.5 + 0.5*cos(a+4.189));
+        }
+
+        void main() {
+          // Apply pan/zoom via texture coordinate transform
+          vec2 uv = (vTexCoord - 0.5) / uScale + 0.5 + uOffset;
+          float amplitude = texture(uTexture, uv).r;
+
+          float value;
+          if (uUseDecibels > 0.5) {
+            float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+            value = (db - uMin) / (uMax - uMin);
+          } else {
+            value = (amplitude - uMin) / (uMax - uMin);
+          }
+          value = clamp(value, 0.0, 1.0);
+
+          if (uStretchMode == 1) { value = sqrt(value); }
+          else if (uStretchMode == 2) { value = pow(value, uGamma); }
+          else if (uStretchMode == 3) {
+            float gain = uGamma * 8.0;
+            float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
+            float lo = 1.0 / (1.0 + exp(gain * 0.5));
+            float hi = 1.0 / (1.0 + exp(-gain * 0.5));
+            value = clamp((raw - lo) / (hi - lo), 0.0, 1.0);
+          }
+
+          vec3 color;
+          if (uColormap == 0) color = grayscale(value);
+          else if (uColormap == 1) color = viridis(value);
+          else if (uColormap == 2) color = inferno(value);
+          else if (uColormap == 3) color = plasma(value);
+          else if (uColormap == 4) color = phaseMap(value);
+          else color = grayscale(value);
+
+          float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
+          fragColor = vec4(color, alpha);
+        }
+      `;
+
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, vsSource);
+      gl.compileShader(vs);
+      if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS))
+        throw new Error('VS: ' + gl.getShaderInfoLog(vs));
+
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, fsSource);
+      gl.compileShader(fs);
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS))
+        throw new Error('FS: ' + gl.getShaderInfoLog(fs));
+
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+        throw new Error('Link: ' + gl.getProgramInfoLog(prog));
+
+      // Quad
+      const quadVerts = new Float32Array([
+        -1, -1, 0, 0,  1, -1, 1, 0,  1, 1, 1, 1,
+        -1, -1, 0, 0,  1, 1, 1, 1,  -1, 1, 0, 1,
+      ]);
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(gl.getAttribLocation(prog, 'aPosition'));
+      gl.vertexAttribPointer(gl.getAttribLocation(prog, 'aPosition'), 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(gl.getAttribLocation(prog, 'aTexCoord'));
+      gl.vertexAttribPointer(gl.getAttribLocation(prog, 'aTexCoord'), 2, gl.FLOAT, false, 16, 8);
+      gl.bindVertexArray(null);
+
+      // FBO
+      const fb = gl.createFramebuffer();
+      const renderTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, renderTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, renderTex, 0);
+
+      // Upload SAR texture
+      const data = generateData(size);
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.finish();
+
+      return { program: prog, vao, fb, tex, renderTex };
+    }
+
+    function render(gl, pipeline, params) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, pipeline.fb);
+      gl.viewport(0, 0, SIZE, SIZE);
+      gl.useProgram(pipeline.program);
+
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, pipeline.tex);
+      gl.uniform1i(gl.getUniformLocation(pipeline.program, 'uTexture'), 0);
+      gl.uniform1f(gl.getUniformLocation(pipeline.program, 'uMin'), params.min);
+      gl.uniform1f(gl.getUniformLocation(pipeline.program, 'uMax'), params.max);
+      gl.uniform1f(gl.getUniformLocation(pipeline.program, 'uUseDecibels'), params.useDecibels ? 1.0 : 0.0);
+      gl.uniform1i(gl.getUniformLocation(pipeline.program, 'uColormap'), params.colormap);
+      gl.uniform1i(gl.getUniformLocation(pipeline.program, 'uStretchMode'), params.stretchMode);
+      gl.uniform1f(gl.getUniformLocation(pipeline.program, 'uGamma'), params.gamma);
+      gl.uniform2f(gl.getUniformLocation(pipeline.program, 'uOffset'), params.offsetX || 0, params.offsetY || 0);
+      gl.uniform1f(gl.getUniformLocation(pipeline.program, 'uScale'), params.scale || 1.0);
+
+      gl.bindVertexArray(pipeline.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.finish();
+      gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function measureFrames(gl, pipeline, frameGenerator, numFrames) {
+      const times = [];
+      // Warmup
+      for (let i = 0; i < 10; i++) render(gl, pipeline, frameGenerator(i));
+
+      for (let i = 0; i < numFrames; i++) {
+        const params = frameGenerator(i);
+        const t0 = performance.now();
+        render(gl, pipeline, params);
+        times.push(performance.now() - t0);
+      }
+
+      times.sort((a, b) => a - b);
+      return {
+        p50: +times[Math.floor(times.length * 0.50)].toFixed(4),
+        p95: +times[Math.floor(times.length * 0.95)].toFixed(4),
+        p99: +times[Math.floor(times.length * 0.99)].toFixed(4),
+        mean: +(times.reduce((a, b) => a + b) / times.length).toFixed(4),
+        min: +times[0].toFixed(4),
+        max: +times[times.length - 1].toFixed(4),
+        frames: numFrames,
+        allTimes: times.map(t => +t.toFixed(4)),
+      };
+    }
+
+    async function runInteractiveBenchmark() {
+      const gl = setupGL(SIZE);
+      const renderer = gl.getParameter(gl.RENDERER);
+      log(`GPU: ${renderer}`, 'dim');
+      log(`Texture: ${SIZE}x${SIZE} R32F`, 'dim');
+
+      const pipeline = buildPipeline(gl, SIZE);
+
+      const tests = {};
+      const N = FRAMES_PER_TEST;
+
+      // Test 1: Contrast sweep
+      setStatus('Running contrast sweep...');
+      log('\n1. Contrast Sweep (slider drag simulation)', 'pass');
+      tests.contrast_sweep = measureFrames(gl, pipeline, (i) => ({
+        min: -30 + (i / N) * 20,
+        max: -5 + (i / N) * 10,
+        useDecibels: true, colormap: 1, stretchMode: 0, gamma: 1.0, scale: 1.0,
+      }), N);
+      log(`   p50=${tests.contrast_sweep.p50}ms  p95=${tests.contrast_sweep.p95}ms  p99=${tests.contrast_sweep.p99}ms`, 'dim');
+
+      // Test 2: Colormap cycle
+      setStatus('Running colormap cycle...');
+      log('2. Colormap Cycle', 'pass');
+      tests.colormap_cycle = measureFrames(gl, pipeline, (i) => ({
+        min: -25, max: 0, useDecibels: true,
+        colormap: i % 5,
+        stretchMode: 0, gamma: 1.0, scale: 1.0,
+      }), N);
+      log(`   p50=${tests.colormap_cycle.p50}ms  p95=${tests.colormap_cycle.p95}ms  p99=${tests.colormap_cycle.p99}ms`, 'dim');
+
+      // Test 3: Gamma sweep
+      setStatus('Running gamma sweep...');
+      log('3. Gamma Sweep', 'pass');
+      tests.gamma_sweep = measureFrames(gl, pipeline, (i) => ({
+        min: -25, max: 0, useDecibels: true, colormap: 1,
+        stretchMode: 2,
+        gamma: 0.3 + (i / N) * 2.7,
+        scale: 1.0,
+      }), N);
+      log(`   p50=${tests.gamma_sweep.p50}ms  p95=${tests.gamma_sweep.p95}ms  p99=${tests.gamma_sweep.p99}ms`, 'dim');
+
+      // Test 4: Stretch mode cycle
+      setStatus('Running stretch mode cycle...');
+      log('4. Stretch Mode Cycle', 'pass');
+      tests.stretch_cycle = measureFrames(gl, pipeline, (i) => ({
+        min: -25, max: 0, useDecibels: true, colormap: 1,
+        stretchMode: i % 4,
+        gamma: 1.0, scale: 1.0,
+      }), N);
+      log(`   p50=${tests.stretch_cycle.p50}ms  p95=${tests.stretch_cycle.p95}ms  p99=${tests.stretch_cycle.p99}ms`, 'dim');
+
+      // Test 5: Simulated pan
+      setStatus('Running pan simulation...');
+      log('5. Pan Simulation', 'pass');
+      tests.pan = measureFrames(gl, pipeline, (i) => ({
+        min: -25, max: 0, useDecibels: true, colormap: 1, stretchMode: 1, gamma: 1.0,
+        offsetX: (i / N) * 0.3,
+        offsetY: (i / N) * 0.2,
+        scale: 1.0,
+      }), N);
+      log(`   p50=${tests.pan.p50}ms  p95=${tests.pan.p95}ms  p99=${tests.pan.p99}ms`, 'dim');
+
+      // Test 6: Simulated zoom
+      setStatus('Running zoom simulation...');
+      log('6. Zoom Simulation', 'pass');
+      tests.zoom = measureFrames(gl, pipeline, (i) => ({
+        min: -25, max: 0, useDecibels: true, colormap: 1, stretchMode: 1, gamma: 1.0,
+        scale: 1.0 + (i / N) * 4.0,
+      }), N);
+      log(`   p50=${tests.zoom.p50}ms  p95=${tests.zoom.p95}ms  p99=${tests.zoom.p99}ms`, 'dim');
+
+      // Summary
+      log('\n=== Summary ===', 'pass');
+      let allPass = true;
+      for (const [name, result] of Object.entries(tests)) {
+        const pass = result.p95 < 16.0;
+        if (!pass) allPass = false;
+        log(`  ${name}: p95=${result.p95}ms ${pass ? 'PASS (<16ms)' : 'FAIL (>=16ms)'}`,
+            pass ? 'pass' : 'fail');
+      }
+
+      log(`\nOverall: ${allPass ? 'ALL PASS' : 'SOME FAILED'}`, allPass ? 'pass' : 'fail');
+      setStatus('Complete');
+
+      return tests;
+    }
+
+    // Auto-run and export for Puppeteer
+    window.runInteractiveBenchmark = runInteractiveBenchmark;
+
+    (async () => {
+      try {
+        window.__READY__ = true;
+        const results = await runInteractiveBenchmark();
+        window.__INTERACTIVE_RESULTS__ = results;
+        window.__INTERACTIVE_COMPLETE__ = true;
+      } catch (e) {
+        log(`FATAL: ${e.message}`, 'fail');
+        window.__INTERACTIVE_RESULTS__ = { error: e.message };
+        window.__INTERACTIVE_COMPLETE__ = true;
+      }
+    })();
+  </script>
+</body>
+</html>

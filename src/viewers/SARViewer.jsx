@@ -59,6 +59,24 @@ export const SARViewer = forwardRef(function SARViewer({
   classifierRoiDims = null, // {w, h} grid dimensions of classification map
 }, ref) {
   const containerRef = useRef(null);
+  const getTileRef = useRef(getTile);
+  getTileRef.current = getTile;
+
+  // Stable getTileData wrapper — identity only changes when data props change,
+  // so SARTileLayer won't re-fetch tiles when visual props (colormap, contrast, etc.) change.
+  const stableGetTileData = useCallback(
+    async (tile) => {
+      const { bbox } = tile;
+      return getTileRef.current({
+        x: tile.index.x,
+        y: tile.index.y,
+        z: tile.index.z,
+        bbox,
+        multiLook,
+      });
+    },
+    [multiLook]
+  );
 
   const [redrawTick, setRedrawTick] = useState(0);
 
@@ -197,7 +215,7 @@ export const SARViewer = forwardRef(function SARViewer({
       return [
         new SARTileLayer({
           id: 'sar-tile-layer',
-          getTile,
+          getTileData: stableGetTileData,
           bounds,
           contrastLimits,
           useDecibels,
@@ -213,7 +231,7 @@ export const SARViewer = forwardRef(function SARViewer({
 
     return [];
   // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
-  }, [cogUrl, getTile, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, toneMapping, handleLoadingChange, redrawTick]);
+  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, toneMapping, handleLoadingChange, redrawTick]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;

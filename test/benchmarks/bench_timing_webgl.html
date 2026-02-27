@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SARdine WebGL2 Benchmark — Isolated Operations</title>
+  <style>
+    body { font-family: monospace; background: #0a1628; color: #e0e0e0; padding: 20px; }
+    h1 { color: #4ec9d4; }
+    #status { color: #a0a0a0; margin: 10px 0; }
+    #log { white-space: pre-wrap; font-size: 12px; line-height: 1.6; max-height: 80vh; overflow-y: auto; }
+    .pass { color: #4ec9d4; } .fail { color: #e05858; } .dim { color: #888; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+  <h1>WebGL2 Per-Operation Benchmark</h1>
+  <div id="status">Initializing...</div>
+  <pre id="log"></pre>
+  <canvas id="canvas"></canvas>
+
+  <script type="module">
+    import { getColormapId, COLORMAP_IDS } from '../../src/layers/shaders.js';
+    import { STRETCH_MODE_IDS } from '../../src/layers/shaders.js';
+
+    const SIZES = [512, 2048, 8192, 16384];
+    const ITERATIONS = 50;
+    const WARMUP = 10;
+
+    const log = (msg, cls) => {
+      const el = document.getElementById('log');
+      if (cls) el.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+      else el.textContent += msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    };
+
+    const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
+
+    function generateSyntheticData(size) {
+      const data = new Float32Array(size * size);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = Math.exp(Math.random() * 6 - 3) * 0.01;
+      }
+      return data;
+    }
+
+    function generateNormalizedData(size) {
+      const data = new Float32Array(size * size);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = Math.random();
+      }
+      return data;
+    }
+
+    function setupGL(size) {
+      const canvas = document.getElementById('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true });
+      if (!gl) throw new Error('WebGL2 not available');
+      gl.getExtension('EXT_color_buffer_float');
+      gl.getExtension('OES_texture_float_linear');
+      return gl;
+    }
+
+    // Build shader with specific operation mode
+    function buildShader(gl, mode) {
+      // mode: 'db_only', 'sqrt_only', 'gamma_only', 'sigmoid_only', 'colormap_only', 'full_pipeline', 'rgb_composite'
+      const vsSource = `#version 300 es
+        in vec2 aPosition;
+        in vec2 aTexCoord;
+        out vec2 vTexCoord;
+        void main() { gl_Position = vec4(aPosition, 0.0, 1.0); vTexCoord = aTexCoord; }
+      `;
+
+      let processBody;
+      if (mode === 'db_only') {
+        processBody = `
+          float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+          float value = (db - uMin) / (uMax - uMin);
+          value = clamp(value, 0.0, 1.0);
+          fragColor = vec4(value, value, value, amplitude == 0.0 ? 0.0 : 1.0);
+        `;
+      } else if (mode === 'sqrt_only') {
+        processBody = `
+          float value = clamp(amplitude, 0.0, 1.0);
+          value = sqrt(value);
+          fragColor = vec4(value, value, value, 1.0);
+        `;
+      } else if (mode === 'gamma_only') {
+        processBody = `
+          float value = clamp(amplitude, 0.0, 1.0);
+          value = pow(value, uGamma);
+          fragColor = vec4(value, value, value, 1.0);
+        `;
+      } else if (mode === 'sigmoid_only') {
+        processBody = `
+          float value = clamp(amplitude, 0.0, 1.0);
+          float gain = uGamma * 8.0;
+          float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
+          float lo = 1.0 / (1.0 + exp(gain * 0.5));
+          float hi = 1.0 / (1.0 + exp(-gain * 0.5));
+          value = clamp((raw - lo) / (hi - lo), 0.0, 1.0);
+          fragColor = vec4(value, value, value, 1.0);
+        `;
+      } else if (mode === 'colormap_only') {
+        processBody = `
+          float value = clamp(amplitude, 0.0, 1.0);
+          vec3 color = viridis(value);
+          fragColor = vec4(color, 1.0);
+        `;
+      } else if (mode === 'full_pipeline') {
+        processBody = `
+          float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+          float value = (db - uMin) / (uMax - uMin);
+          value = clamp(value, 0.0, 1.0);
+          value = sqrt(value);
+          vec3 color = viridis(value);
+          float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
+          fragColor = vec4(color, alpha);
+        `;
+      } else if (mode === 'rgb_composite') {
+        processBody = `
+          float ampR = texture(uTexture, vTexCoord).r;
+          float ampG = texture(uTextureG, vTexCoord).r;
+          float ampB = texture(uTextureB, vTexCoord).r;
+
+          float dbR = 10.0 * log(max(ampR, 1e-10)) / log(10.0);
+          float dbG = 10.0 * log(max(ampG, 1e-10)) / log(10.0);
+          float dbB = 10.0 * log(max(ampB, 1e-10)) / log(10.0);
+
+          float vR = clamp((dbR - uMin) / (uMax - uMin), 0.0, 1.0);
+          float vG = clamp((dbG - uMin) / (uMax - uMin), 0.0, 1.0);
+          float vB = clamp((dbB - uMin) / (uMax - uMin), 0.0, 1.0);
+
+          vR = sqrt(vR); vG = sqrt(vG); vB = sqrt(vB);
+
+          bool anyValid = (ampR != 0.0) || (ampG != 0.0) || (ampB != 0.0);
+          fragColor = vec4(vR, vG, vB, anyValid ? 1.0 : 0.0);
+        `;
+      }
+
+      const fsSource = `#version 300 es
+        precision highp float;
+        uniform sampler2D uTexture;
+        uniform sampler2D uTextureG;
+        uniform sampler2D uTextureB;
+        uniform float uMin;
+        uniform float uMax;
+        uniform float uGamma;
+        in vec2 vTexCoord;
+        out vec4 fragColor;
+
+        vec3 viridis(float t) {
+          const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+          const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
+          const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
+          const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+          const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
+          const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+          const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+          t = clamp(t, 0.0, 1.0);
+          return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+        }
+
+        void main() {
+          float amplitude = texture(uTexture, vTexCoord).r;
+          ${processBody}
+        }
+      `;
+
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, vsSource);
+      gl.compileShader(vs);
+      if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS))
+        throw new Error('VS: ' + gl.getShaderInfoLog(vs));
+
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, fsSource);
+      gl.compileShader(fs);
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS))
+        throw new Error(`FS (${mode}): ` + gl.getShaderInfoLog(fs));
+
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+        throw new Error('Link: ' + gl.getProgramInfoLog(prog));
+
+      return { program: prog, vs, fs };
+    }
+
+    function setupPipeline(gl, program, size) {
+      const quadVerts = new Float32Array([
+        -1, -1, 0, 0,  1, -1, 1, 0,  1, 1, 1, 1,
+        -1, -1, 0, 0,  1, 1, 1, 1,  -1, 1, 0, 1,
+      ]);
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+      const posLoc = gl.getAttribLocation(program, 'aPosition');
+      const texLoc = gl.getAttribLocation(program, 'aTexCoord');
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(texLoc);
+      gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 16, 8);
+      gl.bindVertexArray(null);
+
+      // Offscreen FBO
+      const fb = gl.createFramebuffer();
+      const renderTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, renderTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, renderTex, 0);
+
+      return { vao, buf, fb, renderTex };
+    }
+
+    function createTexture(gl, data, size) {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, data);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.finish();
+      return tex;
+    }
+
+    function renderPass(gl, program, pipeline, textures, size, uniforms) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, pipeline.fb);
+      gl.viewport(0, 0, size, size);
+      gl.useProgram(program);
+
+      // Bind textures
+      for (let i = 0; i < textures.length; i++) {
+        gl.activeTexture(gl.TEXTURE0 + i);
+        gl.bindTexture(gl.TEXTURE_2D, textures[i]);
+      }
+      gl.uniform1i(gl.getUniformLocation(program, 'uTexture'), 0);
+      if (textures.length > 1) {
+        gl.uniform1i(gl.getUniformLocation(program, 'uTextureG'), 1);
+        gl.uniform1i(gl.getUniformLocation(program, 'uTextureB'), 2);
+      }
+      gl.uniform1f(gl.getUniformLocation(program, 'uMin'), uniforms.min);
+      gl.uniform1f(gl.getUniformLocation(program, 'uMax'), uniforms.max);
+      gl.uniform1f(gl.getUniformLocation(program, 'uGamma'), uniforms.gamma || 0.5);
+
+      gl.bindVertexArray(pipeline.vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.finish();
+      gl.bindVertexArray(null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+
+    function bench(name, fn, iterations = ITERATIONS, warmup = WARMUP) {
+      for (let i = 0; i < warmup; i++) fn();
+      const times = [];
+      for (let i = 0; i < iterations; i++) {
+        const t0 = performance.now();
+        fn();
+        times.push(performance.now() - t0);
+      }
+      times.sort((a, b) => a - b);
+      return {
+        name,
+        mean_ms: +(times.reduce((a, b) => a + b) / times.length).toFixed(4),
+        median_ms: +times[Math.floor(times.length / 2)].toFixed(4),
+        p95_ms: +times[Math.floor(times.length * 0.95)].toFixed(4),
+        min_ms: +times[0].toFixed(4),
+        max_ms: +times[times.length - 1].toFixed(4),
+        iterations,
+      };
+    }
+
+    async function runAll() {
+      const allResults = [];
+      const operations = [
+        'dB_conversion', 'sqrt_stretch', 'gamma_stretch', 'sigmoid_stretch',
+        'viridis_colormap', 'full_pipeline', 'rgb_composite_pauli',
+      ];
+      const shaderModes = [
+        'db_only', 'sqrt_only', 'gamma_only', 'sigmoid_only',
+        'colormap_only', 'full_pipeline', 'rgb_composite',
+      ];
+
+      for (const size of SIZES) {
+        const pixels = size * size;
+        log(`\n--- Size: ${size}x${size} (${pixels.toLocaleString()} pixels) ---`, 'pass');
+        setStatus(`Running ${size}x${size}...`);
+
+        const gl = setupGL(size);
+        const renderer = gl.getParameter(gl.RENDERER);
+        if (size === SIZES[0]) log(`  GPU: ${renderer}`, 'dim');
+
+        // Reduce iterations for large sizes
+        const iters = size >= 16384 ? 10 : size >= 8192 ? 20 : ITERATIONS;
+        const warmupCount = size >= 16384 ? 3 : size >= 8192 ? 5 : WARMUP;
+
+        // Generate data
+        const sarData = generateSyntheticData(size);
+        const normData = generateNormalizedData(size);
+        const sarData2 = generateSyntheticData(size);
+        const sarData3 = generateSyntheticData(size);
+
+        for (let opIdx = 0; opIdx < operations.length; opIdx++) {
+          const opName = operations[opIdx];
+          const shaderMode = shaderModes[opIdx];
+
+          try {
+            const shader = buildShader(gl, shaderMode);
+            const pipeline = setupPipeline(gl, shader.program, size);
+
+            // Choose input data (SAR power for dB, normalized for stretches/colormap)
+            const isStretchOrColormap = ['sqrt_only', 'gamma_only', 'sigmoid_only', 'colormap_only'].includes(shaderMode);
+            const inputData = isStretchOrColormap ? normData : sarData;
+            const tex = createTexture(gl, inputData, size);
+
+            const uniforms = { min: -25.0, max: 0.0, gamma: 0.5 };
+            if (isStretchOrColormap) { uniforms.min = 0.0; uniforms.max = 1.0; }
+
+            let result;
+            if (shaderMode === 'rgb_composite') {
+              const texG = createTexture(gl, sarData2, size);
+              const texB = createTexture(gl, sarData3, size);
+              result = bench(opName, () => renderPass(gl, shader.program, pipeline, [tex, texG, texB], size, uniforms), iters, warmupCount);
+              gl.deleteTexture(texG);
+              gl.deleteTexture(texB);
+            } else {
+              result = bench(opName, () => renderPass(gl, shader.program, pipeline, [tex], size, uniforms), iters, warmupCount);
+            }
+
+            result.operation = opName;
+            result.size = size;
+            result.pixels = pixels;
+            result.backend = 'webgl2';
+            result.gpu_renderer = renderer;
+            allResults.push(result);
+
+            log(`  WebGL ${opName}: ${result.median_ms.toFixed(3)} ms (median)`, 'dim');
+
+            // Cleanup
+            gl.deleteTexture(tex);
+            gl.deleteFramebuffer(pipeline.fb);
+            gl.deleteTexture(pipeline.renderTex);
+            gl.deleteBuffer(pipeline.buf);
+            gl.deleteVertexArray(pipeline.vao);
+            gl.deleteProgram(shader.program);
+            gl.deleteShader(shader.vs);
+            gl.deleteShader(shader.fs);
+          } catch (e) {
+            log(`  WebGL ${opName}: ERROR — ${e.message}`, 'fail');
+            allResults.push({
+              operation: opName, size, pixels, backend: 'webgl2',
+              error: e.message, mean_ms: -1, median_ms: -1,
+            });
+          }
+        }
+
+        // Lose context to free GPU memory for next size
+        const ext = gl.getExtension('WEBGL_lose_context');
+        if (ext) ext.loseContext();
+      }
+
+      // Export results for Puppeteer harvesting
+      window.__BENCHMARK_RESULTS__ = allResults;
+      window.__BENCHMARK_COMPLETE__ = true;
+
+      log('\n=== WebGL2 Benchmark Complete ===', 'pass');
+      log(`${allResults.length} results recorded`, 'dim');
+      log('Results available at window.__BENCHMARK_RESULTS__', 'dim');
+      setStatus('Complete');
+
+      return allResults;
+    }
+
+    // Auto-run
+    runAll().catch(e => {
+      log(`FATAL: ${e.message}`, 'fail');
+      window.__BENCHMARK_RESULTS__ = { error: e.message };
+      window.__BENCHMARK_COMPLETE__ = true;
+    });
+  </script>
+</body>
+</html>

@@ -53,6 +53,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",
+    "puppeteer": "^24.37.5",
     "vite": "^4.5.14"
   },
   "peerDependencies": {

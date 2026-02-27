@@ -16,6 +16,7 @@ export class SARTileLayer extends TileLayer {
   constructor(props) {
     const {
       getTile,
+      getTileData: externalGetTileData,
       bounds,
       contrastLimits = [-25, 0],
       useDecibels = true,
@@ -45,24 +46,26 @@ export class SARTileLayer extends TileLayer {
     // dB/colormap/contrast are applied in renderSubLayers (instant).
     const layerId = `${props.id || 'sar-tile-layer'}-${multiLook ? 'ml' : 'nn'}`;
 
+    // Use external getTileData if provided (stable reference from SARViewer),
+    // otherwise create a default closure from getTile + multiLook.
+    const getTileDataFn = externalGetTileData || (async (tile) => {
+      const { bbox } = tile;
+      const tileData = await getTile({
+        x: tile.index.x,
+        y: tile.index.y,
+        z: tile.index.z,
+        bbox,
+        multiLook,
+      });
+      if (!tileData) return null;
+      return tileData;
+    });
+
     super({
       id: layerId,
 
       // getTileData caches RAW float data (not rendered textures)
-      getTileData: async (tile) => {
-        const { bbox, signal } = tile;
-        const tileData = await getTile({
-          x: tile.index.x,
-          y: tile.index.y,
-          z: tile.index.z,
-          bbox,
-          multiLook,
-          signal,
-        });
-        if (!tileData) return null;
-        // Return raw data — rendering happens in renderSubLayers
-        return tileData;
-      },
+      getTileData: getTileDataFn,
 
       extent: bounds,
       minZoom: computedMinZoom,

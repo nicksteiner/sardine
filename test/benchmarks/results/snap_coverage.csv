@@ -1,0 +1,38 @@
+operator,category,description,status,sardine_primitive,sardine_location,note
+Calibration,Radiometric,"Apply radiometric calibration (sigma0, beta0, gamma0)",equivalent,mul (calibration LUT × amplitude²),nisar-loader.js (calibration applied at load),
+LinearToFromdB,Radiometric,Convert between linear power and decibel scale,exact,10 * log10(x) in GLSL shader,"shaders.js:182, SARGPULayer.js:70",
+BandMaths,Radiometric,Arbitrary per-pixel arithmetic expressions,equivalent,"add, mul, div, sqrt, log, exp, pow, abs, min, max","shaders.js (GPU), stretch.js + colormap.js (CPU)",
+BandMerge,Radiometric,Merge multiple bands into one product,equivalent,Multi-texture RGB composite,"SARGPULayer.js (3-texture mode), sar-composites.js",
+BandSelect,Radiometric,Select specific bands from product,equivalent,Dataset/polarization selector in UI,nisar-loader.js (frequency/pol selection),
+Multilook,SAR Filtering,Spatial averaging to reduce speckle (range × azimuth looks),exact,Box-filter ml×ml averaging on raw power,nisar-loader.js:1108-1137 (4 implementations),
+Speckle-Filter (Boxcar),SAR Filtering,NxN mean filter for speckle reduction,partial,3×3 spatial smooth in export path,nisar-loader.js (export smooth),"Only 3×3 mean; no Lee, Frost, or Gamma-MAP"
+Speckle-Filter (Lee),SAR Filtering,Adaptive Lee speckle filter,not-implemented,,,"Requires local statistics computation (mean, variance)"
+Speckle-Filter (Refined Lee),SAR Filtering,Edge-preserving Lee filter with directional windows,not-implemented,,,Requires directional window selection + local stats
+Speckle-Filter (Frost),SAR Filtering,Exponentially weighted speckle filter,not-implemented,,,
+Speckle-Filter (Gamma-MAP),SAR Filtering,Gamma distribution MAP speckle filter,not-implemented,,,
+Polarimetric-Decomposition (Freeman-Durden),Polarimetry,"3-component power decomposition (surface, double-bounce, volume)",exact,Freeman-Durden from C3 matrix elements,sar-composites.js:32-116,
+Polarimetric-Decomposition (Pauli),Polarimetry,"Pauli RGB: |HH-VV|, |HV|, |HH+VV|",equivalent,"Pauli from power (abs-diff, add, div)",sar-composites.js:138-165,"Approximate from power products (GCOV), not full complex Pauli"
+Polarimetric-Decomposition (H-Alpha),Polarimetry,Entropy-Alpha decomposition from coherency matrix,not-implemented,,"matrix.js (scaffolded, not implemented)",Requires 3×3 eigendecomposition
+Polarimetric-Speckle-Filter,Polarimetry,Multi-channel speckle filter preserving polarimetric info,out-of-scope,,,Advanced filtering is pre-processing; GCOV products are already multi-looked
+Polarimetric-Matrix (C3/T3),Polarimetry,Compute covariance/coherency matrix from SLC,equivalent,Reads pre-computed C3 elements from GCOV,nisar-loader.js (GCOV products store C3),GCOV already provides matrix elements; no SLC→C3 computation needed
+StatisticsOp,Statistics,"Compute band statistics (min, max, mean, std, histogram)",exact,"min, max, mean, median, stddev, histogram, percentiles",stats.js:12-278,
+HistogramEqualization,Statistics,Histogram equalization for contrast enhancement,equivalent,Percentile-based auto-contrast (2nd/98th),stats.js:225-278,"Percentile stretch, not full CDF equalization"
+ContrastStretch,Visualization,Linear/sqrt/log contrast stretch,exact,"linear, sqrt, gamma, sigmoid stretch modes","stretch.js, shaders.js:192-205",SARdine has 4 modes vs SNAP's 3; sigmoid is additional
+ColorManipulation,Visualization,Apply color table / LUT to single-band image,exact,"9 colormaps (grayscale, viridis, inferno, plasma, phase, sardine, flood, diverging, polarimetric)","shaders.js:53-173, colormap.js",
+RGB-ImageProfile,Visualization,Create RGB composite from 3 bands,exact,"RGB composite (6 presets: Pauli, dual-pol-h/v, quad-pol, Freeman-Durden)","sar-composites.js, SARGPULayer.js (3-texture mode)",
+CreateStack,Data Management,Stack multiple products for comparison,equivalent,Multi-dataset loading in viewer,main.jsx (multi-file comparison),
+Terrain-Correction (Range-Doppler),Geometric,Geocode SAR image using DEM and orbit,out-of-scope,,,GCOV products are pre-geocoded; terrain correction is pre-processing
+Terrain-Correction (SAR-Simulation),Geometric,Simulation-based terrain correction,out-of-scope,,,Pre-geocoded input assumed; terrain correction is pre-processing
+Ellipsoid-Correction,Geometric,Simple geocoding without DEM,equivalent,Coordinate array extraction from HDF5,nisar-loader.js (lat/lon from HDF5 datasets),GCOV provides geographic coordinates directly
+Reproject,Geometric,Reproject to different CRS,out-of-scope,,,Viewer uses native EPSG:4326; reprojection is pre-processing
+Subset,Data Management,Extract spatial or band subset,exact,Viewport-driven chunk selection (spatial subset),"h5chunk.js (readRegion), nisar-loader.js (getTile)",Viewport IS the spatial subset; only visible chunks are read
+Resample,Geometric,Resample to different pixel spacing,equivalent,Bilinear interpolation in mosaic tiles + multilook downsampling,"nisar-loader.js (buildMosaicTile, multilook)",
+Read,I/O,Read product from file,exact,"h5chunk (HDF5), geotiff.js (COG), File API","h5chunk.js, cog-loader.js",
+Write,I/O,Write product to file,exact,GeoTIFF export (Float32 + RGBA + RGB),geotiff-writer.js,
+Land-Sea-Mask,Masking,Create land/sea mask from coastline data,equivalent,Overture Maps vector overlay (coastline/land polygons),"OvertureLayer.js, overture-loader.js",Uses PMTiles vector overlay for land/water boundaries
+ValidPixelExpression,Masking,Mask pixels based on expression,equivalent,NaN/zero masking in shader + NISAR mask texture,"shaders.js:232, SARGPULayer.js (mask texture)",
+Interferogram,InSAR,Form interferogram from coregistered SLC pair,fft-dependent,,,Requires complex multiplication of coregistered SLCs
+GoldsteinPhaseFiltering,InSAR,Adaptive phase filter in frequency domain,fft-dependent,,,
+PhaseUnwrapping,InSAR,2D phase unwrapping (SNAPHU integration),fft-dependent,,,
+Coherence,InSAR,Estimate interferometric coherence,fft-dependent,,,Requires complex cross-correlation in sliding window
+Coregistration,InSAR,Sub-pixel coregistration of SLC pairs,fft-dependent,,,

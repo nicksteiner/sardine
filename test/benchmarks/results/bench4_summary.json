@@ -1,0 +1,128 @@
+{
+  "benchmark": "4_h5chunk_streaming",
+  "file": {
+    "name": "NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5",
+    "sizeBytes": 1900019712,
+    "sizeMB": 1900
+  },
+  "metadata": {
+    "metadataParseMs": 4.77,
+    "metadataBytesRead": 1463595
+  },
+  "regions": [
+    {
+      "regionSize": 256,
+      "pixels": 65536,
+      "medianTimeMs": 276.32,
+      "minTimeMs": 43.76,
+      "maxTimeMs": 282.54,
+      "bytesNeeded": 262144,
+      "bytesActual": 1263968,
+      "transferRatio": 4.82,
+      "pixelsPerMs": 237
+    },
+    {
+      "regionSize": 512,
+      "pixels": 262144,
+      "medianTimeMs": 255.79,
+      "minTimeMs": 32.87,
+      "maxTimeMs": 305.57,
+      "bytesNeeded": 1048576,
+      "bytesActual": 2518297,
+      "transferRatio": 2.4,
+      "pixelsPerMs": 1025
+    },
+    {
+      "regionSize": 1024,
+      "pixels": 1048576,
+      "medianTimeMs": 344.94,
+      "minTimeMs": 61.6,
+      "maxTimeMs": 485.31,
+      "bytesNeeded": 4194304,
+      "bytesActual": 5686652,
+      "transferRatio": 1.36,
+      "pixelsPerMs": 3040
+    },
+    {
+      "regionSize": 2048,
+      "pixels": 4194304,
+      "medianTimeMs": 429.35,
+      "minTimeMs": 372.94,
+      "maxTimeMs": 435.53,
+      "bytesNeeded": 16777216,
+      "bytesActual": 15816600,
+      "transferRatio": 0.94,
+      "pixelsPerMs": 9769
+    }
+  ],
+  "sequential": [
+    {
+      "tileIndex": 0,
+      "row": 7624,
+      "col": 7840,
+      "timeMs": 41.04,
+      "bytesRead": 2531718
+    },
+    {
+      "tileIndex": 1,
+      "row": 7624,
+      "col": 8352,
+      "timeMs": 26.31,
+      "bytesRead": 2528866
+    },
+    {
+      "tileIndex": 2,
+      "row": 7624,
+      "col": 8864,
+      "timeMs": 21.95,
+      "bytesRead": 2533431
+    },
+    {
+      "tileIndex": 3,
+      "row": 8136,
+      "col": 7840,
+      "timeMs": 182.08,
+      "bytesRead": 2518297
+    },
+    {
+      "tileIndex": 4,
+      "row": 8136,
+      "col": 8352,
+      "timeMs": 28.07,
+      "bytesRead": 2526957
+    },
+    {
+      "tileIndex": 5,
+      "row": 8136,
+      "col": 8864,
+      "timeMs": 22.8,
+      "bytesRead": 2531449
+    },
+    {
+      "tileIndex": 6,
+      "row": 8648,
+      "col": 7840,
+      "timeMs": 23.78,
+      "bytesRead": 2527042
+    },
+    {
+      "tileIndex": 7,
+      "row": 8648,
+      "col": 8352,
+      "timeMs": 34.46,
+      "bytesRead": 2535723
+    },
+    {
+      "tileIndex": 8,
+      "row": 8648,
+      "col": 8864,
+      "timeMs": 22.3,
+      "bytesRead": 2538906
+    }
+  ],
+  "summary": {
+    "timeToFirstPixelMs": 276.32,
+    "firstPixelPass": false,
+    "avgTransferRatio": 2.38
+  }
+}
