@@ -24,7 +24,7 @@
 
 ## Overview
 
-SARdine runs SAR analysis entirely in the browser. No server, no GDAL, no Python.
+SARdine runs SAR analysis entirely in the browser.
 
 It reads NISAR L2 GCOV HDF5 (`.h5`) and Cloud Optimized GeoTIFFs from any vendor. Rendering goes through WebGL2 shaders on deck.gl: dB scaling, colormaps, contrast, polarimetric composites — all on the GPU at 60 fps.
 
@@ -47,7 +47,7 @@ It reads NISAR L2 GCOV HDF5 (`.h5`) and Cloud Optimized GeoTIFFs from any vendor
 
 - **GeoTIFF** — raw Float32 with CRS + tiepoints, rendered RGBA, or RGB composite
 - **Figure PNG** — canvas capture with scale bar, coordinates, colorbar, and classification overlay
-- **Publication SVG** — Nature/RSE-style vector export of scatter plots, histograms, and classification maps
+- **Publication SVG** — Journal-style vector export of scatter plots, histograms, and classification maps
 
 ---
 
@@ -165,7 +165,7 @@ Canvas capture with overlays: scale bar, corner coordinates, colorbar (or RGB tr
 
 ### Publication SVG
 
-Nature/RSE journal-style vector graphics:
+Journal-style vector graphics:
 - **Scatter plot** — density heatmap with class regions, open L-axes, outward ticks, Helvetica
 - **Histogram** — filled distribution with contrast limit markers and legend
 - **Classification map** — embedded raster with vector legend and pixel counts
