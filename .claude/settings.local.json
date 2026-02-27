@@ -15,7 +15,27 @@
       "Bash(npm run build:*)",
       "Bash(git pull:*)",
       "Bash(git stash:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(node:*)",
+      "Bash(npm test:*)",
+      "Bash(aws sts get-caller-identity:*)",
+      "Bash(aws s3api head-object:*)",
+      "Bash(python3:*)",
+      "Bash(aws:*)",
+      "Bash(/snap/bin/aws:*)",
+      "Bash(/snap/bin/aws-cli.aws s3 presign:*)",
+      "Bash(lsof:*)",
+      "Bash(kill:*)",
+      "Bash(curl:*)",
+      "Bash(git ls-tree:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(find:*)",
+      "Bash(pip3 install:*)",
+      "Bash(pip install:*)",
+      "Bash(npx vite build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git merge:*)"
     ]
   }
 }
