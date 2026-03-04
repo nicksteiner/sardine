@@ -91,6 +91,36 @@ No proxy server needed at all. The browser talks directly to S3 using presigned 
 
 ---
 
+## Industry Precedent: The deck.gl Ecosystem
+
+SARdine's architecture is not experimental — it follows the same pattern used by major geospatial platforms in production today. The core framework, [deck.gl](https://deck.gl/), powers client-side GPU rendering at Uber, Google, CARTO, Foursquare, and 200+ other organizations.
+
+| Company | What they visualize | Architecture |
+|---------|-------------------|--------------|
+| **Uber** | Ride networks, surge pricing, city-scale movement | deck.gl + WebGL, client-side GPU |
+| **Google** | Google Earth layers, cross-platform via deck.gl-native | deck.gl + WebGL/WebGPU |
+| **CARTO** | Enterprise geospatial analytics (their primary viz library) | deck.gl + WebGL, cloud data streaming |
+| **Foursquare** | Location intelligence via Kepler.gl / Unfolded Studio | deck.gl + WebGL |
+| **SARdine** | SAR backscatter, polarimetric composites, NISAR GCOV | deck.gl + WebGL2, HDF5/COG streaming |
+
+The pattern is identical across all of these: **large geospatial datasets, streamed to the browser, rendered on the client GPU.** Nobody questions whether Uber should render ride heatmaps server-side — the browser GPU handles it. SARdine applies the same proven architecture to SAR data.
+
+### What Makes SAR Data Different
+
+The only difference is the data format. Uber visualizes GeoJSON and vector tiles. CARTO visualizes cloud data warehouse queries. SARdine visualizes HDF5 and COG rasters. The rendering pipeline (GPU textures → GLSL shaders → screen) is the same.
+
+The gap that SARdine fills is **h5chunk.js** — making HDF5 behave like a cloud-optimized format. Once chunks reach the GPU, SARdine is just another deck.gl application. The innovation is in the data delivery, not the rendering.
+
+```
+Standard deck.gl app:    Vector tiles / MVT  →  GPU  →  screen
+CARTO:                   Cloud SQL results   →  GPU  →  screen
+SARdine:                 HDF5 chunks / COG   →  GPU  →  screen
+                                               ↑
+                                         Same pipeline
+```
+
+---
+
 ## Comparison with Alternatives
 
 | Tool | Architecture | GPU | Streaming | Install |
