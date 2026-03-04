@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SARdine WebGL2 Timing Benchmark</title>
+  <style>
+    body { font-family: monospace; background: #0a1628; color: #ccc; padding: 20px; }
+    #log { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
+    .pass { color: #3eda5e; } .fail { color: #e05858; } .info { color: #4ec9d4; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+<h2 style="color:#4ec9d4">SARdine WebGL2 Isolated Op Timing</h2>
+<div id="log"></div>
+<canvas id="canvas" width="1" height="1"></canvas>
+
+<script>
+const SIZES = [512, 2048, 8192, 16384];
+const WARMUP = 2;
+const TRIALS = 5;
+
+const log = (msg, cls) => {
+  const el = document.getElementById('log');
+  if (cls) el.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+  else el.textContent += msg + '\n';
+};
+
+// ─── Shader fragments for each isolated operation ────────────────────
+const OPS = {
+  dB_conversion: `
+    float op(float x) {
+      return 10.0 * log(max(x, 1e-10)) / log(10.0);
+    }`,
+  sqrt_stretch: `
+    float op(float x) {
+      return sqrt(clamp(x, 0.0, 1.0));
+    }`,
+  gamma_stretch: `
+    float op(float x) {
+      return pow(clamp(x, 0.0, 1.0), 0.5);
+    }`,
+  sigmoid_stretch: `
+    float op(float x) {
+      float v = clamp(x, 0.0, 1.0);
+      float gain = 4.0;
+      float raw = 1.0 / (1.0 + exp(-gain * (v - 0.5)));
+      float lo = 1.0 / (1.0 + exp(gain * 0.5));
+      float hi = 1.0 / (1.0 + exp(-gain * 0.5));
+      return clamp((raw - lo) / (hi - lo), 0.0, 1.0);
+    }`,
+  viridis_colormap: `
+    float op(float x) {
+      float t = clamp(x, 0.0, 1.0);
+      vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+      vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
+      vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
+      vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+      vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
+      vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+      vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+      vec3 col = c0 + t*(c1 + t*(c2 + t*(c3 + t*(c4 + t*(c5 + t*c6)))));
+      return col.r + col.g + col.b;
+    }`,
+  full_pipeline: `
+    float op(float amplitude) {
+      // dB
+      float db = 10.0 * log(max(amplitude, 1e-10)) / log(10.0);
+      float value = clamp((db - (-25.0)) / (0.0 - (-25.0)), 0.0, 1.0);
+      // sqrt stretch
+      value = sqrt(value);
+      // viridis colormap
+      vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
+      vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
+      vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
+      vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
+      vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
+      vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
+      vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+      vec3 col = c0 + value*(c1 + value*(c2 + value*(c3 + value*(c4 + value*(c5 + value*c6)))));
+      return col.r;
+    }`
+};
+
+function makeFragShader(opGLSL) {
+  return `#version 300 es
+    precision highp float;
+    uniform sampler2D uTex;
+    in vec2 vTC;
+    out vec4 fragColor;
+    ${opGLSL}
+    void main() {
+      float x = texture(uTex, vTC).r;
+      float result = op(x);
+      fragColor = vec4(result, result, result, 1.0);
+    }`;
+}
+
+const VS = `#version 300 es
+  in vec2 aPos;
+  in vec2 aTC;
+  out vec2 vTC;
+  void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTC = aTC; }`;
+
+function setupGL() {
+  const canvas = document.getElementById('canvas');
+  const gl = canvas.getContext('webgl2');
+  if (!gl) throw new Error('WebGL2 not available');
+  gl.getExtension('EXT_color_buffer_float');
+  gl.getExtension('OES_texture_float_linear');
+
+  // Fullscreen quad VAO
+  const quadVerts = new Float32Array([-1,-1,0,0, 1,-1,1,0, 1,1,1,1, -1,-1,0,0, 1,1,1,1, -1,1,0,1]);
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+  gl.bindVertexArray(null);
+  return { gl, vao };
+}
+
+function compileProgram(gl, fsSource) {
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vs, VS);
+  gl.compileShader(vs);
+  if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) throw new Error('VS: ' + gl.getShaderInfoLog(vs));
+
+  const fs = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fs, fsSource);
+  gl.compileShader(fs);
+  if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) throw new Error('FS: ' + gl.getShaderInfoLog(fs));
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error('Link: ' + gl.getProgramInfoLog(prog));
+  return { prog, vs, fs };
+}
+
+function createTexture(gl, size) {
+  const data = new Float32Array(size * size);
+  for (let i = 0; i < data.length; i++) data[i] = Math.exp(Math.random() * 6 - 3) * 0.01;
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+
+function createFBO(gl, size) {
+  const fb = gl.createFramebuffer();
+  const rt = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, rt);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, rt, 0);
+  return { fb, rt };
+}
+
+function benchOp(gl, vao, program, tex, fbo, size, warmup, trials) {
+  // Readback buffer for GPU sync (reading 1 pixel forces pipeline flush)
+  const syncPixel = new Uint8Array(4);
+
+  function drawOnce() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
+    gl.viewport(0, 0, size, size);
+    gl.useProgram(program.prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(gl.getUniformLocation(program.prog, 'uTex'), 0);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    // Force GPU completion by reading back 1 pixel
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, syncPixel);
+  }
+
+  // Warmup
+  for (let i = 0; i < warmup; i++) drawOnce();
+
+  // Use batch timing for small sizes (run N iterations, divide total)
+  const batchSize = size <= 2048 ? 20 : 5;
+  const batchTrials = trials;
+  const times = [];
+
+  for (let t = 0; t < batchTrials; t++) {
+    const t0 = performance.now();
+    for (let b = 0; b < batchSize; b++) drawOnce();
+    const elapsed = (performance.now() - t0) / batchSize;
+    times.push(elapsed);
+  }
+
+  gl.bindVertexArray(null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+  times.sort((a, b) => a - b);
+  return {
+    median: times[Math.floor(times.length / 2)],
+    mean: times.reduce((a, b) => a + b) / times.length,
+    min: times[0],
+    max: times[times.length - 1],
+    times
+  };
+}
+
+async function runAll() {
+  log('=== SARdine WebGL2 Isolated Op Timing ===', 'info');
+  const { gl, vao } = setupGL();
+
+  const renderer = gl.getParameter(gl.RENDERER);
+  log(`GPU: ${renderer}`, 'info');
+  log(`Max texture size: ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`, 'info');
+  log('');
+
+  const results = [];
+  const opNames = Object.keys(OPS);
+
+  for (const size of SIZES) {
+    log(`── Size: ${size}x${size} (${(size*size/1e6).toFixed(1)}M pixels) ──`, 'info');
+
+    // Create texture + FBO for this size
+    const canvas = document.getElementById('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const tex = createTexture(gl, size);
+    const fbo = createFBO(gl, size);
+
+    for (const opName of opNames) {
+      const fsSource = makeFragShader(OPS[opName]);
+      let program;
+      try {
+        program = compileProgram(gl, fsSource);
+      } catch (e) {
+        log(`  ${opName}: COMPILE ERROR: ${e.message}`, 'fail');
+        continue;
+      }
+
+      const result = benchOp(gl, vao, program, tex, fbo, size, WARMUP, TRIALS);
+      const mpps = (size * size / 1e6) / (result.median / 1000);
+
+      log(`  ${opName}: ${result.median.toFixed(3)} ms (${mpps.toFixed(0)} Mpix/s)`, 'pass');
+      results.push({
+        operation: opName,
+        size,
+        backend: 'webgl2',
+        median_ms: result.median,
+        mean_ms: result.mean,
+        min_ms: result.min,
+        max_ms: result.max,
+        mpixels_per_sec: mpps
+      });
+
+      gl.deleteProgram(program.prog);
+      gl.deleteShader(program.vs);
+      gl.deleteShader(program.fs);
+    }
+
+    gl.deleteTexture(tex);
+    gl.deleteFramebuffer(fbo.fb);
+    gl.deleteTexture(fbo.rt);
+    log('');
+  }
+
+  // ── Special ops: multilook_4x4 (4x4 downsample in linear power) ──
+  // Each output pixel averages a 4x4 block of input pixels.
+  // All averaging in linear power space (never dB).
+  // Output is size/4 x size/4. Matches CPU np_ml(d, ml=4).
+  log('── Multilook 4x4 (4x4 downsample, linear power) ──', 'info');
+  const mlFS = `#version 300 es
+    precision highp float;
+    uniform sampler2D uTex;
+    in vec2 vTC;
+    out vec4 fragColor;
+    void main() {
+      ivec2 base = ivec2(gl_FragCoord.xy) * 4;
+      float sum = 0.0;
+      float count = 0.0;
+      for (int dy = 0; dy < 4; dy++) {
+        for (int dx = 0; dx < 4; dx++) {
+          float v = texelFetch(uTex, base + ivec2(dx, dy), 0).r;
+          if (v > 0.0) { sum += v; count += 1.0; }
+        }
+      }
+      float avg = count > 0.0 ? sum / count : 0.0;
+      fragColor = vec4(avg, avg, avg, 1.0);
+    }`;
+  let mlProg;
+  try { mlProg = compileProgram(gl, mlFS); } catch(e) { log(`  multilook: COMPILE ERROR: ${e.message}`, 'fail'); }
+  if (mlProg) {
+    for (const size of SIZES) {
+      const outSize = Math.floor(size / 4);
+      const tex = createTexture(gl, size);
+      const fbo = createFBO(gl, outSize);
+      const canvas = document.getElementById('canvas');
+      canvas.width = outSize; canvas.height = outSize;
+      const result = benchOp(gl, vao, mlProg, tex, fbo, outSize, WARMUP, TRIALS);
+      const mpps = (size * size / 1e6) / (result.median / 1000);
+      log(`  ${size}x${size} → ${outSize}x${outSize}: ${result.median.toFixed(3)} ms (${mpps.toFixed(0)} Mpix/s input)`, 'pass');
+      results.push({
+        operation: 'multilook_4x4', size, backend: 'webgl2',
+        median_ms: result.median, mean_ms: result.mean,
+        min_ms: result.min, max_ms: result.max, mpixels_per_sec: mpps
+      });
+      gl.deleteTexture(tex); gl.deleteFramebuffer(fbo.fb); gl.deleteTexture(fbo.rt);
+    }
+    gl.deleteProgram(mlProg.prog); gl.deleteShader(mlProg.vs); gl.deleteShader(mlProg.fs);
+  }
+
+  // ── Special ops: rgb_composite_pauli (3-texture) ───────────────
+  log('── RGB Composite Pauli (3-texture dB+stretch) ──', 'info');
+  const rgbFS = `#version 300 es
+    precision highp float;
+    uniform sampler2D uTexR, uTexG, uTexB;
+    in vec2 vTC;
+    out vec4 fragColor;
+    float process(float amp) {
+      float db = 10.0 * log(max(amp, 1e-10)) / log(10.0);
+      float v = clamp((db - (-25.0)) / (0.0 - (-25.0)), 0.0, 1.0);
+      return sqrt(v);
+    }
+    void main() {
+      float r = process(texture(uTexR, vTC).r);
+      float g = process(texture(uTexG, vTC).r);
+      float b = process(texture(uTexB, vTC).r);
+      fragColor = vec4(r, g, b, 1.0);
+    }`;
+  let rgbProg;
+  try { rgbProg = compileProgram(gl, rgbFS); } catch(e) { log(`  rgb_composite: COMPILE ERROR: ${e.message}`, 'fail'); }
+  if (rgbProg) {
+    for (const size of SIZES) {
+      const texR = createTexture(gl, size);
+      const texG = createTexture(gl, size);
+      const texB = createTexture(gl, size);
+      const fbo = createFBO(gl, size);
+      const canvas = document.getElementById('canvas');
+      canvas.width = size; canvas.height = size;
+      const syncPixel = new Uint8Array(4);
+
+      // Warmup
+      for (let w = 0; w < WARMUP; w++) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
+        gl.viewport(0, 0, size, size);
+        gl.useProgram(rgbProg.prog);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texR);
+        gl.uniform1i(gl.getUniformLocation(rgbProg.prog, 'uTexR'), 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texG);
+        gl.uniform1i(gl.getUniformLocation(rgbProg.prog, 'uTexG'), 1);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texB);
+        gl.uniform1i(gl.getUniformLocation(rgbProg.prog, 'uTexB'), 2);
+        gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, syncPixel);
+      }
+
+      const batchSize = size <= 2048 ? 20 : 5;
+      const times = [];
+      for (let t = 0; t < TRIALS; t++) {
+        const t0 = performance.now();
+        for (let b = 0; b < batchSize; b++) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
+          gl.viewport(0, 0, size, size);
+          gl.useProgram(rgbProg.prog);
+          gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texR);
+          gl.uniform1i(gl.getUniformLocation(rgbProg.prog, 'uTexR'), 0);
+          gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texG);
+          gl.uniform1i(gl.getUniformLocation(rgbProg.prog, 'uTexG'), 1);
+          gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texB);
+          gl.uniform1i(gl.getUniformLocation(rgbProg.prog, 'uTexB'), 2);
+          gl.bindVertexArray(vao); gl.drawArrays(gl.TRIANGLES, 0, 6);
+          gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, syncPixel);
+        }
+        times.push((performance.now() - t0) / batchSize);
+      }
+      times.sort((a, b) => a - b);
+      const median = times[Math.floor(times.length / 2)];
+      const mean = times.reduce((a, b) => a + b) / times.length;
+      const mpps = (size * size / 1e6) / (median / 1000);
+
+      log(`  ${size}x${size}: ${median.toFixed(3)} ms (${mpps.toFixed(0)} Mpix/s)`, 'pass');
+      results.push({
+        operation: 'rgb_composite_pauli', size, backend: 'webgl2',
+        median_ms: median, mean_ms: mean,
+        min_ms: times[0], max_ms: times[times.length - 1], mpixels_per_sec: mpps
+      });
+
+      gl.deleteTexture(texR); gl.deleteTexture(texG); gl.deleteTexture(texB);
+      gl.deleteFramebuffer(fbo.fb); gl.deleteTexture(fbo.rt);
+    }
+    gl.deleteProgram(rgbProg.prog); gl.deleteShader(rgbProg.vs); gl.deleteShader(rgbProg.fs);
+  }
+
+  // Compute speedup vs hypothetical 1x baseline (will be combined with CPU data later)
+  window.__BENCHMARK_RESULTS__ = results;
+  window.__BENCHMARK_COMPLETE__ = true;
+
+  log('=== COMPLETE ===', 'info');
+  log(`${results.length} measurements recorded`, 'pass');
+  log(JSON.stringify(results, null, 2));
+}
+
+// Auto-run
+runAll().catch(e => {
+  log(`FATAL: ${e.message}`, 'fail');
+  window.__BENCHMARK_RESULTS__ = { error: e.message };
+  window.__BENCHMARK_COMPLETE__ = true;
+});
+</script>
+</body>
+</html>

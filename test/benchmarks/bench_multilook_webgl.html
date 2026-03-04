@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SARdine GPU Multilook Benchmark</title>
+  <style>
+    body { font-family: monospace; background: #0a1628; color: #ccc; padding: 20px; }
+    #log { white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
+    .pass { color: #3eda5e; } .fail { color: #e05858; } .info { color: #4ec9d4; }
+    .dim { color: #888; }
+    canvas { display: none; }
+  </style>
+</head>
+<body>
+<h2 style="color:#4ec9d4">SARdine GPU Box-Filter Multilook Benchmark</h2>
+<p style="color:#888; font-size: 12px;">
+  Spatial averaging in linear power space (never dB).
+  N&times;N window per fragment via texelFetch.
+  Zero-valued pixels are excluded from the average.
+</p>
+<div id="log"></div>
+<canvas id="canvas" width="1" height="1"></canvas>
+
+<script>
+/**
+ * GPU Box-Filter Multilook Benchmark
+ *
+ * Measures the cost of NxN spatial averaging in a WebGL2 fragment shader.
+ * All averaging is done in linear power space — dB transform is never
+ * applied before averaging. This matches the domain requirement that
+ * Mean(10·log10(x)) != 10·log10(Mean(x)).
+ *
+ * The shader reads an NxN neighborhood via texelFetch at integer offsets
+ * around gl_FragCoord. Pixels with value <= 0 are excluded (SAR nodata).
+ * Output is the same size as input (no downsampling).
+ *
+ * We sweep:
+ *   - kernel sizes: 3x3, 5x5, 7x7, 9x9  (half-sizes 1,2,3,4)
+ *   - scene sizes: 1024, 4096, 8192
+ *
+ * GPU timing uses EXT_disjoint_timer_query_webgl2 if available,
+ * otherwise falls back to readPixels sync + performance.now().
+ */
+
+const SCENE_SIZES = [1024, 4096, 8192];
+const KERNEL_HALFS = [1, 2, 3, 4]; // 3x3, 5x5, 7x7, 9x9
+const WARMUP = 3;
+const TRIALS = 10;
+
+const log = (msg, cls) => {
+  console.log(msg); // mirror to console for Puppeteer
+  const el = document.getElementById('log');
+  if (cls) el.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+  else el.textContent += msg + '\n';
+};
+
+// ─── Vertex shader ──────────────────────────────────────────────────
+const VS = `#version 300 es
+  in vec2 aPos;
+  in vec2 aTC;
+  out vec2 vTC;
+  void main() { gl_Position = vec4(aPos, 0.0, 1.0); vTC = aTC; }`;
+
+// ─── Box-filter multilook fragment shader ───────────────────────────
+// Operates on R32F texture (linear power). Averages NxN window.
+// Skips zero-valued pixels (SAR nodata). Output is a single float
+// written to R32F FBO.
+function makeMultilookFS(halfSize) {
+  const n = halfSize;
+  return `#version 300 es
+    precision highp float;
+    uniform sampler2D u_power;
+    in vec2 vTC;
+    out vec4 fragColor;
+    void main() {
+      ivec2 coord = ivec2(gl_FragCoord.xy);
+      float sum = 0.0;
+      float count = 0.0;
+      for (int dy = -${n}; dy <= ${n}; dy++) {
+        for (int dx = -${n}; dx <= ${n}; dx++) {
+          float v = texelFetch(u_power, coord + ivec2(dx, dy), 0).r;
+          if (v > 0.0) {
+            sum += v;
+            count += 1.0;
+          }
+        }
+      }
+      float result = count > 0.0 ? sum / count : 0.0;
+      fragColor = vec4(result, 0.0, 0.0, 1.0);
+    }`;
+}
+
+function setupGL() {
+  const canvas = document.getElementById('canvas');
+  const gl = canvas.getContext('webgl2');
+  if (!gl) throw new Error('WebGL2 not available');
+
+  const floatExt = gl.getExtension('EXT_color_buffer_float');
+  if (!floatExt) throw new Error('EXT_color_buffer_float not available (need R32F FBO)');
+  gl.getExtension('OES_texture_float_linear');
+
+  // Check for timer query extension
+  const timerExt = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+
+  // Fullscreen quad
+  const quadVerts = new Float32Array([-1,-1,0,0, 1,-1,1,0, 1,1,1,1, -1,-1,0,0, 1,1,1,1, -1,1,0,1]);
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 16, 8);
+  gl.bindVertexArray(null);
+
+  return { gl, vao, timerExt };
+}
+
+function compileProgram(gl, fsSource) {
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vs, VS);
+  gl.compileShader(vs);
+  if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS))
+    throw new Error('VS: ' + gl.getShaderInfoLog(vs));
+
+  const fs = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fs, fsSource);
+  gl.compileShader(fs);
+  if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS))
+    throw new Error('FS: ' + gl.getShaderInfoLog(fs));
+
+  const prog = gl.createProgram();
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS))
+    throw new Error('Link: ' + gl.getProgramInfoLog(prog));
+  return { prog, vs, fs };
+}
+
+function createR32FTexture(gl, size, data) {
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return tex;
+}
+
+function createR32FFBO(gl, size) {
+  const fb = gl.createFramebuffer();
+  const rt = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, rt);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, size, size, 0, gl.RED, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, rt, 0);
+  const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+  if (status !== gl.FRAMEBUFFER_COMPLETE) {
+    throw new Error(`R32F FBO incomplete: 0x${status.toString(16)}`);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  return { fb, rt };
+}
+
+// Generate synthetic SAR power data (linear power, always > 0)
+// Uses fast LCG PRNG — no Box-Muller to keep generation fast for large arrays
+function generateSARPower(size, seed) {
+  const data = new Float32Array(size * size);
+  let s = (seed || 42) | 0;
+  for (let i = 0; i < data.length; i++) {
+    s = (s * 1664525 + 1013904223) | 0;
+    // Map to [0.001, 0.1] — realistic SAR power range
+    data[i] = ((s >>> 0) / 4294967296) * 0.099 + 0.001;
+  }
+  return data;
+}
+
+// CPU reference: box-filter multilook in linear power space
+function cpuMultilook(data, size, halfSize) {
+  const out = new Float32Array(size * size);
+  const n = halfSize;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let sum = 0, count = 0;
+      for (let dy = -n; dy <= n; dy++) {
+        for (let dx = -n; dx <= n; dx++) {
+          const ny = y + dy, nx = x + dx;
+          if (ny >= 0 && ny < size && nx >= 0 && nx < size) {
+            const v = data[ny * size + nx];
+            if (v > 0) { sum += v; count++; }
+          }
+        }
+      }
+      out[y * size + x] = count > 0 ? sum / count : 0;
+    }
+  }
+  return out;
+}
+
+function benchMultilook(gl, vao, program, tex, fbo, size, timerExt) {
+  const syncPixel = new Float32Array(4);
+
+  function drawOnce() {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
+    gl.viewport(0, 0, size, size);
+    gl.useProgram(program.prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(gl.getUniformLocation(program.prog, 'u_power'), 0);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    // Sync: read 1 pixel to force GPU completion
+    gl.readPixels(0, 0, 1, 1, gl.RED, gl.FLOAT, syncPixel);
+  }
+
+  // Warmup
+  for (let i = 0; i < WARMUP; i++) drawOnce();
+
+  // If timer queries available, use them for GPU-side timing
+  if (timerExt) {
+    const times = [];
+    for (let t = 0; t < TRIALS; t++) {
+      const query = gl.createQuery();
+      gl.beginQuery(timerExt.TIME_ELAPSED_EXT, query);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.fb);
+      gl.viewport(0, 0, size, size);
+      gl.useProgram(program.prog);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(gl.getUniformLocation(program.prog, 'u_power'), 0);
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      gl.endQuery(timerExt.TIME_ELAPSED_EXT);
+      gl.readPixels(0, 0, 1, 1, gl.RED, gl.FLOAT, syncPixel); // force completion
+
+      // Poll for result
+      let timeNs = null;
+      const pollStart = performance.now();
+      while (performance.now() - pollStart < 5000) {
+        const available = gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE);
+        const disjoint = gl.getParameter(timerExt.GPU_DISJOINT_EXT);
+        if (available && !disjoint) {
+          timeNs = gl.getQueryParameter(query, gl.QUERY_RESULT);
+          break;
+        }
+        if (disjoint) break;
+      }
+      gl.deleteQuery(query);
+      if (timeNs !== null) times.push(timeNs / 1e6); // ns → ms
+    }
+
+    if (times.length >= TRIALS / 2) {
+      times.sort((a, b) => a - b);
+      const mean = times.reduce((a, b) => a + b) / times.length;
+      const std = Math.sqrt(times.reduce((s, t) => s + (t - mean) ** 2, 0) / times.length);
+      return {
+        median: times[Math.floor(times.length / 2)],
+        mean, std, min: times[0], max: times[times.length - 1],
+        timing: 'timer_query', trials: times.length
+      };
+    }
+    // Fall through to readPixels timing if timer queries failed
+  }
+
+  // Fallback: batch timing with readPixels sync
+  const batchSize = size <= 2048 ? 10 : 3;
+  const times = [];
+  for (let t = 0; t < TRIALS; t++) {
+    const t0 = performance.now();
+    for (let b = 0; b < batchSize; b++) drawOnce();
+    times.push((performance.now() - t0) / batchSize);
+  }
+  times.sort((a, b) => a - b);
+  const mean = times.reduce((a, b) => a + b) / times.length;
+  const std = Math.sqrt(times.reduce((s, t) => s + (t - mean) ** 2, 0) / times.length);
+  return {
+    median: times[Math.floor(times.length / 2)],
+    mean, std, min: times[0], max: times[times.length - 1],
+    timing: 'readpixels_sync', trials: times.length
+  };
+}
+
+async function runAll() {
+  log('=== SARdine GPU Box-Filter Multilook Benchmark ===', 'info');
+  log('All averaging in linear power space (never dB)', 'dim');
+  log('');
+
+  const { gl, vao, timerExt } = setupGL();
+
+  const renderer = gl.getParameter(gl.RENDERER);
+  log(`GPU: ${renderer}`, 'info');
+  log(`Timer queries: ${timerExt ? 'YES (EXT_disjoint_timer_query_webgl2)' : 'NO (using readPixels sync)'}`, 'info');
+  log(`Max texture size: ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`, 'info');
+  log('');
+
+  const results = [];
+
+  // ── Correctness validation (small scene) ──────────────────────────
+  log('── Correctness validation (256x256, 3x3 kernel) ──', 'info');
+  {
+    const valSize = 256;
+    const valData = generateSARPower(valSize, 42);
+    const valTex = createR32FTexture(gl, valSize, valData);
+    const valFBO = createR32FFBO(gl, valSize);
+    const valProg = compileProgram(gl, makeMultilookFS(1)); // 3x3
+
+    const canvas = document.getElementById('canvas');
+    canvas.width = valSize; canvas.height = valSize;
+
+    // GPU run
+    gl.bindFramebuffer(gl.FRAMEBUFFER, valFBO.fb);
+    gl.viewport(0, 0, valSize, valSize);
+    gl.useProgram(valProg.prog);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, valTex);
+    gl.uniform1i(gl.getUniformLocation(valProg.prog, 'u_power'), 0);
+    gl.bindVertexArray(vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    // Read back GPU result
+    const gpuResult = new Float32Array(valSize * valSize);
+    gl.readPixels(0, 0, valSize, valSize, gl.RED, gl.FLOAT, gpuResult);
+
+    // CPU reference
+    const cpuResult = cpuMultilook(valData, valSize, 1);
+
+    // Compare: mean pixel value
+    let gpuSum = 0, cpuSum = 0, gpuN = 0, cpuN = 0;
+    for (let i = 0; i < valSize * valSize; i++) {
+      if (gpuResult[i] > 0) { gpuSum += gpuResult[i]; gpuN++; }
+      if (cpuResult[i] > 0) { cpuSum += cpuResult[i]; cpuN++; }
+    }
+    const gpuMean = gpuSum / gpuN;
+    const cpuMean = cpuSum / cpuN;
+    const relError = Math.abs(gpuMean - cpuMean) / cpuMean * 100;
+
+    log(`  GPU mean: ${gpuMean.toFixed(6)}  CPU mean: ${cpuMean.toFixed(6)}`, 'dim');
+    log(`  Relative error: ${relError.toFixed(4)}%  (tolerance: 1%)`, relError < 1 ? 'pass' : 'fail');
+
+    if (relError >= 1) {
+      log('  WARNING: GPU/CPU disagreement > 1% — check domain (dB vs linear)', 'fail');
+    }
+
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteTexture(valTex);
+    gl.deleteFramebuffer(valFBO.fb);
+    gl.deleteTexture(valFBO.rt);
+    gl.deleteProgram(valProg.prog);
+    gl.deleteShader(valProg.vs);
+    gl.deleteShader(valProg.fs);
+  }
+  log('');
+
+  // ── Performance sweep ─────────────────────────────────────────────
+  for (const size of SCENE_SIZES) {
+    log(`── Scene: ${size}x${size} (${(size*size/1e6).toFixed(1)}M pixels) ──`, 'info');
+
+    const canvas = document.getElementById('canvas');
+    canvas.width = size;
+    canvas.height = size;
+
+    // Generate data once per scene size (data already in GPU memory)
+    const data = generateSARPower(size, 42);
+    const tex = createR32FTexture(gl, size, data);
+
+    for (const halfSize of KERNEL_HALFS) {
+      const kernelSize = 2 * halfSize + 1;
+      const kernelLabel = `${kernelSize}x${kernelSize}`;
+      const looks = kernelSize * kernelSize;
+
+      const fbo = createR32FFBO(gl, size);
+      let program;
+      try {
+        program = compileProgram(gl, makeMultilookFS(halfSize));
+      } catch (e) {
+        log(`  ${kernelLabel}: COMPILE ERROR: ${e.message}`, 'fail');
+        gl.deleteFramebuffer(fbo.fb);
+        gl.deleteTexture(fbo.rt);
+        continue;
+      }
+
+      const result = benchMultilook(gl, vao, program, tex, fbo, size, timerExt);
+      const mpps = (size * size / 1e6) / (result.median / 1000);
+      const under16ms = result.median < 16;
+
+      log(`  ${kernelLabel} (${looks} looks): ${result.median.toFixed(3)} ms ` +
+          `(std=${result.std.toFixed(3)}, ${mpps.toFixed(0)} Mpix/s) ` +
+          `[${result.timing}] ${under16ms ? '<16ms' : '>16ms'}`,
+          under16ms ? 'pass' : 'fail');
+
+      results.push({
+        scene_size: size,
+        kernel_size: kernelSize,
+        kernel_half: halfSize,
+        looks,
+        backend: 'webgl2',
+        median_ms: result.median,
+        mean_ms: result.mean,
+        std_ms: result.std,
+        min_ms: result.min,
+        max_ms: result.max,
+        mpixels_per_sec: mpps,
+        under_16ms: under16ms,
+        timing_method: result.timing
+      });
+
+      gl.deleteProgram(program.prog);
+      gl.deleteShader(program.vs);
+      gl.deleteShader(program.fs);
+      gl.deleteFramebuffer(fbo.fb);
+      gl.deleteTexture(fbo.rt);
+    }
+
+    gl.deleteTexture(tex);
+    log('');
+  }
+
+  // ── Summary ───────────────────────────────────────────────────────
+  log('── Summary ──', 'info');
+  const interactive = results.filter(r => r.under_16ms);
+  log(`  ${interactive.length}/${results.length} combinations under 16ms (60fps interactive)`, 'info');
+
+  // Find crossover: largest scene where all kernels are <16ms
+  for (const size of SCENE_SIZES) {
+    const sceneResults = results.filter(r => r.scene_size === size);
+    const allUnder = sceneResults.every(r => r.under_16ms);
+    log(`  ${size}x${size}: ${allUnder ? 'ALL kernels <16ms' : 'some kernels >16ms'}`,
+        allUnder ? 'pass' : 'fail');
+  }
+
+  window.__BENCHMARK_RESULTS__ = results;
+  window.__BENCHMARK_COMPLETE__ = true;
+
+  log('');
+  log('=== COMPLETE ===', 'info');
+}
+
+// Defer execution so page finishes loading (prevents Puppeteer timeout)
+setTimeout(() => {
+  runAll().catch(e => {
+    log(`FATAL: ${e.message}`, 'fail');
+    console.error(e);
+    window.__BENCHMARK_RESULTS__ = { error: e.message };
+    window.__BENCHMARK_COMPLETE__ = true;
+  });
+}, 100);
+</script>
+</body>
+</html>

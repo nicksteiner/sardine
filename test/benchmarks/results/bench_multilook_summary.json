@@ -1,0 +1,47 @@
+{
+  "benchmark": "multilook_box_filter",
+  "description": "NxN box-filter multilook in linear power space",
+  "backends": [
+    "cupy",
+    "numpy",
+    "scipy",
+    "webgl2"
+  ],
+  "kernel_sizes": [
+    3,
+    5,
+    7,
+    9
+  ],
+  "scene_sizes": [
+    1024,
+    4096,
+    8192
+  ],
+  "domain_constraint": "All averaging in linear power (never dB)",
+  "all_gpu_under_16ms": true,
+  "peak_speedups": {
+    "cupy": {
+      "vs_scipy": 228.9,
+      "kernel": 7,
+      "scene_size": 8192,
+      "gpu_ms": 13.939,
+      "scipy_ms": 3190.6
+    },
+    "webgl2": {
+      "vs_scipy": 2815.3,
+      "kernel": 7,
+      "scene_size": 8192,
+      "gpu_ms": 1.133,
+      "scipy_ms": 3190.6
+    }
+  },
+  "crossover_analysis": {
+    "cupy": {
+      "always_faster_than_scipy": true
+    },
+    "webgl2": {
+      "always_faster_than_scipy": true
+    }
+  }
+}

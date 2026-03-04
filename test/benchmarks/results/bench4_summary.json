@@ -1,0 +1,97 @@
+{
+  "benchmark": "4_h5chunk_streaming",
+  "file": {
+    "name": "NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5",
+    "sizeMB": 1900
+  },
+  "metadataParseMs": 4.05,
+  "regions": [
+    {
+      "regionSize": 256,
+      "pixels": 65536,
+      "medianTimeMs": 258.54,
+      "bytesNeeded": 262144,
+      "bytesActual": 1263968,
+      "transferRatio": 4.82,
+      "pixelsPerMs": 253
+    },
+    {
+      "regionSize": 512,
+      "pixels": 262144,
+      "medianTimeMs": 293.25,
+      "bytesNeeded": 1048576,
+      "bytesActual": 2518297,
+      "transferRatio": 2.4,
+      "pixelsPerMs": 894
+    },
+    {
+      "regionSize": 1024,
+      "pixels": 1048576,
+      "medianTimeMs": 310.85,
+      "bytesNeeded": 4194304,
+      "bytesActual": 5686652,
+      "transferRatio": 1.36,
+      "pixelsPerMs": 3373
+    },
+    {
+      "regionSize": 2048,
+      "pixels": 4194304,
+      "medianTimeMs": 378.15,
+      "bytesNeeded": 16777216,
+      "bytesActual": 15816600,
+      "transferRatio": 0.94,
+      "pixelsPerMs": 11092
+    }
+  ],
+  "sequential": [
+    {
+      "tile": "0,0",
+      "timeMs": 25.86,
+      "bytesRead": 2531718
+    },
+    {
+      "tile": "0,1",
+      "timeMs": 25.82,
+      "bytesRead": 2528866
+    },
+    {
+      "tile": "0,2",
+      "timeMs": 21.86,
+      "bytesRead": 2533431
+    },
+    {
+      "tile": "1,0",
+      "timeMs": 21.12,
+      "bytesRead": 2518297
+    },
+    {
+      "tile": "1,1",
+      "timeMs": 20.37,
+      "bytesRead": 2526957
+    },
+    {
+      "tile": "1,2",
+      "timeMs": 19.97,
+      "bytesRead": 2531449
+    },
+    {
+      "tile": "2,0",
+      "timeMs": 22.02,
+      "bytesRead": 2527042
+    },
+    {
+      "tile": "2,1",
+      "timeMs": 21.51,
+      "bytesRead": 2535723
+    },
+    {
+      "tile": "2,2",
+      "timeMs": 21.32,
+      "bytesRead": 2538906
+    }
+  ],
+  "summary": {
+    "timeToFirstPixelMs": 258.54,
+    "avgTransferRatio": 2.38
+  }
+}
