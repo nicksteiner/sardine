@@ -1,160 +1,106 @@
 #!/bin/bash
+# SARdine Benchmark Suite — Master Runner
+# Runs all 5 benchmarks and generates figures + summary
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RESULTS_DIR="$SCRIPT_DIR/results"
+
 mkdir -p "$RESULTS_DIR"
 
-echo "============================================================"
-echo "  SARdine Scientific Benchmark Suite"
-echo "============================================================"
-echo "  Date:    $(date -Iseconds)"
-echo "  Project: $PROJECT_DIR"
+echo "╔══════════════════════════════════════════╗"
+echo "║   SARdine Scientific Benchmark Suite     ║"
+echo "╚══════════════════════════════════════════╝"
 echo ""
 
 # Record environment
-echo "--- Recording Environment ---"
-ENV_FILE="$RESULTS_DIR/environment.json"
-GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo "N/A")
-GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null || echo "N/A")
-GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo "N/A")
-CUDA_VER=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || echo "N/A")
-NODE_VER=$(node --version 2>/dev/null || echo "N/A")
-PY_VER=$(python3 --version 2>&1 | cut -d' ' -f2 || echo "N/A")
-CHROME_VER=$(google-chrome --version 2>/dev/null || chromium-browser --version 2>/dev/null || echo "N/A")
-NUMPY_VER=$(python3 -c "import numpy; print(numpy.__version__)" 2>/dev/null || echo "N/A")
-CUPY_VER=$(python3 -c "import cupy; print(cupy.__version__)" 2>/dev/null || echo "N/A")
+ENV_JSON="$RESULTS_DIR/environment.json"
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo "unknown")
+GPU_DRIVER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo "unknown")
+GPU_VRAM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null || echo "unknown")
+NODE_VER=$(node --version 2>/dev/null || echo "unknown")
+PYTHON_VER=$(python3 --version 2>/dev/null | awk '{print $2}' || echo "unknown")
+CHROME_VER=$(google-chrome --version 2>/dev/null || chromium --version 2>/dev/null || echo "unknown")
 
-cat > "$ENV_FILE" <<EOF
+cat > "$ENV_JSON" << EOF
 {
-  "date": "$(date -Iseconds)",
   "gpu": "$GPU_NAME",
-  "gpu_memory": "$GPU_MEM",
   "gpu_driver": "$GPU_DRIVER",
-  "cuda_compute_cap": "$CUDA_VER",
-  "node_version": "$NODE_VER",
-  "python_version": "$PY_VER",
-  "chrome_version": "$CHROME_VER",
-  "numpy_version": "$NUMPY_VER",
-  "cupy_version": "$CUPY_VER"
+  "gpu_vram": "$GPU_VRAM",
+  "node": "$NODE_VER",
+  "python": "$PYTHON_VER",
+  "chrome": "$CHROME_VER",
+  "date": "$(date -Iseconds)",
+  "hostname": "$(hostname)"
 }
 EOF
-echo "  Environment: $ENV_FILE"
-echo "  GPU: $GPU_NAME ($GPU_MEM)"
-echo "  Node: $NODE_VER  Python: $PY_VER"
-echo "  NumPy: $NUMPY_VER  CuPy: $CUPY_VER"
+echo "Environment recorded to $ENV_JSON"
 echo ""
 
-# Benchmark 1: SNAP Coverage Matrix
-echo "============================================================"
-echo "  Benchmark 1: SNAP Primitive Coverage Matrix"
-echo "============================================================"
+# ─── Benchmark 1: SNAP Coverage ────────────────────────────────────
+echo "━━━ Benchmark 1: SNAP Primitive Coverage ━━━"
 python3 "$SCRIPT_DIR/snap_coverage_matrix.py"
 echo ""
 
-# Benchmark 2a: CPU + CUDA Timing
-echo "============================================================"
-echo "  Benchmark 2a: CPU (NumPy) + CUDA (CuPy) Timing"
-echo "============================================================"
+# ─── Benchmark 2a: CPU/CUDA Timing ─────────────────────────────────
+echo "━━━ Benchmark 2a: CPU/CUDA Timing ━━━"
 python3 "$SCRIPT_DIR/bench_timing_cpu_cuda.py"
 echo ""
 
-# Benchmark 2b+c: WebGL2 Timing (requires Vite)
-echo "============================================================"
-echo "  Benchmark 2b: WebGL2 Timing (via Puppeteer)"
-echo "============================================================"
-cd "$PROJECT_DIR"
-npx vite --config vite.test.config.js --port 5175 &
-VITE_PID=$!
-echo "  Vite dev server started (PID: $VITE_PID)"
-sleep 4  # Wait for server startup
-
-if node "$SCRIPT_DIR/bench_timing_harvest.js"; then
-  echo "  WebGL2 timing complete"
-else
-  echo "  WARNING: WebGL2 timing failed (continuing without)"
-fi
-
-kill $VITE_PID 2>/dev/null || true
-wait $VITE_PID 2>/dev/null || true
-echo ""
-
-# Benchmark 2d: Combine Results
-echo "============================================================"
-echo "  Benchmark 2d: Combine Timing Results"
-echo "============================================================"
-python3 "$SCRIPT_DIR/bench_timing_combine.py"
-echo ""
-
-# Benchmark 3: I/O Elimination
-echo "============================================================"
-echo "  Benchmark 3: I/O Elimination"
-echo "============================================================"
+# ─── Benchmark 3: I/O Elimination ──────────────────────────────────
+echo "━━━ Benchmark 3: I/O Elimination ━━━"
 python3 "$SCRIPT_DIR/bench_io_elimination.py"
 echo ""
 
-# Benchmark 4: h5chunk Streaming
-echo "============================================================"
-echo "  Benchmark 4: h5chunk Streaming Performance"
-echo "============================================================"
-cd "$PROJECT_DIR"
+# ─── Benchmark 4: h5chunk Streaming ────────────────────────────────
+echo "━━━ Benchmark 4: h5chunk Streaming ━━━"
 node "$SCRIPT_DIR/bench_h5chunk_streaming.mjs"
 echo ""
 
-# Benchmark 5: Interactive Responsiveness (requires Vite)
-echo "============================================================"
-echo "  Benchmark 5: Interactive Responsiveness"
-echo "============================================================"
-cd "$PROJECT_DIR"
-npx vite --config vite.test.config.js --port 5175 &
+# ─── Benchmarks 2b + 5: WebGL via Puppeteer ────────────────────────
+echo "━━━ Starting Vite dev server for browser benchmarks ━━━"
+cd "$PROJECT_ROOT"
+npx vite --config vite.test.config.js &
 VITE_PID=$!
-echo "  Vite dev server started (PID: $VITE_PID)"
-sleep 4
+sleep 3  # Wait for Vite to start
 
-if node "$SCRIPT_DIR/bench_interactive_harvest.js"; then
-  echo "  Interactive benchmark complete"
-else
-  echo "  WARNING: Interactive benchmark failed (continuing without)"
+# Check Vite is running
+if ! kill -0 $VITE_PID 2>/dev/null; then
+  echo "ERROR: Vite failed to start"
+  exit 1
 fi
+echo "Vite running (PID $VITE_PID)"
+echo ""
 
+echo "━━━ Benchmark 2b: WebGL2 Timing ━━━"
+node "$SCRIPT_DIR/bench_timing_harvest.js" || echo "  [WARN] WebGL timing benchmark had errors"
+echo ""
+
+echo "━━━ Benchmark 5: Interactive Responsiveness ━━━"
+node "$SCRIPT_DIR/bench_interactive_harvest.js" || echo "  [WARN] Interactive benchmark had errors"
+echo ""
+
+# Stop Vite
+echo "Stopping Vite dev server..."
 kill $VITE_PID 2>/dev/null || true
 wait $VITE_PID 2>/dev/null || true
 echo ""
 
-# Compile summary
-echo "============================================================"
-echo "  Compiling Summary"
-echo "============================================================"
-python3 -c "
-import json, os, glob
-
-results_dir = '$RESULTS_DIR'
-summary = {}
-
-# Load individual summaries
-for f in glob.glob(os.path.join(results_dir, 'bench*_summary.json')):
-    with open(f) as fh:
-        data = json.load(fh)
-        key = data.get('benchmark', os.path.basename(f))
-        summary[key] = data
-
-# Load environment
-env_path = os.path.join(results_dir, 'environment.json')
-if os.path.exists(env_path):
-    with open(env_path) as fh:
-        summary['environment'] = json.load(fh)
-
-with open(os.path.join(results_dir, 'summary.json'), 'w') as fh:
-    json.dump(summary, fh, indent=2)
-print(f'  Summary written to: {results_dir}/summary.json')
-"
-
+# ─── Combine Benchmark 2 results ───────────────────────────────────
+echo "━━━ Combining Benchmark 2 results ━━━"
+python3 "$SCRIPT_DIR/bench_timing_combine.py"
 echo ""
-echo "============================================================"
-echo "  ALL BENCHMARKS COMPLETE"
-echo "============================================================"
-echo "  Results directory: $RESULTS_DIR"
+
+# ─── Generate all figures ──────────────────────────────────────────
+echo "━━━ Generating figures ━━━"
+python3 "$SCRIPT_DIR/generate_figures.py"
 echo ""
-echo "  Output files:"
-ls -la "$RESULTS_DIR/"
+
+# ─── Summary ────────────────────────────────────────────────────────
+echo "╔══════════════════════════════════════════╗"
+echo "║          Benchmark Suite Complete        ║"
+echo "╚══════════════════════════════════════════╝"
+echo ""
+echo "Results in: $RESULTS_DIR/"
+ls -lh "$RESULTS_DIR/"

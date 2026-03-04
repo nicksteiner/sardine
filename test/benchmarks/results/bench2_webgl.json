@@ -1,0 +1,322 @@
+[
+  {
+    "operation": "dB_conversion",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.23500000238418578,
+    "mean_ms": 0.2459999990463257,
+    "min_ms": 0.15,
+    "max_ms": 0.35,
+    "mpixels_per_sec": 1115.5063716613854
+  },
+  {
+    "operation": "sqrt_stretch",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.15,
+    "mean_ms": 0.16899999856948852,
+    "min_ms": 0.13000000715255738,
+    "max_ms": 0.2149999976158142,
+    "mpixels_per_sec": 1747.6266666666668
+  },
+  {
+    "operation": "gamma_stretch",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.225,
+    "mean_ms": 0.21900000095367433,
+    "min_ms": 0.1799999952316284,
+    "max_ms": 0.2550000071525574,
+    "mpixels_per_sec": 1165.0844444444444
+  },
+  {
+    "operation": "sigmoid_stretch",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.1549999952316284,
+    "mean_ms": 0.16200000047683716,
+    "min_ms": 0.15,
+    "max_ms": 0.1850000023841858,
+    "mpixels_per_sec": 1691.2516649323638
+  },
+  {
+    "operation": "viridis_colormap",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.13999999761581422,
+    "mean_ms": 0.14700000047683717,
+    "min_ms": 0.12999999523162842,
+    "max_ms": 0.1799999952316284,
+    "mpixels_per_sec": 1872.457174744898
+  },
+  {
+    "operation": "full_pipeline",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.14499999284744264,
+    "mean_ms": 0.19299999952316285,
+    "min_ms": 0.13499999046325684,
+    "max_ms": 0.33999999761581423,
+    "mpixels_per_sec": 1807.889744351966
+  },
+  {
+    "operation": "dB_conversion",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.15,
+    "mean_ms": 0.15,
+    "min_ms": 0.12999999523162842,
+    "max_ms": 0.175,
+    "mpixels_per_sec": 27962.02666666667
+  },
+  {
+    "operation": "sqrt_stretch",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.20499999523162843,
+    "mean_ms": 0.2109999990463257,
+    "min_ms": 0.14499999284744264,
+    "max_ms": 0.2899999976158142,
+    "mpixels_per_sec": 20460.01998810233
+  },
+  {
+    "operation": "gamma_stretch",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.16999999284744263,
+    "mean_ms": 0.16899999856948852,
+    "min_ms": 0.1350000023841858,
+    "max_ms": 0.21999999284744262,
+    "mpixels_per_sec": 24672.37750865056
+  },
+  {
+    "operation": "sigmoid_stretch",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.15,
+    "mean_ms": 0.15200000047683715,
+    "min_ms": 0.14000000953674316,
+    "max_ms": 0.16499999761581421,
+    "mpixels_per_sec": 27962.02666666667
+  },
+  {
+    "operation": "viridis_colormap",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.1600000023841858,
+    "mean_ms": 0.1840000009536743,
+    "min_ms": 0.1549999952316284,
+    "max_ms": 0.275,
+    "mpixels_per_sec": 26214.399609375003
+  },
+  {
+    "operation": "full_pipeline",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.1600000023841858,
+    "mean_ms": 0.16399999856948852,
+    "min_ms": 0.15,
+    "max_ms": 0.18499999046325682,
+    "mpixels_per_sec": 26214.399609375003
+  },
+  {
+    "operation": "dB_conversion",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.32000002861022947,
+    "mean_ms": 0.3360000038146972,
+    "min_ms": 0.3,
+    "max_ms": 0.4,
+    "mpixels_per_sec": 209715.1812500017
+  },
+  {
+    "operation": "sqrt_stretch",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.46000003814697266,
+    "mean_ms": 0.6199999999999999,
+    "min_ms": 0.4,
+    "max_ms": 1.2399999618530273,
+    "mpixels_per_sec": 145888.82268431102
+  },
+  {
+    "operation": "gamma_stretch",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.4200000286102295,
+    "mean_ms": 0.6280000019073486,
+    "min_ms": 0.4199999809265137,
+    "max_ms": 1.4400000095367431,
+    "mpixels_per_sec": 159782.99863945652
+  },
+  {
+    "operation": "sigmoid_stretch",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.4,
+    "mean_ms": 0.39999999999999997,
+    "min_ms": 0.3799999713897705,
+    "max_ms": 0.4200000286102295,
+    "mpixels_per_sec": 167772.15999999997
+  },
+  {
+    "operation": "viridis_colormap",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.4,
+    "mean_ms": 0.40399999618530275,
+    "min_ms": 0.38000001907348635,
+    "max_ms": 0.4199999809265137,
+    "mpixels_per_sec": 167772.15999999997
+  },
+  {
+    "operation": "full_pipeline",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.4199999809265137,
+    "mean_ms": 0.62,
+    "min_ms": 0.38000001907348635,
+    "max_ms": 1.4599999904632568,
+    "mpixels_per_sec": 159783.01678004567
+  },
+  {
+    "operation": "dB_conversion",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 0.9199999809265137,
+    "mean_ms": 2.1480000019073486,
+    "min_ms": 0.8199999809265137,
+    "max_ms": 7.2,
+    "mpixels_per_sec": 291777.67561436683
+  },
+  {
+    "operation": "sqrt_stretch",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 1.3,
+    "mean_ms": 1.58,
+    "min_ms": 1.2599999904632568,
+    "max_ms": 2.1,
+    "mpixels_per_sec": 206488.8123076923
+  },
+  {
+    "operation": "gamma_stretch",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 1.3,
+    "mean_ms": 1.4600000000000002,
+    "min_ms": 1.2599999904632568,
+    "max_ms": 2.1200000286102294,
+    "mpixels_per_sec": 206488.8123076923
+  },
+  {
+    "operation": "sigmoid_stretch",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 1.140000009536743,
+    "mean_ms": 1.295999994277954,
+    "min_ms": 1.1,
+    "max_ms": 1.9400000095367431,
+    "mpixels_per_sec": 235469.69627577718
+  },
+  {
+    "operation": "viridis_colormap",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 1.2,
+    "mean_ms": 1.3799999904632567,
+    "min_ms": 1.1599999904632567,
+    "max_ms": 2.1,
+    "mpixels_per_sec": 223696.21333333335
+  },
+  {
+    "operation": "full_pipeline",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 1.3,
+    "mean_ms": 1.2880000019073485,
+    "min_ms": 1.2400000095367432,
+    "max_ms": 1.3199999809265137,
+    "mpixels_per_sec": 206488.8123076923
+  },
+  {
+    "operation": "multilook_4x4",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.1549999952316284,
+    "mean_ms": 0.20599999904632565,
+    "min_ms": 0.1350000023841858,
+    "max_ms": 0.425,
+    "mpixels_per_sec": 1691.2516649323638
+  },
+  {
+    "operation": "multilook_4x4",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.16499999761581421,
+    "mean_ms": 0.16,
+    "min_ms": 0.14500000476837158,
+    "max_ms": 0.17000000476837157,
+    "mpixels_per_sec": 25420.024609733704
+  },
+  {
+    "operation": "multilook_4x4",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.3350000023841858,
+    "mean_ms": 0.7059999990463257,
+    "min_ms": 0.3100000023841858,
+    "max_ms": 1.9549999952316284,
+    "mpixels_per_sec": 200324.96573847183
+  },
+  {
+    "operation": "multilook_4x4",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 0.9,
+    "mean_ms": 3.0079999923706056,
+    "min_ms": 0.8599999904632568,
+    "max_ms": 10.419999980926514,
+    "mpixels_per_sec": 298261.6177777778
+  },
+  {
+    "operation": "rgb_composite_pauli",
+    "size": 512,
+    "backend": "webgl2",
+    "median_ms": 0.17000000476837157,
+    "mean_ms": 0.22999999999999998,
+    "min_ms": 0.1549999952316284,
+    "max_ms": 0.4850000023841858,
+    "mpixels_per_sec": 1542.0234861591707
+  },
+  {
+    "operation": "rgb_composite_pauli",
+    "size": 2048,
+    "backend": "webgl2",
+    "median_ms": 0.1799999952316284,
+    "mean_ms": 0.24000000238418578,
+    "min_ms": 0.1600000023841858,
+    "max_ms": 0.4950000047683716,
+    "mpixels_per_sec": 23301.689506172854
+  },
+  {
+    "operation": "rgb_composite_pauli",
+    "size": 8192,
+    "backend": "webgl2",
+    "median_ms": 0.9600000381469727,
+    "mean_ms": 2.844000005722046,
+    "min_ms": 0.9,
+    "max_ms": 10.459999990463256,
+    "mpixels_per_sec": 69905.063888889
+  },
+  {
+    "operation": "rgb_composite_pauli",
+    "size": 16384,
+    "backend": "webgl2",
+    "median_ms": 4.62000002861023,
+    "mean_ms": 5.208000001907349,
+    "min_ms": 3.359999990463257,
+    "max_ms": 10,
+    "mpixels_per_sec": 58102.912194299206
+  }
+]

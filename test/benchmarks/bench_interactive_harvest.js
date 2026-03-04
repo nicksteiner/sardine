@@ -1,141 +1,98 @@
 #!/usr/bin/env node
 /**
- * Benchmark 5: Interactive Responsiveness Harvester
- *
- * Launches headless Chrome with GPU, runs bench_interactive.html,
- * and extracts frame time measurements.
+ * Benchmark 5: Harvest interactive responsiveness results via Puppeteer.
+ * Launches headless Chrome, opens bench_interactive.html on Vite dev server,
+ * waits for completion, extracts frame time results.
  */
-
 import puppeteer from 'puppeteer';
-import { writeFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
+import { writeFileSync } from 'fs';
+import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RESULTS_DIR = join(__dirname, 'results');
-const VITE_URL = process.env.VITE_URL || 'http://localhost:5175';
+const PORT = 5175;
+const URL = `http://localhost:${PORT}/test/benchmarks/bench_interactive.html`;
+const TIMEOUT = 120_000; // 2 min
 
 async function main() {
-  mkdirSync(RESULTS_DIR, { recursive: true });
-  console.log('=== Benchmark 5: Interactive Responsiveness Harvester ===');
+  console.log('=== Benchmark 5: Interactive Responsiveness (Puppeteer) ===');
+  console.log(`Opening ${URL}`);
 
   const browser = await puppeteer.launch({
-    headless: 'new',
+    headless: false,
     args: [
+      '--use-gl=angle',
+      '--use-angle=gl-egl',
       '--enable-webgl',
-      '--use-gl=egl',
-      '--enable-gpu',
-      '--disable-gpu-sandbox',
+      '--ignore-gpu-blocklist',
       '--no-sandbox',
       '--disable-setuid-sandbox',
-      '--enable-features=Vulkan',
-      '--ignore-gpu-blocklist',
-      '--disable-software-rasterizer',
+      '--enable-gpu-rasterization',
+      '--window-size=1,1',
+      '--window-position=0,0',
     ],
   });
 
-  try {
-    const page = await browser.newPage();
-    page.on('console', msg => {
-      const text = msg.text();
-      if (text.length < 200) console.log(`  [Chrome] ${text}`);
-    });
+  const page = await browser.newPage();
+  page.on('console', msg => console.log(`  [browser] ${msg.text()}`));
+  page.on('pageerror', err => console.error(`  [browser error] ${err.message}`));
 
-    console.log('  Navigating to interactive benchmark...');
-    await page.goto(`${VITE_URL}/test/benchmarks/bench_interactive.html`, {
-      waitUntil: 'networkidle0',
-      timeout: 30_000,
-    });
+  await page.goto(URL, { waitUntil: 'networkidle2', timeout: 30000 });
+  console.log('Page loaded, waiting for benchmarks to complete...');
 
-    console.log('  Waiting for benchmarks to complete...');
-    await page.waitForFunction(() => window.__INTERACTIVE_COMPLETE__ === true, {
-      timeout: 120_000,
-      polling: 1000,
-    });
-
-    const results = await page.evaluate(() => window.__INTERACTIVE_RESULTS__);
-
-    if (results.error) {
-      console.error(`  Benchmark failed: ${results.error}`);
-      process.exit(1);
+  // Poll for completion
+  const startTime = Date.now();
+  let results = null;
+  while (Date.now() - startTime < TIMEOUT) {
+    const complete = await page.evaluate(() => window.__BENCHMARK_COMPLETE__);
+    if (complete) {
+      results = await page.evaluate(() => window.__BENCHMARK_RESULTS__);
+      break;
     }
-
-    // Write JSON
-    const jsonPath = join(RESULTS_DIR, 'bench5_interactive.json');
-    writeFileSync(jsonPath, JSON.stringify(results, null, 2));
-    console.log(`  Results written to: ${jsonPath}`);
-
-    // Write CSV
-    const csvPath = join(RESULTS_DIR, 'bench5_interactive.csv');
-    const csvLines = ['test,p50_ms,p95_ms,p99_ms,mean_ms,min_ms,max_ms,frames'];
-    for (const [name, data] of Object.entries(results)) {
-      csvLines.push(`${name},${data.p50},${data.p95},${data.p99},${data.mean},${data.min},${data.max},${data.frames}`);
-    }
-    writeFileSync(csvPath, csvLines.join('\n') + '\n');
-    console.log(`  CSV written to: ${csvPath}`);
-
-    // Summary
-    console.log('\n  --- Results ---');
-    let allPass = true;
-    for (const [name, data] of Object.entries(results)) {
-      const pass = data.p95 < 16.0;
-      if (!pass) allPass = false;
-      console.log(`  ${name}: p50=${data.p50}ms p95=${data.p95}ms ${pass ? 'PASS' : 'FAIL'}`);
-    }
-    console.log(`\n  Overall: ${allPass ? 'ALL PASS' : 'SOME FAILED'}`);
-
-    // Generate figure
-    try {
-      const { execSync } = await import('child_process');
-      const figScript = `
-import json
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import numpy as np
-
-with open('${jsonPath}') as f:
-    data = json.load(f)
-
-names = list(data.keys())
-p50 = [data[n]['p50'] for n in names]
-p95 = [data[n]['p95'] for n in names]
-p99 = [data[n]['p99'] for n in names]
-
-fig, ax = plt.subplots(figsize=(10, 5))
-x = np.arange(len(names))
-width = 0.25
-
-ax.bar(x - width, p50, width, label='p50', color='#4ec9d4')
-ax.bar(x, p95, width, label='p95', color='#76b900')
-ax.bar(x + width, p99, width, label='p99', color='#e05858')
-
-ax.axhline(y=16.0, color='#e05858', linestyle='--', linewidth=1.5, label='16ms target (60fps)')
-ax.set_ylabel('Frame Time (ms)')
-ax.set_title('Interactive Responsiveness: Frame Times by Operation')
-ax.set_xticks(x)
-ax.set_xticklabels([n.replace('_', '\\n') for n in names], fontsize=8)
-ax.legend(fontsize=8)
-ax.grid(True, alpha=0.2, axis='y')
-
-plt.tight_layout()
-plt.savefig('${join(RESULTS_DIR, 'fig_frame_times.pdf')}', dpi=150, bbox_inches='tight')
-plt.close()
-print('Figure saved')
-`;
-      execSync(`python3 -c ${JSON.stringify(figScript)}`, { stdio: 'inherit' });
-    } catch {
-      console.log('  [SKIP] Figure generation failed');
-    }
-
-  } finally {
-    await browser.close();
+    await new Promise(r => setTimeout(r, 1000));
   }
 
-  console.log('\n  Done.');
+  await browser.close();
+
+  if (!results) {
+    console.error('TIMEOUT: Benchmark did not complete in time');
+    process.exit(1);
+  }
+
+  if (results.error) {
+    console.error(`Benchmark error: ${results.error}`);
+    process.exit(1);
+  }
+
+  // Write results
+  const outPath = join(RESULTS_DIR, 'bench5_interactive.json');
+  writeFileSync(outPath, JSON.stringify(results, null, 2));
+  console.log(`\nResults written to ${outPath}`);
+
+  // Print summary
+  console.log('\nResults:');
+  console.log('Test'.padEnd(25) + 'p50'.padStart(10) + 'p95'.padStart(10) + 'p99'.padStart(10) + 'Pass'.padStart(8));
+  for (const [name, r] of Object.entries(results)) {
+    console.log(
+      name.padEnd(25) +
+      `${r.p50.toFixed(2)}ms`.padStart(10) +
+      `${r.p95.toFixed(2)}ms`.padStart(10) +
+      `${r.p99.toFixed(2)}ms`.padStart(10) +
+      (r.pass ? '  YES' : '   NO').padStart(8)
+    );
+  }
+
+  const allPass = Object.values(results).every(r => r.pass);
+  console.log(`\nOverall: ${allPass ? 'PASS' : 'FAIL'}`);
+
+  // Write summary
+  const summary = {
+    benchmark: '5_interactive',
+    tests: results,
+    allPass,
+  };
+  writeFileSync(join(RESULTS_DIR, 'bench5_summary.json'), JSON.stringify(summary, null, 2));
 }
 
-main().catch(e => {
-  console.error(e);
-  process.exit(1);
-});
+main().catch(e => { console.error(e); process.exit(1); });
