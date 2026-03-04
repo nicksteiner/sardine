@@ -204,57 +204,121 @@ export default function ScatterClassifier({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, totalW, totalH);
 
-    // Draw density heatmap
-    if (densityImage) {
-      const tmpCanvas = document.createElement('canvas');
-      tmpCanvas.width = DENSITY_BINS;
-      tmpCanvas.height = DENSITY_BINS;
-      tmpCanvas.getContext('2d').putImageData(densityImage, 0, 0);
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(tmpCanvas, MARGIN.left, MARGIN.top, PLOT_W, PLOT_H);
-      ctx.imageSmoothingEnabled = true;
-    }
-
     const [xMin, xMax] = xRange;
     const [yMin, yMax] = yRange;
 
-    // Draw class rectangles
-    for (let c = 0; c < classRegions.length; c++) {
-      const r = classRegions[c];
-      const lx = MARGIN.left + dataToPlot(r.xMin, xMin, xMax, PLOT_W);
-      const rx = MARGIN.left + dataToPlot(r.xMax, xMin, xMax, PLOT_W);
-      const ty = MARGIN.top + PLOT_H - dataToPlot(r.yMax, yMin, yMax, PLOT_H);
-      const by = MARGIN.top + PLOT_H - dataToPlot(r.yMin, yMin, yMax, PLOT_H);
-      const w = rx - lx;
-      const h = by - ty;
+    if (isSingleChannel && histogram1D) {
+      // ── Single-channel: 1D histogram ──
+      let maxBin = 0;
+      for (let i = 0; i < histogram1D.length; i++) if (histogram1D[i] > maxBin) maxBin = histogram1D[i];
+      const logMax = Math.log10(maxBin + 1) || 1;
 
-      ctx.fillStyle = r.color + '40'; // ~25% alpha
-      ctx.fillRect(lx, ty, w, h);
-      ctx.strokeStyle = r.color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(lx, ty, w, h);
+      const barW = PLOT_W / DENSITY_BINS;
+      for (let i = 0; i < DENSITY_BINS; i++) {
+        if (histogram1D[i] === 0) continue;
+        const t = Math.log10(histogram1D[i] + 1) / logMax;
+        const barH = t * PLOT_H;
+        const bx = MARGIN.left + i * barW;
+        const by = MARGIN.top + PLOT_H - barH;
+        // Sardine ramp: navy → cyan → white
+        let r, g, b;
+        if (t < 0.5) {
+          const s = t / 0.5;
+          r = Math.round(10 + s * 68); g = Math.round(22 + s * 179); b = Math.round(40 + s * 172);
+        } else {
+          const s = (t - 0.5) / 0.5;
+          r = Math.round(78 + s * 154); g = Math.round(201 + s * 36); b = Math.round(212 + s * 33);
+        }
+        ctx.fillStyle = `rgb(${r},${g},${b})`;
+        ctx.fillRect(bx, by, Math.ceil(barW), barH);
+      }
 
-      // Label
-      ctx.font = "bold 11px 'JetBrains Mono', monospace";
-      ctx.fillStyle = r.color;
-      ctx.fillText(r.name, lx + 4, ty + 14);
-    }
+      // Draw class regions as vertical bands
+      for (let c = 0; c < classRegions.length; c++) {
+        const cr = classRegions[c];
+        const lx = MARGIN.left + dataToPlot(cr.xMin, xMin, xMax, PLOT_W);
+        const rx = MARGIN.left + dataToPlot(cr.xMax, xMin, xMax, PLOT_W);
+        ctx.fillStyle = cr.color + '30';
+        ctx.fillRect(lx, MARGIN.top, rx - lx, PLOT_H);
+        ctx.strokeStyle = cr.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(lx, MARGIN.top); ctx.lineTo(lx, MARGIN.top + PLOT_H);
+        ctx.moveTo(rx, MARGIN.top); ctx.lineTo(rx, MARGIN.top + PLOT_H);
+        ctx.stroke();
+        // Label
+        ctx.font = "bold 11px 'JetBrains Mono', monospace";
+        ctx.fillStyle = cr.color;
+        ctx.fillText(cr.name, lx + 4, MARGIN.top + 14);
+      }
 
-    // Draw drag preview
-    if (dragState?.type === 'new' && dragState.currentPx != null) {
-      const { startPx, startPy, currentPx, currentPy, classIdx } = dragState;
-      const color = classRegions[classIdx]?.color || CLASS_COLORS[classIdx % CLASS_COLORS.length];
-      const lx = MARGIN.left + Math.min(startPx, currentPx);
-      const ty = MARGIN.top + Math.min(startPy, currentPy);
-      const w = Math.abs(currentPx - startPx);
-      const h = Math.abs(currentPy - startPy);
-      ctx.fillStyle = color + '30';
-      ctx.fillRect(lx, ty, w, h);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
-      ctx.strokeRect(lx, ty, w, h);
-      ctx.setLineDash([]);
+      // Drag preview (vertical band)
+      if (dragState?.type === 'new' && dragState.currentPx != null) {
+        const { startPx, currentPx, classIdx } = dragState;
+        const color = classRegions[classIdx]?.color || CLASS_COLORS[classIdx % CLASS_COLORS.length];
+        const lx = MARGIN.left + Math.min(startPx, currentPx);
+        const w = Math.abs(currentPx - startPx);
+        ctx.fillStyle = color + '25';
+        ctx.fillRect(lx, MARGIN.top, w, PLOT_H);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(lx, MARGIN.top); ctx.lineTo(lx, MARGIN.top + PLOT_H);
+        ctx.moveTo(lx + w, MARGIN.top); ctx.lineTo(lx + w, MARGIN.top + PLOT_H);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    } else {
+      // ── Two-channel: 2D density heatmap ──
+      if (densityImage) {
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width = DENSITY_BINS;
+        tmpCanvas.height = DENSITY_BINS;
+        tmpCanvas.getContext('2d').putImageData(densityImage, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tmpCanvas, MARGIN.left, MARGIN.top, PLOT_W, PLOT_H);
+        ctx.imageSmoothingEnabled = true;
+      }
+
+      // Draw class rectangles
+      for (let c = 0; c < classRegions.length; c++) {
+        const cr = classRegions[c];
+        const lx = MARGIN.left + dataToPlot(cr.xMin, xMin, xMax, PLOT_W);
+        const rx = MARGIN.left + dataToPlot(cr.xMax, xMin, xMax, PLOT_W);
+        const ty = MARGIN.top + PLOT_H - dataToPlot(cr.yMax, yMin, yMax, PLOT_H);
+        const by = MARGIN.top + PLOT_H - dataToPlot(cr.yMin, yMin, yMax, PLOT_H);
+        const w = rx - lx;
+        const h = by - ty;
+
+        ctx.fillStyle = cr.color + '40'; // ~25% alpha
+        ctx.fillRect(lx, ty, w, h);
+        ctx.strokeStyle = cr.color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(lx, ty, w, h);
+
+        // Label
+        ctx.font = "bold 11px 'JetBrains Mono', monospace";
+        ctx.fillStyle = cr.color;
+        ctx.fillText(cr.name, lx + 4, ty + 14);
+      }
+
+      // Draw drag preview
+      if (dragState?.type === 'new' && dragState.currentPx != null) {
+        const { startPx, startPy, currentPx, currentPy, classIdx } = dragState;
+        const color = classRegions[classIdx]?.color || CLASS_COLORS[classIdx % CLASS_COLORS.length];
+        const lx = MARGIN.left + Math.min(startPx, currentPx);
+        const ty = MARGIN.top + Math.min(startPy, currentPy);
+        const w = Math.abs(currentPx - startPx);
+        const h = Math.abs(currentPy - startPy);
+        ctx.fillStyle = color + '30';
+        ctx.fillRect(lx, ty, w, h);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(lx, ty, w, h);
+        ctx.setLineDash([]);
+      }
     }
 
     // Axes
@@ -280,15 +344,39 @@ export default function ScatterClassifier({
       ctx.stroke();
       ctx.fillText(xVal.toFixed(0), xPx, MARGIN.top + PLOT_H + 14);
 
-      // Y axis
-      const yVal = yMin + t * (yMax - yMin);
-      const yPx = MARGIN.top + PLOT_H - t * PLOT_H;
-      ctx.beginPath();
-      ctx.moveTo(MARGIN.left, yPx);
-      ctx.lineTo(MARGIN.left + PLOT_W, yPx);
-      ctx.stroke();
+      if (!isSingleChannel) {
+        // Y axis (2D mode: data values)
+        const yVal = yMin + t * (yMax - yMin);
+        const yPx = MARGIN.top + PLOT_H - t * PLOT_H;
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left, yPx);
+        ctx.lineTo(MARGIN.left + PLOT_W, yPx);
+        ctx.stroke();
+        ctx.textAlign = 'right';
+        ctx.fillText(yVal.toFixed(0), MARGIN.left - 4, yPx + 3);
+        ctx.textAlign = 'center';
+      }
+    }
+
+    // Y-axis gridlines for single-channel (log count scale)
+    if (isSingleChannel && histogram1D) {
+      let maxBin = 0;
+      for (let i = 0; i < histogram1D.length; i++) if (histogram1D[i] > maxBin) maxBin = histogram1D[i];
+      const logMax = Math.log10(maxBin + 1) || 1;
+      // Log-scale ticks: 1, 10, 100, 1000, ...
       ctx.textAlign = 'right';
-      ctx.fillText(yVal.toFixed(0), MARGIN.left - 4, yPx + 3);
+      for (let exp = 0; Math.pow(10, exp) <= maxBin; exp++) {
+        const val = Math.pow(10, exp);
+        const t = Math.log10(val + 1) / logMax;
+        const yPx = MARGIN.top + PLOT_H - t * PLOT_H;
+        ctx.beginPath();
+        ctx.moveTo(MARGIN.left, yPx);
+        ctx.lineTo(MARGIN.left + PLOT_W, yPx);
+        ctx.strokeStyle = 'rgba(30,58,95,0.4)';
+        ctx.stroke();
+        ctx.fillStyle = '#5a7099';
+        ctx.fillText(val >= 1000 ? (val / 1000) + 'k' : String(val), MARGIN.left - 4, yPx + 3);
+      }
       ctx.textAlign = 'center';
     }
 
@@ -301,10 +389,10 @@ export default function ScatterClassifier({
     ctx.save();
     ctx.translate(12, MARGIN.top + PLOT_H / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(yLabel || 'Band Y (dB)', 0, 0);
+    ctx.fillText(isSingleChannel ? 'Count (log)' : (yLabel || 'Band Y (dB)'), 0, 0);
     ctx.restore();
 
-  }, [densityImage, classRegions, dragState, xRange, yRange, xLabel, yLabel]);
+  }, [densityImage, histogram1D, isSingleChannel, classRegions, dragState, xRange, yRange, xLabel, yLabel]);
 
   // --- Mouse interaction for drawing class rectangles ---
   const handlePointerDown = useCallback((e) => {
@@ -336,14 +424,24 @@ export default function ScatterClassifier({
     const w = Math.abs(px - startPx);
     const h = Math.abs(py - startPy);
 
-    if (w > 5 && h > 5) {
+    // Single-channel: only need horizontal drag (X range); 2D: need both X and Y
+    const minDrag = isSingleChannel ? w > 5 : (w > 5 && h > 5);
+    if (minDrag) {
       const [xMin, xMax] = xRange;
       const [yMin, yMax] = yRange;
       const x1 = plotToData(Math.min(startPx, px), xMin, xMax, PLOT_W);
       const x2 = plotToData(Math.max(startPx, px), xMin, xMax, PLOT_W);
-      // Y is flipped (top of canvas = high value)
-      const y1 = plotToData(PLOT_H - Math.max(startPy, py), yMin, yMax, PLOT_H);
-      const y2 = plotToData(PLOT_H - Math.min(startPy, py), yMin, yMax, PLOT_H);
+
+      let y1, y2;
+      if (isSingleChannel) {
+        // Span full Y range — classification is 1D (X only)
+        y1 = yMin;
+        y2 = yMax;
+      } else {
+        // Y is flipped (top of canvas = high value)
+        y1 = plotToData(PLOT_H - Math.max(startPy, py), yMin, yMax, PLOT_H);
+        y2 = plotToData(PLOT_H - Math.min(startPy, py), yMin, yMax, PLOT_H);
+      }
 
       const updated = [...classRegions];
       if (classIdx < updated.length) {
@@ -354,7 +452,7 @@ export default function ScatterClassifier({
 
     setDragState(null);
     setDrawingClass(-1);
-  }, [dragState, xRange, yRange, classRegions, onClassRegionsChange]);
+  }, [dragState, isSingleChannel, xRange, yRange, classRegions, onClassRegionsChange]);
 
   // Attach document-level listeners for drag
   useEffect(() => {
@@ -434,7 +532,7 @@ export default function ScatterClassifier({
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.5px' }}>
-          <span style={{ color: '#4ec9d4' }}>Feature Space</span>
+          <span style={{ color: '#4ec9d4' }}>{isSingleChannel ? 'Histogram' : 'Feature Space'}</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <button onClick={handleExportSVG} title="Export scatter SVG" style={{
