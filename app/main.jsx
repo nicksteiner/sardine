@@ -2,7 +2,9 @@ import React, { useState, useCallback, useEffect, useMemo, useRef, Component } f
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
-import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
+import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
+import { validateWKT } from '../src/utils/wkt.js';
+import { computeSubsetBounds } from '../src/utils/roi-subset.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
@@ -281,6 +283,8 @@ function App() {
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
   const [roiProfile, setRoiProfile] = useState(null); // Computed profile data for ROIProfilePlot
+  const [wktInput, setWktInput] = useState('');       // WKT text input value
+  const [wktError, setWktError] = useState(null);     // WKT validation error message
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
 
   // Feature space classifier state
@@ -344,6 +348,8 @@ function App() {
   useEffect(() => {
     setROI(null);
     setRoiProfile(null);
+    setWktInput('');
+    setWktError(null);
     setClassifierOpen(false);
     setClassRegions([]);
     setClassifierData(null);
@@ -577,6 +583,67 @@ function App() {
     return () => { cancelled = true; };
   }, [classifierOpen, roi, imageData, classifierBands]);
 
+  // Helper to add status log (must be before any callback that uses it)
+  const addStatusLog = useCallback((type, message, details = null) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setStatusLogs(prev => {
+      const next = [...prev, { type, message, details, timestamp }];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
+  }, []);
+
+  // WKT ROI: track sync source to avoid loops between WKT input and Shift+drag
+  const wktSyncSource = useRef('');
+
+  // WKT ROI: apply WKT string to set pixel ROI
+  const handleWktApply = useCallback(() => {
+    if (!wktInput.trim() || !imageData) return;
+
+    try {
+      const pixelRoi = wktToROI(wktInput.trim(), imageData);
+      if (!pixelRoi) {
+        setWktError('ROI does not intersect the image');
+        return;
+      }
+      setWktError(null);
+      wktSyncSource.current = 'wkt'; // prevent reverse-sync from overwriting input
+      setROI(pixelRoi);
+      addStatusLog('info', `WKT ROI applied: ${pixelRoi.width} x ${pixelRoi.height} px`,
+        `at (${pixelRoi.left}, ${pixelRoi.top})`);
+    } catch (e) {
+      setWktError(e.message);
+      addStatusLog('error', `WKT error: ${e.message}`);
+    }
+  }, [wktInput, imageData, addStatusLog]);
+
+  // WKT ROI: reverse-sync — when ROI changes via Shift+drag, populate WKT input
+  useEffect(() => {
+    if (!roi || !imageData) {
+      if (!roi) wktSyncSource.current = '';
+      return;
+    }
+    // Only reverse-sync if the ROI was NOT set by WKT apply (avoid overwriting user input)
+    if (wktSyncSource.current === 'wkt') {
+      wktSyncSource.current = '';
+      return;
+    }
+    const fileBbox = imageData.worldBounds || imageData.bounds;
+    if (!fileBbox) return;
+    const subBounds = computeSubsetBounds(
+      { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+      {
+        worldBounds: fileBbox,
+        width: imageData.width,
+        height: imageData.height,
+        xCoords: imageData.xCoords || null,
+        yCoords: imageData.yCoords || null,
+      }
+    );
+    const [w, s, e, n] = subBounds;
+    setWktInput(`BBOX(${w.toFixed(6)}, ${s.toFixed(6)}, ${e.toFixed(6)}, ${n.toFixed(6)})`);
+    setWktError(null);
+  }, [roi, imageData]);
+
   // Recompute classification map when class regions, scatter data, or incidence range changes
   useEffect(() => {
     if (!classifierData || !classRegions.length) {
@@ -628,15 +695,6 @@ function App() {
     const maxLat = Math.min(85, cy + span/2);
     return [cx - span/2, minLat, cx + span/2, maxLat];
   }, [imageData, viewCenter, viewZoom]);
-
-  // Helper to add status log
-  const addStatusLog = useCallback((type, message, details = null) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setStatusLogs(prev => {
-      const next = [...prev, { type, message, details, timestamp }];
-      return next.length > 500 ? next.slice(-500) : next;
-    });
-  }, []);
 
   // Memoize arrays to prevent unnecessary re-renders
   const contrastLimits = useMemo(() => [contrastMin, contrastMax], [contrastMin, contrastMax]);
@@ -3059,6 +3117,45 @@ function App() {
                     Shift+drag on image to select ROI for export
                   </div>
                 )}
+
+                {/* WKT ROI Input */}
+                <div style={{ marginTop: '4px' }}>
+                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      value={wktInput}
+                      onChange={(e) => { setWktInput(e.target.value); setWktError(null); }}
+                      onKeyDown={(e) => e.key === 'Enter' && handleWktApply()}
+                      placeholder="BBOX(west, south, east, north) or POLYGON(...)"
+                      style={{
+                        flex: 1, fontSize: '0.65rem',
+                        background: 'var(--surface-2)', color: 'var(--text)',
+                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)', padding: '3px 6px',
+                        fontFamily: "'JetBrains Mono', monospace",
+                      }}
+                    />
+                    <button
+                      onClick={handleWktApply}
+                      disabled={!wktInput.trim()}
+                      style={{
+                        fontSize: '0.65rem', padding: '3px 8px',
+                        background: wktInput.trim() ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
+                        border: '1px solid rgba(255, 200, 50, 0.3)',
+                        color: '#ffc832', borderRadius: 'var(--radius-sm)',
+                        cursor: wktInput.trim() ? 'pointer' : 'default',
+                        opacity: wktInput.trim() ? 1 : 0.4,
+                      }}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                  {wktError && (
+                    <div style={{ color: '#e74c3c', fontSize: '0.6rem', marginTop: '2px' }}>
+                      {wktError}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 

@@ -13,7 +13,11 @@ export {
   loadMultiBandCOG,
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
-export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl } from './loaders/nisar-loader.js';
+export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
+
+// WKT / ROI utilities
+export { parseWKT, wktToBbox, bboxToWKT, validateWKT, wktToGeoJSON } from './utils/wkt.js';
+export { bboxToPixelRange, reprojectBbox, computeSubsetBounds, roiIntersectsFile } from './utils/roi-subset.js';
 
 // S3 URL utilities
 export { normalizeS3Url, isS3Url } from './utils/s3-url.js';

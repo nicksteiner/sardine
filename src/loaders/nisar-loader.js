@@ -28,6 +28,8 @@
 
 import h5wasm from 'h5wasm';
 import { openH5ChunkFile, openH5ChunkUrl } from './h5chunk.js';
+import { wktToBbox, validateWKT } from '../utils/wkt.js';
+import { bboxToPixelRange, reprojectBbox, roiIntersectsFile, computeSubsetBounds } from '../utils/roi-subset.js';
 import { loadMetadataCube } from '../utils/metadata-cube.js';
 import { normalizeS3Url } from '../utils/s3-url.js';
 import { createPersistentChunkCache } from '../utils/chunk-cache.js';
@@ -4938,5 +4940,128 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   return result;
 }
 
+
+/**
+ * Convert a WKT string to a pixel ROI {left, top, width, height}
+ * using the loaded file's coordinate system and coordinate arrays.
+ *
+ * @param {string} wkt — WKT geometry string or BBOX(w,s,e,n)
+ * @param {Object} imageData — result from loadNISARGCOV / loadNISARGCOVFromUrl
+ * @returns {{ left: number, top: number, width: number, height: number } | null}
+ *   null if ROI does not intersect the file
+ */
+export function wktToROI(wkt, imageData) {
+  const validation = validateWKT(wkt);
+  if (!validation.valid) {
+    throw new Error(`Invalid WKT: ${validation.error}`);
+  }
+
+  const bbox4326 = validation.bbox; // [west, south, east, north]
+
+  // Reproject if file is in UTM
+  const fileCrs = imageData.crs || 'EPSG:4326';
+  const bboxFileCrs = reprojectBbox(bbox4326, fileCrs);
+
+  // Check intersection
+  const fileBbox = imageData.worldBounds || imageData.bounds;
+  if (!roiIntersectsFile(bboxFileCrs, fileBbox)) {
+    return null;
+  }
+
+  // Map to pixel range using coordinate arrays for precision
+  const pixelRange = bboxToPixelRange(bboxFileCrs, {
+    worldBounds: fileBbox,
+    width: imageData.width,
+    height: imageData.height,
+    xCoords: imageData.xCoords || null,
+    yCoords: imageData.yCoords || null,
+  });
+
+  if (!pixelRange) return null;
+
+  return {
+    left: pixelRange.startCol,
+    top: pixelRange.startRow,
+    width: pixelRange.numCols,
+    height: pixelRange.numRows,
+  };
+}
+
+/**
+ * Load the same WKT ROI from multiple NISAR GCOV URLs.
+ * Opens metadata for each file, maps the ROI to pixel bounds,
+ * and fetches only the intersecting chunks at full resolution.
+ *
+ * @param {string[]} urls — Array of NISAR HDF5 URLs
+ * @param {string} wkt — WKT geometry defining the ROI
+ * @param {Object} [opts]
+ * @param {string} [opts.frequency='A'] — Frequency band
+ * @param {string} [opts.polarization='HHHH'] — Polarization
+ * @param {number} [opts.multilook=1] — Multilook factor
+ * @param {Function} [opts.onProgress] — Called with (index, total, url) for each file
+ * @returns {Promise<Array<{ url, data, width, height, bounds, pixelROI, identification, error? }>>}
+ */
+export async function loadNISARTimeSeriesROI(urls, wkt, opts = {}) {
+  const {
+    frequency = 'A',
+    polarization = 'HHHH',
+    multilook = 1,
+    onProgress,
+  } = opts;
+
+  const results = [];
+
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    if (onProgress) onProgress(i, urls.length, url);
+
+    try {
+      // Open file metadata (lazy tree walking — only reads ~10KB + headers)
+      const imageData = await loadNISARGCOVFromUrl(url, { frequency, polarization });
+
+      // Map WKT to pixel ROI for this specific file's grid
+      const pixelROI = wktToROI(wkt, imageData);
+      if (!pixelROI) {
+        results.push({ url, data: null, error: 'ROI does not intersect file' });
+        continue;
+      }
+
+      // Fetch only the chunks covering the ROI
+      const ml = multilook;
+      const startCol = Math.floor(pixelROI.left / ml);
+      const startRow = Math.floor(pixelROI.top / ml);
+      const numCols = Math.floor((pixelROI.left + pixelROI.width) / ml) - startCol;
+      const numRows = Math.floor((pixelROI.top + pixelROI.height) / ml) - startRow;
+
+      const stripe = await imageData.getExportStripe({
+        startRow, numRows, ml,
+        exportWidth: numCols,
+        startCol, numCols,
+      });
+
+      const subBounds = computeSubsetBounds(
+        { startRow: pixelROI.top, startCol: pixelROI.left,
+          numRows: pixelROI.height, numCols: pixelROI.width },
+        { worldBounds: imageData.worldBounds || imageData.bounds,
+          width: imageData.width, height: imageData.height,
+          xCoords: imageData.xCoords || null, yCoords: imageData.yCoords || null }
+      );
+
+      results.push({
+        url,
+        data: stripe.bands[polarization],
+        width: numCols,
+        height: numRows,
+        bounds: subBounds,
+        pixelROI,
+        identification: imageData.identification,
+      });
+    } catch (e) {
+      results.push({ url, data: null, error: e.message });
+    }
+  }
+
+  return results;
+}
 
 export default loadNISARGCOV;
