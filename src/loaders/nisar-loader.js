@@ -1509,7 +1509,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   //   1. Full xCoordinates/yCoordinates arrays (exact bounds)
   //   2. Endpoint reading: just first/last element of coordinate arrays (efficient)
   //   3. Spacing datasets + first coordinate element (computed bounds)
-  const bounds = [0, 0, width, height];
+  let bounds = [0, 0, width, height];
   let worldBounds = null;
   let pixelSizeX = 1;
   let pixelSizeY = 1;
@@ -1657,6 +1657,15 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     console.warn(`[NISAR Loader] No projection found, using fallback: ${crs}`);
   }
 
+  // ── Normalize bounds to world coordinates ──
+  // All loaders must use world-coordinate bounds so deck.gl positions tiles
+  // correctly in a shared coordinate space (required for multi-granule mosaicing).
+  // When worldBounds is available, use it as bounds; keep pixel-space as fallback.
+  if (worldBounds) {
+    bounds = worldBounds;
+    console.log(`[NISAR Loader] Bounds normalized to world coordinates: [${bounds.join(', ')}]`);
+  }
+
   // Compute initial stats from a center chunk for auto-contrast
   const stats = { min_value: undefined, max_value: undefined, mean_value: undefined, sample_stddev: undefined };
   try {
@@ -1788,7 +1797,9 @@ async function loadNISARGCOVStreaming(file, options = {}) {
    */
   async function getTile({ x, y, z, bbox, multiLook = false }) {
     const ml = multiLook ? 'ml' : 'nn';
-    const tileKey = `${x},${y},${z},${ml}`;
+    // Include bbox in cache key so histogram samples from different regions aren't conflated
+    const bboxSuffix = bbox ? `,${bbox.left|0},${bbox.top|0},${bbox.right|0},${bbox.bottom|0}` : '';
+    const tileKey = `${x},${y},${z},${ml}${bboxSuffix}`;
 
     // LRU: If tile exists, move it to end (most recently used)
     if (tileCache.has(tileKey)) {
@@ -1807,13 +1818,20 @@ async function loadNISARGCOVStreaming(file, options = {}) {
       let left, top, right, bottom;
       if (bbox) {
         if (bbox.left !== undefined) {
-          // OrthographicView: Y increases upward in world, but image rows increase downward.
-          // bbox.top = min world Y (bottom of view), bbox.bottom = max world Y (top of view).
-          // Flip Y: imageRow = height - worldY
-          left = Math.max(0, Math.floor(bbox.left));
-          right = Math.min(width, Math.ceil(bbox.right));
-          top = Math.max(0, height - Math.ceil(bbox.bottom));
-          bottom = Math.min(height, height - Math.floor(bbox.top));
+          // OrthographicView bbox: top = min world Y (south), bottom = max world Y (north).
+          // Convert world coordinates to pixel coordinates using bounds.
+          // bounds may be world coords (UTM/latlon) or pixel coords (fallback).
+          const [bMinX, bMinY, bMaxX, bMaxY] = bounds;
+          const bSpanX = bMaxX - bMinX || 1;
+          const bSpanY = bMaxY - bMinY || 1;
+          // X: linear map from world → pixel
+          left = Math.max(0, Math.floor(((bbox.left - bMinX) / bSpanX) * width));
+          right = Math.min(width, Math.ceil(((bbox.right - bMinX) / bSpanX) * width));
+          // Y: world Y increases north (up), image rows increase south (down)
+          // bbox.bottom = max world Y (north) → small row index (top of image)
+          // bbox.top = min world Y (south) → large row index (bottom of image)
+          top = Math.max(0, Math.floor(((bMaxY - bbox.bottom) / bSpanY) * height));
+          bottom = Math.min(height, Math.ceil(((bMaxY - bbox.top) / bSpanY) * height));
         } else {
           left = Math.max(0, Math.floor(bbox.west));
           top = Math.max(0, Math.floor(bbox.south));
@@ -2579,6 +2597,7 @@ export async function loadNISARGCOV(file, options = {}) {
   const result = {
     getTile,
     bounds,
+    worldBounds: bounds,  // bounds are already world coordinates from extractMetadata
     crs,
     width,
     height,
@@ -3255,30 +3274,17 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     try {
       const tileSize = 256;
 
-      // Compute pixel region from bbox (same logic as single-band getTile)
+      // Compute pixel region from bbox — convert world coordinates to pixels
       let left, top, right, bottom;
       if (bbox && bbox.left !== undefined) {
-        // Auto-detect: if all bbox values fit within image pixel dimensions → pixel coords
-        const isPixelCoords = (
-          bbox.left >= 0 && bbox.left <= width &&
-          bbox.right >= 0 && bbox.right <= width &&
-          bbox.top >= 0 && bbox.top <= height &&
-          bbox.bottom >= 0 && bbox.bottom <= height
-        );
-
-        if (isPixelCoords) {
-          left = Math.max(0, Math.floor(bbox.left));
-          right = Math.min(width, Math.ceil(bbox.right));
-          top = Math.max(0, Math.floor(Math.min(bbox.top, bbox.bottom)));
-          bottom = Math.min(height, Math.ceil(Math.max(bbox.top, bbox.bottom)));
-        } else {
-          // World coordinates (UTM meters, etc.) — convert to pixels using bounds
-          const [minX, minY, maxX, maxY] = bounds;
-          left = Math.max(0, Math.round(((bbox.left - minX) / (maxX - minX)) * width));
-          right = Math.min(width, Math.round(((bbox.right - minX) / (maxX - minX)) * width));
-          top = Math.max(0, Math.round(((maxY - bbox.bottom) / (maxY - minY)) * height));
-          bottom = Math.min(height, Math.round(((maxY - bbox.top) / (maxY - minY)) * height));
-        }
+        const [minX, minY, maxX, maxY] = bounds;
+        const spanX = (maxX - minX) || 1;
+        const spanY = (maxY - minY) || 1;
+        left = Math.max(0, Math.round(((bbox.left - minX) / spanX) * width));
+        right = Math.min(width, Math.round(((bbox.right - minX) / spanX) * width));
+        // Y: world Y increases north (up), image rows increase south (down)
+        top = Math.max(0, Math.round(((maxY - bbox.bottom) / spanY) * height));
+        bottom = Math.min(height, Math.round(((maxY - bbox.top) / spanY) * height));
       } else {
         const scale = Math.pow(2, z);
         const pixelX = x * width / scale;
@@ -4412,36 +4418,28 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     const tileSize = 256;
     try {
       // Check tile result cache first (covers readRegion tiles)
-      const tileCacheKey = `${x},${y},${z},${multiLook ? 'ml' : ''}`;
+      // Include bbox in key so histogram samples from different regions aren't conflated
+      const bboxKey = bbox ? `${bbox.left|0},${bbox.top|0},${bbox.right|0},${bbox.bottom|0}` : '';
+      const tileCacheKey = `${x},${y},${z},${multiLook ? 'ml' : ''},${bboxKey}`;
       if (tileResultCache.has(tileCacheKey)) {
         return tileResultCache.get(tileCacheKey);
       }
 
-      // Auto-detect coordinate system: pixel coords vs world coords
-      // Check if bbox values are within image pixel bounds [0, width]×[0, height]
-      // If yes → pixel coordinates, if no → world coordinates (need conversion)
+      // Convert world-coordinate bbox to pixel coordinates using bounds.
       let pxLeft, pxRight, pxTop, pxBottom;
+      const bSpanX = (bounds[2] - bounds[0]) || 1;
+      const bSpanY = (bounds[3] - bounds[1]) || 1;
+      pxLeft = Math.max(0, Math.round(((bbox.left - bounds[0]) / bSpanX) * width));
+      pxRight = Math.min(width, Math.round(((bbox.right - bounds[0]) / bSpanX) * width));
+      // Y: world Y increases north (up), image rows increase south (down)
+      pxTop = Math.max(0, Math.round(((bounds[3] - bbox.bottom) / bSpanY) * height));
+      pxBottom = Math.min(height, Math.round(((bounds[3] - bbox.top) / bSpanY) * height));
 
-      const isPixelCoords = (
-        bbox.left >= 0 && bbox.left <= width &&
-        bbox.right >= 0 && bbox.right <= width &&
-        bbox.top >= 0 && bbox.top <= height &&
-        bbox.bottom >= 0 && bbox.bottom <= height
-      );
-
-      if (isPixelCoords) {
-        // Direct pixel coordinates (from histogram sampling or direct pixel access)
-        pxLeft = Math.max(0, Math.floor(bbox.left));
-        pxRight = Math.min(width, Math.ceil(bbox.right));
-        pxTop = Math.max(0, Math.floor(Math.min(bbox.top, bbox.bottom)));
-        pxBottom = Math.min(height, Math.ceil(Math.max(bbox.top, bbox.bottom)));
-      } else {
-        // World coordinates (CRS-specific: UTM meters, lat/lon degrees, etc.)
-        // Convert to pixels using worldBounds
-        pxLeft = Math.max(0, Math.round(((bbox.left - bounds[0]) / (bounds[2] - bounds[0])) * width));
-        pxRight = Math.min(width, Math.round(((bbox.right - bounds[0]) / (bounds[2] - bounds[0])) * width));
-        pxTop = Math.max(0, Math.round(((bounds[3] - bbox.bottom) / (bounds[3] - bounds[1])) * height));
-        pxBottom = Math.min(height, Math.round(((bounds[3] - bbox.top) / (bounds[3] - bounds[1])) * height));
+      if (x === 0 && y === 0) {
+        console.log('[getTile] bbox:', JSON.stringify({l: bbox.left|0, t: bbox.top|0, r: bbox.right|0, b: bbox.bottom|0}),
+          'bounds:', JSON.stringify(bounds.map(b => b|0)),
+          '→ px:', {pxLeft, pxTop, pxRight, pxBottom},
+          'slice:', pxRight - pxLeft, '×', pxBottom - pxTop);
       }
 
       const sliceW = pxRight - pxLeft;

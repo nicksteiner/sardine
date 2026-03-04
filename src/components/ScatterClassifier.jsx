@@ -80,6 +80,23 @@ function densityToImage(grid) {
 }
 
 /**
+ * Build a 1D histogram for single-channel mode.
+ * Returns { bins: Float64Array, binEdges: Float64Array } with log-scaled counts.
+ */
+function build1DHistogram(x, valid, xRange) {
+  const bins = new Uint32Array(DENSITY_BINS);
+  const [xMin, xMax] = xRange;
+  const xSpan = xMax - xMin || 1;
+  for (let i = 0; i < x.length; i++) {
+    if (!valid[i]) continue;
+    const bx = Math.floor((x[i] - xMin) / xSpan * (DENSITY_BINS - 1));
+    if (bx < 0 || bx >= DENSITY_BINS) continue;
+    bins[bx]++;
+  }
+  return bins;
+}
+
+/**
  * Convert data-space coords to canvas pixel coords (within plot area).
  */
 function dataToPlot(val, rangeMin, rangeMax, plotSize) {
@@ -150,12 +167,20 @@ export default function ScatterClassifier({
     };
   }, [scatterData]);
 
-  // Build density grid
+  const isSingleChannel = scatterData?.singleChannel || false;
+
+  // Build density grid (2D mode) or 1D histogram (single-channel mode)
   const densityImage = useMemo(() => {
-    if (!scatterData) return null;
+    if (!scatterData || isSingleChannel) return null;
     const grid = buildDensityGrid(scatterData.x, scatterData.y, scatterData.valid, xRange, yRange);
     return densityToImage(grid);
-  }, [scatterData, xRange, yRange]);
+  }, [scatterData, isSingleChannel, xRange, yRange]);
+
+  // Build 1D histogram bins (single-channel mode)
+  const histogram1D = useMemo(() => {
+    if (!scatterData || !isSingleChannel) return null;
+    return build1DHistogram(scatterData.x, scatterData.valid, xRange);
+  }, [scatterData, isSingleChannel, xRange]);
 
   // Compute per-class pixel counts
   const classCounts = useMemo(() => {

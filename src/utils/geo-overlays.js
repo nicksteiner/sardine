@@ -190,7 +190,8 @@ export function worldToPixel(wx, wy, viewState, canvasW, canvasH) {
   const ppu = Math.pow(2, viewState.zoom || 0);
   const [cx, cy] = viewState.target || [0, 0];
   const px = (wx - cx) * ppu + canvasW / 2;
-  const py = (wy - cy) * ppu + canvasH / 2;
+  // deck.gl OrthographicView (flipY:false): world Y+ = up, screen Y+ = down → negate
+  const py = -(wy - cy) * ppu + canvasH / 2;
   return [px, py];
 }
 
@@ -200,5 +201,5 @@ export function worldToPixel(wx, wy, viewState, canvasW, canvasH) {
 export function pixelToWorld(px, py, viewState, canvasW, canvasH) {
   const ppu = Math.pow(2, viewState.zoom || 0);
   const [cx, cy] = viewState.target || [0, 0];
-  return [(px - canvasW / 2) / ppu + cx, (py - canvasH / 2) / ppu + cy];
+  return [(px - canvasW / 2) / ppu + cx, -(py - canvasH / 2) / ppu + cy];
 }

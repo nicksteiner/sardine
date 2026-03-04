@@ -525,7 +525,7 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
   const [cx, cy] = viewState.target || [0, 0];
 
   const toX = (wx) => (wx - cx) * ppu + W / 2;
-  const toY = (wy) => (wy - cy) * ppu + H / 2;
+  const toY = (wy) => -(wy - cy) * ppu + H / 2;
 
   const dx = niceInterval(extent.width, 3);
   const dy = niceInterval(extent.height, 3);

@@ -230,7 +230,7 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
  */
 function App() {
   // Core state
-  const [fileType, setFileType] = useState('remote'); // 'cog' | 'nisar' | 'remote'
+  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar' | 'remote'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
@@ -296,7 +296,7 @@ function App() {
   const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
   const [incidenceRange, setIncidenceRange] = useState([0, 90]); // min/max incidence angle filter (degrees)
 
-  const [histogramScope, setHistogramScope] = useState('viewport'); // 'global' | 'viewport'
+  const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport' | 'roi'
   const [showHistogramOverlay, setShowHistogramOverlay] = useState(false);
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
@@ -339,7 +339,7 @@ function App() {
 
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
-  const [statusCollapsed, setStatusCollapsed] = useState(false);
+  const [statusCollapsed, setStatusCollapsed] = useState(true);
 
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
@@ -560,7 +560,7 @@ function App() {
         if (!cancelled) {
           const validCount = valid.reduce((a, b) => a + b, 0);
           console.log('[Classifier] Scatter data ready:', { exportW, exportH, validCount, hasIncidence: !!incidence });
-          setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence });
+          setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence, singleChannel: xData === yData });
           setClassifierRoiDims({ w: exportW, h: exportH });
           // Set initial incidence range from data
           if (incidence) {
@@ -742,8 +742,13 @@ function App() {
 
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
+    console.log('[histogram] handleRecomputeHistogram called, scope:', histogramScope, 'displayMode:', displayMode, 'hasGetTile:', !!imageData?.getTile, 'hasGetRGBTile:', !!imageData?.getRGBTile, 'compositeId:', compositeId);
     if (!imageData || !imageData.getTile) {
       addStatusLog('warning', 'No tile data available for histogram');
+      return;
+    }
+    if (histogramScope === 'roi' && !roi) {
+      addStatusLog('warning', 'No ROI drawn — draw a region with Shift+drag first');
       return;
     }
 
@@ -751,9 +756,8 @@ function App() {
 
     try {
       // Compute viewport region bounds (used for viewport scope)
-      // viewCenter is in world coordinates (= image pixel coords for NISAR data
-      // where bounds = [0, 0, width, height]).
-      // viewZoom: 2^zoom = pixels-per-world-unit (deck.gl OrthographicView).
+      // viewCenter is in world coordinates (matches imageData.bounds).
+      // viewZoom: 2^zoom = screen-pixels-per-world-unit (deck.gl OrthographicView).
       // Visible world extent = canvasPixels / 2^zoom.
       const ppu = Math.pow(2, viewZoom);
       const canvas = viewerRef.current?.getCanvas();
@@ -763,17 +767,40 @@ function App() {
       const vpHalfH = (canvasH / 2) / ppu;
       const cx = viewCenter[0];
       const cy = viewCenter[1];
-      const vpLeft = Math.max(0, cx - vpHalfW);
-      const vpRight = Math.min(imageData.width, cx + vpHalfW);
-      const vpTop = Math.max(0, cy - vpHalfH);
-      const vpBottom = Math.min(imageData.height, cy + vpHalfH);
+      // Clamp to image bounds (world coordinates, not pixel dimensions)
+      const [bMinX, bMinY, bMaxX, bMaxY] = imageData.bounds;
+      const vpLeft = Math.max(bMinX, cx - vpHalfW);
+      const vpRight = Math.min(bMaxX, cx + vpHalfW);
+      const vpTop = Math.max(bMinY, cy - vpHalfH);
+      const vpBottom = Math.min(bMaxY, cy + vpHalfH);
 
-      const isViewport = histogramScope === 'viewport';
-      const regionX = isViewport ? vpLeft : 0;
-      const regionY = isViewport ? vpTop : 0;
-      const regionW = isViewport ? (vpRight - vpLeft) : imageData.width;
-      const regionH = isViewport ? (vpBottom - vpTop) : imageData.height;
-      const scopeLabel = isViewport ? 'Viewport' : 'Global';
+      let regionX, regionY, regionW, regionH, scopeLabel;
+      if (histogramScope === 'roi' && roi) {
+        // ROI is in pixel coordinates — convert to world coordinates for getTile
+        const roiWorldLeft = bMinX + (roi.left / imageData.width) * (bMaxX - bMinX);
+        const roiWorldRight = bMinX + ((roi.left + roi.width) / imageData.width) * (bMaxX - bMinX);
+        // ROI top/height are in image-row space (top=0 is north); convert to world Y
+        const roiWorldTop = bMaxY - ((roi.top + roi.height) / imageData.height) * (bMaxY - bMinY);
+        const roiWorldBottom = bMaxY - (roi.top / imageData.height) * (bMaxY - bMinY);
+        regionX = roiWorldLeft;
+        regionY = roiWorldTop;   // min world Y (south)
+        regionW = roiWorldRight - roiWorldLeft;
+        regionH = roiWorldBottom - roiWorldTop;
+        scopeLabel = 'ROI';
+      } else if (histogramScope === 'viewport') {
+        regionX = vpLeft;
+        regionY = vpTop;
+        regionW = vpRight - vpLeft;
+        regionH = vpBottom - vpTop;
+        scopeLabel = 'Viewport';
+      } else {
+        // Global: use full bounds (world coordinates)
+        regionX = bMinX;
+        regionY = bMinY;
+        regionW = bMaxX - bMinX;
+        regionH = bMaxY - bMinY;
+        scopeLabel = 'Global';
+      }
 
       if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
         // RGB histogram — sample 3×3 tiles from the region
@@ -789,12 +816,12 @@ function App() {
           for (let tx = 0; tx < gridSize; tx++) {
             const left = regionX + tx * stepX;
             const right = regionX + (tx + 1) * stepX;
-            const wBottom = imageData.height - (regionY + (ty + 1) * stepY);
-            const wTop = imageData.height - (regionY + ty * stepY);
+            const top = regionY + ty * stepY;
+            const bottom = regionY + (ty + 1) * stepY;
 
             const tileData = await imageData.getRGBTile({
               x: tx, y: ty, z: 0,
-              bbox: { left, top: wBottom, right, bottom: wTop },
+              bbox: { left, top, right, bottom },
             });
 
             if (tileData && tileData.bands) {
@@ -815,55 +842,76 @@ function App() {
 
         addStatusLog('info', 'Histogram: computing statistics...');
         const hists = {};
-        const autoLims = {};
+        let hasAnyStats = false;
         for (const ch of ['R', 'G', 'B']) {
           hists[ch] = computeChannelStats(rawValues[ch], useDecibels);
-          autoLims[ch] = hists[ch] ? [hists[ch].p2, hists[ch].p98] : [0, 1];
+          if (hists[ch]) hasAnyStats = true;
         }
-        setHistogramData(hists);
-        setRgbContrastLimits(autoLims);
-        addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`);
+        if (hasAnyStats) {
+          setHistogramData(hists);
+          addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`);
+        } else {
+          addStatusLog('info', `${scopeLabel} histogram: no valid pixels in region`);
+        }
       } else {
         // Single-band histogram — pass origin offset for correct viewport sampling
+        console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', useDecibels);
         const stats = await sampleViewportStats(
           imageData.getTile, regionW, regionH, useDecibels, 128,
           regionX, regionY, imageData.height,
           (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
         );
+        console.log('[histogram] single-band stats:', stats ? { p2: stats.p2, p98: stats.p98, count: stats.count } : null);
         if (stats) {
+          console.log('[histogram] CALLING setHistogramData, new min:', stats.min.toFixed(2), 'max:', stats.max.toFixed(2), 'count:', stats.count);
           setHistogramData({ single: stats });
           addStatusLog('success', `${scopeLabel} histogram: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)}`);
+        } else {
+          console.log('[histogram] single-band: no stats returned');
         }
       }
     } catch (e) {
+      console.error('[histogram] recompute error:', e);
       addStatusLog('warning', 'Histogram recompute failed', e.message);
     }
-  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, addStatusLog]);
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, roi, addStatusLog]);
 
-  // Auto-recompute histogram when scope changes
-  const histogramScopeRef = useRef(histogramScope);
+  // Recompute histogram when scope changes
   useEffect(() => {
-    if (histogramScope !== histogramScopeRef.current) {
-      histogramScopeRef.current = histogramScope;
-      if (imageData) handleRecomputeHistogram();
-    }
-  }, [histogramScope, imageData, handleRecomputeHistogram]);
+    if (imageData) recomputeRef.current();
+  }, [histogramScope, imageData]);
 
   // Auto-show histogram overlay when histogram data becomes available
   useEffect(() => {
     if (histogramData) setShowHistogramOverlay(true);
   }, [histogramData]);
 
-  // Auto-recompute histogram when viewport changes (debounced 800ms)
-  const viewCenterX = viewCenter[0];
-  const viewCenterY = viewCenter[1];
+  // Fall back to global scope if ROI is cleared while in ROI scope
   useEffect(() => {
-    if (!imageData || !showHistogramOverlay) return;
+    if (!roi && histogramScope === 'roi') setHistogramScope('global');
+  }, [roi, histogramScope]);
+
+  // Auto-recompute histogram when viewport changes (viewport scope, debounced)
+  const recomputeRef = useRef(handleRecomputeHistogram);
+  recomputeRef.current = handleRecomputeHistogram;
+  const vcx = viewCenter[0];
+  const vcy = viewCenter[1];
+  useEffect(() => {
+    if (!imageData || !showHistogramOverlay || histogramScope !== 'viewport') return;
     const timer = setTimeout(() => {
-      handleRecomputeHistogram();
+      recomputeRef.current();
     }, 800);
     return () => clearTimeout(timer);
-  }, [viewCenterX, viewCenterY, viewZoom]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [vcx, vcy, viewZoom, imageData, showHistogramOverlay, histogramScope]);
+
+  // Auto-recompute histogram when ROI changes (ROI scope only)
+  useEffect(() => {
+    if (!imageData || !roi || histogramScope !== 'roi') return;
+    const timer = setTimeout(() => {
+      recomputeRef.current();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [roi, imageData, histogramScope]);
 
   // Recompute histogram when switching between dB and linear mode
   const useDecibelsRef = useRef(useDecibels);
@@ -1418,12 +1466,14 @@ function App() {
             const tileSize = 256;
             const rawValues = { R: [], G: [], B: [] };
             // Sample center tile only — fast enough for remote
-            const cx = Math.floor(data.width / 2);
-            const cy = Math.floor(data.height / 2);
-            const half = Math.floor(data.width / 6);
+            // Use world-coordinate bounds for bbox
+            const [rcMinX, rcMinY, rcMaxX, rcMaxY] = data.bounds;
+            const rcCx = (rcMinX + rcMaxX) / 2;
+            const rcCy = (rcMinY + rcMaxY) / 2;
+            const rcHalf = (rcMaxX - rcMinX) / 6;
             const tileData = await data.getRGBTile({
               x: 0, y: 0, z: 0,
-              bbox: { left: cx - half, top: cy - half, right: cx + half, bottom: cy + half },
+              bbox: { left: rcCx - rcHalf, top: rcCy - rcHalf, right: rcCx + rcHalf, bottom: rcCy + rcHalf },
             });
             if (tileData && tileData.bands) {
               const rgbBands = computeRGBBands(tileData.bands, _histCompositeId, tileSize);
@@ -1454,7 +1504,12 @@ function App() {
         addStatusLog('info', 'Computing histogram in background...');
         (async () => {
           try {
-            const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
+            // Sample using world-coordinate bounds so getTile receives world-space bboxes
+            const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
+            const stats = await sampleViewportStats(
+              data.getTile, gMaxX - gMinX, gMaxY - gMinY, useDecibels, 128,
+              gMinX, gMinY,
+            );
             if (stats) {
               setHistogramData({ single: stats });
               setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
@@ -1544,20 +1599,23 @@ function App() {
           addStatusLog('info', 'Computing per-channel histograms (linear)...');
           const tileSize = 256;
           const gridSize = 3;
-          const stepX = data.width / gridSize;
-          const stepY = data.height / gridSize;
+          // Use world-coordinate bounds for bbox sampling
+          const [rgbMinX, rgbMinY, rgbMaxX, rgbMaxY] = data.bounds;
+          const stepX = (rgbMaxX - rgbMinX) / gridSize;
+          const stepY = (rgbMaxY - rgbMinY) / gridSize;
           const rawValues = { R: [], G: [], B: [] };
 
           for (let ty = 0; ty < gridSize; ty++) {
             for (let tx = 0; tx < gridSize; tx++) {
-              const left = tx * stepX;
-              const right = (tx + 1) * stepX;
-              const worldBottom = data.height - (ty + 1) * stepY;
-              const worldTop = data.height - ty * stepY;
+              const left = rgbMinX + tx * stepX;
+              const right = rgbMinX + (tx + 1) * stepX;
+              // OrthographicView bbox: top = min Y (south), bottom = max Y (north)
+              const top = rgbMinY + ty * stepY;
+              const bottom = rgbMinY + (ty + 1) * stepY;
 
               const tileData = await data.getRGBTile({
                 x: tx, y: ty, z: 0,
-                bbox: { left, top: worldBottom, right, bottom: worldTop },
+                bbox: { left, top, right, bottom },
               });
 
               if (tileData && tileData.bands) {
@@ -1588,7 +1646,12 @@ function App() {
             ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
         } else if (data.getTile) {
           addStatusLog('info', 'Computing histogram from tile samples...');
-          const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
+          // Sample using world-coordinate bounds so getTile receives world-space bboxes
+          const [hMinX, hMinY, hMaxX, hMaxY] = data.bounds;
+          const stats = await sampleViewportStats(
+            data.getTile, hMaxX - hMinX, hMaxY - hMinY, useDecibels, 128,
+            hMinX, hMinY,
+          );
           if (stats) {
             setHistogramData({ single: stats });
             // Keep decimal precision for dB values (don't round)
@@ -3207,23 +3270,28 @@ function App() {
             {histogramData && (
               <div className="control-group" style={{ marginBottom: '6px' }}>
                 <div style={{ display: 'flex', gap: '4px' }}>
-                  {['global', 'viewport'].map(scope => (
-                    <button
-                      key={scope}
-                      className={histogramScope === scope ? '' : 'btn-secondary'}
-                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
-                      onClick={() => {
-                        if (histogramScope === scope) {
-                          // Already active — re-run (e.g. viewport after pan/zoom)
-                          handleRecomputeHistogram();
-                        } else {
-                          setHistogramScope(scope);
-                        }
-                      }}
-                    >
-                      {scope === 'global' ? 'Global' : 'Viewport'}
-                    </button>
-                  ))}
+                  {['global', 'viewport', 'roi'].map(scope => {
+                    const label = scope === 'global' ? 'Global' : scope === 'viewport' ? 'Viewport' : 'ROI';
+                    const disabled = scope === 'roi' && !roi;
+                    return (
+                      <button
+                        key={scope}
+                        className={histogramScope === scope ? '' : 'btn-secondary'}
+                        style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px', opacity: disabled ? 0.4 : 1 }}
+                        disabled={disabled}
+                        onClick={() => {
+                          if (histogramScope === scope) {
+                            // Already active — re-run
+                            handleRecomputeHistogram();
+                          } else {
+                            setHistogramScope(scope);
+                          }
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}

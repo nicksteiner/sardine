@@ -353,7 +353,7 @@ function formatBool(v) {
  * @param {string|null} props.fileName — Name of loaded file
  */
 export function MetadataPanel({ imageData, fileType, fileName }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   // Compute WGS84 footprint for mini-map
   const wgs84Bounds = useMemo(() => {
