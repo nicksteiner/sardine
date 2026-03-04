@@ -143,31 +143,83 @@ No conformance issues with the loading architecture.
 
 ---
 
+## Cross-Cutting Concerns
+
+### Fragment Shader Masking: `alpha = 0` vs `discard`
+
+All fragment shaders use `alpha = 0.0` for NaN/zero masking instead of `discard`:
+
+| File | Line | Pattern |
+|------|------|---------|
+| shaders.js | 232 | `float alpha = (amplitude == 0.0 \|\| isnan(amplitude)) ? 0.0 : 1.0;` |
+| SARGPULayer.js | 116 | `float alpha = anyValid ? 1.0 : 0.0;` (RGB composite) |
+| SARGPULayer.js | 154 | `float alpha = (amplitude == 0.0 \|\| isnan(amplitude)) ? 0.0 : 1.0;` |
+| SARGPUBitmapLayer.js | 92 | Same pattern |
+
+**deck.gl recommendation**: Use `discard` for early fragment rejection — it's faster and doesn't pollute the depth buffer. The current approach works visually but wastes GPU cycles on transparent pixels.
+
+### React Callback Memoization
+
+Core viewer callbacks are properly wrapped in `useCallback`:
+- `SARViewer.jsx:67` — `stableGetTileData`
+- `MapViewer.jsx:102` — `handleViewStateChange`
+- `app/main.jsx:633` — `addStatusLog`
+- `app/main.jsx:1121` — `handleViewStateChange`
+
+However, **~24 inline arrow functions** in `app/main.jsx` are not wrapped. Most are UI event handlers (button clicks, toggles) that don't affect layer rendering directly, so the impact is low. The ones in `ComparisonViewer.jsx:352,369` (`onViewStateChange`) are more concerning since they fire every frame during pan/zoom.
+
+### Layer `id` Props
+
+All layer instantiations have explicit `id` props. No violations found across SARViewer, MapViewer, ComparisonViewer, and SARTileLayer sublayer creation.
+
+### Data Prop Memoization
+
+Layer arrays are consistently memoized with `useMemo` in all viewers:
+- `SARViewer.jsx:168` — `const layers = useMemo(() => [...])`
+- `MapViewer.jsx:113` — `const layers = useMemo(() => [...])`
+- `ComparisonViewer.jsx:147,279,295` — All layer arrays memoized
+
+### Multiple WebGL Contexts
+
+ComparisonViewer creates 2 DeckGL instances (side-by-side and swipe modes). This is inherent to the comparison use case — deck.gl doesn't support split-view rendering within a single context. Risk is low unless multiple comparison viewers are mounted simultaneously (browser limit is typically 8-16 contexts).
+
+### `getShaders()` as Overridable Method
+
+Both custom layers define `getShaders()` correctly:
+- `SARGPULayer.js:174` — Returns `{ vs, fs, modules: [project32, picking] }`
+- `SARGPUBitmapLayer.js:18` — Extends parent: `const shaders = super.getShaders(); return { ...shaders, inject: {...} }`
+
+---
+
 ## Summary
 
 ### What SARdine Does Well
 
 1. **SARGPULayer lifecycle** — Full initializeState/updateState/finalizeState with proper resource cleanup and context loss handling
 2. **SARTileLayer updateTriggers** — Textbook deck.gl pattern: visual param changes re-render without refetching data
-3. **Shader extension** — Uses deck.gl's shader hook system correctly
-4. **Viewer components** — Proper React integration with stable callbacks and memoization
-5. **Data/rendering separation** — Loaders return raw data, layers handle GPU rendering
+3. **Shader extension** — Uses deck.gl's shader hook system correctly via `getShaders()`
+4. **Layer identity** — All layers have explicit `id` props
+5. **Data memoization** — Layer arrays consistently wrapped in `useMemo`
+6. **Data/rendering separation** — Loaders return raw data, layers handle GPU rendering
 
 ### What Needs Fixing
 
-| Priority | Issue | Component |
-|----------|-------|-----------|
-| **High** | Props mutation via `Object.assign()` | SARGPUBitmapLayer |
-| **Medium** | `shouldUpdateState()` always returns true | SARTiledCOGLayer |
-| **Medium** | 4 MB ImageData allocation per update | SARGPUBitmapLayer |
-| **Low** | Dead code (`_createR32FTexture`) | SARBitmapLayer |
-| **Low** | Bool/float uniform type inconsistency | shaders.js |
+| Priority | Issue | Component | Fix |
+|----------|-------|-----------|-----|
+| **High** | Props mutation via `Object.assign()` | SARGPUBitmapLayer:173 | `props = {...props, ...newProps}` |
+| **Medium** | `shouldUpdateState()` always returns true | SARTiledCOGLayer:38 | Check specific changeFlags |
+| **Medium** | `alpha = 0` instead of `discard` in shaders | All fragment shaders | Add `if (alpha == 0.0) discard;` |
+| **Medium** | 4 MB ImageData allocation per update | SARGPUBitmapLayer:150 | Reuse if dimensions unchanged |
+| **Low** | Inline `onViewStateChange` in ComparisonViewer | ComparisonViewer:352,369 | Wrap in `useCallback` |
+| **Low** | Dead code (`_createR32FTexture`) | SARBitmapLayer:54 | Remove |
+| **Low** | Bool/float uniform type inconsistency | shaders.js:44 | Standardize to float |
 
 ### Conformance Score
 
 - **5 of 6 layers** are compliant or excellent
 - **3 of 3 viewers** are compliant or excellent
-- **Shader system** follows standard deck.gl patterns
+- **Shader system** follows standard deck.gl patterns (with `discard` optimization opportunity)
+- **React integration** follows best practices (memoization, stable callbacks, explicit IDs)
 - **Data loading** is appropriately custom (no loaders.gl equivalent exists)
 
-**Overall**: SARdine is a well-structured deck.gl application. The architecture follows industry patterns. The high-priority fix (SARGPUBitmapLayer props mutation) should be addressed to prevent subtle state bugs. The SARTileLayer implementation should be used as the internal reference for how to build deck.gl layers correctly.
+**Overall**: SARdine is a well-structured deck.gl application that follows industry patterns. The architecture matches how Uber, CARTO, and Foursquare build production geospatial apps. The high-priority fix (SARGPUBitmapLayer props mutation) should be addressed to prevent subtle state bugs. The `discard` optimization is a quick win for shader performance. SARTileLayer should be used as the internal reference for how to build deck.gl layers correctly.
