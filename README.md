@@ -270,8 +270,8 @@ npm run benchmark    # GPU vs CPU performance comparison
 | NISAR GCOV HDF5 local + remote streaming | Done |
 | Cloud Optimized GeoTIFF loading | Done |
 | GPU dB scaling + colormaps + stretch modes | Done |
-| RGB polarimetric composites (Pauli, dual-pol, quad-pol) | Done |
-| Freeman-Durden decomposition | Done |
+| RGB polarimetric composites (Pauli, dual-pol, quad-pol) | Planned |
+| Freeman-Durden decomposition | Planned |
 | Viewport histogram with auto-update | Done |
 | Feature space scatter classifier | Done |
 | Incidence angle masking (NISAR) | Done |
@@ -290,7 +290,7 @@ npm run benchmark    # GPU vs CPU performance comparison
 
 ## License
 
-MIT
+AGPL-3.0. Previously MIT (through 3/5/26). Commercial licensing available - contact [nick.steiner@gmail.com](mailto:nick.steiner@gmail.com).
 
 ---
 
