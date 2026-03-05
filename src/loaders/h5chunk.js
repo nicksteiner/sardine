@@ -2493,17 +2493,25 @@ export class H5Chunk {
     // across the metadata region (NISAR B-trees for 35K×35K images can span
     // hundreds of KB; child nodes at absolute addresses need the full buffer).
     let btreeReader;
-    if (layout.btreeAddress < this.metadataBuffer.byteLength) {
+    // Estimate B-tree size: each leaf entry ≈ 50–64 bytes, internal nodes add overhead.
+    // If the B-tree root + estimated extent fits inside the metadata buffer, use it;
+    // otherwise fetch from the file so child nodes beyond the buffer are reachable.
+    const shape = dataset.shape || [1, 1];
+    const chunkDims = layout.chunkDims || [512, 512];
+    const numChunks = shape.reduce((n, dim, i) =>
+      n * Math.ceil(dim / (chunkDims[i] || 1)), 1);
+    const estimatedBTreeSize = Math.max(256 * 1024, numChunks * 64);
+
+    if (layout.btreeAddress + estimatedBTreeSize <= this.metadataBuffer.byteLength) {
       btreeReader = new BufferReader(this.metadataBuffer, true, 0);
-    } else {
-      // B-tree beyond metadata buffer — fetch a region sized to the expected
-      // number of chunks. Each B-tree leaf entry ≈ 50 bytes.
-      const shape = dataset.shape || [1, 1];
-      const chunkDims = layout.chunkDims || [512, 512];
-      const numChunks = shape.reduce((n, dim, i) =>
-        n * Math.ceil(dim / (chunkDims[i] || 1)), 1);
-      const btreeSize = Math.max(256 * 1024, numChunks * 64);
+    } else if (layout.btreeAddress < this.metadataBuffer.byteLength) {
+      // Root is in metadata buffer but children may spill past it — fetch the full extent
+      const btreeSize = estimatedBTreeSize;
       const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
+      btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
+    } else {
+      // B-tree entirely beyond metadata buffer — fetch from file
+      const btreeBuffer = await this._fetchBytes(layout.btreeAddress, estimatedBTreeSize);
       btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
     }
 
