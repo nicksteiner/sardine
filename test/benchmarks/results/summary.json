@@ -1,0 +1,324 @@
+{
+  "1_primitive_coverage": {
+    "benchmark": "1_primitive_coverage",
+    "post_slc_coverage_pct": 82.1,
+    "post_slc_total": 28,
+    "post_slc_covered": 23,
+    "by_status": {
+      "equivalent": 12,
+      "exact": 10,
+      "partial": 1,
+      "not-implemented": 5,
+      "out-of-scope": 4,
+      "fft-dependent": 5
+    },
+    "pass": true
+  },
+  "2_gpu_timing": {
+    "benchmark": "2_gpu_timing",
+    "backends": [
+      "cupy",
+      "webgl2",
+      "numpy"
+    ],
+    "operations": [
+      "dB_conversion",
+      "full_pipeline",
+      "gamma_stretch",
+      "multilook_4x4",
+      "rgb_composite_pauli",
+      "sigmoid_stretch",
+      "sqrt_stretch",
+      "viridis_colormap"
+    ],
+    "sizes": [
+      512,
+      2048,
+      8192,
+      16384
+    ],
+    "max_speedups": {
+      "cupy": {
+        "speedup": 997.3,
+        "operation": "dB_conversion",
+        "size": 16384
+      },
+      "webgl2": {
+        "speedup": 28916.4,
+        "operation": "viridis_colormap",
+        "size": 16384
+      }
+    }
+  },
+  "3_io_elimination": {
+    "benchmark": "3_io_elimination",
+    "results": [
+      {
+        "method": "file_based",
+        "compute_ms": 36.3,
+        "io_ms": 40.196,
+        "total_ms": 76.496,
+        "io_pct": 52.533,
+        "size": 2048,
+        "pixels": 4194304
+      },
+      {
+        "method": "chained_numpy",
+        "compute_ms": 24.051,
+        "io_ms": 0.0,
+        "total_ms": 24.065,
+        "io_pct": 0.0,
+        "size": 2048,
+        "pixels": 4194304,
+        "speedup_vs_file": 3.2,
+        "io_elimination_pct": 100.0
+      },
+      {
+        "method": "chained_cupy",
+        "compute_ms": 2.301,
+        "io_ms": 0.0,
+        "total_ms": 2.301,
+        "io_pct": 0.0,
+        "size": 2048,
+        "pixels": 4194304,
+        "speedup_vs_file": 33.2,
+        "io_elimination_pct": 100.0
+      },
+      {
+        "method": "file_based",
+        "compute_ms": 770.527,
+        "io_ms": 894.683,
+        "total_ms": 1665.209,
+        "io_pct": 53.733,
+        "size": 8192,
+        "pixels": 67108864
+      },
+      {
+        "method": "chained_numpy",
+        "compute_ms": 775.142,
+        "io_ms": 0.0,
+        "total_ms": 775.158,
+        "io_pct": 0.0,
+        "size": 8192,
+        "pixels": 67108864,
+        "speedup_vs_file": 2.1,
+        "io_elimination_pct": 100.0
+      },
+      {
+        "method": "chained_cupy",
+        "compute_ms": 2.641,
+        "io_ms": 0.0,
+        "total_ms": 2.641,
+        "io_pct": 0.0,
+        "size": 8192,
+        "pixels": 67108864,
+        "speedup_vs_file": 630.5,
+        "io_elimination_pct": 100.0
+      }
+    ]
+  },
+  "4_h5chunk_streaming": {
+    "benchmark": "4_h5chunk_streaming",
+    "file": {
+      "name": "NISAR_L2_PR_GCOV_013_147_A_175_2005_DHDH_A_20251226T104404_20251226T104439_P05006_N_F_J_001.h5",
+      "sizeMB": 1900
+    },
+    "metadataParseMs": 4.05,
+    "regions": [
+      {
+        "regionSize": 256,
+        "pixels": 65536,
+        "medianTimeMs": 258.54,
+        "bytesNeeded": 262144,
+        "bytesActual": 1263968,
+        "transferRatio": 4.82,
+        "pixelsPerMs": 253
+      },
+      {
+        "regionSize": 512,
+        "pixels": 262144,
+        "medianTimeMs": 293.25,
+        "bytesNeeded": 1048576,
+        "bytesActual": 2518297,
+        "transferRatio": 2.4,
+        "pixelsPerMs": 894
+      },
+      {
+        "regionSize": 1024,
+        "pixels": 1048576,
+        "medianTimeMs": 310.85,
+        "bytesNeeded": 4194304,
+        "bytesActual": 5686652,
+        "transferRatio": 1.36,
+        "pixelsPerMs": 3373
+      },
+      {
+        "regionSize": 2048,
+        "pixels": 4194304,
+        "medianTimeMs": 378.15,
+        "bytesNeeded": 16777216,
+        "bytesActual": 15816600,
+        "transferRatio": 0.94,
+        "pixelsPerMs": 11092
+      }
+    ],
+    "sequential": [
+      {
+        "tile": "0,0",
+        "timeMs": 25.86,
+        "bytesRead": 2531718
+      },
+      {
+        "tile": "0,1",
+        "timeMs": 25.82,
+        "bytesRead": 2528866
+      },
+      {
+        "tile": "0,2",
+        "timeMs": 21.86,
+        "bytesRead": 2533431
+      },
+      {
+        "tile": "1,0",
+        "timeMs": 21.12,
+        "bytesRead": 2518297
+      },
+      {
+        "tile": "1,1",
+        "timeMs": 20.37,
+        "bytesRead": 2526957
+      },
+      {
+        "tile": "1,2",
+        "timeMs": 19.97,
+        "bytesRead": 2531449
+      },
+      {
+        "tile": "2,0",
+        "timeMs": 22.02,
+        "bytesRead": 2527042
+      },
+      {
+        "tile": "2,1",
+        "timeMs": 21.51,
+        "bytesRead": 2535723
+      },
+      {
+        "tile": "2,2",
+        "timeMs": 21.32,
+        "bytesRead": 2538906
+      }
+    ],
+    "summary": {
+      "timeToFirstPixelMs": 258.54,
+      "avgTransferRatio": 2.38
+    }
+  },
+  "5_interactive": {
+    "benchmark": "5_interactive",
+    "tests": {
+      "contrast_sweep": {
+        "name": "Contrast sweep",
+        "p50": 0.20000004768371582,
+        "p95": 0.3000001907348633,
+        "p99": 0.7000000476837158,
+        "mean": 0.2200000023841858,
+        "frames": 100,
+        "pass": true
+      },
+      "colormap_cycle": {
+        "name": "Colormap cycle",
+        "p50": 0.20000004768371582,
+        "p95": 0.3000001907348633,
+        "p99": 1.7999999523162842,
+        "mean": 0.2955555597941081,
+        "frames": 45,
+        "pass": true
+      },
+      "gamma_sweep": {
+        "name": "Gamma sweep",
+        "p50": 0.20000004768371582,
+        "p95": 0.2999999523162842,
+        "p99": 0.39999985694885254,
+        "mean": 0.19599999904632567,
+        "frames": 100,
+        "pass": true
+      },
+      "stretch_cycle": {
+        "name": "Stretch mode cycle",
+        "p50": 0.20000004768371582,
+        "p95": 1,
+        "p99": 1.4000000953674316,
+        "mean": 0.2574999988079071,
+        "frames": 40,
+        "pass": true
+      },
+      "simulated_pan": {
+        "name": "Simulated pan",
+        "p50": 0.20000004768371582,
+        "p95": 0.3000001907348633,
+        "p99": 0.39999985694885254,
+        "mean": 0.20199999809265137,
+        "frames": 100,
+        "pass": true
+      },
+      "simulated_zoom": {
+        "name": "Simulated zoom",
+        "p50": 0.20000004768371582,
+        "p95": 0.40000009536743164,
+        "p99": 1.2999999523162842,
+        "mean": 0.24100000143051148,
+        "frames": 100,
+        "pass": true
+      }
+    },
+    "allPass": true
+  },
+  "multilook_box_filter": {
+    "benchmark": "multilook_box_filter",
+    "description": "NxN box-filter multilook in linear power space",
+    "backends": [
+      "cupy",
+      "numpy",
+      "scipy",
+      "webgl2"
+    ],
+    "kernel_sizes": [
+      3,
+      5,
+      7,
+      9
+    ],
+    "scene_sizes": [
+      1024,
+      4096,
+      8192
+    ],
+    "domain_constraint": "All averaging in linear power (never dB)",
+    "all_gpu_under_16ms": true,
+    "peak_speedups": {
+      "cupy": {
+        "vs_scipy": 228.9,
+        "kernel": 7,
+        "scene_size": 8192,
+        "gpu_ms": 13.939,
+        "scipy_ms": 3190.6
+      },
+      "webgl2": {
+        "vs_scipy": 2815.3,
+        "kernel": 7,
+        "scene_size": 8192,
+        "gpu_ms": 1.133,
+        "scipy_ms": 3190.6
+      }
+    },
+    "crossover_analysis": {
+      "cupy": {
+        "always_faster_than_scipy": true
+      },
+      "webgl2": {
+        "always_faster_than_scipy": true
+      }
+    }
+  }
+}

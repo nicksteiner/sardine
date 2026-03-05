@@ -3,6 +3,7 @@ import { Model, Geometry } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 
+
 /**
  * Simple vertex shader using deck.gl's project module
  */
@@ -370,13 +371,12 @@ export class SARGPULayer extends Layer {
         texData         // Float32Array
       );
 
-      // Set texture parameters
+      // Set texture filtering parameters
       const filter = nearest ? gl.NEAREST : gl.LINEAR;
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
       gl.bindTexture(gl.TEXTURE_2D, null);
 
       // Check for GL errors (VRAM exhaustion won't throw, it sets an error flag)
@@ -541,6 +541,6 @@ SARGPULayer.defaultProps = {
   useDecibels: { type: 'boolean', value: true, compare: true },
   colormap: { type: 'string', value: 'grayscale', compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
-  stretchMode: { type: 'string', value: 'linear', compare: true }
+  stretchMode: { type: 'string', value: 'linear', compare: true },
   // Note: coordinateSystem is NOT defined here - it will inherit from parent layer
 };
