@@ -34,6 +34,9 @@ export const SARViewer = forwardRef(function SARViewer({
   compositeId = null, // SAR RGB composite ID (null = single band)
   multiLook = false,  // Multi-look mode (area-averaged resampling)
   useMask = false,    // Apply NISAR mask (0=invalid, 255=fill → transparent)
+  speckleFilter = 'none',   // Speckle filter: 'none'|'boxcar'|'lee'|'median'
+  speckleFilterSize = 3,    // Filter kernel size: 3, 5, or 7
+  speckleFilterENL = 4.0,   // Lee filter ENL parameter
   showGrid = true,    // Show coordinate grid + corner coordinates
   opacity = 1,
   toneMapping, // Tone mapping configuration
@@ -182,6 +185,9 @@ export const SARViewer = forwardRef(function SARViewer({
           opacity,
           useMask,
           toneMapping,
+          speckleFilter,
+          speckleFilterSize,
+          speckleFilterENL,
           onLoadingChange: handleLoadingChange,
         }),
       ];
@@ -205,6 +211,9 @@ export const SARViewer = forwardRef(function SARViewer({
           stretchMode,
           opacity,
           useMask,
+          speckleFilter,
+          speckleFilterSize,
+          speckleFilterENL,
         }),
       ];
     }
@@ -225,13 +234,16 @@ export const SARViewer = forwardRef(function SARViewer({
           opacity,
           multiLook,
           useMask,
+          speckleFilter,
+          speckleFilterSize,
+          speckleFilterENL,
         }),
       ];
     }
 
     return [];
   // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
-  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, toneMapping, handleLoadingChange, redrawTick]);
+  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, toneMapping, speckleFilter, speckleFilterSize, speckleFilterENL, handleLoadingChange, redrawTick]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;

@@ -1,7 +1,7 @@
 import { Layer, project32, picking } from '@deck.gl/core';
 import { Model, Geometry } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
-import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
+import { getColormapId, getStretchModeId, getSpeckleFilterId, glslColormaps } from './shaders.js';
 
 
 /**
@@ -60,8 +60,118 @@ uniform float uMaxG;
 uniform float uMinB;
 uniform float uMaxB;
 
+// Speckle filter uniforms
+uniform float uFilterType;   // 0=none, 1=boxcar, 2=lee, 3=median
+uniform float uFilterSize;   // kernel size: 3, 5, or 7
+uniform float uFilterENL;    // ENL for Lee filter (noise variance = mean²/ENL)
+uniform vec2  uTextureSize;  // (width, height) in texels
+
 in vec2 vTexCoord;
 out vec4 fragColor;
+
+// ─── Speckle filters ─────────────────────────────────────────────────
+
+// Read texel, returning -1.0 sentinel for nodata (0 or NaN)
+float fetchAmp(sampler2D tex, vec2 uv) {
+  float v = texture(tex, uv).r;
+  return (v == 0.0 || isnan(v)) ? -1.0 : v;
+}
+
+// Boxcar (mean) filter — NxN average, skipping nodata
+float boxcarFilter(sampler2D tex, vec2 uv, int halfK, vec2 ts) {
+  float sum = 0.0, count = 0.0;
+  for (int dy = -halfK; dy <= halfK; dy++) {
+    for (int dx = -halfK; dx <= halfK; dx++) {
+      float v = fetchAmp(tex, uv + vec2(float(dx), float(dy)) * ts);
+      if (v >= 0.0) { sum += v; count += 1.0; }
+    }
+  }
+  return count > 0.0 ? sum / count : 0.0;
+}
+
+// Lee adaptive filter — preserves edges in heterogeneous areas
+float leeFilter(sampler2D tex, vec2 uv, int halfK, vec2 ts, float enl) {
+  float center = fetchAmp(tex, uv);
+  if (center < 0.0) return 0.0;
+
+  float sum = 0.0, sum2 = 0.0, count = 0.0;
+  for (int dy = -halfK; dy <= halfK; dy++) {
+    for (int dx = -halfK; dx <= halfK; dx++) {
+      float v = fetchAmp(tex, uv + vec2(float(dx), float(dy)) * ts);
+      if (v >= 0.0) { sum += v; sum2 += v * v; count += 1.0; }
+    }
+  }
+  if (count < 2.0) return center;
+
+  float mean = sum / count;
+  float variance = (sum2 / count) - mean * mean;
+  float noiseVar = (mean * mean) / max(enl, 1.0);
+  float weight = max(0.0, 1.0 - noiseVar / max(variance, 1e-10));
+  return mean + weight * (center - mean);
+}
+
+// 3x3 median via sorting network (9 elements, 25 compare-and-swaps)
+float medianFilter3x3(sampler2D tex, vec2 uv, vec2 ts) {
+  float v[9];
+  int idx = 0;
+  for (int dy = -1; dy <= 1; dy++) {
+    for (int dx = -1; dx <= 1; dx++) {
+      float a = fetchAmp(tex, uv + vec2(float(dx), float(dy)) * ts);
+      v[idx++] = a >= 0.0 ? a : 1e30;
+    }
+  }
+  #define SW(a,b) { float t = min(v[a],v[b]); v[b] = max(v[a],v[b]); v[a] = t; }
+  SW(0,1); SW(3,4); SW(6,7); SW(1,2); SW(4,5); SW(7,8);
+  SW(0,1); SW(3,4); SW(6,7); SW(0,3); SW(3,6); SW(0,3);
+  SW(1,4); SW(4,7); SW(1,4); SW(2,5); SW(5,8); SW(2,5);
+  SW(1,3); SW(5,7); SW(2,6); SW(4,6); SW(2,4); SW(2,3);
+  SW(5,6);
+  #undef SW
+  return v[4] < 1e29 ? v[4] : 0.0;
+}
+
+// 5x5 median via sorting network (25 elements)
+float medianFilter5x5(sampler2D tex, vec2 uv, vec2 ts) {
+  float v[25];
+  int idx = 0;
+  for (int dy = -2; dy <= 2; dy++) {
+    for (int dx = -2; dx <= 2; dx++) {
+      float a = fetchAmp(tex, uv + vec2(float(dx), float(dy)) * ts);
+      v[idx++] = a >= 0.0 ? a : 1e30;
+    }
+  }
+  // Partial sort: only need to find the 13th element (median of 25)
+  // Use truncated bubble passes to push smallest 13 values to front
+  #define SW(a,b) { float t = min(v[a],v[b]); v[b] = max(v[a],v[b]); v[a] = t; }
+  // Sort pairs across the array
+  for (int pass = 0; pass < 13; pass++) {
+    for (int i = 1; i < 25; i++) {
+      SW(i-1, i);
+    }
+  }
+  #undef SW
+  return v[12] < 1e29 ? v[12] : 0.0;
+}
+
+// Dispatcher: apply selected speckle filter to a texture
+float applySpeckleFilter(sampler2D tex, vec2 uv) {
+  int filterType = int(uFilterType + 0.5);
+  if (filterType == 0) return texture(tex, uv).r;
+
+  vec2 ts = 1.0 / uTextureSize;
+  int halfK = int(uFilterSize + 0.5) / 2;
+
+  if (filterType == 1) {
+    return boxcarFilter(tex, uv, halfK, ts);
+  } else if (filterType == 2) {
+    return leeFilter(tex, uv, halfK, ts, uFilterENL);
+  } else if (filterType == 3) {
+    int kSize = int(uFilterSize + 0.5);
+    if (kSize <= 3) return medianFilter3x3(tex, uv, ts);
+    else return medianFilter5x5(tex, uv, ts);
+  }
+  return texture(tex, uv).r;
+}
 
 // ─── Shared: dB scaling + contrast + stretch ─────────────────────────
 
@@ -100,9 +210,9 @@ ${glslColormaps}
 void main() {
   if (uMode > 0.5) {
     // ── RGB composite mode: 3 separate R32F textures ──
-    float ampR = texture(uTexture, vTexCoord).r;
-    float ampG = texture(uTextureG, vTexCoord).r;
-    float ampB = texture(uTextureB, vTexCoord).r;
+    float ampR = applySpeckleFilter(uTexture, vTexCoord);
+    float ampG = applySpeckleFilter(uTextureG, vTexCoord);
+    float ampB = applySpeckleFilter(uTextureB, vTexCoord);
 
     vec3 rgb = vec3(
       processChannel(ampR, uMinR, uMaxR),
@@ -125,7 +235,7 @@ void main() {
     fragColor = vec4(rgb, alpha);
   } else {
     // ── Single-band mode: R32F texture + colormap ──
-    float amplitude = texture(uTexture, vTexCoord).r;
+    float amplitude = applySpeckleFilter(uTexture, vTexCoord);
     float value = processChannel(amplitude, uMin, uMax);
 
     vec3 rgb;
@@ -293,9 +403,12 @@ export class SARGPULayer extends Layer {
       this.setState({ model, needsGeometryUpdate: false });
     }
 
-    // Upload R32F texture(s) when data changes
-    const { dataR, dataG, dataB, mode = 'single' } = props;
+    // Upload R32F texture(s) when data changes or filter mode changes
+    // Speckle filter requires NEAREST filtering (no GPU interpolation of raw values)
+    const { dataR, dataG, dataB, mode = 'single', speckleFilter: sf = 'none' } = props;
     const isRGB = mode === 'rgb';
+    const useNearest = sf !== 'none';
+    const filterChanged = sf !== (oldProps.speckleFilter || 'none');
 
     if (isRGB) {
       // RGB mode: upload 3 separate R32F textures
@@ -304,10 +417,10 @@ export class SARGPULayer extends Layer {
       const bChanged = dataB !== oldProps.dataB;
       const sizeChanged = width !== oldProps.width || height !== oldProps.height;
 
-      if (dataR && dataG && dataB && (rChanged || gChanged || bChanged || sizeChanged)) {
-        const texR = this._createR32FTexture(dataR, width, height);
-        const texG = this._createR32FTexture(dataG, width, height);
-        const texB = this._createR32FTexture(dataB, width, height);
+      if (dataR && dataG && dataB && (rChanged || gChanged || bChanged || sizeChanged || filterChanged)) {
+        const texR = this._createR32FTexture(dataR, width, height, useNearest);
+        const texG = this._createR32FTexture(dataG, width, height, useNearest);
+        const texB = this._createR32FTexture(dataB, width, height, useNearest);
 
         if (texR && texG && texB) {
           // Clean up old textures
@@ -320,8 +433,8 @@ export class SARGPULayer extends Layer {
           console.error('[SARGPULayer] Failed to create one or more RGB textures');
         }
       }
-    } else if (data && (data !== oldProps.data || width !== oldProps.width || height !== oldProps.height)) {
-      const texture = this._createR32FTexture(data, width, height);
+    } else if (data && (data !== oldProps.data || width !== oldProps.width || height !== oldProps.height || filterChanged)) {
+      const texture = this._createR32FTexture(data, width, height, useNearest);
 
       if (texture) {
         if (this.state.texture) gl.deleteTexture(this.state.texture);
@@ -407,7 +520,12 @@ export class SARGPULayer extends Layer {
       gamma = 1.0,
       stretchMode = 'linear',
       mode = 'single',
-      useMask = false
+      useMask = false,
+      speckleFilter = 'none',
+      speckleFilterSize = 3,
+      speckleFilterENL = 4.0,
+      width = 256,
+      height = 256,
     } = this.props;
 
     const isRGB = mode === 'rgb';
@@ -456,6 +574,10 @@ export class SARGPULayer extends Layer {
         uMode: isRGB ? 1.0 : 0.0,
         uUseMask: (useMask && textureMask) ? 1.0 : 0.0,
         uTextureMask: 3,
+        uFilterType: getSpeckleFilterId(speckleFilter),
+        uFilterSize: speckleFilterSize,
+        uFilterENL: speckleFilterENL,
+        uTextureSize: [width, height],
       };
 
       if (isRGB && textureG && textureB) {
@@ -542,5 +664,9 @@ SARGPULayer.defaultProps = {
   colormap: { type: 'string', value: 'grayscale', compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true },
+  // Speckle filter props
+  speckleFilter: { type: 'string', value: 'none', compare: true },       // 'none'|'boxcar'|'lee'|'median'
+  speckleFilterSize: { type: 'number', value: 3, compare: true },         // 3, 5, or 7
+  speckleFilterENL: { type: 'number', value: 4.0, compare: true },        // Lee ENL parameter
   // Note: coordinateSystem is NOT defined here - it will inherit from parent layer
 };

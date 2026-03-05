@@ -281,6 +281,25 @@ export function getStretchModeId(name) {
 }
 
 /**
+ * Speckle filter name to integer mapping for shader
+ */
+export const SPECKLE_FILTER_IDS = {
+  none: 0,
+  boxcar: 1,
+  lee: 2,
+  median: 3,
+};
+
+/**
+ * Get speckle filter ID from name
+ * @param {string} name - Filter name
+ * @returns {number} Filter ID for shader
+ */
+export function getSpeckleFilterId(name) {
+  return SPECKLE_FILTER_IDS[name] ?? SPECKLE_FILTER_IDS.none;
+}
+
+/**
  * Consolidated GLSL colormap functions (single source of truth)
  * Use this in all layers to ensure consistent colormaps across the application.
  */
@@ -414,4 +433,6 @@ export default {
   getColormapId,
   STRETCH_MODE_IDS,
   getStretchModeId,
+  SPECKLE_FILTER_IDS,
+  getSpeckleFilterId,
 };

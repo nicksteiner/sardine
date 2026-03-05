@@ -26,6 +26,9 @@ export class SARTileLayer extends TileLayer {
       opacity = 1,
       multiLook = false,
       useMask = false,
+      speckleFilter = 'none',
+      speckleFilterSize = 3,
+      speckleFilterENL = 4.0,
       minZoom,
       maxZoom = 20,
       tileSize = 256,
@@ -75,7 +78,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, useMask],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, useMask, speckleFilter, speckleFilterSize, speckleFilterENL],
       },
 
       renderSubLayers: (subProps) => {
@@ -109,6 +112,9 @@ export class SARTileLayer extends TileLayer {
             colormap,
             gamma,
             stretchMode,
+            speckleFilter,
+            speckleFilterSize,
+            speckleFilterENL,
             opacity: subProps.opacity,
             ...maskProps,
           });
@@ -124,6 +130,9 @@ export class SARTileLayer extends TileLayer {
             colormap,
             gamma,
             stretchMode,
+            speckleFilter,
+            speckleFilterSize,
+            speckleFilterENL,
             opacity: subProps.opacity,
             ...maskProps,
           });

@@ -59,6 +59,89 @@ function smoothBand(data, width, height, kernel) {
 }
 
 /**
+ * Lee adaptive speckle filter (CPU).
+ * Preserves edges by blending between local mean and original pixel
+ * based on local variance relative to estimated noise variance.
+ */
+function leeBand(data, width, height, kernel, enl = 4.0) {
+  const half = Math.floor(kernel / 2);
+  const out = new Float32Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const yMin = Math.max(0, y - half);
+    const yMax = Math.min(height - 1, y + half);
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const center = data[idx];
+      if (center === 0 || isNaN(center)) { out[idx] = center; continue; }
+
+      const xMin = Math.max(0, x - half);
+      const xMax = Math.min(width - 1, x + half);
+      let sum = 0, sum2 = 0, count = 0;
+      for (let ky = yMin; ky <= yMax; ky++) {
+        const rowOff = ky * width;
+        for (let kx = xMin; kx <= xMax; kx++) {
+          const v = data[rowOff + kx];
+          if (v > 0 && !isNaN(v)) { sum += v; sum2 += v * v; count++; }
+        }
+      }
+      if (count < 2) { out[idx] = center; continue; }
+      const mean = sum / count;
+      const variance = (sum2 / count) - mean * mean;
+      const noiseVar = (mean * mean) / Math.max(enl, 1);
+      const weight = Math.max(0, 1 - noiseVar / Math.max(variance, 1e-10));
+      out[idx] = mean + weight * (center - mean);
+    }
+  }
+  return out;
+}
+
+/**
+ * Median speckle filter (CPU).
+ * Robust to outliers — sorts NxN neighbourhood and picks the middle value.
+ */
+function medianBand(data, width, height, kernel) {
+  const half = Math.floor(kernel / 2);
+  const out = new Float32Array(width * height);
+  const buf = [];
+  for (let y = 0; y < height; y++) {
+    const yMin = Math.max(0, y - half);
+    const yMax = Math.min(height - 1, y + half);
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const center = data[idx];
+      if (center === 0 || isNaN(center)) { out[idx] = center; continue; }
+
+      const xMin = Math.max(0, x - half);
+      const xMax = Math.min(width - 1, x + half);
+      buf.length = 0;
+      for (let ky = yMin; ky <= yMax; ky++) {
+        const rowOff = ky * width;
+        for (let kx = xMin; kx <= xMax; kx++) {
+          const v = data[rowOff + kx];
+          if (v > 0 && !isNaN(v)) buf.push(v);
+        }
+      }
+      if (buf.length === 0) { out[idx] = 0; continue; }
+      buf.sort((a, b) => a - b);
+      out[idx] = buf[buf.length >> 1];
+    }
+  }
+  return out;
+}
+
+/**
+ * Apply speckle filter to a Float32Array band (CPU path for export).
+ * Operates in linear power space — call before dB conversion.
+ */
+function speckleFilterBand(data, width, height, filterType, kernelSize, enl) {
+  if (filterType === 'none' || !filterType) return data;
+  if (filterType === 'boxcar') return smoothBand(data, width, height, kernelSize);
+  if (filterType === 'lee') return leeBand(data, width, height, kernelSize, enl);
+  if (filterType === 'median') return medianBand(data, width, height, kernelSize);
+  return data;
+}
+
+/**
  * Parse markdown state into object
  * @param {string} markdown - Markdown state string
  * @returns {Object} Parsed state object
@@ -275,6 +358,9 @@ function App() {
   const [contrastMax, setContrastMax] = useState(0);
   const [gamma, setGamma] = useState(1.0);
   const [stretchMode, setStretchMode] = useState('linear');
+  const [speckleFilter, setSpeckleFilter] = useState('none');
+  const [speckleFilterSize, setSpeckleFilterSize] = useState(3);
+  const [speckleFilterENL, setSpeckleFilterENL] = useState(4.0);
   const [multiLook, setMultiLook] = useState(false);
   const [useMask, setUseMask] = useState(false);
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
@@ -1810,6 +1896,15 @@ function App() {
 
       if (isRendered) {
         // --- Rendered export: apply same pipeline as GPU shader ---
+
+        // Apply user's speckle filter (matches GPU shader pipeline)
+        if (speckleFilter !== 'none') {
+          addStatusLog('info', `Applying ${speckleFilter} filter (${speckleFilterSize}×${speckleFilterSize}) to export bands...`);
+          for (const name of bandNames) {
+            bands[name] = speckleFilterBand(bands[name], exportWidth, exportHeight, speckleFilter, speckleFilterSize, speckleFilterENL);
+          }
+        }
+
         // Spatial smoothing: the export at ml=N averages N×N source pixels per
         // output pixel, but the on-screen display at overview zoom implicitly
         // averages far more (hundreds at low zoom).  A 3×3 post-multilook
@@ -3212,6 +3307,48 @@ function App() {
               </div>
             )}
 
+            {/* Speckle Filter */}
+            <div className="control-group">
+              <label>Speckle Filter</label>
+              <select value={speckleFilter} onChange={(e) => setSpeckleFilter(e.target.value)}>
+                <option value="none">None</option>
+                <option value="boxcar">Boxcar (Mean)</option>
+                <option value="lee">Lee (Adaptive)</option>
+                <option value="median">Median</option>
+              </select>
+            </div>
+
+            {speckleFilter !== 'none' && (
+              <div className="control-group">
+                <label>Filter Window</label>
+                <select
+                  value={speckleFilterSize}
+                  onChange={(e) => setSpeckleFilterSize(Number(e.target.value))}
+                >
+                  <option value={3}>3×3</option>
+                  <option value={5}>5×5</option>
+                  {speckleFilter !== 'median' && <option value={7}>7×7</option>}
+                </select>
+              </div>
+            )}
+
+            {speckleFilter === 'lee' && (
+              <div className="control-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <label>ENL</label>
+                  <span className="value-display">{speckleFilterENL.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={16}
+                  step={0.5}
+                  value={speckleFilterENL}
+                  onChange={(e) => setSpeckleFilterENL(Number(e.target.value))}
+                />
+              </div>
+            )}
+
             {/* Multi-look toggle */}
             <div className="control-group">
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -3298,6 +3435,9 @@ function App() {
               colormap={colormap}
               gamma={gamma}
               stretchMode={stretchMode}
+              speckleFilter={speckleFilter}
+              speckleFilterSize={speckleFilterSize}
+              speckleFilterENL={speckleFilterENL}
               compositeId={displayMode === 'rgb' ? compositeId : null}
               multiLook={multiLook}
               useMask={useMask}

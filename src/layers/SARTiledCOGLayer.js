@@ -350,7 +350,7 @@ export class SARTiledCOGLayer extends CompositeLayer {
 
   renderLayers() {
     const { bounds, tiff } = this.state;
-    const { contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, onLoadingChange, toneMapping, useMask = false } = this.props;
+    const { contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, onLoadingChange, toneMapping, useMask = false, speckleFilter = 'none', speckleFilterSize = 3, speckleFilterENL = 4.0 } = this.props;
 
     // Wait for COG to be loaded before rendering
     if (!bounds || !tiff) {
@@ -464,6 +464,9 @@ export class SARTiledCOGLayer extends CompositeLayer {
             opacity,
             dataMask: tileData.mask || null,
             useMask,
+            speckleFilter,
+            speckleFilterSize,
+            speckleFilterENL,
           })
         );
       }
