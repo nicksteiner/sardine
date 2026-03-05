@@ -283,6 +283,13 @@ function App() {
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
   const [roiProfile, setRoiProfile] = useState(null); // Computed profile data for ROIProfilePlot
+  const [roiRGBData, setRoiRGBData] = useState(null);       // RGB composite data loaded for ROI overlay
+  const [roiRGBBounds, setRoiRGBBounds] = useState(null);   // [minX,minY,maxX,maxY] world coords for ROI RGB
+  const [roiRGBLoading, setRoiRGBLoading] = useState(false);
+  const [roiCompositeId, setRoiCompositeId] = useState(null); // composite preset for ROI RGB overlay
+  const [roiRGBContrastLimits, setRoiRGBContrastLimits] = useState(null); // per-channel {R,G,B} contrast for ROI overlay
+  const [roiRGBHistogramData, setRoiRGBHistogramData] = useState(null); // histogram data for ROI RGB viewer
+  const [activeViewer, setActiveViewer] = useState('main'); // 'main' | 'roi-rgb' — which viewer the sidebar controls
   const [wktInput, setWktInput] = useState('');       // WKT text input value
   const [wktError, setWktError] = useState(null);     // WKT validation error message
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
@@ -355,6 +362,12 @@ function App() {
     setClassifierData(null);
     setClassificationMap(null);
     setClassifierRoiDims(null);
+    setRoiRGBData(null);
+    setRoiRGBBounds(null);
+    setRoiCompositeId(null);
+    setRoiRGBContrastLimits(null);
+    setRoiRGBHistogramData(null);
+    setActiveViewer('main');
   }, [imageData]);
 
   // Auto-select classifier bands when datasets change
@@ -644,6 +657,114 @@ function App() {
     setWktError(null);
   }, [roi, imageData]);
 
+  // Clear ROI RGB overlay when ROI changes or is cleared
+  useEffect(() => {
+    setRoiRGBData(null);
+    setRoiRGBBounds(null);
+    setRoiRGBContrastLimits(null);
+    setRoiRGBHistogramData(null);
+    setActiveViewer('main');
+  }, [roi]);
+
+  // Load RGB composite into ROI overlay
+  const handleLoadRoiRGB = useCallback(async () => {
+    if (!nisarFile || !roi || !roiCompositeId || !imageData) return;
+
+    setRoiRGBLoading(true);
+    try {
+      const requiredPols = getRequiredDatasets(roiCompositeId);
+      const requiredComplexPols = getRequiredComplexDatasets(roiCompositeId);
+
+      addStatusLog('info', `Loading ROI RGB composite: ${roiCompositeId} (${requiredPols.join(', ')})`);
+
+      const data = await loadNISARRGBComposite(nisarFile, {
+        frequency: selectedFrequency,
+        compositeId: roiCompositeId,
+        requiredPols,
+        requiredComplexPols,
+      });
+
+      // Convert ROI pixel coords → world bounds
+      const fileBbox = imageData.worldBounds || imageData.bounds;
+      const subBounds = computeSubsetBounds(
+        { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+        {
+          worldBounds: fileBbox,
+          width: imageData.width,
+          height: imageData.height,
+          xCoords: imageData.xCoords || null,
+          yCoords: imageData.yCoords || null,
+        }
+      );
+
+      data.getTile = data.getRGBTile;
+
+      // Auto-compute per-channel contrast + histogram from ROI region
+      // Sample 3×3 grid of tiles (same pattern as main histogram)
+      const [minX, minY, maxX, maxY] = subBounds;
+      const regionW = maxX - minX;
+      const regionH = maxY - minY;
+      let lims = { R: [0, 0.1], G: [0, 0.1], B: [0, 0.1] };
+      let roiHists = null;
+      try {
+        const rawValues = { R: [], G: [], B: [] };
+        const gridSize = 3;
+        const stepX = regionW / gridSize;
+        const stepY = regionH / gridSize;
+
+        for (let ty = 0; ty < gridSize; ty++) {
+          for (let tx = 0; tx < gridSize; tx++) {
+            const left = minX + tx * stepX;
+            const right = minX + (tx + 1) * stepX;
+            const top = minY + ty * stepY;
+            const bottom = minY + (ty + 1) * stepY;
+
+            const tileData = await data.getRGBTile({
+              x: tx, y: ty, z: 0,
+              bbox: { left, top, right, bottom },
+            });
+
+            if (tileData && tileData.bands) {
+              const rgbBands = computeRGBBands(tileData.bands, roiCompositeId, tileData.width);
+              for (const ch of ['R', 'G', 'B']) {
+                const arr = rgbBands[ch];
+                for (let i = 0; i < arr.length; i += 4) {
+                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+                }
+              }
+            }
+          }
+        }
+
+        addStatusLog('info', `ROI RGB sampled ${rawValues.R.length} pixels per channel`);
+        roiHists = {};
+        for (const ch of ['R', 'G', 'B']) {
+          const stats = computeChannelStats(rawValues[ch], false);
+          if (stats) {
+            roiHists[ch] = stats;
+            lims[ch] = [stats.p2, stats.p98];
+          }
+        }
+        addStatusLog('info', `ROI RGB contrast: R=[${lims.R.map(v=>v.toFixed(4))}] G=[${lims.G.map(v=>v.toFixed(4))}] B=[${lims.B.map(v=>v.toFixed(4))}]`);
+      } catch (histErr) {
+        addStatusLog('warning', `ROI RGB histogram error: ${histErr.message}`);
+      }
+
+      setRoiRGBContrastLimits(lims);
+      setRoiRGBHistogramData(roiHists);
+      setRoiRGBData(data);
+      setRoiRGBBounds(subBounds);
+      setActiveViewer('roi-rgb');
+
+      addStatusLog('success', 'ROI RGB composite loaded',
+        `${data.width}x${data.height}, bounds: ${subBounds.map(v => v.toFixed(4)).join(', ')}`);
+    } catch (err) {
+      addStatusLog('error', `ROI RGB load failed: ${err.message}`);
+    } finally {
+      setRoiRGBLoading(false);
+    }
+  }, [nisarFile, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog]);
+
   // Recompute classification map when class regions, scatter data, or incidence range changes
   useEffect(() => {
     if (!classifierData || !classRegions.length) {
@@ -707,8 +828,28 @@ function App() {
     return contrastLimits;
   }, [displayMode, rgbContrastLimits, contrastLimits]);
 
+  // Sidebar context: which viewer are the controls targeting?
+  const sidebarIsRoiRGB = activeViewer === 'roi-rgb' && !!roiRGBData;
+  const sidebarHistogramData = sidebarIsRoiRGB ? roiRGBHistogramData : histogramData;
+  const sidebarDisplayMode = sidebarIsRoiRGB ? 'rgb' : displayMode;
+
   // Auto-stretch: reset to 2-98% percentiles from cached histogram
   const handleAutoStretch = useCallback(() => {
+    // If ROI RGB viewer is active, auto-stretch its contrast
+    if (activeViewer === 'roi-rgb' && roiRGBData && roiRGBHistogramData) {
+      const newLimits = {};
+      for (const ch of ['R', 'G', 'B']) {
+        if (roiRGBHistogramData[ch]) {
+          newLimits[ch] = [roiRGBHistogramData[ch].p2, roiRGBHistogramData[ch].p98];
+        }
+      }
+      if (Object.keys(newLimits).length > 0) {
+        setRoiRGBContrastLimits(newLimits);
+        addStatusLog('success', 'ROI RGB contrast reset to 2–98% percentiles');
+      }
+      return;
+    }
+
     if (!histogramData) {
       addStatusLog('warning', 'No histogram data — load a dataset first');
       return;
@@ -738,7 +879,7 @@ function App() {
     } else {
       addStatusLog('warning', 'No histogram data for current mode');
     }
-  }, [histogramData, displayMode, addStatusLog]);
+  }, [histogramData, displayMode, addStatusLog, activeViewer, roiRGBData, roiRGBHistogramData]);
 
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
@@ -3015,7 +3156,7 @@ function App() {
           <CollapsibleSection title="Display">
             
             {/* Colormap selector — hidden in RGB composite mode */}
-            {displayMode !== 'rgb' && (
+            {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
                 <label>Colormap</label>
                 <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
@@ -3181,6 +3322,54 @@ function App() {
                   </div>
                 )}
 
+                {/* Load RGB Composite into ROI */}
+                {roi && nisarFile && availableComposites.length > 0 && displayMode === 'single' && (
+                  <div style={{
+                    marginTop: '4px', padding: '4px 8px',
+                    background: 'rgba(78, 201, 212, 0.06)',
+                    border: '1px solid rgba(78, 201, 212, 0.2)',
+                    borderRadius: 'var(--radius-sm)',
+                  }}>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      <select
+                        value={roiCompositeId || ''}
+                        onChange={(e) => setRoiCompositeId(e.target.value || null)}
+                        style={{
+                          flex: 1, fontSize: '0.65rem',
+                          background: 'var(--surface-2)', color: 'var(--text)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 'var(--radius-sm)', padding: '2px 4px',
+                        }}
+                      >
+                        <option value="">Select composite...</option>
+                        {availableComposites.map(c => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleLoadRoiRGB}
+                        disabled={!roiCompositeId || roiRGBLoading}
+                        style={{
+                          fontSize: '0.65rem', padding: '3px 8px',
+                          background: roiCompositeId ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
+                          border: '1px solid rgba(78, 201, 212, 0.3)',
+                          color: '#4ec9d4', borderRadius: 'var(--radius-sm)',
+                          cursor: roiCompositeId ? 'pointer' : 'default',
+                          opacity: roiCompositeId ? 1 : 0.4,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {roiRGBLoading ? 'Loading...' : 'RGB in ROI'}
+                      </button>
+                    </div>
+                    {roiRGBData && (
+                      <div style={{ fontSize: '0.6rem', color: '#4ec9d4', marginTop: '2px' }}>
+                        RGB overlay active ({roiCompositeId})
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* WKT ROI Input */}
                 <div style={{ marginTop: '4px' }}>
                   <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
@@ -3296,23 +3485,59 @@ function App() {
               </div>
             )}
 
-            {/* RGB per-channel histograms */}
-            {displayMode === 'rgb' && histogramData && (
+            {/* Active viewer indicator when split view */}
+            {roiRGBData && (
+              <div className="control-group" style={{ padding: '2px 0' }}>
+                <div style={{
+                  display: 'flex', gap: '4px', fontSize: '0.65rem',
+                }}>
+                  <button
+                    onClick={() => setActiveViewer('main')}
+                    style={{
+                      flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
+                      background: activeViewer === 'main' ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
+                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--border)',
+                      color: activeViewer === 'main' ? '#ffc832' : 'var(--text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Main
+                  </button>
+                  <button
+                    onClick={() => setActiveViewer('roi-rgb')}
+                    style={{
+                      flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
+                      background: activeViewer === 'roi-rgb' ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
+                      border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--border)',
+                      color: activeViewer === 'roi-rgb' ? '#4ec9d4' : 'var(--text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ROI RGB
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* RGB per-channel histograms (main RGB mode or ROI RGB viewer) */}
+            {sidebarDisplayMode === 'rgb' && sidebarHistogramData && (
               <HistogramPanel
-                histograms={histogramData}
+                histograms={sidebarHistogramData}
                 mode="rgb"
-                contrastLimits={rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }}
-                useDecibels={useDecibels}
-                onContrastChange={setRgbContrastLimits}
+                contrastLimits={sidebarIsRoiRGB
+                  ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
+                  : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })}
+                useDecibels={sidebarIsRoiRGB ? false : useDecibels}
+                onContrastChange={sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
               />
             )}
 
-            {/* Single-band histogram */}
-            {displayMode !== 'rgb' && histogramData?.single && (
+            {/* Single-band histogram (main viewer only) */}
+            {sidebarDisplayMode !== 'rgb' && sidebarHistogramData?.single && (
               <HistogramPanel
-                histograms={histogramData}
+                histograms={sidebarHistogramData}
                 mode="single"
                 contrastLimits={contrastLimits}
                 useDecibels={useDecibels}
@@ -3325,8 +3550,8 @@ function App() {
               />
             )}
 
-            {/* Brightness (Window/Level) slider — shifts window center */}
-            {displayMode !== 'rgb' && (
+            {/* Brightness (Window/Level) slider — shifts window center (single-band only) */}
+            {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <label>Brightness</label>
@@ -3451,44 +3676,105 @@ function App() {
           )}
 
           {(imageData || fileType === 'stac') && (
-            <SARViewer
-              ref={viewerRef}
-              cogUrl={imageData?.cogUrl}
-              getTile={imageData?.getTile}
-              tileVersion={tileVersion}
-              imageData={imageData?.data ? imageData : null}
-              bounds={imageData?.bounds || [-180, -90, 180, 90]}
-              contrastLimits={effectiveContrastLimits}
-              useDecibels={useDecibels}
-              colormap={colormap}
-              gamma={gamma}
-              stretchMode={stretchMode}
-              compositeId={displayMode === 'rgb' ? compositeId : null}
-              multiLook={multiLook}
-              useMask={useMask}
-              showGrid={showGrid}
-              opacity={1}
-              // toneMapping={toneMapping}  // hidden — see tone mapping NOTE above
-              width="100%"
-              height="100%"
-              onViewStateChange={handleViewStateChange}
-              initialViewState={initialViewState}
-              extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
-              roi={roi}
-              onROIChange={setROI}
-              imageWidth={imageData?.sourceWidth || imageData?.width}
-              imageHeight={imageData?.sourceHeight || imageData?.height}
-              getPixelValue={imageData?.getPixelValue}
-              pixelExplorer={pixelExplorer}
-              pixelWindowSize={pixelWindowSize}
-              xCoords={imageData?.xCoords}
-              yCoords={imageData?.yCoords}
-              roiProfile={null}
-              profileShow={{ v: false, h: false, i: false }}
-              classificationMap={classifierOpen ? classificationMap : null}
-              classRegions={classRegions}
-              classifierRoiDims={classifierRoiDims}
-            />
+            <div style={{ display: 'flex', width: '100%', height: '100%' }}>
+              {/* Main viewer (single-channel full extent) */}
+              <div
+                onClick={() => roiRGBData && setActiveViewer('main')}
+                style={{
+                  flex: 1, position: 'relative', height: '100%',
+                  outline: roiRGBData && activeViewer === 'main' ? '2px solid #ffc832' : 'none',
+                  outlineOffset: '-2px',
+                }}>
+                <SARViewer
+                  ref={viewerRef}
+                  cogUrl={imageData?.cogUrl}
+                  getTile={imageData?.getTile}
+                  tileVersion={tileVersion}
+                  imageData={imageData?.data ? imageData : null}
+                  bounds={imageData?.bounds || [-180, -90, 180, 90]}
+                  contrastLimits={effectiveContrastLimits}
+                  useDecibels={useDecibels}
+                  colormap={colormap}
+                  gamma={gamma}
+                  stretchMode={stretchMode}
+                  compositeId={displayMode === 'rgb' ? compositeId : null}
+                  multiLook={multiLook}
+                  useMask={useMask}
+                  showGrid={showGrid}
+                  opacity={1}
+                  width="100%"
+                  height="100%"
+                  onViewStateChange={handleViewStateChange}
+                  initialViewState={initialViewState}
+                  extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
+                  roi={roi}
+                  onROIChange={setROI}
+                  imageWidth={imageData?.sourceWidth || imageData?.width}
+                  imageHeight={imageData?.sourceHeight || imageData?.height}
+                  getPixelValue={imageData?.getPixelValue}
+                  pixelExplorer={pixelExplorer}
+                  pixelWindowSize={pixelWindowSize}
+                  xCoords={imageData?.xCoords}
+                  yCoords={imageData?.yCoords}
+                  roiProfile={null}
+                  profileShow={{ v: false, h: false, i: false }}
+                  classificationMap={classifierOpen ? classificationMap : null}
+                  classRegions={classRegions}
+                  classifierRoiDims={classifierRoiDims}
+                />
+              </div>
+
+              {/* ROI RGB viewer (side-by-side, only when ROI RGB loaded) */}
+              {roiRGBData && roiRGBBounds && roiRGBContrastLimits && (
+                <>
+                  <div style={{
+                    width: '3px', background: 'var(--border)',
+                    flexShrink: 0,
+                  }} />
+                  <div
+                    onClick={() => setActiveViewer('roi-rgb')}
+                    style={{
+                      flex: 1, position: 'relative', height: '100%',
+                      outline: activeViewer === 'roi-rgb' ? '2px solid #4ec9d4' : 'none',
+                      outlineOffset: '-2px',
+                    }}>
+                    <div style={{
+                      position: 'absolute', top: '8px', left: '8px', zIndex: 10,
+                      background: 'rgba(0,0,0,0.7)', color: '#4ec9d4',
+                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
+                      fontSize: '0.7rem', pointerEvents: 'none',
+                    }}>
+                      ROI RGB: {roiCompositeId}
+                    </div>
+                    <button
+                      onClick={() => { setRoiRGBData(null); setRoiRGBBounds(null); setRoiRGBContrastLimits(null); setRoiRGBHistogramData(null); setActiveViewer('main'); }}
+                      style={{
+                        position: 'absolute', top: '8px', right: '8px', zIndex: 10,
+                        background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                        padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                      }}
+                    >
+                      Close
+                    </button>
+                    <SARViewer
+                      getTile={roiRGBData.getTile}
+                      bounds={roiRGBBounds}
+                      contrastLimits={roiRGBContrastLimits}
+                      useDecibels={false}
+                      colormap={colormap}
+                      gamma={gamma}
+                      stretchMode={stretchMode}
+                      compositeId={roiCompositeId}
+                      showGrid={showGrid}
+                      opacity={1}
+                      width="100%"
+                      height="100%"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
           )}
 
           {/* Overview Map — toggleable overlay, bottom-left */}
