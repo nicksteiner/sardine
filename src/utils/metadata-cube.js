@@ -344,7 +344,7 @@ export async function loadMetadataCube(reader, band, options = {}) {
     const heights = await readDataset(reader, `${basePath}/heightAboveEllipsoid`);
 
     if (!xCoordinates || !yCoordinates || !heights) {
-      console.warn('[MetadataCube] Missing axis datasets, skipping cube load');
+      console.debug('[MetadataCube] Missing axis datasets, skipping cube load');
       return null;
     }
 

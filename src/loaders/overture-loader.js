@@ -181,6 +181,88 @@ function utmToWGS84(bounds, zone, isNorth) {
 }
 
 /**
+ * Convert WGS84 lon/lat to projected coordinates (inverse of projectedToWGS84).
+ * Used to transform Overture GeoJSON features into the viewer's coordinate system.
+ *
+ * @param {number} lon - Longitude in degrees
+ * @param {number} lat - Latitude in degrees
+ * @param {string} crs - CRS string like "EPSG:32618"
+ * @returns {number[]} [x, y] in projected coordinates
+ */
+export function wgs84ToProjected(lon, lat, crs) {
+  const epsgMatch = crs?.match(/EPSG:(\d+)/);
+  if (!epsgMatch) return [lon, lat];
+
+  const epsg = parseInt(epsgMatch[1]);
+  if (epsg === 4326) return [lon, lat];
+
+  // UTM zones
+  let zone, isNorth;
+  if (epsg >= 32601 && epsg <= 32660) {
+    zone = epsg - 32600;
+    isNorth = true;
+  } else if (epsg >= 32701 && epsg <= 32760) {
+    zone = epsg - 32700;
+    isNorth = false;
+  } else {
+    return [lon, lat]; // Unknown CRS
+  }
+
+  const k0 = 0.9996;
+  const a = 6378137;
+  const lon0 = (zone - 1) * 6 - 180 + 3;
+
+  const latRad = lat * Math.PI / 180;
+  const easting = 500000 + k0 * a * (lon - lon0) * Math.PI / 180 * Math.cos(latRad);
+  const northing = k0 * a * latRad + (isNorth ? 0 : 10000000);
+
+  return [easting, northing];
+}
+
+/**
+ * Transform all coordinates in a GeoJSON FeatureCollection from WGS84 to a projected CRS.
+ *
+ * @param {Object} featureCollection - GeoJSON FeatureCollection
+ * @param {string} crs - Target CRS (e.g. "EPSG:32618")
+ * @returns {Object} New FeatureCollection with transformed coordinates
+ */
+export function transformFeatureCollection(featureCollection, crs) {
+  if (!featureCollection?.features || !crs) return featureCollection;
+  const epsgMatch = crs.match(/EPSG:(\d+)/);
+  if (!epsgMatch || parseInt(epsgMatch[1]) === 4326) return featureCollection;
+
+  const transformCoord = (coord) => wgs84ToProjected(coord[0], coord[1], crs);
+
+  const transformCoords = (coords, type) => {
+    switch (type) {
+      case 'Point':
+        return transformCoord(coords);
+      case 'LineString':
+      case 'MultiPoint':
+        return coords.map(transformCoord);
+      case 'Polygon':
+      case 'MultiLineString':
+        return coords.map(ring => ring.map(transformCoord));
+      case 'MultiPolygon':
+        return coords.map(poly => poly.map(ring => ring.map(transformCoord)));
+      default:
+        return coords;
+    }
+  };
+
+  return {
+    type: 'FeatureCollection',
+    features: featureCollection.features.map(f => ({
+      ...f,
+      geometry: {
+        ...f.geometry,
+        coordinates: transformCoords(f.geometry.coordinates, f.geometry.type),
+      },
+    })),
+  };
+}
+
+/**
  * Convert lon/lat to tile coordinates at a given zoom level.
  */
 function lon2tile(lon, zoom) {

@@ -8,18 +8,19 @@
  */
 
 import { GeoJsonLayer } from '@deck.gl/layers';
-import { OVERTURE_THEMES } from '../loaders/overture-loader.js';
+import { OVERTURE_THEMES, transformFeatureCollection } from '../loaders/overture-loader.js';
 
 /**
  * Create deck.gl layers for Overture data.
  *
- * @param {Object} overtureData - Map of themeKey → GeoJSON FeatureCollection
+ * @param {Object} overtureData - Map of themeKey → GeoJSON FeatureCollection (WGS84)
  * @param {Object} options
  * @param {number} options.opacity - Layer opacity (0–1)
+ * @param {string} options.crs - Target CRS for coordinate transform (e.g. "EPSG:32618")
  * @returns {Array} deck.gl Layer instances
  */
 export function createOvertureLayers(overtureData, options = {}) {
-  const { opacity = 0.7 } = options;
+  const { opacity = 0.7, crs } = options;
   const layers = [];
 
   if (!overtureData) return layers;
@@ -31,11 +32,13 @@ export function createOvertureLayers(overtureData, options = {}) {
     if (!themeDef) continue;
 
     const layerId = `overture-${themeKey}`;
+    // Transform WGS84 → projected CRS so features align with the OrthographicView
+    const data = crs ? transformFeatureCollection(featureCollection, crs) : featureCollection;
 
     layers.push(
       new GeoJsonLayer({
         id: layerId,
-        data: featureCollection,
+        data,
         opacity,
 
         // Polygon styling (buildings, water, land_use)

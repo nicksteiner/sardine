@@ -2488,29 +2488,23 @@ export class H5Chunk {
 
     console.log(`[h5chunk] Lazy-loading B-tree for ${dataset.path || datasetId} at 0x${layout.btreeAddress.toString(16)}`);
 
-    // Use the metadata buffer if the B-tree falls within it — avoids a redundant
-    // fetch AND gives the parser access to child nodes that may be scattered
-    // across the metadata region (NISAR B-trees for 35K×35K images can span
-    // hundreds of KB; child nodes at absolute addresses need the full buffer).
-    let btreeReader;
-    // Estimate B-tree size: each leaf entry ≈ 50–64 bytes, internal nodes add overhead.
-    // If the B-tree root + estimated extent fits inside the metadata buffer, use it;
-    // otherwise fetch from the file so child nodes beyond the buffer are reachable.
+    // Estimate B-tree size from dataset dimensions
     const shape = dataset.shape || [1, 1];
     const chunkDims = layout.chunkDims || [512, 512];
     const numChunks = shape.reduce((n, dim, i) =>
       n * Math.ceil(dim / (chunkDims[i] || 1)), 1);
     const estimatedBTreeSize = Math.max(256 * 1024, numChunks * 64);
 
-    if (layout.btreeAddress + estimatedBTreeSize <= this.metadataBuffer.byteLength) {
+    // Use the metadata buffer if the B-tree AND its estimated extent fit
+    // within it. If the root is near the end of the metadata buffer, child
+    // nodes may spill past it — in that case, fetch the B-tree region directly.
+    let btreeReader;
+    if (layout.btreeAddress < this.metadataBuffer.byteLength &&
+        layout.btreeAddress + estimatedBTreeSize <= this.metadataBuffer.byteLength) {
       btreeReader = new BufferReader(this.metadataBuffer, true, 0);
-    } else if (layout.btreeAddress < this.metadataBuffer.byteLength) {
-      // Root is in metadata buffer but children may spill past it — fetch the full extent
-      const btreeSize = estimatedBTreeSize;
-      const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
-      btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
     } else {
-      // B-tree entirely beyond metadata buffer — fetch from file
+      // B-tree beyond (or partially beyond) metadata buffer — fetch a region
+      // sized to the expected number of chunks. Each B-tree leaf entry ≈ 50 bytes.
       const btreeBuffer = await this._fetchBytes(layout.btreeAddress, estimatedBTreeSize);
       btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
     }
@@ -2666,15 +2660,20 @@ export class H5Chunk {
 
     if (chunkEntries.length === 0) return results;
 
-    // For local files, just read each chunk directly (File.slice is fast)
+    // For local files, read chunks with bounded concurrency to avoid
+    // exhausting browser file handles (Chrome throws NotReadableError
+    // when too many File.slice().arrayBuffer() calls are in flight).
     if (this.file) {
-      const promises = chunkEntries.map(async (entry) => {
-        const slice = this.file.slice(entry.offset, entry.offset + entry.size);
-        const buffer = await slice.arrayBuffer();
-        const decoded = await this._decompressAndDecode(buffer, dataset, entry.filterMask);
-        results.set(entry.key, decoded);
-      });
-      await Promise.all(promises);
+      const LOCAL_CONCURRENCY = 6;
+      for (let i = 0; i < chunkEntries.length; i += LOCAL_CONCURRENCY) {
+        const batch = chunkEntries.slice(i, i + LOCAL_CONCURRENCY);
+        await Promise.all(batch.map(async (entry) => {
+          const slice = this.file.slice(entry.offset, entry.offset + entry.size);
+          const buffer = await slice.arrayBuffer();
+          const decoded = await this._decompressAndDecode(buffer, dataset, entry.filterMask);
+          results.set(entry.key, decoded);
+        }));
+      }
       return results;
     }
 

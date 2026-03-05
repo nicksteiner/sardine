@@ -12,7 +12,6 @@ import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/ut
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
-import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
@@ -281,8 +280,6 @@ function App() {
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
   const [useMask, setUseMask] = useState(false);
-  const [speckleFilterType, setSpeckleFilterType] = useState('none'); // 'none' | 'boxcar' | 'lee' | 'enhanced-lee' | 'frost' | 'gamma-map'
-  const [speckleKernelSize, setSpeckleKernelSize] = useState(7);      // 3, 5, 7, 9, 11
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
@@ -2213,24 +2210,17 @@ function App() {
 
       if (isRendered) {
         // --- Rendered export: apply same pipeline as GPU shader ---
-        // Speckle reduction: if user selected a filter, apply it to export bands.
-        // Otherwise fall back to the default 3×3 box-filter smooth.
-        if (speckleFilterType !== 'none') {
-          addStatusLog('info', `Applying ${speckleFilterType} ${speckleKernelSize}×${speckleKernelSize} speckle filter...`);
-          for (const name of bandNames) {
-            bands[name] = await applySpeckleFilter(bands[name], exportWidth, exportHeight, {
-              type: speckleFilterType,
-              kernelSize: speckleKernelSize,
-            });
-          }
-        } else {
-          // Default 3×3 box-filter bridges the gap between export multilook
-          // and on-screen implicit averaging at overview zoom levels.
-          const smoothKernel = 3;
-          addStatusLog('info', `Smoothing bands: ${smoothKernel}×${smoothKernel} box filter (speckle reduction)...`);
-          for (const name of bandNames) {
-            bands[name] = smoothBand(bands[name], exportWidth, exportHeight, smoothKernel);
-          }
+        // Spatial smoothing: the export at ml=N averages N×N source pixels per
+        // output pixel, but the on-screen display at overview zoom implicitly
+        // averages far more (hundreds at low zoom).  A 3×3 post-multilook
+        // box-filter bridges the gap, raising the effective look count by ~9×
+        // (e.g. ml=4 → 16 looks → ~144 effective looks after smoothing).
+        // This is especially important for ratio channels (HH/HV) where
+        // residual speckle is amplified by the division.
+        const smoothKernel = 3;
+        addStatusLog('info', `Smoothing bands: ${smoothKernel}×${smoothKernel} box filter (speckle reduction)...`);
+        for (const name of bandNames) {
+          bands[name] = smoothBand(bands[name], exportWidth, exportHeight, smoothKernel);
         }
 
         const numPixels = exportWidth * exportHeight;
@@ -3838,45 +3828,6 @@ function App() {
               </div>
             </div>
 
-            {/* Speckle filter */}
-            <div className="control-group">
-              <label>Speckle Filter</label>
-              <select
-                value={speckleFilterType}
-                onChange={(e) => {
-                  setSpeckleFilterType(e.target.value);
-                  addStatusLog('info', e.target.value === 'none'
-                    ? 'Speckle filter disabled'
-                    : `Speckle filter: ${e.target.value} ${speckleKernelSize}×${speckleKernelSize}`);
-                }}
-              >
-                <option value="none">None</option>
-                {getFilterTypes().map(f => (
-                  <option key={f.id} value={f.id}>{f.name}</option>
-                ))}
-              </select>
-              {speckleFilterType !== 'none' && (
-                <div style={{ marginTop: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Kernel</label>
-                    <span className="value-display">{speckleKernelSize}×{speckleKernelSize}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={3}
-                    max={11}
-                    step={2}
-                    value={speckleKernelSize}
-                    onChange={(e) => {
-                      const ks = Number(e.target.value);
-                      setSpeckleKernelSize(ks);
-                      addStatusLog('info', `Speckle filter kernel: ${ks}×${ks}`);
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-
             {/* Mask toggle — only shown when mask dataset is available */}
             {imageData?.hasMask && (
               <div className="control-group">
@@ -3952,8 +3903,6 @@ function App() {
                   compositeId={displayMode === 'rgb' ? compositeId : null}
                   multiLook={multiLook}
                   useMask={useMask}
-                  speckleFilterType={speckleFilterType}
-                  speckleKernelSize={speckleKernelSize}
                   showGrid={showGrid}
                   opacity={1}
                   width="100%"

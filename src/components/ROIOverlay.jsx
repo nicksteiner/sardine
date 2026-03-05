@@ -197,19 +197,6 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       ctx.setLineDash([6, 4]);
       ctx.strokeRect(rx, ry, rw, rh);
       ctx.setLineDash([]);
-
-      // Label
-      const label = `${roi.width} × ${roi.height} px`;
-      ctx.font = "11px 'JetBrains Mono', monospace";
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'bottom';
-      const textW = ctx.measureText(label).width + 8;
-      const labelX = rx + 4;
-      const labelY = ry - 4;
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
-      ctx.fillRect(labelX - 2, labelY - 13, textW, 15);
-      ctx.fillStyle = '#ffc832';
-      ctx.fillText(label, labelX, labelY);
     }
   }, [viewState, bounds, imageWidth, imageHeight, roi, dragStart, dragCurrent]);
 
