@@ -289,7 +289,17 @@ function App() {
   const [roiCompositeId, setRoiCompositeId] = useState(null); // composite preset for ROI RGB overlay
   const [roiRGBContrastLimits, setRoiRGBContrastLimits] = useState(null); // per-channel {R,G,B} contrast for ROI overlay
   const [roiRGBHistogramData, setRoiRGBHistogramData] = useState(null); // histogram data for ROI RGB viewer
-  const [activeViewer, setActiveViewer] = useState('main'); // 'main' | 'roi-rgb' — which viewer the sidebar controls
+  const [activeViewer, setActiveViewer] = useState('main'); // 'main' | 'roi-rgb' | 'roi-ts' — which viewer the sidebar controls
+
+  // ROI Time-Series state
+  const [roiTSFiles, setRoiTSFiles] = useState([]);           // Array of File objects for time-series
+  const [roiTSFrames, setRoiTSFrames] = useState(null);       // [{getTile, bounds, label, date, identification}, ...]
+  const [roiTSBounds, setRoiTSBounds] = useState(null);       // [minX,minY,maxX,maxY] world coords for ROI
+  const [roiTSLoading, setRoiTSLoading] = useState(false);
+  const [roiTSIndex, setRoiTSIndex] = useState(0);            // Current frame index
+  const [roiTSPlaying, setRoiTSPlaying] = useState(false);    // Animation playing
+  const [roiTSContrastLimits, setRoiTSContrastLimits] = useState(null); // [min, max] shared across frames
+  const [roiTSHistogramData, setRoiTSHistogramData] = useState(null);   // Histogram for current frame
   const [wktInput, setWktInput] = useState('');       // WKT text input value
   const [wktError, setWktError] = useState(null);     // WKT validation error message
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
@@ -367,6 +377,13 @@ function App() {
     setRoiCompositeId(null);
     setRoiRGBContrastLimits(null);
     setRoiRGBHistogramData(null);
+    setRoiTSFiles([]);
+    setRoiTSFrames(null);
+    setRoiTSBounds(null);
+    setRoiTSContrastLimits(null);
+    setRoiTSHistogramData(null);
+    setRoiTSPlaying(false);
+    setRoiTSIndex(0);
     setActiveViewer('main');
   }, [imageData]);
 
@@ -657,12 +674,18 @@ function App() {
     setWktError(null);
   }, [roi, imageData]);
 
-  // Clear ROI RGB overlay when ROI changes or is cleared
+  // Clear ROI RGB overlay and time-series when ROI changes or is cleared
   useEffect(() => {
     setRoiRGBData(null);
     setRoiRGBBounds(null);
     setRoiRGBContrastLimits(null);
     setRoiRGBHistogramData(null);
+    setRoiTSFrames(null);
+    setRoiTSBounds(null);
+    setRoiTSContrastLimits(null);
+    setRoiTSHistogramData(null);
+    setRoiTSPlaying(false);
+    setRoiTSIndex(0);
     setActiveViewer('main');
   }, [roi]);
 
@@ -765,6 +788,107 @@ function App() {
     }
   }, [nisarFile, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog]);
 
+  // Load time-series into ROI side panel
+  const handleLoadRoiTimeSeries = useCallback(async () => {
+    if (!roiTSFiles.length || !roi || !imageData) return;
+
+    setRoiTSLoading(true);
+    setRoiTSPlaying(false);
+    setRoiTSIndex(0);
+    try {
+      // Convert ROI pixel coords → world bounds
+      const fileBbox = imageData.worldBounds || imageData.bounds;
+      const subBounds = computeSubsetBounds(
+        { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+        {
+          worldBounds: fileBbox,
+          width: imageData.width,
+          height: imageData.height,
+          xCoords: imageData.xCoords || null,
+          yCoords: imageData.yCoords || null,
+        }
+      );
+
+      addStatusLog('info', `Loading time-series: ${roiTSFiles.length} files for ROI`);
+
+      const frames = [];
+      for (let i = 0; i < roiTSFiles.length; i++) {
+        const file = roiTSFiles[i];
+        addStatusLog('info', `Loading file ${i + 1}/${roiTSFiles.length}: ${file.name}`);
+        try {
+          const data = await loadNISARGCOV(file, {
+            frequency: selectedFrequency,
+            polarization: selectedPolarization,
+          });
+          // Extract date from identification metadata or filename
+          const ident = data.identification || {};
+          const date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || file.name;
+          const label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
+          frames.push({
+            getTile: data.getTile,
+            bounds: data.bounds,
+            label,
+            date,
+            width: data.width,
+            height: data.height,
+          });
+        } catch (fileErr) {
+          addStatusLog('warning', `Skipping ${file.name}: ${fileErr.message}`);
+        }
+      }
+
+      if (frames.length === 0) {
+        addStatusLog('error', 'No files loaded successfully');
+        setRoiTSLoading(false);
+        return;
+      }
+
+      // Sort by date label
+      frames.sort((a, b) => a.label.localeCompare(b.label));
+
+      // Compute histogram from first frame for contrast
+      const [minX, minY, maxX, maxY] = subBounds;
+      const regionW = maxX - minX;
+      const regionH = maxY - minY;
+      let tsHist = null;
+      let tsContrast = [-25, 0]; // dB default
+      try {
+        const stats = await sampleViewportStats(
+          frames[0].getTile, regionW, regionH, useDecibels, 128,
+          minX, minY, frames[0].height,
+        );
+        if (stats) {
+          tsHist = { single: stats };
+          tsContrast = [Number(stats.p2.toFixed(1)), Number(stats.p98.toFixed(1))];
+        }
+      } catch (histErr) {
+        addStatusLog('warning', `Time-series histogram error: ${histErr.message}`);
+      }
+
+      setRoiTSBounds(subBounds);
+      setRoiTSFrames(frames);
+      setRoiTSContrastLimits(tsContrast);
+      setRoiTSHistogramData(tsHist);
+      setActiveViewer('roi-ts');
+
+      addStatusLog('success', `Time-series loaded: ${frames.length} frames`,
+        frames.map(f => f.label).join(', '));
+    } catch (err) {
+      addStatusLog('error', `Time-series load failed: ${err.message}`);
+    } finally {
+      setRoiTSLoading(false);
+    }
+  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, useDecibels, addStatusLog]);
+
+  // Animation timer for time-series playback
+  useEffect(() => {
+    if (!roiTSPlaying || !roiTSFrames) return;
+    const interval = setInterval(() => {
+      setRoiTSIndex(prev => (prev + 1) % roiTSFrames.length);
+    }, 1000); // 1 fps
+    return () => clearInterval(interval);
+  }, [roiTSPlaying, roiTSFrames]);
+
   // Recompute classification map when class regions, scatter data, or incidence range changes
   useEffect(() => {
     if (!classifierData || !classRegions.length) {
@@ -830,12 +954,22 @@ function App() {
 
   // Sidebar context: which viewer are the controls targeting?
   const sidebarIsRoiRGB = activeViewer === 'roi-rgb' && !!roiRGBData;
-  const sidebarHistogramData = sidebarIsRoiRGB ? roiRGBHistogramData : histogramData;
-  const sidebarDisplayMode = sidebarIsRoiRGB ? 'rgb' : displayMode;
+  const sidebarIsRoiTS = activeViewer === 'roi-ts' && !!roiTSFrames;
+  const sidebarHistogramData = sidebarIsRoiTS ? roiTSHistogramData : (sidebarIsRoiRGB ? roiRGBHistogramData : histogramData);
+  const sidebarDisplayMode = sidebarIsRoiRGB ? 'rgb' : (sidebarIsRoiTS ? 'single' : displayMode);
 
   // Auto-stretch: reset to 2-98% percentiles from cached histogram
   const handleAutoStretch = useCallback(() => {
     // If ROI RGB viewer is active, auto-stretch its contrast
+    // If ROI time-series viewer is active
+    if (activeViewer === 'roi-ts' && roiTSHistogramData?.single) {
+      const p2 = Number(roiTSHistogramData.single.p2.toFixed(1));
+      const p98 = Number(roiTSHistogramData.single.p98.toFixed(1));
+      setRoiTSContrastLimits([p2, p98]);
+      addStatusLog('success', `Time-series contrast reset to ${p2} – ${p98}`);
+      return;
+    }
+
     if (activeViewer === 'roi-rgb' && roiRGBData && roiRGBHistogramData) {
       const newLimits = {};
       for (const ch of ['R', 'G', 'B']) {
@@ -879,7 +1013,7 @@ function App() {
     } else {
       addStatusLog('warning', 'No histogram data for current mode');
     }
-  }, [histogramData, displayMode, addStatusLog, activeViewer, roiRGBData, roiRGBHistogramData]);
+  }, [histogramData, displayMode, addStatusLog, activeViewer, roiRGBData, roiRGBHistogramData, roiTSHistogramData]);
 
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
@@ -3370,6 +3504,54 @@ function App() {
                   </div>
                 )}
 
+                {/* Time-Series file input for ROI */}
+                {roi && nisarFile && displayMode === 'single' && (
+                  <div style={{
+                    marginTop: '4px', padding: '4px 8px',
+                    background: 'rgba(46, 204, 113, 0.06)',
+                    border: '1px solid rgba(46, 204, 113, 0.2)',
+                    borderRadius: 'var(--radius-sm)',
+                  }}>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      <label style={{
+                        flex: 1, fontSize: '0.65rem', cursor: 'pointer',
+                        color: 'var(--text-muted)',
+                      }}>
+                        <input
+                          type="file"
+                          multiple
+                          accept=".h5,.hdf5"
+                          style={{ display: 'none' }}
+                          onChange={(e) => setRoiTSFiles(Array.from(e.target.files || []))}
+                        />
+                        {roiTSFiles.length > 0
+                          ? `${roiTSFiles.length} file${roiTSFiles.length > 1 ? "s" : ""} selected`
+                          : 'Select .h5 files...'}
+                      </label>
+                      <button
+                        onClick={handleLoadRoiTimeSeries}
+                        disabled={!roiTSFiles.length || roiTSLoading}
+                        style={{
+                          fontSize: '0.65rem', padding: '3px 8px',
+                          background: roiTSFiles.length ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
+                          border: '1px solid rgba(46, 204, 113, 0.3)',
+                          color: '#2ecc71', borderRadius: 'var(--radius-sm)',
+                          cursor: roiTSFiles.length ? 'pointer' : 'default',
+                          opacity: roiTSFiles.length ? 1 : 0.4,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {roiTSLoading ? 'Loading...' : 'Time Series'}
+                      </button>
+                    </div>
+                    {roiTSFrames && (
+                      <div style={{ fontSize: '0.6rem', color: '#2ecc71', marginTop: '2px' }}>
+                        {roiTSFrames.length} frames loaded
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* WKT ROI Input */}
                 <div style={{ marginTop: '4px' }}>
                   <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
@@ -3486,7 +3668,7 @@ function App() {
             )}
 
             {/* Active viewer indicator when split view */}
-            {roiRGBData && (
+            {(roiRGBData || roiTSFrames) && (
               <div className="control-group" style={{ padding: '2px 0' }}>
                 <div style={{
                   display: 'flex', gap: '4px', fontSize: '0.65rem',
@@ -3503,18 +3685,34 @@ function App() {
                   >
                     Main
                   </button>
-                  <button
-                    onClick={() => setActiveViewer('roi-rgb')}
-                    style={{
-                      flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
-                      background: activeViewer === 'roi-rgb' ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
-                      border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--border)',
-                      color: activeViewer === 'roi-rgb' ? '#4ec9d4' : 'var(--text-muted)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ROI RGB
-                  </button>
+                  {roiRGBData && (
+                    <button
+                      onClick={() => setActiveViewer('roi-rgb')}
+                      style={{
+                        flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
+                        background: activeViewer === 'roi-rgb' ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
+                        border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--border)',
+                        color: activeViewer === 'roi-rgb' ? '#4ec9d4' : 'var(--text-muted)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      ROI RGB
+                    </button>
+                  )}
+                  {roiTSFrames && (
+                    <button
+                      onClick={() => setActiveViewer('roi-ts')}
+                      style={{
+                        flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
+                        background: activeViewer === 'roi-ts' ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
+                        border: activeViewer === 'roi-ts' ? '1px solid rgba(46, 204, 113, 0.4)' : '1px solid var(--border)',
+                        color: activeViewer === 'roi-ts' ? '#2ecc71' : 'var(--text-muted)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Time Series
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -3534,17 +3732,17 @@ function App() {
               />
             )}
 
-            {/* Single-band histogram (main viewer only) */}
+            {/* Single-band histogram */}
             {sidebarDisplayMode !== 'rgb' && sidebarHistogramData?.single && (
               <HistogramPanel
                 histograms={sidebarHistogramData}
                 mode="single"
-                contrastLimits={contrastLimits}
+                contrastLimits={sidebarIsRoiTS ? roiTSContrastLimits : contrastLimits}
                 useDecibels={useDecibels}
-                onContrastChange={([min, max]) => {
-                  setContrastMin(Math.round(min));
-                  setContrastMax(Math.round(max));
-                }}
+                onContrastChange={sidebarIsRoiTS
+                  ? (([min, max]) => setRoiTSContrastLimits([Math.round(min), Math.round(max)]))
+                  : (([min, max]) => { setContrastMin(Math.round(min)); setContrastMax(Math.round(max)); })
+                }
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
               />
@@ -3770,6 +3968,89 @@ function App() {
                       opacity={1}
                       width="100%"
                       height="100%"
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* ROI Time-Series viewer (side-by-side, only when frames loaded) */}
+              {roiTSFrames && roiTSBounds && roiTSContrastLimits && (
+                <>
+                  <div style={{
+                    width: '3px', background: 'var(--border)',
+                    flexShrink: 0,
+                  }} />
+                  <div
+                    onClick={() => setActiveViewer('roi-ts')}
+                    style={{
+                      flex: 1, position: 'relative', height: '100%',
+                      outline: activeViewer === 'roi-ts' ? '2px solid #2ecc71' : 'none',
+                      outlineOffset: '-2px',
+                    }}>
+                    <div style={{
+                      position: 'absolute', top: '8px', left: '8px', zIndex: 10,
+                      background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
+                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
+                      fontSize: '0.7rem', pointerEvents: 'none',
+                    }}>
+                      {roiTSFrames[roiTSIndex]?.label || 'Frame ' + roiTSIndex}
+                      {' '}({roiTSIndex + 1}/{roiTSFrames.length})
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setRoiTSFrames(null); setRoiTSBounds(null); setRoiTSContrastLimits(null); setRoiTSHistogramData(null); setRoiTSPlaying(false); setActiveViewer('main'); }}
+                      style={{
+                        position: 'absolute', top: '8px', right: '8px', zIndex: 10,
+                        background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                        padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                      }}
+                    >
+                      Close
+                    </button>
+                    {/* Playback controls */}
+                    <div style={{
+                      position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)',
+                      zIndex: 10, display: 'flex', alignItems: 'center', gap: '8px',
+                      background: 'rgba(0,0,0,0.8)', padding: '6px 12px',
+                      borderRadius: 'var(--radius-sm)', fontSize: '0.7rem',
+                    }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev - 1 + roiTSFrames.length) % roiTSFrames.length); }}
+                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                      >◀</button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setRoiTSPlaying(prev => !prev); }}
+                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                      >{roiTSPlaying ? '⏸' : '▶'}</button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev + 1) % roiTSFrames.length); }}
+                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                      >▶</button>
+                      <input
+                        type="range"
+                        min={0}
+                        max={roiTSFrames.length - 1}
+                        value={roiTSIndex}
+                        onChange={(e) => { e.stopPropagation(); setRoiTSIndex(Number(e.target.value)); }}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ width: '100px', accentColor: '#2ecc71' }}
+                      />
+                      <span style={{ color: '#2ecc71', minWidth: '70px', textAlign: 'center' }}>
+                        {roiTSFrames[roiTSIndex]?.label}
+                      </span>
+                    </div>
+                    <SARViewer
+                      getTile={roiTSFrames[roiTSIndex]?.getTile}
+                      bounds={roiTSBounds}
+                      contrastLimits={roiTSContrastLimits}
+                      useDecibels={useDecibels}
+                      colormap={colormap}
+                      gamma={gamma}
+                      stretchMode={stretchMode}
+                      showGrid={showGrid}
+                      opacity={1}
+                      width=100%
+                      height=100%
                     />
                   </div>
                 </>
