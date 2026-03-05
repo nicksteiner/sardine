@@ -108,6 +108,9 @@ export {
   computeHistogramGPU,
   computeChannelStatsAuto,
   canUseGPUStats,
+  applySpeckleFilter,
+  getFilterTypes,
+  estimateENL,
 } from './gpu/index.js';
 
 // Overture Maps integration
