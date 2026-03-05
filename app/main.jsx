@@ -2,7 +2,9 @@ import React, { useState, useCallback, useEffect, useMemo, useRef, Component } f
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
-import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl } from '../src/loaders/nisar-loader.js';
+import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
+import { validateWKT } from '../src/utils/wkt.js';
+import { computeSubsetBounds } from '../src/utils/roi-subset.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
@@ -228,7 +230,7 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
  */
 function App() {
   // Core state
-  const [fileType, setFileType] = useState('remote'); // 'cog' | 'nisar' | 'remote'
+  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar' | 'remote'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
@@ -281,6 +283,15 @@ function App() {
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
   const [roiProfile, setRoiProfile] = useState(null); // Computed profile data for ROIProfilePlot
+  const [roiRGBData, setRoiRGBData] = useState(null);       // RGB composite data loaded for ROI overlay
+  const [roiRGBBounds, setRoiRGBBounds] = useState(null);   // [minX,minY,maxX,maxY] world coords for ROI RGB
+  const [roiRGBLoading, setRoiRGBLoading] = useState(false);
+  const [roiCompositeId, setRoiCompositeId] = useState(null); // composite preset for ROI RGB overlay
+  const [roiRGBContrastLimits, setRoiRGBContrastLimits] = useState(null); // per-channel {R,G,B} contrast for ROI overlay
+  const [roiRGBHistogramData, setRoiRGBHistogramData] = useState(null); // histogram data for ROI RGB viewer
+  const [activeViewer, setActiveViewer] = useState('main'); // 'main' | 'roi-rgb' — which viewer the sidebar controls
+  const [wktInput, setWktInput] = useState('');       // WKT text input value
+  const [wktError, setWktError] = useState(null);     // WKT validation error message
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
 
   // Feature space classifier state
@@ -292,7 +303,7 @@ function App() {
   const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
   const [incidenceRange, setIncidenceRange] = useState([0, 90]); // min/max incidence angle filter (degrees)
 
-  const [histogramScope, setHistogramScope] = useState('viewport'); // 'global' | 'viewport'
+  const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport' | 'roi'
   const [showHistogramOverlay, setShowHistogramOverlay] = useState(false);
   const [viewCenter, setViewCenter] = useState([0, 0]);
   const [viewZoom, setViewZoom] = useState(0);
@@ -335,7 +346,7 @@ function App() {
 
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
-  const [statusCollapsed, setStatusCollapsed] = useState(false);
+  const [statusCollapsed, setStatusCollapsed] = useState(true);
 
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
@@ -344,11 +355,19 @@ function App() {
   useEffect(() => {
     setROI(null);
     setRoiProfile(null);
+    setWktInput('');
+    setWktError(null);
     setClassifierOpen(false);
     setClassRegions([]);
     setClassifierData(null);
     setClassificationMap(null);
     setClassifierRoiDims(null);
+    setRoiRGBData(null);
+    setRoiRGBBounds(null);
+    setRoiCompositeId(null);
+    setRoiRGBContrastLimits(null);
+    setRoiRGBHistogramData(null);
+    setActiveViewer('main');
   }, [imageData]);
 
   // Auto-select classifier bands when datasets change
@@ -554,7 +573,7 @@ function App() {
         if (!cancelled) {
           const validCount = valid.reduce((a, b) => a + b, 0);
           console.log('[Classifier] Scatter data ready:', { exportW, exportH, validCount, hasIncidence: !!incidence });
-          setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence });
+          setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence, singleChannel: xData === yData });
           setClassifierRoiDims({ w: exportW, h: exportH });
           // Set initial incidence range from data
           if (incidence) {
@@ -576,6 +595,175 @@ function App() {
     fetchClassifierData();
     return () => { cancelled = true; };
   }, [classifierOpen, roi, imageData, classifierBands]);
+
+  // Helper to add status log (must be before any callback that uses it)
+  const addStatusLog = useCallback((type, message, details = null) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setStatusLogs(prev => {
+      const next = [...prev, { type, message, details, timestamp }];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
+  }, []);
+
+  // WKT ROI: track sync source to avoid loops between WKT input and Shift+drag
+  const wktSyncSource = useRef('');
+
+  // WKT ROI: apply WKT string to set pixel ROI
+  const handleWktApply = useCallback(() => {
+    if (!wktInput.trim() || !imageData) return;
+
+    try {
+      const pixelRoi = wktToROI(wktInput.trim(), imageData);
+      if (!pixelRoi) {
+        setWktError('ROI does not intersect the image');
+        return;
+      }
+      setWktError(null);
+      wktSyncSource.current = 'wkt'; // prevent reverse-sync from overwriting input
+      setROI(pixelRoi);
+      addStatusLog('info', `WKT ROI applied: ${pixelRoi.width} x ${pixelRoi.height} px`,
+        `at (${pixelRoi.left}, ${pixelRoi.top})`);
+    } catch (e) {
+      setWktError(e.message);
+      addStatusLog('error', `WKT error: ${e.message}`);
+    }
+  }, [wktInput, imageData, addStatusLog]);
+
+  // WKT ROI: reverse-sync — when ROI changes via Shift+drag, populate WKT input
+  useEffect(() => {
+    if (!roi || !imageData) {
+      if (!roi) wktSyncSource.current = '';
+      return;
+    }
+    // Only reverse-sync if the ROI was NOT set by WKT apply (avoid overwriting user input)
+    if (wktSyncSource.current === 'wkt') {
+      wktSyncSource.current = '';
+      return;
+    }
+    const fileBbox = imageData.worldBounds || imageData.bounds;
+    if (!fileBbox) return;
+    const subBounds = computeSubsetBounds(
+      { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+      {
+        worldBounds: fileBbox,
+        width: imageData.width,
+        height: imageData.height,
+        xCoords: imageData.xCoords || null,
+        yCoords: imageData.yCoords || null,
+      }
+    );
+    const [w, s, e, n] = subBounds;
+    setWktInput(`BBOX(${w.toFixed(6)}, ${s.toFixed(6)}, ${e.toFixed(6)}, ${n.toFixed(6)})`);
+    setWktError(null);
+  }, [roi, imageData]);
+
+  // Clear ROI RGB overlay when ROI changes or is cleared
+  useEffect(() => {
+    setRoiRGBData(null);
+    setRoiRGBBounds(null);
+    setRoiRGBContrastLimits(null);
+    setRoiRGBHistogramData(null);
+    setActiveViewer('main');
+  }, [roi]);
+
+  // Load RGB composite into ROI overlay
+  const handleLoadRoiRGB = useCallback(async () => {
+    if (!nisarFile || !roi || !roiCompositeId || !imageData) return;
+
+    setRoiRGBLoading(true);
+    try {
+      const requiredPols = getRequiredDatasets(roiCompositeId);
+      const requiredComplexPols = getRequiredComplexDatasets(roiCompositeId);
+
+      addStatusLog('info', `Loading ROI RGB composite: ${roiCompositeId} (${requiredPols.join(', ')})`);
+
+      const data = await loadNISARRGBComposite(nisarFile, {
+        frequency: selectedFrequency,
+        compositeId: roiCompositeId,
+        requiredPols,
+        requiredComplexPols,
+      });
+
+      // Convert ROI pixel coords → world bounds
+      const fileBbox = imageData.worldBounds || imageData.bounds;
+      const subBounds = computeSubsetBounds(
+        { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+        {
+          worldBounds: fileBbox,
+          width: imageData.width,
+          height: imageData.height,
+          xCoords: imageData.xCoords || null,
+          yCoords: imageData.yCoords || null,
+        }
+      );
+
+      data.getTile = data.getRGBTile;
+
+      // Auto-compute per-channel contrast + histogram from ROI region
+      // Sample 3×3 grid of tiles (same pattern as main histogram)
+      const [minX, minY, maxX, maxY] = subBounds;
+      const regionW = maxX - minX;
+      const regionH = maxY - minY;
+      let lims = { R: [0, 0.1], G: [0, 0.1], B: [0, 0.1] };
+      let roiHists = null;
+      try {
+        const rawValues = { R: [], G: [], B: [] };
+        const gridSize = 3;
+        const stepX = regionW / gridSize;
+        const stepY = regionH / gridSize;
+
+        for (let ty = 0; ty < gridSize; ty++) {
+          for (let tx = 0; tx < gridSize; tx++) {
+            const left = minX + tx * stepX;
+            const right = minX + (tx + 1) * stepX;
+            const top = minY + ty * stepY;
+            const bottom = minY + (ty + 1) * stepY;
+
+            const tileData = await data.getRGBTile({
+              x: tx, y: ty, z: 0,
+              bbox: { left, top, right, bottom },
+            });
+
+            if (tileData && tileData.bands) {
+              const rgbBands = computeRGBBands(tileData.bands, roiCompositeId, tileData.width);
+              for (const ch of ['R', 'G', 'B']) {
+                const arr = rgbBands[ch];
+                for (let i = 0; i < arr.length; i += 4) {
+                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+                }
+              }
+            }
+          }
+        }
+
+        addStatusLog('info', `ROI RGB sampled ${rawValues.R.length} pixels per channel`);
+        roiHists = {};
+        for (const ch of ['R', 'G', 'B']) {
+          const stats = computeChannelStats(rawValues[ch], false);
+          if (stats) {
+            roiHists[ch] = stats;
+            lims[ch] = [stats.p2, stats.p98];
+          }
+        }
+        addStatusLog('info', `ROI RGB contrast: R=[${lims.R.map(v=>v.toFixed(4))}] G=[${lims.G.map(v=>v.toFixed(4))}] B=[${lims.B.map(v=>v.toFixed(4))}]`);
+      } catch (histErr) {
+        addStatusLog('warning', `ROI RGB histogram error: ${histErr.message}`);
+      }
+
+      setRoiRGBContrastLimits(lims);
+      setRoiRGBHistogramData(roiHists);
+      setRoiRGBData(data);
+      setRoiRGBBounds(subBounds);
+      setActiveViewer('roi-rgb');
+
+      addStatusLog('success', 'ROI RGB composite loaded',
+        `${data.width}x${data.height}, bounds: ${subBounds.map(v => v.toFixed(4)).join(', ')}`);
+    } catch (err) {
+      addStatusLog('error', `ROI RGB load failed: ${err.message}`);
+    } finally {
+      setRoiRGBLoading(false);
+    }
+  }, [nisarFile, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog]);
 
   // Recompute classification map when class regions, scatter data, or incidence range changes
   useEffect(() => {
@@ -629,15 +817,6 @@ function App() {
     return [cx - span/2, minLat, cx + span/2, maxLat];
   }, [imageData, viewCenter, viewZoom]);
 
-  // Helper to add status log
-  const addStatusLog = useCallback((type, message, details = null) => {
-    const timestamp = new Date().toLocaleTimeString();
-    setStatusLogs(prev => {
-      const next = [...prev, { type, message, details, timestamp }];
-      return next.length > 500 ? next.slice(-500) : next;
-    });
-  }, []);
-
   // Memoize arrays to prevent unnecessary re-renders
   const contrastLimits = useMemo(() => [contrastMin, contrastMax], [contrastMin, contrastMax]);
 
@@ -649,8 +828,28 @@ function App() {
     return contrastLimits;
   }, [displayMode, rgbContrastLimits, contrastLimits]);
 
+  // Sidebar context: which viewer are the controls targeting?
+  const sidebarIsRoiRGB = activeViewer === 'roi-rgb' && !!roiRGBData;
+  const sidebarHistogramData = sidebarIsRoiRGB ? roiRGBHistogramData : histogramData;
+  const sidebarDisplayMode = sidebarIsRoiRGB ? 'rgb' : displayMode;
+
   // Auto-stretch: reset to 2-98% percentiles from cached histogram
   const handleAutoStretch = useCallback(() => {
+    // If ROI RGB viewer is active, auto-stretch its contrast
+    if (activeViewer === 'roi-rgb' && roiRGBData && roiRGBHistogramData) {
+      const newLimits = {};
+      for (const ch of ['R', 'G', 'B']) {
+        if (roiRGBHistogramData[ch]) {
+          newLimits[ch] = [roiRGBHistogramData[ch].p2, roiRGBHistogramData[ch].p98];
+        }
+      }
+      if (Object.keys(newLimits).length > 0) {
+        setRoiRGBContrastLimits(newLimits);
+        addStatusLog('success', 'ROI RGB contrast reset to 2–98% percentiles');
+      }
+      return;
+    }
+
     if (!histogramData) {
       addStatusLog('warning', 'No histogram data — load a dataset first');
       return;
@@ -680,12 +879,17 @@ function App() {
     } else {
       addStatusLog('warning', 'No histogram data for current mode');
     }
-  }, [histogramData, displayMode, addStatusLog]);
+  }, [histogramData, displayMode, addStatusLog, activeViewer, roiRGBData, roiRGBHistogramData]);
 
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
+    console.log('[histogram] handleRecomputeHistogram called, scope:', histogramScope, 'displayMode:', displayMode, 'hasGetTile:', !!imageData?.getTile, 'hasGetRGBTile:', !!imageData?.getRGBTile, 'compositeId:', compositeId);
     if (!imageData || !imageData.getTile) {
       addStatusLog('warning', 'No tile data available for histogram');
+      return;
+    }
+    if (histogramScope === 'roi' && !roi) {
+      addStatusLog('warning', 'No ROI drawn — draw a region with Shift+drag first');
       return;
     }
 
@@ -693,9 +897,8 @@ function App() {
 
     try {
       // Compute viewport region bounds (used for viewport scope)
-      // viewCenter is in world coordinates (= image pixel coords for NISAR data
-      // where bounds = [0, 0, width, height]).
-      // viewZoom: 2^zoom = pixels-per-world-unit (deck.gl OrthographicView).
+      // viewCenter is in world coordinates (matches imageData.bounds).
+      // viewZoom: 2^zoom = screen-pixels-per-world-unit (deck.gl OrthographicView).
       // Visible world extent = canvasPixels / 2^zoom.
       const ppu = Math.pow(2, viewZoom);
       const canvas = viewerRef.current?.getCanvas();
@@ -705,17 +908,40 @@ function App() {
       const vpHalfH = (canvasH / 2) / ppu;
       const cx = viewCenter[0];
       const cy = viewCenter[1];
-      const vpLeft = Math.max(0, cx - vpHalfW);
-      const vpRight = Math.min(imageData.width, cx + vpHalfW);
-      const vpTop = Math.max(0, cy - vpHalfH);
-      const vpBottom = Math.min(imageData.height, cy + vpHalfH);
+      // Clamp to image bounds (world coordinates, not pixel dimensions)
+      const [bMinX, bMinY, bMaxX, bMaxY] = imageData.bounds;
+      const vpLeft = Math.max(bMinX, cx - vpHalfW);
+      const vpRight = Math.min(bMaxX, cx + vpHalfW);
+      const vpTop = Math.max(bMinY, cy - vpHalfH);
+      const vpBottom = Math.min(bMaxY, cy + vpHalfH);
 
-      const isViewport = histogramScope === 'viewport';
-      const regionX = isViewport ? vpLeft : 0;
-      const regionY = isViewport ? vpTop : 0;
-      const regionW = isViewport ? (vpRight - vpLeft) : imageData.width;
-      const regionH = isViewport ? (vpBottom - vpTop) : imageData.height;
-      const scopeLabel = isViewport ? 'Viewport' : 'Global';
+      let regionX, regionY, regionW, regionH, scopeLabel;
+      if (histogramScope === 'roi' && roi) {
+        // ROI is in pixel coordinates — convert to world coordinates for getTile
+        const roiWorldLeft = bMinX + (roi.left / imageData.width) * (bMaxX - bMinX);
+        const roiWorldRight = bMinX + ((roi.left + roi.width) / imageData.width) * (bMaxX - bMinX);
+        // ROI top/height are in image-row space (top=0 is north); convert to world Y
+        const roiWorldTop = bMaxY - ((roi.top + roi.height) / imageData.height) * (bMaxY - bMinY);
+        const roiWorldBottom = bMaxY - (roi.top / imageData.height) * (bMaxY - bMinY);
+        regionX = roiWorldLeft;
+        regionY = roiWorldTop;   // min world Y (south)
+        regionW = roiWorldRight - roiWorldLeft;
+        regionH = roiWorldBottom - roiWorldTop;
+        scopeLabel = 'ROI';
+      } else if (histogramScope === 'viewport') {
+        regionX = vpLeft;
+        regionY = vpTop;
+        regionW = vpRight - vpLeft;
+        regionH = vpBottom - vpTop;
+        scopeLabel = 'Viewport';
+      } else {
+        // Global: use full bounds (world coordinates)
+        regionX = bMinX;
+        regionY = bMinY;
+        regionW = bMaxX - bMinX;
+        regionH = bMaxY - bMinY;
+        scopeLabel = 'Global';
+      }
 
       if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
         // RGB histogram — sample 3×3 tiles from the region
@@ -731,12 +957,12 @@ function App() {
           for (let tx = 0; tx < gridSize; tx++) {
             const left = regionX + tx * stepX;
             const right = regionX + (tx + 1) * stepX;
-            const wBottom = imageData.height - (regionY + (ty + 1) * stepY);
-            const wTop = imageData.height - (regionY + ty * stepY);
+            const top = regionY + ty * stepY;
+            const bottom = regionY + (ty + 1) * stepY;
 
             const tileData = await imageData.getRGBTile({
               x: tx, y: ty, z: 0,
-              bbox: { left, top: wBottom, right, bottom: wTop },
+              bbox: { left, top, right, bottom },
             });
 
             if (tileData && tileData.bands) {
@@ -757,55 +983,76 @@ function App() {
 
         addStatusLog('info', 'Histogram: computing statistics...');
         const hists = {};
-        const autoLims = {};
+        let hasAnyStats = false;
         for (const ch of ['R', 'G', 'B']) {
           hists[ch] = computeChannelStats(rawValues[ch], useDecibels);
-          autoLims[ch] = hists[ch] ? [hists[ch].p2, hists[ch].p98] : [0, 1];
+          if (hists[ch]) hasAnyStats = true;
         }
-        setHistogramData(hists);
-        setRgbContrastLimits(autoLims);
-        addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`);
+        if (hasAnyStats) {
+          setHistogramData(hists);
+          addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`);
+        } else {
+          addStatusLog('info', `${scopeLabel} histogram: no valid pixels in region`);
+        }
       } else {
         // Single-band histogram — pass origin offset for correct viewport sampling
+        console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', useDecibels);
         const stats = await sampleViewportStats(
           imageData.getTile, regionW, regionH, useDecibels, 128,
           regionX, regionY, imageData.height,
           (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
         );
+        console.log('[histogram] single-band stats:', stats ? { p2: stats.p2, p98: stats.p98, count: stats.count } : null);
         if (stats) {
+          console.log('[histogram] CALLING setHistogramData, new min:', stats.min.toFixed(2), 'max:', stats.max.toFixed(2), 'count:', stats.count);
           setHistogramData({ single: stats });
           addStatusLog('success', `${scopeLabel} histogram: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)}`);
+        } else {
+          console.log('[histogram] single-band: no stats returned');
         }
       }
     } catch (e) {
+      console.error('[histogram] recompute error:', e);
       addStatusLog('warning', 'Histogram recompute failed', e.message);
     }
-  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, addStatusLog]);
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, roi, addStatusLog]);
 
-  // Auto-recompute histogram when scope changes
-  const histogramScopeRef = useRef(histogramScope);
+  // Recompute histogram when scope changes
   useEffect(() => {
-    if (histogramScope !== histogramScopeRef.current) {
-      histogramScopeRef.current = histogramScope;
-      if (imageData) handleRecomputeHistogram();
-    }
-  }, [histogramScope, imageData, handleRecomputeHistogram]);
+    if (imageData) recomputeRef.current();
+  }, [histogramScope, imageData]);
 
   // Auto-show histogram overlay when histogram data becomes available
   useEffect(() => {
     if (histogramData) setShowHistogramOverlay(true);
   }, [histogramData]);
 
-  // Auto-recompute histogram when viewport changes (debounced 800ms)
-  const viewCenterX = viewCenter[0];
-  const viewCenterY = viewCenter[1];
+  // Fall back to global scope if ROI is cleared while in ROI scope
   useEffect(() => {
-    if (!imageData || !showHistogramOverlay) return;
+    if (!roi && histogramScope === 'roi') setHistogramScope('global');
+  }, [roi, histogramScope]);
+
+  // Auto-recompute histogram when viewport changes (viewport scope, debounced)
+  const recomputeRef = useRef(handleRecomputeHistogram);
+  recomputeRef.current = handleRecomputeHistogram;
+  const vcx = viewCenter[0];
+  const vcy = viewCenter[1];
+  useEffect(() => {
+    if (!imageData || !showHistogramOverlay || histogramScope !== 'viewport') return;
     const timer = setTimeout(() => {
-      handleRecomputeHistogram();
+      recomputeRef.current();
     }, 800);
     return () => clearTimeout(timer);
-  }, [viewCenterX, viewCenterY, viewZoom]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [vcx, vcy, viewZoom, imageData, showHistogramOverlay, histogramScope]);
+
+  // Auto-recompute histogram when ROI changes (ROI scope only)
+  useEffect(() => {
+    if (!imageData || !roi || histogramScope !== 'roi') return;
+    const timer = setTimeout(() => {
+      recomputeRef.current();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [roi, imageData, histogramScope]);
 
   // Recompute histogram when switching between dB and linear mode
   const useDecibelsRef = useRef(useDecibels);
@@ -1360,12 +1607,14 @@ function App() {
             const tileSize = 256;
             const rawValues = { R: [], G: [], B: [] };
             // Sample center tile only — fast enough for remote
-            const cx = Math.floor(data.width / 2);
-            const cy = Math.floor(data.height / 2);
-            const half = Math.floor(data.width / 6);
+            // Use world-coordinate bounds for bbox
+            const [rcMinX, rcMinY, rcMaxX, rcMaxY] = data.bounds;
+            const rcCx = (rcMinX + rcMaxX) / 2;
+            const rcCy = (rcMinY + rcMaxY) / 2;
+            const rcHalf = (rcMaxX - rcMinX) / 6;
             const tileData = await data.getRGBTile({
               x: 0, y: 0, z: 0,
-              bbox: { left: cx - half, top: cy - half, right: cx + half, bottom: cy + half },
+              bbox: { left: rcCx - rcHalf, top: rcCy - rcHalf, right: rcCx + rcHalf, bottom: rcCy + rcHalf },
             });
             if (tileData && tileData.bands) {
               const rgbBands = computeRGBBands(tileData.bands, _histCompositeId, tileSize);
@@ -1396,7 +1645,12 @@ function App() {
         addStatusLog('info', 'Computing histogram in background...');
         (async () => {
           try {
-            const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
+            // Sample using world-coordinate bounds so getTile receives world-space bboxes
+            const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
+            const stats = await sampleViewportStats(
+              data.getTile, gMaxX - gMinX, gMaxY - gMinY, useDecibels, 128,
+              gMinX, gMinY,
+            );
             if (stats) {
               setHistogramData({ single: stats });
               setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
@@ -1486,20 +1740,23 @@ function App() {
           addStatusLog('info', 'Computing per-channel histograms (linear)...');
           const tileSize = 256;
           const gridSize = 3;
-          const stepX = data.width / gridSize;
-          const stepY = data.height / gridSize;
+          // Use world-coordinate bounds for bbox sampling
+          const [rgbMinX, rgbMinY, rgbMaxX, rgbMaxY] = data.bounds;
+          const stepX = (rgbMaxX - rgbMinX) / gridSize;
+          const stepY = (rgbMaxY - rgbMinY) / gridSize;
           const rawValues = { R: [], G: [], B: [] };
 
           for (let ty = 0; ty < gridSize; ty++) {
             for (let tx = 0; tx < gridSize; tx++) {
-              const left = tx * stepX;
-              const right = (tx + 1) * stepX;
-              const worldBottom = data.height - (ty + 1) * stepY;
-              const worldTop = data.height - ty * stepY;
+              const left = rgbMinX + tx * stepX;
+              const right = rgbMinX + (tx + 1) * stepX;
+              // OrthographicView bbox: top = min Y (south), bottom = max Y (north)
+              const top = rgbMinY + ty * stepY;
+              const bottom = rgbMinY + (ty + 1) * stepY;
 
               const tileData = await data.getRGBTile({
                 x: tx, y: ty, z: 0,
-                bbox: { left, top: worldBottom, right, bottom: worldTop },
+                bbox: { left, top, right, bottom },
               });
 
               if (tileData && tileData.bands) {
@@ -1530,7 +1787,12 @@ function App() {
             ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
         } else if (data.getTile) {
           addStatusLog('info', 'Computing histogram from tile samples...');
-          const stats = await sampleViewportStats(data.getTile, data.width, data.height, useDecibels);
+          // Sample using world-coordinate bounds so getTile receives world-space bboxes
+          const [hMinX, hMinY, hMaxX, hMaxY] = data.bounds;
+          const stats = await sampleViewportStats(
+            data.getTile, hMaxX - hMinX, hMaxY - hMinY, useDecibels, 128,
+            hMinX, hMinY,
+          );
           if (stats) {
             setHistogramData({ single: stats });
             // Keep decimal precision for dB values (don't round)
@@ -2894,7 +3156,7 @@ function App() {
           <CollapsibleSection title="Display">
             
             {/* Colormap selector — hidden in RGB composite mode */}
-            {displayMode !== 'rgb' && (
+            {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
                 <label>Colormap</label>
                 <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
@@ -3059,6 +3321,93 @@ function App() {
                     Shift+drag on image to select ROI for export
                   </div>
                 )}
+
+                {/* Load RGB Composite into ROI */}
+                {roi && nisarFile && availableComposites.length > 0 && displayMode === 'single' && (
+                  <div style={{
+                    marginTop: '4px', padding: '4px 8px',
+                    background: 'rgba(78, 201, 212, 0.06)',
+                    border: '1px solid rgba(78, 201, 212, 0.2)',
+                    borderRadius: 'var(--radius-sm)',
+                  }}>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      <select
+                        value={roiCompositeId || ''}
+                        onChange={(e) => setRoiCompositeId(e.target.value || null)}
+                        style={{
+                          flex: 1, fontSize: '0.65rem',
+                          background: 'var(--surface-2)', color: 'var(--text)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 'var(--radius-sm)', padding: '2px 4px',
+                        }}
+                      >
+                        <option value="">Select composite...</option>
+                        {availableComposites.map(c => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleLoadRoiRGB}
+                        disabled={!roiCompositeId || roiRGBLoading}
+                        style={{
+                          fontSize: '0.65rem', padding: '3px 8px',
+                          background: roiCompositeId ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
+                          border: '1px solid rgba(78, 201, 212, 0.3)',
+                          color: '#4ec9d4', borderRadius: 'var(--radius-sm)',
+                          cursor: roiCompositeId ? 'pointer' : 'default',
+                          opacity: roiCompositeId ? 1 : 0.4,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {roiRGBLoading ? 'Loading...' : 'RGB in ROI'}
+                      </button>
+                    </div>
+                    {roiRGBData && (
+                      <div style={{ fontSize: '0.6rem', color: '#4ec9d4', marginTop: '2px' }}>
+                        RGB overlay active ({roiCompositeId})
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* WKT ROI Input */}
+                <div style={{ marginTop: '4px' }}>
+                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      value={wktInput}
+                      onChange={(e) => { setWktInput(e.target.value); setWktError(null); }}
+                      onKeyDown={(e) => e.key === 'Enter' && handleWktApply()}
+                      placeholder="BBOX(west, south, east, north) or POLYGON(...)"
+                      style={{
+                        flex: 1, fontSize: '0.65rem',
+                        background: 'var(--surface-2)', color: 'var(--text)',
+                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)', padding: '3px 6px',
+                        fontFamily: "'JetBrains Mono', monospace",
+                      }}
+                    />
+                    <button
+                      onClick={handleWktApply}
+                      disabled={!wktInput.trim()}
+                      style={{
+                        fontSize: '0.65rem', padding: '3px 8px',
+                        background: wktInput.trim() ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
+                        border: '1px solid rgba(255, 200, 50, 0.3)',
+                        color: '#ffc832', borderRadius: 'var(--radius-sm)',
+                        cursor: wktInput.trim() ? 'pointer' : 'default',
+                        opacity: wktInput.trim() ? 1 : 0.4,
+                      }}
+                    >
+                      Apply
+                    </button>
+                  </div>
+                  {wktError && (
+                    <div style={{ color: '#e74c3c', fontSize: '0.6rem', marginTop: '2px' }}>
+                      {wktError}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -3110,44 +3459,85 @@ function App() {
             {histogramData && (
               <div className="control-group" style={{ marginBottom: '6px' }}>
                 <div style={{ display: 'flex', gap: '4px' }}>
-                  {['global', 'viewport'].map(scope => (
-                    <button
-                      key={scope}
-                      className={histogramScope === scope ? '' : 'btn-secondary'}
-                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
-                      onClick={() => {
-                        if (histogramScope === scope) {
-                          // Already active — re-run (e.g. viewport after pan/zoom)
-                          handleRecomputeHistogram();
-                        } else {
-                          setHistogramScope(scope);
-                        }
-                      }}
-                    >
-                      {scope === 'global' ? 'Global' : 'Viewport'}
-                    </button>
-                  ))}
+                  {['global', 'viewport', 'roi'].map(scope => {
+                    const label = scope === 'global' ? 'Global' : scope === 'viewport' ? 'Viewport' : 'ROI';
+                    const disabled = scope === 'roi' && !roi;
+                    return (
+                      <button
+                        key={scope}
+                        className={histogramScope === scope ? '' : 'btn-secondary'}
+                        style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px', opacity: disabled ? 0.4 : 1 }}
+                        disabled={disabled}
+                        onClick={() => {
+                          if (histogramScope === scope) {
+                            // Already active — re-run
+                            handleRecomputeHistogram();
+                          } else {
+                            setHistogramScope(scope);
+                          }
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
 
-            {/* RGB per-channel histograms */}
-            {displayMode === 'rgb' && histogramData && (
+            {/* Active viewer indicator when split view */}
+            {roiRGBData && (
+              <div className="control-group" style={{ padding: '2px 0' }}>
+                <div style={{
+                  display: 'flex', gap: '4px', fontSize: '0.65rem',
+                }}>
+                  <button
+                    onClick={() => setActiveViewer('main')}
+                    style={{
+                      flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
+                      background: activeViewer === 'main' ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
+                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--border)',
+                      color: activeViewer === 'main' ? '#ffc832' : 'var(--text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Main
+                  </button>
+                  <button
+                    onClick={() => setActiveViewer('roi-rgb')}
+                    style={{
+                      flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
+                      background: activeViewer === 'roi-rgb' ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
+                      border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--border)',
+                      color: activeViewer === 'roi-rgb' ? '#4ec9d4' : 'var(--text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ROI RGB
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* RGB per-channel histograms (main RGB mode or ROI RGB viewer) */}
+            {sidebarDisplayMode === 'rgb' && sidebarHistogramData && (
               <HistogramPanel
-                histograms={histogramData}
+                histograms={sidebarHistogramData}
                 mode="rgb"
-                contrastLimits={rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }}
-                useDecibels={useDecibels}
-                onContrastChange={setRgbContrastLimits}
+                contrastLimits={sidebarIsRoiRGB
+                  ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
+                  : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })}
+                useDecibels={sidebarIsRoiRGB ? false : useDecibels}
+                onContrastChange={sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
               />
             )}
 
-            {/* Single-band histogram */}
-            {displayMode !== 'rgb' && histogramData?.single && (
+            {/* Single-band histogram (main viewer only) */}
+            {sidebarDisplayMode !== 'rgb' && sidebarHistogramData?.single && (
               <HistogramPanel
-                histograms={histogramData}
+                histograms={sidebarHistogramData}
                 mode="single"
                 contrastLimits={contrastLimits}
                 useDecibels={useDecibels}
@@ -3160,8 +3550,8 @@ function App() {
               />
             )}
 
-            {/* Brightness (Window/Level) slider — shifts window center */}
-            {displayMode !== 'rgb' && (
+            {/* Brightness (Window/Level) slider — shifts window center (single-band only) */}
+            {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <label>Brightness</label>
@@ -3286,44 +3676,105 @@ function App() {
           )}
 
           {(imageData || fileType === 'stac') && (
-            <SARViewer
-              ref={viewerRef}
-              cogUrl={imageData?.cogUrl}
-              getTile={imageData?.getTile}
-              tileVersion={tileVersion}
-              imageData={imageData?.data ? imageData : null}
-              bounds={imageData?.bounds || [-180, -90, 180, 90]}
-              contrastLimits={effectiveContrastLimits}
-              useDecibels={useDecibels}
-              colormap={colormap}
-              gamma={gamma}
-              stretchMode={stretchMode}
-              compositeId={displayMode === 'rgb' ? compositeId : null}
-              multiLook={multiLook}
-              useMask={useMask}
-              showGrid={showGrid}
-              opacity={1}
-              // toneMapping={toneMapping}  // hidden — see tone mapping NOTE above
-              width="100%"
-              height="100%"
-              onViewStateChange={handleViewStateChange}
-              initialViewState={initialViewState}
-              extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
-              roi={roi}
-              onROIChange={setROI}
-              imageWidth={imageData?.sourceWidth || imageData?.width}
-              imageHeight={imageData?.sourceHeight || imageData?.height}
-              getPixelValue={imageData?.getPixelValue}
-              pixelExplorer={pixelExplorer}
-              pixelWindowSize={pixelWindowSize}
-              xCoords={imageData?.xCoords}
-              yCoords={imageData?.yCoords}
-              roiProfile={null}
-              profileShow={{ v: false, h: false, i: false }}
-              classificationMap={classifierOpen ? classificationMap : null}
-              classRegions={classRegions}
-              classifierRoiDims={classifierRoiDims}
-            />
+            <div style={{ display: 'flex', width: '100%', height: '100%' }}>
+              {/* Main viewer (single-channel full extent) */}
+              <div
+                onClick={() => roiRGBData && setActiveViewer('main')}
+                style={{
+                  flex: 1, position: 'relative', height: '100%',
+                  outline: roiRGBData && activeViewer === 'main' ? '2px solid #ffc832' : 'none',
+                  outlineOffset: '-2px',
+                }}>
+                <SARViewer
+                  ref={viewerRef}
+                  cogUrl={imageData?.cogUrl}
+                  getTile={imageData?.getTile}
+                  tileVersion={tileVersion}
+                  imageData={imageData?.data ? imageData : null}
+                  bounds={imageData?.bounds || [-180, -90, 180, 90]}
+                  contrastLimits={effectiveContrastLimits}
+                  useDecibels={useDecibels}
+                  colormap={colormap}
+                  gamma={gamma}
+                  stretchMode={stretchMode}
+                  compositeId={displayMode === 'rgb' ? compositeId : null}
+                  multiLook={multiLook}
+                  useMask={useMask}
+                  showGrid={showGrid}
+                  opacity={1}
+                  width="100%"
+                  height="100%"
+                  onViewStateChange={handleViewStateChange}
+                  initialViewState={initialViewState}
+                  extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
+                  roi={roi}
+                  onROIChange={setROI}
+                  imageWidth={imageData?.sourceWidth || imageData?.width}
+                  imageHeight={imageData?.sourceHeight || imageData?.height}
+                  getPixelValue={imageData?.getPixelValue}
+                  pixelExplorer={pixelExplorer}
+                  pixelWindowSize={pixelWindowSize}
+                  xCoords={imageData?.xCoords}
+                  yCoords={imageData?.yCoords}
+                  roiProfile={null}
+                  profileShow={{ v: false, h: false, i: false }}
+                  classificationMap={classifierOpen ? classificationMap : null}
+                  classRegions={classRegions}
+                  classifierRoiDims={classifierRoiDims}
+                />
+              </div>
+
+              {/* ROI RGB viewer (side-by-side, only when ROI RGB loaded) */}
+              {roiRGBData && roiRGBBounds && roiRGBContrastLimits && (
+                <>
+                  <div style={{
+                    width: '3px', background: 'var(--border)',
+                    flexShrink: 0,
+                  }} />
+                  <div
+                    onClick={() => setActiveViewer('roi-rgb')}
+                    style={{
+                      flex: 1, position: 'relative', height: '100%',
+                      outline: activeViewer === 'roi-rgb' ? '2px solid #4ec9d4' : 'none',
+                      outlineOffset: '-2px',
+                    }}>
+                    <div style={{
+                      position: 'absolute', top: '8px', left: '8px', zIndex: 10,
+                      background: 'rgba(0,0,0,0.7)', color: '#4ec9d4',
+                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
+                      fontSize: '0.7rem', pointerEvents: 'none',
+                    }}>
+                      ROI RGB: {roiCompositeId}
+                    </div>
+                    <button
+                      onClick={() => { setRoiRGBData(null); setRoiRGBBounds(null); setRoiRGBContrastLimits(null); setRoiRGBHistogramData(null); setActiveViewer('main'); }}
+                      style={{
+                        position: 'absolute', top: '8px', right: '8px', zIndex: 10,
+                        background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                        padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                      }}
+                    >
+                      Close
+                    </button>
+                    <SARViewer
+                      getTile={roiRGBData.getTile}
+                      bounds={roiRGBBounds}
+                      contrastLimits={roiRGBContrastLimits}
+                      useDecibels={false}
+                      colormap={colormap}
+                      gamma={gamma}
+                      stretchMode={stretchMode}
+                      compositeId={roiCompositeId}
+                      showGrid={showGrid}
+                      opacity={1}
+                      width="100%"
+                      height="100%"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
           )}
 
           {/* Overview Map — toggleable overlay, bottom-left */}

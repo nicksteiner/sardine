@@ -302,19 +302,20 @@ export async function sampleViewportStats(
   const stepY = regionHeight / gridSize;
   const allValues = [];
 
-  // Build tile requests
+  // Build tile requests — pass world-coordinate bboxes directly.
+  // getTile handles world→pixel conversion internally.
   const tileRequests = [];
   for (let ty = 0; ty < gridSize; ty++) {
     for (let tx = 0; tx < gridSize; tx++) {
       const left = originX + tx * stepX;
       const right = originX + (tx + 1) * stepX;
-      const worldBottom = imgH - (originY + (ty + 1) * stepY);
-      const worldTop = imgH - (originY + ty * stepY);
+      const top = originY + ty * stepY;
+      const bottom = originY + (ty + 1) * stepY;
 
       tileRequests.push({
         promise: getTile({
           x: tx, y: ty, z: 0,
-          bbox: { left, top: worldBottom, right, bottom: worldTop },
+          bbox: { left, top, right, bottom },
         }),
         tx, ty,
       });

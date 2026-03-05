@@ -42,9 +42,9 @@ export function CoordinateGrid({ viewState, bounds, width, height }) {
 
     const [cx, cy] = viewState.target || [0, 0];
 
-    // World → pixel transform
+    // World → pixel transform (Y negated: world Y+ = up, screen Y+ = down)
     const toX = (wx) => (wx - cx) * ppu + w / 2;
-    const toY = (wy) => (wy - cy) * ppu + h / 2;
+    const toY = (wy) => -(wy - cy) * ppu + h / 2;
 
     // Grid line style
     ctx.strokeStyle = 'rgba(30, 58, 95, 0.35)'; // --sardine-border at 35%

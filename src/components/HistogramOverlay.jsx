@@ -13,7 +13,7 @@
  *   - dB and linear scales
  *   - Contrast limit markers with percentile annotations
  */
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { SAR_COMPOSITES } from '../utils/sar-composites.js';
 import { generateHistogramSVG, downloadSVG } from '../utils/svg-export.js';
 
@@ -369,8 +369,20 @@ export function HistogramOverlay({
   onClose,          // () => void
 }) {
   const canvasRef = useRef(null);
+  const [drawCount, setDrawCount] = useState(0);
+  const renderCount = useRef(0);
+  renderCount.current++;
+  console.log('[histogram-overlay] RENDER #' + renderCount.current, 'fingerprint:', histograms?.single?.count || 'none');
 
-  // ── Draw ────────────────────────────────────────────────────────────────
+  // ── Fingerprint the histogram data so we can detect real changes ──
+  const dataFingerprint = histograms
+    ? Object.keys(histograms).map(k => {
+        const s = histograms[k];
+        return s ? `${k}:${s.min}:${s.max}:${s.count}` : k;
+      }).join('|')
+    : '';
+
+  // ── Draw on canvas ──
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !histograms) return;
@@ -378,6 +390,7 @@ export function HistogramOverlay({
     const rect = canvas.parentElement.getBoundingClientRect();
     const W = rect.width;
     const H = rect.height;
+    if (W === 0 || H === 0) return;
     canvas.width = W * DPR;
     canvas.height = H * DPR;
     canvas.style.width = `${W}px`;
@@ -385,18 +398,22 @@ export function HistogramOverlay({
 
     const ctx = canvas.getContext('2d');
     ctx.scale(DPR, DPR);
+    ctx.clearRect(0, 0, W, H);
 
     drawHistogramCanvas(ctx, W, H, {
       histograms, mode, contrastLimits, useDecibels,
       polarization, compositeId, compact: true,
     });
+  }, [dataFingerprint, mode, contrastLimits, useDecibels, polarization, compositeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  }, [histograms, mode, contrastLimits, useDecibels, polarization, compositeId]);
-
-  // ── Render on mount / data change / resize ──
+  // ── Redraw when draw function changes or manual refresh ──
   useEffect(() => {
-    draw();
-    const handleResize = () => draw();
+    requestAnimationFrame(() => draw());
+  }, [draw, drawCount]);
+
+  // ── Resize handler ──
+  useEffect(() => {
+    const handleResize = () => requestAnimationFrame(() => draw());
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [draw]);
@@ -443,6 +460,10 @@ export function HistogramOverlay({
           <span style={{ color: '#4ec9d4' }}>Histogram</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          <button onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
+            background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
+            fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
+          }}>&#8635;</button>
           <button onClick={handleExportSVG} title="Export SVG" style={{
             background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
             fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
@@ -452,6 +473,12 @@ export function HistogramOverlay({
             fontSize: 16, padding: '0 4px', lineHeight: 1,
           }}>&times;</button>
         </div>
+      </div>
+      {/* Debug: show stats as HTML to verify data flow */}
+      <div style={{ padding: '2px 12px', fontSize: 9, color: '#ff0', fontFamily: 'monospace' }}>
+        {histograms && Object.entries(histograms).map(([k, v]) =>
+          v ? <span key={k}>{k}: min={v.min?.toFixed(2)} max={v.max?.toFixed(2)} p2={v.p2?.toFixed(2)} p98={v.p98?.toFixed(2)} n={v.count} </span> : null
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
