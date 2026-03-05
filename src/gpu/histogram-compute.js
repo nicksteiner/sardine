@@ -108,8 +108,10 @@ fn reduceMain(
 `;
 
 const histogramShader = /* wgsl */ `
-// Pass 2: atomic histogram binning.
-// Reads input data, converts to value, bins into NUM_BINS buckets.
+// Pass 2: atomic histogram binning with workgroup-local accumulation.
+// Each workgroup accumulates into shared memory first, then flushes to
+// a per-workgroup chunk in global storage. This reduces global atomic
+// contention from O(elements) to O(workgroups × bins).
 
 struct Params {
   count: u32,
@@ -120,7 +122,10 @@ struct Params {
 
 @group(0) @binding(0) var<storage, read> inputData: array<f32>;
 @group(0) @binding(1) var<uniform> params: Params;
-@group(0) @binding(2) var<storage, read_write> bins: array<atomic<u32>, ${NUM_BINS}>;
+// Each workgroup writes its own chunk: chunks[wid.x * NUM_BINS + bin]
+@group(0) @binding(2) var<storage, read_write> chunks: array<atomic<u32>>;
+
+var<workgroup> localBins: array<atomic<u32>, ${NUM_BINS}>;
 
 fn toValue(raw: f32) -> f32 {
   if (raw <= 0.0 || raw != raw) {
@@ -133,21 +138,65 @@ fn toValue(raw: f32) -> f32 {
 }
 
 @compute @workgroup_size(${WORKGROUP_SIZE})
-fn histMain(@builtin(global_invocation_id) gid: vec3u) {
+fn histMain(
+  @builtin(global_invocation_id) gid: vec3u,
+  @builtin(local_invocation_id) lid: vec3u,
+  @builtin(workgroup_id) wid: vec3u,
+) {
+  // Zero local bins — each thread zeros one bin (WORKGROUP_SIZE >= NUM_BINS)
+  if (lid.x < ${NUM_BINS}u) {
+    atomicStore(&localBins[lid.x], 0u);
+  }
+  workgroupBarrier();
+
+  // Bin into workgroup-local shared memory
   let idx = gid.x;
-  if (idx >= params.count) { return; }
+  if (idx < params.count) {
+    let val = toValue(inputData[idx]);
+    if (val == val) {  // NaN check
+      let range = params.rangeMax - params.rangeMin;
+      if (range > 0.0) {
+        var bin = i32(floor((val - params.rangeMin) / range * f32(${NUM_BINS})));
+        bin = max(0, min(${NUM_BINS - 1}, bin));
+        atomicAdd(&localBins[bin], 1u);
+      }
+    }
+  }
 
-  let val = toValue(inputData[idx]);
-  // NaN check
-  if (val != val) { return; }
+  workgroupBarrier();
 
-  let range = params.rangeMax - params.rangeMin;
-  if (range <= 0.0) { return; }
+  // Flush local bins to per-workgroup chunk in global storage
+  if (lid.x < ${NUM_BINS}u) {
+    let count = atomicLoad(&localBins[lid.x]);
+    if (count > 0u) {
+      atomicStore(&chunks[wid.x * ${NUM_BINS}u + lid.x], count);
+    }
+  }
+}
+`;
 
-  var bin = i32(floor((val - params.rangeMin) / range * f32(${NUM_BINS})));
-  bin = max(0, min(${NUM_BINS - 1}, bin));
+const histReduceShader = /* wgsl */ `
+// Pass 3: reduce per-workgroup chunks into final histogram.
+// Each thread handles one bin, summing across all chunks.
 
-  atomicAdd(&bins[bin], 1u);
+struct Params {
+  numChunks: u32,
+};
+
+@group(0) @binding(0) var<storage, read> chunks: array<u32>;
+@group(0) @binding(1) var<uniform> params: Params;
+@group(0) @binding(2) var<storage, read_write> finalBins: array<atomic<u32>, ${NUM_BINS}>;
+
+@compute @workgroup_size(${NUM_BINS})
+fn histReduceMain(@builtin(global_invocation_id) gid: vec3u) {
+  let bin = gid.x;
+  if (bin >= ${NUM_BINS}u) { return; }
+
+  var total = 0u;
+  for (var c = 0u; c < params.numChunks; c++) {
+    total += chunks[c * ${NUM_BINS}u + bin];
+  }
+  atomicStore(&finalBins[bin], total);
 }
 `;
 
@@ -155,10 +204,11 @@ fn histMain(@builtin(global_invocation_id) gid: vec3u) {
 
 let _reducePipeline = null;
 let _histPipeline = null;
+let _histReducePipeline = null;
 let _pipelineDevice = null;
 
 async function ensurePipelines(device) {
-  if (_pipelineDevice === device && _reducePipeline && _histPipeline) return;
+  if (_pipelineDevice === device && _reducePipeline && _histPipeline && _histReducePipeline) return;
 
   _reducePipeline = device.createComputePipeline({
     layout: 'auto',
@@ -173,6 +223,14 @@ async function ensurePipelines(device) {
     compute: {
       module: device.createShaderModule({ code: histogramShader }),
       entryPoint: 'histMain',
+    },
+  });
+
+  _histReducePipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({ code: histReduceShader }),
+      entryPoint: 'histReduceMain',
     },
   });
 
@@ -284,19 +342,18 @@ export async function computeHistogramGPU(data, { useDecibels = true, numBins = 
 
   const globalMean = globalSum / globalCount;
 
-  // ── Pass 2: Histogram binning ─────────────────────────────────────────
-  const histBinBuffer = device.createBuffer({
-    size: numBins * 4,
+  // ── Pass 2: Workgroup-local histogram binning ──────────────────────────
+  // Each workgroup accumulates into shared memory, then writes its chunk
+  // to a per-workgroup slot in the chunks buffer.
+  const chunksSize = numWorkgroups * numBins * 4;
+  const chunksBuffer = device.createBuffer({
+    size: chunksSize,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
   });
-  const histReadBuffer = device.createBuffer({
-    size: numBins * 4,
-    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
-  });
 
-  // Zero-initialize the bin buffer
-  const zeros = new Uint32Array(numBins);
-  device.queue.writeBuffer(histBinBuffer, 0, zeros);
+  // Zero-initialize chunks buffer
+  const chunksZeros = new Uint32Array(numWorkgroups * numBins);
+  device.queue.writeBuffer(chunksBuffer, 0, chunksZeros);
 
   const histParamsData = new ArrayBuffer(16);
   new Uint32Array(histParamsData, 0, 1)[0] = elementCount;
@@ -314,7 +371,7 @@ export async function computeHistogramGPU(data, { useDecibels = true, numBins = 
     entries: [
       { binding: 0, resource: { buffer: inputBuffer } },
       { binding: 1, resource: { buffer: histParamsBuffer } },
-      { binding: 2, resource: { buffer: histBinBuffer } },
+      { binding: 2, resource: { buffer: chunksBuffer } },
     ],
   });
 
@@ -324,13 +381,48 @@ export async function computeHistogramGPU(data, { useDecibels = true, numBins = 
   pass.setBindGroup(0, histBindGroup);
   pass.dispatchWorkgroups(numWorkgroups);
   pass.end();
-  encoder.copyBufferToBuffer(histBinBuffer, 0, histReadBuffer, 0, numBins * 4);
   device.queue.submit([encoder.finish()]);
 
-  // Read back histogram
-  await histReadBuffer.mapAsync(GPUMapMode.READ);
-  const binsU32 = new Uint32Array(histReadBuffer.getMappedRange().slice(0));
-  histReadBuffer.unmap();
+  // ── Pass 3: Reduce chunks into final histogram ────────────────────────
+  const finalBinBuffer = device.createBuffer({
+    size: numBins * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+  });
+  const finalReadBuffer = device.createBuffer({
+    size: numBins * 4,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+
+  const reduceHistParamsData = new ArrayBuffer(16); // pad to 16 for uniform alignment
+  new Uint32Array(reduceHistParamsData, 0, 1)[0] = numWorkgroups;
+  const reduceHistParamsBuffer = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(reduceHistParamsBuffer, 0, reduceHistParamsData);
+
+  const reduceHistBindGroup = device.createBindGroup({
+    layout: _histReducePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: chunksBuffer } },
+      { binding: 1, resource: { buffer: reduceHistParamsBuffer } },
+      { binding: 2, resource: { buffer: finalBinBuffer } },
+    ],
+  });
+
+  encoder = device.createCommandEncoder();
+  pass = encoder.beginComputePass();
+  pass.setPipeline(_histReducePipeline);
+  pass.setBindGroup(0, reduceHistBindGroup);
+  pass.dispatchWorkgroups(1); // NUM_BINS threads in one workgroup
+  pass.end();
+  encoder.copyBufferToBuffer(finalBinBuffer, 0, finalReadBuffer, 0, numBins * 4);
+  device.queue.submit([encoder.finish()]);
+
+  // Read back final histogram
+  await finalReadBuffer.mapAsync(GPUMapMode.READ);
+  const binsU32 = new Uint32Array(finalReadBuffer.getMappedRange().slice(0));
+  finalReadBuffer.unmap();
 
   // ── Percentile walk (CPU — trivial on 256 bins) ───────────────────────
   const binWidth = (globalMax - globalMin) / numBins;
@@ -361,9 +453,11 @@ export async function computeHistogramGPU(data, { useDecibels = true, numBins = 
   reduceResultBuffer.destroy();
   reduceReadBuffer.destroy();
   reduceParamsBuffer.destroy();
-  histBinBuffer.destroy();
-  histReadBuffer.destroy();
+  chunksBuffer.destroy();
   histParamsBuffer.destroy();
+  finalBinBuffer.destroy();
+  finalReadBuffer.destroy();
+  reduceHistParamsBuffer.destroy();
 
   return {
     bins,
