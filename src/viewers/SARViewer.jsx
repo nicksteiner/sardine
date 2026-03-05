@@ -34,6 +34,8 @@ export const SARViewer = forwardRef(function SARViewer({
   compositeId = null, // SAR RGB composite ID (null = single band)
   multiLook = false,  // Multi-look mode (area-averaged resampling)
   useMask = false,    // Apply NISAR mask (0=invalid, 255=fill → transparent)
+  speckleFilterType = 'none', // Speckle filter type ('none' | 'boxcar' | 'lee' | etc.)
+  speckleKernelSize = 7,      // Speckle filter kernel size (3–11, odd)
   showGrid = true,    // Show coordinate grid + corner coordinates
   opacity = 1,
   toneMapping, // Tone mapping configuration
@@ -225,13 +227,15 @@ export const SARViewer = forwardRef(function SARViewer({
           opacity,
           multiLook,
           useMask,
+          speckleFilterType,
+          speckleKernelSize,
         }),
       ];
     }
 
     return [];
   // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
-  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, toneMapping, handleLoadingChange, redrawTick]);
+  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, speckleFilterType, speckleKernelSize, toneMapping, handleLoadingChange, redrawTick]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;
