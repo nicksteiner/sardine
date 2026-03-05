@@ -3,6 +3,7 @@ import { getColormap } from '../utils/colormap.js';
 import { computeRGBBands } from '../utils/sar-composites.js';
 import { applyStretch } from '../utils/stretch.js';
 import { SARGPULayer } from './SARGPULayer.js';
+import { applySpeckleFilter } from '../gpu/spatial-filter.js';
 
 /**
  * SARTileLayer - A deck.gl TileLayer specialized for SAR imagery
@@ -26,6 +27,8 @@ export class SARTileLayer extends TileLayer {
       opacity = 1,
       multiLook = false,
       useMask = false,
+      speckleFilterType = 'none',
+      speckleKernelSize = 7,
       minZoom,
       maxZoom = 20,
       tileSize = 256,
@@ -44,11 +47,36 @@ export class SARTileLayer extends TileLayer {
     if (computedMinZoom === undefined) computedMinZoom = -8;
 
     // dB/colormap/contrast are applied in renderSubLayers (instant).
-    const layerId = `${props.id || 'sar-tile-layer'}-${multiLook ? 'ml' : 'nn'}`;
+    // Include filter params in layer ID so tiles are re-processed when filter changes.
+    const filterSuffix = speckleFilterType !== 'none' ? `-${speckleFilterType}${speckleKernelSize}` : '';
+    const layerId = `${props.id || 'sar-tile-layer'}-${multiLook ? 'ml' : 'nn'}${filterSuffix}`;
+
+    // Helper: apply speckle filter to tile data bands
+    const filterTileData = async (tileData) => {
+      if (!tileData || speckleFilterType === 'none') return tileData;
+      const { width, height } = tileData;
+      if (tileData.data) {
+        tileData.data = await applySpeckleFilter(tileData.data, width, height, {
+          type: speckleFilterType,
+          kernelSize: speckleKernelSize,
+        });
+      }
+      if (tileData.bands) {
+        const filtered = {};
+        for (const [name, band] of Object.entries(tileData.bands)) {
+          filtered[name] = await applySpeckleFilter(band, width, height, {
+            type: speckleFilterType,
+            kernelSize: speckleKernelSize,
+          });
+        }
+        tileData.bands = filtered;
+      }
+      return tileData;
+    };
 
     // Use external getTileData if provided (stable reference from SARViewer),
     // otherwise create a default closure from getTile + multiLook.
-    const getTileDataFn = externalGetTileData || (async (tile) => {
+    const baseFn = externalGetTileData || (async (tile) => {
       const { bbox } = tile;
       const tileData = await getTile({
         x: tile.index.x,
@@ -60,6 +88,12 @@ export class SARTileLayer extends TileLayer {
       if (!tileData) return null;
       return tileData;
     });
+
+    // Wrap to apply speckle filter after loading
+    const getTileDataFn = async (tile) => {
+      const tileData = await baseFn(tile);
+      return filterTileData(tileData);
+    };
 
     super({
       id: layerId,

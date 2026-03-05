@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SARdine WebGPU Compute Benchmark</title>
+  <link rel="stylesheet" href="../../src/theme/sardine-theme.css">
+  <style>
+    body {
+      padding: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+      font-family: var(--font-body);
+    }
+    body::after { display: none; }
+
+    h1 {
+      font-family: var(--font-mono);
+      color: var(--sardine-cyan);
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      margin-bottom: 24px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      align-items: flex-end;
+    }
+    .controls button {
+      padding: 8px 16px;
+      font-size: 0.75rem;
+    }
+    .controls select, .controls input {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      padding: 8px 12px;
+      background: var(--sardine-bg);
+      color: var(--text-primary);
+      border: 1px solid var(--sardine-border);
+      border-radius: var(--radius-sm);
+    }
+    .controls label {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    #status {
+      background: var(--sardine-bg-panel);
+      border: 1px solid var(--sardine-border);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      margin-bottom: 16px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      display: none;
+    }
+    #status.visible { display: block; }
+
+    #log {
+      background: var(--sardine-bg);
+      border: 1px solid var(--sardine-border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      white-space: pre-wrap;
+      max-height: 500px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+    .log-header { color: var(--sardine-cyan); font-weight: bold; }
+    .log-pass   { color: var(--sardine-green, #3dd68c); }
+    .log-warn   { color: var(--sardine-orange, #e8a838); }
+    .log-dim    { color: var(--text-muted); }
+    .log-info   { color: var(--text-primary); }
+    .log-error  { color: #ff6b6b; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+    }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      background: var(--sardine-bg-panel);
+      color: var(--sardine-cyan);
+      border-bottom: 2px solid var(--sardine-border);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      font-size: 0.65rem;
+    }
+    td {
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--sardine-border-subtle, rgba(255,255,255,0.05));
+      color: var(--text-primary);
+    }
+    tr.winner td { background: rgba(78, 201, 212, 0.05); }
+    .speedup { color: var(--sardine-cyan); font-weight: bold; }
+    .slower  { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>WebGPU Compute Benchmark</h1>
+  <div class="subtitle">Histogram + Spatial Filter — GPU vs CPU</div>
+
+  <div class="controls">
+    <label>
+      Data size:
+      <select id="dataSize">
+        <option value="256">256×256 (65K px)</option>
+        <option value="512" selected>512×512 (262K px)</option>
+        <option value="1024">1024×1024 (1M px)</option>
+        <option value="2048">2048×2048 (4M px)</option>
+        <option value="4096">4096×4096 (16M px)</option>
+      </select>
+    </label>
+    <label>
+      Iterations:
+      <input type="number" id="iterations" value="20" min="3" max="200" style="width:70px">
+    </label>
+    <label>
+      Filter kernel:
+      <select id="kernelSize">
+        <option value="3">3×3</option>
+        <option value="5">5×5</option>
+        <option value="7" selected>7×7</option>
+        <option value="11">11×11</option>
+      </select>
+    </label>
+    <button onclick="runAllBenchmarks()">Run All</button>
+    <button onclick="runHistogramBench()">Histogram Only</button>
+    <button onclick="runFilterBench()">Filters Only</button>
+    <button class="btn-secondary" onclick="clearLog()">Clear</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="log"></div>
+  <div id="results-table"></div>
+
+  <script type="module">
+    import { hasWebGPU } from '../../src/gpu/webgpu-device.js';
+    import { computeHistogramGPU } from '../../src/gpu/histogram-compute.js';
+    import { applySpeckleFilter } from '../../src/gpu/spatial-filter.js';
+    import { computeChannelStats } from '../../src/utils/stats.js';
+
+    const logEl = document.getElementById('log');
+    const resultsEl = document.getElementById('results-table');
+    const statusEl = document.getElementById('status');
+    const allResults = [];
+
+    function log(text, cls = 'info') {
+      const span = document.createElement('span');
+      span.className = `log-${cls}`;
+      span.textContent = text + '\n';
+      logEl.appendChild(span);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function header(text) {
+      const span = document.createElement('span');
+      span.className = 'log-header';
+      span.textContent = '\n' + text + '\n';
+      logEl.appendChild(span);
+    }
+
+    function showStatus(html) {
+      statusEl.innerHTML = html;
+      statusEl.classList.add('visible');
+    }
+
+    window.clearLog = () => {
+      logEl.innerHTML = '';
+      resultsEl.innerHTML = '';
+      allResults.length = 0;
+      statusEl.classList.remove('visible');
+    };
+
+    // ─── Synthetic SAR data ─────────────────────────────────────────────
+
+    function generateSARData(size) {
+      const n = size * size;
+      const data = new Float32Array(n);
+      // Log-normal distribution approximating real SAR backscatter
+      for (let i = 0; i < n; i++) {
+        data[i] = Math.exp(Math.random() * 6 - 3) * 0.01;
+      }
+      // Sprinkle 5% nodata (zero/NaN) like real SAR
+      for (let i = 0; i < n * 0.05; i++) {
+        const idx = Math.floor(Math.random() * n);
+        data[idx] = i % 2 === 0 ? 0 : NaN;
+      }
+      return data;
+    }
+
+    // ─── Timing helper ──────────────────────────────────────────────────
+
+    async function timeAsync(fn, warmup = 2, iterations = 10) {
+      // Warmup (compiles pipelines, JIT, caches)
+      for (let i = 0; i < warmup; i++) {
+        await fn();
+      }
+
+      // Timed runs
+      const times = [];
+      for (let i = 0; i < iterations; i++) {
+        const t0 = performance.now();
+        await fn();
+        times.push(performance.now() - t0);
+      }
+
+      times.sort((a, b) => a - b);
+      const median = times[Math.floor(times.length / 2)];
+      const mean = times.reduce((s, t) => s + t, 0) / times.length;
+      const min = times[0];
+      const max = times[times.length - 1];
+      const p95 = times[Math.floor(times.length * 0.95)];
+
+      return { median, mean, min, max, p95, times };
+    }
+
+    function timeSync(fn, warmup = 2, iterations = 10) {
+      for (let i = 0; i < warmup; i++) fn();
+
+      const times = [];
+      for (let i = 0; i < iterations; i++) {
+        const t0 = performance.now();
+        fn();
+        times.push(performance.now() - t0);
+      }
+
+      times.sort((a, b) => a - b);
+      const median = times[Math.floor(times.length / 2)];
+      const mean = times.reduce((s, t) => s + t, 0) / times.length;
+      const min = times[0];
+      const max = times[times.length - 1];
+      const p95 = times[Math.floor(times.length * 0.95)];
+
+      return { median, mean, min, max, p95, times };
+    }
+
+    function fmtMs(ms) {
+      if (ms < 1) return `${(ms * 1000).toFixed(0)} µs`;
+      if (ms < 100) return `${ms.toFixed(2)} ms`;
+      return `${ms.toFixed(0)} ms`;
+    }
+
+    // ─── Histogram benchmark ────────────────────────────────────────────
+
+    async function benchHistogram(data, iterations) {
+      const size = Math.sqrt(data.length);
+      header(`── Histogram  ${size}×${size} (${(data.length / 1e6).toFixed(2)}M px)  ${iterations} iters ──`);
+
+      // CPU path
+      log('CPU histogram (stats.js)...', 'dim');
+      const cpuResult = timeSync(
+        () => computeChannelStats(data, true, 256, 1),
+        2, iterations
+      );
+      log(`  CPU median: ${fmtMs(cpuResult.median)}  (min ${fmtMs(cpuResult.min)}, p95 ${fmtMs(cpuResult.p95)})`, 'info');
+
+      // GPU path
+      let gpuResult = null;
+      if (hasWebGPU()) {
+        log('GPU histogram (WebGPU compute)...', 'dim');
+        gpuResult = await timeAsync(
+          () => computeHistogramGPU(data, { useDecibels: true, numBins: 256 }),
+          2, iterations
+        );
+        log(`  GPU median: ${fmtMs(gpuResult.median)}  (min ${fmtMs(gpuResult.min)}, p95 ${fmtMs(gpuResult.p95)})`, 'info');
+
+        const speedup = cpuResult.median / gpuResult.median;
+        const cls = speedup > 1 ? 'pass' : 'warn';
+        log(`  Speedup: ${speedup.toFixed(1)}× (GPU ${speedup > 1 ? 'faster' : 'slower'})`, cls);
+      } else {
+        log('  WebGPU not available — GPU path skipped', 'warn');
+      }
+
+      // Verify results match
+      if (gpuResult) {
+        const cpuStats = computeChannelStats(data, true, 256, 1);
+        const gpuStats = await computeHistogramGPU(data, { useDecibels: true, numBins: 256 });
+
+        const minDiff = Math.abs(cpuStats.min - gpuStats.min);
+        const maxDiff = Math.abs(cpuStats.max - gpuStats.max);
+        const meanDiff = Math.abs(cpuStats.mean - gpuStats.mean);
+        const p2Diff = Math.abs(cpuStats.p2 - gpuStats.p2);
+        const p98Diff = Math.abs(cpuStats.p98 - gpuStats.p98);
+
+        const tolerance = 0.5; // dB
+        const allClose = minDiff < tolerance && maxDiff < tolerance &&
+                         meanDiff < tolerance && p2Diff < tolerance && p98Diff < tolerance;
+
+        if (allClose) {
+          log(`  ✓ Results match (max Δ: ${Math.max(minDiff, maxDiff, meanDiff).toFixed(3)} dB)`, 'pass');
+        } else {
+          log(`  ⚠ Results diverge: Δmin=${minDiff.toFixed(2)} Δmax=${maxDiff.toFixed(2)} Δmean=${meanDiff.toFixed(2)} Δp2=${p2Diff.toFixed(2)} Δp98=${p98Diff.toFixed(2)}`, 'warn');
+        }
+      }
+
+      allResults.push({
+        test: 'Histogram',
+        size: `${size}×${size}`,
+        pixels: data.length,
+        cpuMs: cpuResult.median,
+        gpuMs: gpuResult?.median ?? null,
+        speedup: gpuResult ? cpuResult.median / gpuResult.median : null,
+      });
+    }
+
+    // ─── Spatial filter benchmark ───────────────────────────────────────
+
+    async function benchFilter(data, size, filterType, kernelSize, iterations) {
+      header(`── ${filterType} ${kernelSize}×${kernelSize}  ${size}×${size} (${(data.length / 1e6).toFixed(2)}M px)  ${iterations} iters ──`);
+
+      // Force CPU path by temporarily making WebGPU "unavailable"
+      // We do this by calling the filter with a flag, or just timing the
+      // CPU fallback directly. The applySpeckleFilter function falls back
+      // to CPU when WebGPU isn't available, but we can't easily force it.
+      // Instead, we'll import the CPU fallback path separately.
+
+      // CPU path — call applySpeckleFilter with WebGPU disabled
+      log(`CPU ${filterType} (JS fallback)...`, 'dim');
+      const cpuResult = await timeAsync(
+        () => applySpeckleFilter(data, size, size, {
+          type: filterType,
+          kernelSize,
+          enl: 4,
+          _forceBackend: 'cpu',
+        }),
+        1, iterations
+      );
+      log(`  CPU median: ${fmtMs(cpuResult.median)}  (min ${fmtMs(cpuResult.min)}, p95 ${fmtMs(cpuResult.p95)})`, 'info');
+
+      // GPU path
+      let gpuResult = null;
+      if (hasWebGPU()) {
+        log(`GPU ${filterType} (WebGPU compute)...`, 'dim');
+        gpuResult = await timeAsync(
+          () => applySpeckleFilter(data, size, size, {
+            type: filterType,
+            kernelSize,
+            enl: 4,
+            _forceBackend: 'gpu',
+          }),
+          1, iterations
+        );
+        log(`  GPU median: ${fmtMs(gpuResult.median)}  (min ${fmtMs(gpuResult.min)}, p95 ${fmtMs(gpuResult.p95)})`, 'info');
+
+        const speedup = cpuResult.median / gpuResult.median;
+        const cls = speedup > 1 ? 'pass' : 'warn';
+        log(`  Speedup: ${speedup.toFixed(1)}× (GPU ${speedup > 1 ? 'faster' : 'slower'})`, cls);
+      } else {
+        log('  WebGPU not available — GPU path skipped', 'warn');
+      }
+
+      allResults.push({
+        test: `${filterType} ${kernelSize}×${kernelSize}`,
+        size: `${size}×${size}`,
+        pixels: data.length,
+        cpuMs: cpuResult.median,
+        gpuMs: gpuResult?.median ?? null,
+        speedup: gpuResult ? cpuResult.median / gpuResult.median : null,
+      });
+    }
+
+    // ─── Results table ──────────────────────────────────────────────────
+
+    function renderResults() {
+      if (allResults.length === 0) return;
+
+      let html = `<table>
+        <thead>
+          <tr>
+            <th>Test</th>
+            <th>Size</th>
+            <th>Pixels</th>
+            <th>CPU (median)</th>
+            <th>GPU (median)</th>
+            <th>Speedup</th>
+          </tr>
+        </thead><tbody>`;
+
+      for (const r of allResults) {
+        const speedupStr = r.speedup
+          ? `<span class="${r.speedup > 1 ? 'speedup' : 'slower'}">${r.speedup.toFixed(1)}×</span>`
+          : '—';
+        const winner = r.speedup && r.speedup > 1 ? ' class="winner"' : '';
+        html += `<tr${winner}>
+          <td>${r.test}</td>
+          <td>${r.size}</td>
+          <td>${(r.pixels / 1e6).toFixed(2)}M</td>
+          <td>${fmtMs(r.cpuMs)}</td>
+          <td>${r.gpuMs != null ? fmtMs(r.gpuMs) : '—'}</td>
+          <td>${speedupStr}</td>
+        </tr>`;
+      }
+
+      html += '</tbody></table>';
+      resultsEl.innerHTML = html;
+    }
+
+    // ─── Entry points ───────────────────────────────────────────────────
+
+    window.runHistogramBench = async () => {
+      const size = parseInt(document.getElementById('dataSize').value);
+      const iters = parseInt(document.getElementById('iterations').value);
+
+      showStatus(`Generating ${size}×${size} synthetic SAR data...`);
+      const data = generateSARData(size);
+      showStatus(`Running histogram benchmark — ${size}×${size}, ${iters} iterations`);
+
+      await benchHistogram(data, iters);
+      renderResults();
+      showStatus('Done.');
+    };
+
+    window.runFilterBench = async () => {
+      const size = parseInt(document.getElementById('dataSize').value);
+      const iters = parseInt(document.getElementById('iterations').value);
+      const ks = parseInt(document.getElementById('kernelSize').value);
+
+      showStatus(`Generating ${size}×${size} synthetic SAR data...`);
+      const data = generateSARData(size);
+
+      const filters = ['boxcar', 'lee', 'enhanced-lee', 'frost', 'gamma-map'];
+      for (const filterType of filters) {
+        showStatus(`Running ${filterType} ${ks}×${ks} — ${size}×${size}, ${iters} iterations`);
+        await benchFilter(data, size, filterType, ks, iters);
+        renderResults();
+      }
+      showStatus('Done — all filters complete.');
+    };
+
+    window.runAllBenchmarks = async () => {
+      const size = parseInt(document.getElementById('dataSize').value);
+      const iters = parseInt(document.getElementById('iterations').value);
+      const ks = parseInt(document.getElementById('kernelSize').value);
+      allResults.length = 0;
+
+      showStatus(`Generating ${size}×${size} synthetic SAR data...`);
+      const data = generateSARData(size);
+
+      // Histogram
+      showStatus(`Histogram — ${size}×${size}, ${iters} iterations`);
+      await benchHistogram(data, iters);
+      renderResults();
+
+      // Spatial filters
+      const filters = ['boxcar', 'lee', 'enhanced-lee', 'frost', 'gamma-map'];
+      for (const filterType of filters) {
+        showStatus(`${filterType} ${ks}×${ks} — ${size}×${size}, ${iters} iterations`);
+        await benchFilter(data, size, filterType, ks, iters);
+        renderResults();
+      }
+
+      // Summary
+      header('── Summary ──');
+      const gpuWins = allResults.filter(r => r.speedup && r.speedup > 1).length;
+      const total = allResults.filter(r => r.speedup != null).length;
+      log(`GPU faster in ${gpuWins}/${total} tests`, gpuWins === total ? 'pass' : 'warn');
+
+      if (total > 0) {
+        const avgSpeedup = allResults
+          .filter(r => r.speedup != null)
+          .reduce((s, r) => s + r.speedup, 0) / total;
+        log(`Average speedup: ${avgSpeedup.toFixed(1)}×`, avgSpeedup > 1 ? 'pass' : 'warn');
+      }
+
+      showStatus('Done — all benchmarks complete.');
+    };
+
+    // ─── Init ───────────────────────────────────────────────────────────
+
+    log('SARdine WebGPU Compute Benchmark', 'header');
+    log(`WebGPU: ${hasWebGPU() ? '✓ available' : '✗ not available'}`, hasWebGPU() ? 'pass' : 'warn');
+    log(`User agent: ${navigator.userAgent}`, 'dim');
+
+    if (hasWebGPU()) {
+      try {
+        const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+        if (adapter) {
+          const info = await adapter.requestAdapterInfo?.() || {};
+          log(`GPU: ${info.description || info.device || 'unknown'}`, 'dim');
+          log(`Max buffer: ${(adapter.limits.maxStorageBufferBindingSize / 1e6).toFixed(0)} MB`, 'dim');
+          log(`Max workgroup: ${adapter.limits.maxComputeWorkgroupSizeX}`, 'dim');
+        }
+      } catch (e) {
+        log(`Adapter info error: ${e.message}`, 'dim');
+      }
+    }
+
+    log('\nSelect data size and click "Run All" to start.\n', 'dim');
+  </script>
+</body>
+</html>

@@ -693,6 +693,7 @@ export async function applySpeckleFilter(data, width, height, {
   kernelSize = 7,
   enl = 4,
   damping = 1.0,
+  _forceBackend,  // 'cpu' | 'gpu' — for benchmarking; omit for normal auto-detection
 } = {}) {
   // Validate
   const validTypes = ['boxcar', 'lee', 'enhanced-lee', 'frost', 'gamma-map'];
@@ -713,11 +714,17 @@ export async function applySpeckleFilter(data, width, height, {
   // Ensure Float32Array
   const f32 = data instanceof Float32Array ? data : new Float32Array(data);
 
+  // Force CPU path for benchmarking
+  if (_forceBackend === 'cpu') {
+    return cpuFallback(f32, width, height, type, halfK, enl, damping);
+  }
+
   // Try GPU path
-  if (hasWebGPU() && f32.length > 256) {
+  if ((_forceBackend === 'gpu' || !_forceBackend) && hasWebGPU() && f32.length > 256) {
     try {
       return await gpuFilter(f32, width, height, type, halfK, enl, damping);
     } catch (err) {
+      if (_forceBackend === 'gpu') throw err;  // Don't silently fall back when explicitly requesting GPU
       console.warn('[spatial-filter] GPU filter failed, falling back to CPU:', err.message);
     }
   }
