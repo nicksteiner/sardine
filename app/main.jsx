@@ -11,6 +11,7 @@ import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
+import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
@@ -981,11 +982,12 @@ function App() {
           }
         }
 
-        addStatusLog('info', 'Histogram: computing statistics...');
+        addStatusLog('info', 'Histogram: computing statistics (GPU)...');
         const hists = {};
         let hasAnyStats = false;
         for (const ch of ['R', 'G', 'B']) {
-          hists[ch] = computeChannelStats(rawValues[ch], useDecibels);
+          const arr = rawValues[ch] instanceof Float32Array ? rawValues[ch] : new Float32Array(rawValues[ch]);
+          hists[ch] = await computeChannelStatsAuto(arr, useDecibels);
           if (hists[ch]) hasAnyStats = true;
         }
         if (hasAnyStats) {
@@ -1628,7 +1630,8 @@ function App() {
             const hists = {};
             const lims = {};
             for (const ch of ['R', 'G', 'B']) {
-              const st = computeChannelStats(rawValues[ch], false);
+              const arr = rawValues[ch] instanceof Float32Array ? rawValues[ch] : new Float32Array(rawValues[ch]);
+              const st = await computeChannelStatsAuto(arr, false);
               hists[ch] = st;
               lims[ch] = st ? [st.p2, st.p98] : [0, 1];
             }
@@ -1775,7 +1778,8 @@ function App() {
           const hists = {};
           const lims = {};
           for (const ch of ['R', 'G', 'B']) {
-            const st = computeChannelStats(rawValues[ch], false);
+            const arr = rawValues[ch] instanceof Float32Array ? rawValues[ch] : new Float32Array(rawValues[ch]);
+            const st = await computeChannelStatsAuto(arr, false);
             hists[ch] = st;
             lims[ch] = st ? [st.p2, st.p98] : [0, 1];
           }

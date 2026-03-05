@@ -101,6 +101,18 @@ export {
   COLOR_RAMPS,
 } from './utils/tone-mapping.js';
 
+// WebGPU compute
+export {
+  hasWebGPU,
+  getDevice,
+  computeHistogramGPU,
+  computeChannelStatsAuto,
+  canUseGPUStats,
+  applySpeckleFilter,
+  getFilterTypes,
+  estimateENL,
+} from './gpu/index.js';
+
 // Overture Maps integration
 export {
   fetchAllOvertureThemes,

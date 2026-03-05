@@ -5,6 +5,7 @@ export function probeGPU() {
 
   let webgl2 = false;
   let floatTextures = false;
+  let webgpu = false;
 
   try {
     const canvas = typeof OffscreenCanvas !== 'undefined'
@@ -22,14 +23,23 @@ export function probeGPU() {
     // headless / no DOM — treat as no GPU
   }
 
+  // WebGPU detection (synchronous check — device request is async)
+  webgpu = typeof navigator !== 'undefined' && !!navigator.gpu;
+
   _cached = {
     webgl2,
     floatTextures,
     gpuRendering: webgl2 && floatTextures,
+    webgpu,
+    computeShaders: webgpu,  // WebGPU implies compute shader support
   };
   return _cached;
 }
 
 export function canUseGPURendering() {
   return probeGPU().gpuRendering;
+}
+
+export function canUseWebGPUCompute() {
+  return probeGPU().computeShaders;
 }
