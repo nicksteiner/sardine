@@ -8,6 +8,8 @@
 // Loaders
 export {
   loadCOG,
+  loadLocalTIF,
+  loadLocalTIFs,
   loadMultipleCOGs,
   loadCOGFullImage,
   loadMultiBandCOG,

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
+import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds } from '../src/utils/roi-subset.js';
@@ -12,6 +12,8 @@ import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/ut
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
+import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js';
+import { interpolateCubeOnGrid, interpolateAllFieldsOnGrid } from '../src/gpu/cube-interpolate.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
@@ -236,6 +238,7 @@ function App() {
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
   const [loading, setLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0); // 0-100 for local TIF loading
   const [error, setError] = useState(null);
 
   // Load generation counter — incremented on each new load to discard stale results
@@ -280,6 +283,8 @@ function App() {
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
   const [useMask, setUseMask] = useState(false);
+  const [speckleFilterType, setSpeckleFilterType] = useState('none'); // 'none' | 'boxcar' | 'lee' | 'enhanced-lee' | 'frost' | 'gamma-map'
+  const [speckleKernelSize, setSpeckleKernelSize] = useState(7);      // 3, 5, 7, 9, 11
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
@@ -313,6 +318,7 @@ function App() {
   const [classificationMap, setClassificationMap] = useState(null); // Uint8Array per ROI pixel
   const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
   const [incidenceRange, setIncidenceRange] = useState([0, 90]); // min/max incidence angle filter (degrees)
+  const [slantRangeRange, setSlantRangeRange] = useState([0, 1e6]); // min/max slant range filter (meters)
 
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport' | 'roi'
   const [showHistogramOverlay, setShowHistogramOverlay] = useState(false);
@@ -571,38 +577,55 @@ function App() {
           }
         }
 
-        // Evaluate incidence angle over ROI if metadata cube available
+        // Evaluate metadata cube fields over ROI (GPU-accelerated)
         let incidence = null;
-        console.log('[Classifier] metadataCube:', !!imageData.metadataCube, 'xCoords:', !!imageData.xCoords, 'yCoords:', !!imageData.yCoords);
+        let slantRange = null;
         if (imageData.metadataCube && imageData.xCoords && imageData.yCoords) {
-          incidence = new Float32Array(n);
+          const subX = new Float64Array(exportW);
+          const subY = new Float64Array(exportH);
+          for (let ox = 0; ox < exportW; ox++) {
+            subX[ox] = imageData.xCoords[Math.min((startCol + ox) * ml, sourceW - 1)];
+          }
           for (let oy = 0; oy < exportH; oy++) {
-            const srcRow = Math.min((startRow + oy) * ml, sourceH - 1);
-            const northing = imageData.yCoords[srcRow];
-            for (let ox = 0; ox < exportW; ox++) {
-              const srcCol = Math.min((startCol + ox) * ml, sourceW - 1);
-              const easting = imageData.xCoords[srcCol];
-              const val = imageData.metadataCube.getIncidenceAngle(easting, northing);
-              incidence[oy * exportW + ox] = val ?? NaN;
-            }
+            subY[oy] = imageData.yCoords[Math.min((startRow + oy) * ml, sourceH - 1)];
+          }
+          const cubeFields = imageData.metadataCube.getFieldNames();
+          if (cubeFields.includes('incidenceAngle')) {
+            incidence = await interpolateCubeOnGrid(
+              imageData.metadataCube, 'incidenceAngle', subX, subY, exportW, exportH
+            );
+          }
+          if (cubeFields.includes('slantRange')) {
+            slantRange = await interpolateCubeOnGrid(
+              imageData.metadataCube, 'slantRange', subX, subY, exportW, exportH
+            );
           }
         }
 
         if (!cancelled) {
           const validCount = valid.reduce((a, b) => a + b, 0);
-          console.log('[Classifier] Scatter data ready:', { exportW, exportH, validCount, hasIncidence: !!incidence });
-          setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence, singleChannel: xData === yData });
+          setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence, slantRange, singleChannel: xData === yData });
           setClassifierRoiDims({ w: exportW, h: exportH });
-          // Set initial incidence range from data
+          // Set initial ranges from data
           if (incidence) {
-            let minInc = 90, maxInc = 0;
+            let minV = 90, maxV = 0;
             for (let i = 0; i < n; i++) {
               if (valid[i] && !isNaN(incidence[i])) {
-                if (incidence[i] < minInc) minInc = incidence[i];
-                if (incidence[i] > maxInc) maxInc = incidence[i];
+                if (incidence[i] < minV) minV = incidence[i];
+                if (incidence[i] > maxV) maxV = incidence[i];
               }
             }
-            setIncidenceRange([Math.floor(minInc), Math.ceil(maxInc)]);
+            setIncidenceRange([Math.floor(minV), Math.ceil(maxV)]);
+          }
+          if (slantRange) {
+            let minV = Infinity, maxV = -Infinity;
+            for (let i = 0; i < n; i++) {
+              if (valid[i] && !isNaN(slantRange[i])) {
+                if (slantRange[i] < minV) minV = slantRange[i];
+                if (slantRange[i] > maxV) maxV = slantRange[i];
+              }
+            }
+            setSlantRangeRange([Math.floor(minV / 1000) * 1000, Math.ceil(maxV / 1000) * 1000]);
           }
         }
       } catch (e) {
@@ -890,14 +913,15 @@ function App() {
     return () => clearInterval(interval);
   }, [roiTSPlaying, roiTSFrames]);
 
-  // Recompute classification map when class regions, scatter data, or incidence range changes
+  // Recompute classification map when class regions, scatter data, or filter ranges change
   useEffect(() => {
     if (!classifierData || !classRegions.length) {
       setClassificationMap(null);
       return;
     }
-    const { x, y, valid, w, h, incidence } = classifierData;
+    const { x, y, valid, incidence, slantRange } = classifierData;
     const [incMin, incMax] = incidenceRange;
+    const [srMin, srMax] = slantRangeRange;
     const map = new Uint8Array(x.length);
 
     for (let i = 0; i < x.length; i++) {
@@ -906,18 +930,22 @@ function App() {
       if (incidence && !isNaN(incidence[i])) {
         if (incidence[i] < incMin || incidence[i] > incMax) continue;
       }
+      // Filter by slant range if available
+      if (slantRange && !isNaN(slantRange[i])) {
+        if (slantRange[i] < srMin || slantRange[i] > srMax) continue;
+      }
       const xv = x[i], yv = y[i];
       for (let c = 0; c < classRegions.length; c++) {
         const r = classRegions[c];
         if (xv >= r.xMin && xv <= r.xMax && yv >= r.yMin && yv <= r.yMax) {
-          map[i] = c + 1; // 1-based class index
+          map[i] = c + 1;
           break;
         }
       }
     }
 
     setClassificationMap(map);
-  }, [classifierData, classRegions, incidenceRange]);
+  }, [classifierData, classRegions, incidenceRange, slantRangeRange]);
 
   // Compute WGS84 bounds for overview map and context layers
   const wgs84Bounds = useMemo(() => {
@@ -1019,7 +1047,7 @@ function App() {
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
     console.log('[histogram] handleRecomputeHistogram called, scope:', histogramScope, 'displayMode:', displayMode, 'hasGetTile:', !!imageData?.getTile, 'hasGetRGBTile:', !!imageData?.getRGBTile, 'compositeId:', compositeId);
-    if (!imageData || !imageData.getTile) {
+    if (!imageData || (!imageData.getTile && !imageData.data)) {
       addStatusLog('warning', 'No tile data available for histogram');
       return;
     }
@@ -1131,13 +1159,20 @@ function App() {
           addStatusLog('info', `${scopeLabel} histogram: no valid pixels in region`);
         }
       } else {
-        // Single-band histogram — pass origin offset for correct viewport sampling
+        // Single-band histogram
         console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', useDecibels);
-        const stats = await sampleViewportStats(
-          imageData.getTile, regionW, regionH, useDecibels, 128,
-          regionX, regionY, imageData.height,
-          (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
-        );
+        let stats;
+        if (imageData.data) {
+          // Plain TIF: compute from in-memory raster directly (subsampled)
+          const stride = Math.max(1, Math.floor(imageData.data.length / 500000));
+          stats = computeChannelStats(imageData.data, useDecibels, 128, stride);
+        } else {
+          stats = await sampleViewportStats(
+            imageData.getTile, regionW, regionH, useDecibels, 128,
+            regionX, regionY, imageData.height,
+            (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
+          );
+        }
         console.log('[histogram] single-band stats:', stats ? { p2: stats.p2, p98: stats.p98, count: stats.count } : null);
         if (stats) {
           console.log('[histogram] CALLING setHistogramData, new min:', stats.min.toFixed(2), 'max:', stats.max.toFixed(2), 'count:', stats.count);
@@ -1547,6 +1582,73 @@ function App() {
   const handleNISARFileSelect = useCallback(async (file) => {
     if (!file) return;
 
+    // Route .tif/.tiff files to the local TIF loader
+    const isTIF = /\.tiff?$/i.test(file.name);
+    if (isTIF) {
+      setLoading(true);
+      setLoadProgress(0);
+      setError(null);
+      setFileType('cog');
+      addStatusLog('info', `Loading local GeoTIFF: ${file.name} (${(file.size / 1e6).toFixed(1)} MB)`);
+
+      try {
+        const gen = ++loadGenRef.current;
+        const data = await loadLocalTIF(file, (pct) => setLoadProgress(pct));
+        if (gen !== loadGenRef.current) return;
+
+        setLoadProgress(90);
+        setImageData(data);
+        addStatusLog('success', `GeoTIFF loaded: ${data.width}×${data.height}, ${data.mipmapLevels} mipmap levels`);
+
+        // Auto-contrast and auto-detect dB mode
+        try {
+          const sampleData = data.data || (await data.getTile({ x: 0, y: 0, z: 0 }))?.data;
+          if (sampleData) {
+            // Check if values look like raw power (large) or already dB/other (small).
+            // Compute 98th percentile of non-zero values to decide.
+            const vals = [];
+            const stride = Math.max(1, Math.floor(sampleData.length / 10000));
+            for (let i = 0; i < sampleData.length; i += stride) {
+              const v = sampleData[i];
+              if (!isNaN(v) && v !== 0) vals.push(v);
+            }
+            vals.sort((a, b) => a - b);
+            const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
+
+            // If values are small (< 10), they're likely already in dB or a ratio — skip dB conversion
+            const needsDb = p98 > 10;
+            setUseDecibels(needsDb);
+
+            // Use subsampled vals for auto-contrast (full array is too large to sort)
+            const dbVals = needsDb
+              ? vals.map(v => 10 * Math.log10(Math.max(v, 1e-10)))
+              : vals;
+            const lowIdx = Math.floor(0.02 * dbVals.length);
+            const highIdx = Math.floor(0.98 * dbVals.length);
+            const limits = [
+              dbVals[lowIdx] ?? (needsDb ? -30 : 0),
+              dbVals[Math.min(highIdx, dbVals.length - 1)] ?? (needsDb ? 0 : 1),
+            ];
+            setContrastMin(limits[0]);
+            setContrastMax(limits[1]);
+            addStatusLog('info', needsDb
+              ? `Raw power detected (p98=${p98.toFixed(1)}), dB scaling enabled`
+              : `Values already scaled (p98=${p98.toFixed(2)}), dB scaling disabled`);
+            addStatusLog('info', `Auto-contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`);
+          }
+        } catch (statsErr) {
+          console.warn('Auto-contrast failed:', statsErr);
+        }
+        setLoadProgress(100);
+      } catch (e) {
+        setError(`Failed to load GeoTIFF: ${e.message}`);
+        addStatusLog('error', 'Failed to load GeoTIFF', e.message);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
     setNisarFile(file);
     setNisarDatasets([]);
     setLoading(true);
@@ -1586,6 +1688,74 @@ function App() {
       setLoading(false);
     }
   }, [addStatusLog]);
+
+  // Handle multiple local TIF file selection (multi-band)
+  const handleLocalTIFMultiSelect = useCallback(async (files) => {
+    if (!files || files.length === 0) return;
+
+    setLoading(true);
+    setLoadProgress(0);
+    setError(null);
+    setFileType('cog');
+    const names = files.map(f => f.name).join(', ');
+    addStatusLog('info', `Loading ${files.length} local GeoTIFFs as multi-band: ${names}`);
+
+    try {
+      const gen = ++loadGenRef.current;
+      const data = await loadLocalTIFs(files, (pct) => setLoadProgress(pct));
+      if (gen !== loadGenRef.current) return;
+
+      setImageData(data);
+      if (data.bandNames) {
+        setBandNames(data.bandNames);
+      }
+      addStatusLog('success',
+        `Multi-band loaded: ${data.bandNames?.join(', ')} (${data.width}×${data.height})`);
+
+      // Auto-contrast from first band
+      try {
+        const sampleData = data.data || (await data.getTile({ x: 0, y: 0, z: 0 }))?.data;
+        if (sampleData) {
+          const vals = [];
+          const stride = Math.max(1, Math.floor(sampleData.length / 10000));
+          for (let i = 0; i < sampleData.length; i += stride) {
+            const v = sampleData[i];
+            if (!isNaN(v) && v !== 0) vals.push(v);
+          }
+          vals.sort((a, b) => a - b);
+          const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
+          const needsDb = p98 > 10;
+          setUseDecibels(needsDb);
+          const dbVals = needsDb
+            ? vals.map(v => 10 * Math.log10(Math.max(v, 1e-10)))
+            : vals;
+          const lowIdx = Math.floor(0.02 * dbVals.length);
+          const highIdx = Math.floor(0.98 * dbVals.length);
+          const limits = [
+            dbVals[lowIdx] ?? (needsDb ? -30 : 0),
+            dbVals[Math.min(highIdx, dbVals.length - 1)] ?? (needsDb ? 0 : 1),
+          ];
+          setContrastMin(limits[0]);
+          setContrastMax(limits[1]);
+          addStatusLog('info', `Auto-contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`);
+        }
+      } catch (statsErr) {
+        console.warn('Auto-contrast failed for multi-band:', statsErr);
+      }
+
+      // Fit view to bounds
+      if (data.bounds) {
+        autoFitIfNewScene(data.bounds);
+      }
+
+      setLoadProgress(100);
+    } catch (e) {
+      setError(`Failed to load GeoTIFFs: ${e.message}`);
+      addStatusLog('error', 'Failed to load multi-band GeoTIFFs', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog, autoFitIfNewScene]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
@@ -2133,13 +2303,14 @@ function App() {
             cubeXCoords = imageData.xCoords.subarray(xStart, xEnd);
             cubeYCoords = imageData.yCoords.subarray(yStart, yEnd);
           }
-          const cubeFields = imageData.metadataCube.evaluateAllFields(
+          const cubeFields = await interpolateAllFieldsOnGrid(
+            imageData.metadataCube,
             cubeXCoords,
             cubeYCoords,
             exportWidth,
             exportHeight,
             effectiveMl,
-            null, // ground layer (no DEM)
+            { elevationM: null },
           );
 
           const cubeFieldNames = Object.keys(cubeFields);
@@ -2210,17 +2381,24 @@ function App() {
 
       if (isRendered) {
         // --- Rendered export: apply same pipeline as GPU shader ---
-        // Spatial smoothing: the export at ml=N averages N×N source pixels per
-        // output pixel, but the on-screen display at overview zoom implicitly
-        // averages far more (hundreds at low zoom).  A 3×3 post-multilook
-        // box-filter bridges the gap, raising the effective look count by ~9×
-        // (e.g. ml=4 → 16 looks → ~144 effective looks after smoothing).
-        // This is especially important for ratio channels (HH/HV) where
-        // residual speckle is amplified by the division.
-        const smoothKernel = 3;
-        addStatusLog('info', `Smoothing bands: ${smoothKernel}×${smoothKernel} box filter (speckle reduction)...`);
-        for (const name of bandNames) {
-          bands[name] = smoothBand(bands[name], exportWidth, exportHeight, smoothKernel);
+        // Speckle reduction: if user selected a filter, apply it to export bands.
+        // Otherwise fall back to the default 3×3 box-filter smooth.
+        if (speckleFilterType !== 'none') {
+          addStatusLog('info', `Applying ${speckleFilterType} ${speckleKernelSize}×${speckleKernelSize} speckle filter...`);
+          for (const name of bandNames) {
+            bands[name] = await applySpeckleFilter(bands[name], exportWidth, exportHeight, {
+              type: speckleFilterType,
+              kernelSize: speckleKernelSize,
+            });
+          }
+        } else {
+          // Default 3×3 box-filter bridges the gap between export multilook
+          // and on-screen implicit averaging at overview zoom levels.
+          const smoothKernel = 3;
+          addStatusLog('info', `Smoothing bands: ${smoothKernel}×${smoothKernel} box filter (speckle reduction)...`);
+          for (const name of bandNames) {
+            bands[name] = smoothBand(bands[name], exportWidth, exportHeight, smoothKernel);
+          }
         }
 
         const numPixels = exportWidth * exportHeight;
@@ -2667,16 +2845,21 @@ function App() {
           {fileType === 'nisar' && (
             <CollapsibleSection title="Load NISAR GCOV">
               <div className="control-group">
-                <label>HDF5 File</label>
+                <label>Local File</label>
                 <input
                   type="file"
-                  accept=".h5,.hdf5,.he5"
+                  accept=".h5,.hdf5,.he5,.tif,.tiff"
+                  multiple
                   id="nisar-file-input"
                   style={{ display: 'none' }}
                   onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      handleNISARFileSelect(file);
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    const tifFiles = files.filter(f => /\.tiff?$/i.test(f.name));
+                    if (tifFiles.length > 1) {
+                      handleLocalTIFMultiSelect(tifFiles);
+                    } else {
+                      handleNISARFileSelect(files[0]);
                     }
                   }}
                 />
@@ -2687,11 +2870,21 @@ function App() {
                 >
                   {nisarFile ? 'Change File...' : 'Choose File...'}
                 </button>
+                {loading && loadProgress > 0 && loadProgress < 100 && (
+                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                    <div className="progress-fill" style={{ width: `${loadProgress}%`, transition: 'width 0.3s ease' }} />
+                  </div>
+                )}
               </div>
 
               {nisarFile && (
                 <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
+                </div>
+              )}
+              {imageData?.type === 'multi-band' && imageData.bandNames && (
+                <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {imageData.bandCount} bands: {imageData.bandNames.join(', ')}
                 </div>
               )}
 
@@ -3828,6 +4021,45 @@ function App() {
               </div>
             </div>
 
+            {/* Speckle filter */}
+            <div className="control-group">
+              <label>Speckle Filter</label>
+              <select
+                value={speckleFilterType}
+                onChange={(e) => {
+                  setSpeckleFilterType(e.target.value);
+                  addStatusLog('info', e.target.value === 'none'
+                    ? 'Speckle filter disabled'
+                    : `Speckle filter: ${e.target.value} ${speckleKernelSize}×${speckleKernelSize}`);
+                }}
+              >
+                <option value="none">None</option>
+                {getFilterTypes().map(f => (
+                  <option key={f.id} value={f.id}>{f.name}</option>
+                ))}
+              </select>
+              {speckleFilterType !== 'none' && (
+                <div style={{ marginTop: '4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Kernel</label>
+                    <span className="value-display">{speckleKernelSize}×{speckleKernelSize}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={3}
+                    max={11}
+                    step={2}
+                    value={speckleKernelSize}
+                    onChange={(e) => {
+                      const ks = Number(e.target.value);
+                      setSpeckleKernelSize(ks);
+                      addStatusLog('info', `Speckle filter kernel: ${ks}×${ks}`);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+
             {/* Mask toggle — only shown when mask dataset is available */}
             {imageData?.hasMask && (
               <div className="control-group">
@@ -3903,6 +4135,8 @@ function App() {
                   compositeId={displayMode === 'rgb' ? compositeId : null}
                   multiLook={multiLook}
                   useMask={useMask}
+                  speckleFilterType={speckleFilterType}
+                  speckleKernelSize={speckleKernelSize}
                   showGrid={showGrid}
                   opacity={1}
                   width="100%"
@@ -4102,6 +4336,8 @@ function App() {
               classifierRoiDims={classifierRoiDims}
               incidenceRange={incidenceRange}
               onIncidenceRangeChange={setIncidenceRange}
+              slantRangeRange={slantRangeRange}
+              onSlantRangeRangeChange={setSlantRangeRange}
               onClose={() => setClassifierOpen(false)}
             />
           )}

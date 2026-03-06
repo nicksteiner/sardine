@@ -35,7 +35,8 @@
       "Bash(npx vite build:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(gdalinfo -json \"/media/nsteiner/data4/hiflows_raw/iceye/2025/10/20251025T102329_ICEYE_X48_GRD_SM_951750205.tif\")"
     ]
   }
 }

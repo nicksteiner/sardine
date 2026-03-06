@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { OrthographicView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
 import { SARBitmapLayer } from '../layers/SARBitmapLayer.js';
+import { SARGPUBitmapLayer } from '../layers/SARGPUBitmapLayer.js';
 import { SARTiledCOGLayer } from '../layers/SARTiledCOGLayer.js';
 import { getColormap } from '../utils/colormap.js';
 import { SAR_COMPOSITES } from '../utils/sar-composites.js';
@@ -189,14 +190,14 @@ export const SARViewer = forwardRef(function SARViewer({
       ];
     }
 
-    // Use BitmapLayer if full image data is provided
+    // Use GPU BitmapLayer if full image data is provided — contrast/colormap
+    // changes are instant shader uniform updates, no CPU re-render.
     if (imageData && imageData.data) {
-      console.log('[SARViewer] Using BitmapLayer with full image data');
+      console.log('[SARViewer] Using SARGPUBitmapLayer with full image data');
       return [
-        new SARBitmapLayer({
-          id: 'sar-bitmap-layer',
+        new SARGPUBitmapLayer({
+          id: 'sar-gpu-bitmap-layer',
           data: imageData.data,
-          dataMask: imageData.mask || null,
           width: imageData.width,
           height: imageData.height,
           bounds,
@@ -206,7 +207,6 @@ export const SARViewer = forwardRef(function SARViewer({
           gamma,
           stretchMode,
           opacity,
-          useMask,
         }),
       ];
     }

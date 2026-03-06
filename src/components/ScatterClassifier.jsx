@@ -130,7 +130,7 @@ function classifyCounts(x, y, valid, classRegions) {
 }
 
 export default function ScatterClassifier({
-  scatterData,   // { x: Float32Array, y: Float32Array, valid: Uint8Array, incidence?: Float32Array }
+  scatterData,   // { x, y, valid, incidence?, slantRange?, w, h, singleChannel? }
   xLabel,        // "HHHH (dB)"
   yLabel,        // "HVHV (dB)"
   classRegions,  // [{name, color, xMin, xMax, yMin, yMax}]
@@ -139,6 +139,8 @@ export default function ScatterClassifier({
   classifierRoiDims,       // {w, h}
   incidenceRange,          // [min, max] degrees
   onIncidenceRangeChange,  // ([min, max]) => void
+  slantRangeRange,         // [min, max] meters
+  onSlantRangeRangeChange, // ([min, max]) => void
   onClose,
 }) {
   const canvasRef = useRef(null);
@@ -627,10 +629,10 @@ export default function ScatterClassifier({
         )}
       </div>
 
-      {/* Incidence angle filter */}
-      {!scatterData?.incidence && (
+      {/* Radar geometry filters */}
+      {!scatterData?.incidence && !scatterData?.slantRange && (
         <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8, fontSize: 9, color: '#5a7099' }}>
-          No incidence angle data (NISAR HDF5 only)
+          No radar geometry data (NISAR HDF5 only)
         </div>
       )}
       {scatterData?.incidence && incidenceRange && onIncidenceRangeChange && (() => {
@@ -649,7 +651,7 @@ export default function ScatterClassifier({
         return (
           <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8 }}>
             <div style={{ fontSize: 10, color: '#5a7099', marginBottom: 4 }}>
-              Incidence Angle Filter ({curMin}°–{curMax}°)
+              Incidence Angle ({curMin}°–{curMax}°)
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 9, color: '#5a7099', width: 22, textAlign: 'right' }}>{curMin}°</span>
@@ -667,6 +669,49 @@ export default function ScatterClassifier({
                 onChange={(e) => {
                   const v = Number(e.target.value);
                   onIncidenceRangeChange([curMin, Math.max(v, curMin + 1)]);
+                }}
+                style={{ flex: 1, accentColor: '#e8833a', height: 4 }}
+              />
+            </div>
+          </div>
+        );
+      })()}
+      {scatterData?.slantRange && slantRangeRange && onSlantRangeRangeChange && (() => {
+        const sr = scatterData.slantRange;
+        const valid = scatterData.valid;
+        let dataMin = Infinity, dataMax = -Infinity;
+        for (let i = 0; i < sr.length; i++) {
+          if (valid[i] && !isNaN(sr[i])) {
+            if (sr[i] < dataMin) dataMin = sr[i];
+            if (sr[i] > dataMax) dataMax = sr[i];
+          }
+        }
+        const stepKm = 1000;
+        dataMin = Math.floor(dataMin / stepKm) * stepKm;
+        dataMax = Math.ceil(dataMax / stepKm) * stepKm;
+        const [curMin, curMax] = slantRangeRange;
+        const fmt = (v) => `${(v / 1000).toFixed(0)} km`;
+        return (
+          <div style={{ marginTop: 6 }}>
+            <div style={{ fontSize: 10, color: '#5a7099', marginBottom: 4 }}>
+              Slant Range ({fmt(curMin)}–{fmt(curMax)})
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 9, color: '#5a7099', width: 36, textAlign: 'right' }}>{fmt(curMin)}</span>
+              <input type="range" min={dataMin} max={dataMax} step={stepKm} value={curMin}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  onSlantRangeRangeChange([Math.min(v, curMax - stepKm), curMax]);
+                }}
+                style={{ flex: 1, accentColor: '#4ec9d4', height: 4 }}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 9, color: '#5a7099', width: 36, textAlign: 'right' }}>{fmt(curMax)}</span>
+              <input type="range" min={dataMin} max={dataMax} step={stepKm} value={curMax}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  onSlantRangeRangeChange([curMin, Math.max(v, curMin + stepKm)]);
                 }}
                 style={{ flex: 1, accentColor: '#e8833a', height: 4 }}
               />
