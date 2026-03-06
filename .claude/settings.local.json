@@ -35,7 +35,14 @@
       "Bash(npx vite build:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(gh repo list nicksteiner --json name -q '.[].name')",
+      "Bash(gh auth status)",
+      "Bash(gh auth login --web)",
+      "Bash(gh auth login 2)",
+      "Bash(1:*)",
+      "Bash(git remote add sardine-agent git@github.com:nicksteiner/sardine-agent.git)",
+      "Bash(git remote remove sardine-agent)"
     ]
   }
 }
