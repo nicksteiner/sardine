@@ -119,7 +119,8 @@ export class SARTileLayer extends TileLayer {
         const { bbox } = subProps.tile;
         const tileBounds = bbox.west !== undefined
           ? [bbox.west, bbox.south, bbox.east, bbox.north]
-          : [bbox.left, bbox.top, bbox.right, bbox.bottom];
+          : [Math.min(bbox.left, bbox.right), Math.min(bbox.top, bbox.bottom),
+             Math.max(bbox.left, bbox.right), Math.max(bbox.top, bbox.bottom)];
 
         // Mask data (if available from tile)
         const maskProps = tileData.mask ? { dataMask: tileData.mask, useMask } : { useMask: false };
