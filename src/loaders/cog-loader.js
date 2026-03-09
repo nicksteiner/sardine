@@ -1,4 +1,4 @@
-import GeoTIFF, { fromUrl } from 'geotiff';
+import GeoTIFF, { fromUrl, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
 
 /** @deprecated Use normalizeS3Url from utils/s3-url.js */
@@ -549,6 +549,392 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
     bounds,
     crs,
   };
+}
+
+/**
+ * Load a local GeoTIFF file (File object).
+ * - COGs (tiled + overviews): metadata-only load, tiles served on demand
+ * - Plain TIFs: full raster read into memory
+ * Both paths use world (geo) coordinates as bounds.
+ *
+ * @param {File} file - Local File object (.tif / .tiff)
+ * @param {Function} [onProgress] - Progress callback (0-100)
+ * @returns {Promise<Object>} Same interface as loadCOG
+ */
+export async function loadLocalTIF(file, onProgress) {
+  const progress = onProgress || (() => {});
+  console.log('[COG Loader] Loading local TIF:', file.name, `(${(file.size / 1e6).toFixed(1)} MB)`);
+  progress(5);
+
+  const arrayBuffer = await file.arrayBuffer();
+  progress(15);
+  const tiff = await fromArrayBuffer(arrayBuffer);
+  const image = await tiff.getImage();
+  progress(25);
+
+  const width = image.getWidth();
+  const height = image.getHeight();
+  const imageCount = await tiff.getImageCount();
+  const tileWidth = image.getTileWidth();
+  const tileHeight = image.getTileHeight();
+  const isCOG = !!(tileWidth && tileHeight && imageCount > 1);
+
+  // Extract georeferencing
+  let bbox;
+  try {
+    bbox = image.getBoundingBox();
+  } catch (e) {
+    console.warn('[COG Loader] getBoundingBox() failed, using pixel coords');
+    bbox = [0, 0, width, height];
+  }
+  if (bbox[0] > bbox[2]) [bbox[0], bbox[2]] = [bbox[2], bbox[0]];
+  if (bbox[1] > bbox[3]) [bbox[1], bbox[3]] = [bbox[3], bbox[1]];
+  const geoBounds = [bbox[0], bbox[1], bbox[2], bbox[3]];
+
+  let crs = 'EPSG:4326';
+  try {
+    const geoKeys = image.getGeoKeys();
+    if (geoKeys.ProjectedCSTypeGeoKey) crs = `EPSG:${geoKeys.ProjectedCSTypeGeoKey}`;
+    else if (geoKeys.GeographicTypeGeoKey) crs = `EPSG:${geoKeys.GeographicTypeGeoKey}`;
+  } catch (_) {}
+
+  let resolution = null;
+  try { resolution = image.getResolution(); } catch (_) {}
+
+  // --- Data loading: COGs skip full read, plain TIFs read everything ---
+  let fullData = null;
+
+  if (isCOG) {
+    console.log(`[COG Loader] COG detected: ${imageCount} overviews, tiles ${tileWidth}x${tileHeight}`);
+    progress(85);
+  } else {
+    console.log('[COG Loader] Plain TIF — reading full raster...');
+    progress(30);
+    const rasters = await image.readRasters();
+    fullData = new Float32Array(rasters[0]);
+    progress(85);
+    console.log(`[COG Loader] Raster read: ${width}x${height} (${(fullData.byteLength / 1e6).toFixed(1)} MB)`);
+  }
+
+  // --- getTile: for COGs, read from overviews on demand ---
+  // Uses bbox from deck.gl TileLayer which gives the exact world rectangle.
+  // OrthographicView: Y=0 is bottom, Y=height is top.
+  // Image raster:     row 0 is top, row height-1 is bottom.
+  // So world Y maps to pixel row = height - Y.
+  async function getTile({ x, y, z, bbox }) {
+    if (!isCOG) return null;
+    try {
+      const tileSize = 256;
+
+      // Get world rectangle from bbox (OrthographicView provides left/right/top/bottom)
+      let wxMin, wxMax, wyMin, wyMax;
+      if (bbox && bbox.left !== undefined) {
+        wxMin = Math.min(bbox.left, bbox.right);
+        wxMax = Math.max(bbox.left, bbox.right);
+        wyMin = Math.min(bbox.top, bbox.bottom);
+        wyMax = Math.max(bbox.top, bbox.bottom);
+      } else {
+        // Fallback: compute from x,y,z
+        const worldSize = tileSize / Math.pow(2, z);
+        wxMin = x * worldSize;
+        wxMax = wxMin + worldSize;
+        wyMin = y * worldSize;
+        wyMax = wyMin + worldSize;
+      }
+
+      // Map world coords to full-res pixel coords (flip Y)
+      const pxLeft = Math.max(0, Math.floor(wxMin));
+      const pxRight = Math.min(width, Math.ceil(wxMax));
+      const pxTop = Math.max(0, Math.floor(height - wyMax));   // world top → pixel top (low row)
+      const pxBottom = Math.min(height, Math.ceil(height - wyMin)); // world bottom → pixel bottom (high row)
+
+      if (pxLeft >= pxRight || pxTop >= pxBottom) return null;
+
+      // Pick best overview for this resolution
+      const neededRes = Math.max(pxRight - pxLeft, pxBottom - pxTop) / tileSize;
+      let bestIdx = 0;
+      for (let i = 0; i < imageCount; i++) {
+        const ovImg = await tiff.getImage(i);
+        const ovRes = width / ovImg.getWidth();
+        if (ovRes <= neededRes * 1.5) bestIdx = i;
+      }
+
+      const ovImg = await tiff.getImage(bestIdx);
+      const ovW = ovImg.getWidth();
+      const ovH = ovImg.getHeight();
+      const scaleX = ovW / width;
+      const scaleY = ovH / height;
+
+      // Map full-res pixel window to overview pixel window
+      const ovLeft = Math.max(0, Math.floor(pxLeft * scaleX));
+      const ovTop = Math.max(0, Math.floor(pxTop * scaleY));
+      const ovRight = Math.min(ovW, Math.ceil(pxRight * scaleX));
+      const ovBottom = Math.min(ovH, Math.ceil(pxBottom * scaleY));
+
+      if (ovLeft >= ovRight || ovTop >= ovBottom) return null;
+
+      const rasters = await ovImg.readRasters({
+        window: [ovLeft, ovTop, ovRight, ovBottom],
+        width: tileSize,
+        height: tileSize,
+        resampleMethod: 'bilinear',
+      });
+      return { data: new Float32Array(rasters[0]), width: tileSize, height: tileSize };
+    } catch (error) {
+      console.error(`[COG Loader] Tile error x:${x} y:${y} z:${z}:`, error);
+      return null;
+    }
+  }
+
+  async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
+    const outCols = numCols || exportWidth;
+    const srcData = fullData || (await image.readRasters()).then(r => new Float32Array(r[0]));
+    const out = new Float32Array(outCols * numRows);
+    for (let r = 0; r < numRows; r++) {
+      for (let c = 0; c < outCols; c++) {
+        let sum = 0, cnt = 0;
+        const r0 = (startRow + r) * ml;
+        const c0 = (startCol + c) * ml;
+        for (let dr = 0; dr < ml && r0 + dr < height; dr++) {
+          for (let dc = 0; dc < ml && c0 + dc < width; dc++) {
+            const v = srcData[(r0 + dr) * width + (c0 + dc)];
+            if (!isNaN(v) && v !== 0) { sum += v; cnt++; }
+          }
+        }
+        out[r * outCols + c] = cnt > 0 ? sum / cnt : NaN;
+      }
+    }
+    return { bands: { band0: out } };
+  }
+
+  async function getPixelValue(row, col) {
+    if (row < 0 || row >= height || col < 0 || col >= width) return NaN;
+    if (fullData) return fullData[row * width + col];
+    // COG: read single pixel window
+    const rasters = await image.readRasters({ window: [col, row, col + 1, row + 1] });
+    return new Float32Array(rasters[0])[0];
+  }
+
+  /**
+   * Force-read full raster into memory (used by mosaic).
+   * No-op if already loaded (plain TIF path).
+   */
+  async function readFullData() {
+    if (fullData) return fullData;
+    console.log(`[COG Loader] Reading full raster for ${file.name}...`);
+    const rasters = await image.readRasters();
+    fullData = new Float32Array(rasters[0]);
+    return fullData;
+  }
+
+  progress(100);
+
+  console.log(`[COG Loader] Local TIF ready: ${width}x${height}, isCOG=${isCOG}, crs=${crs}`);
+
+  return {
+    ...(fullData ? { data: fullData } : {}),
+    getTile,
+    getExportStripe,
+    getPixelValue,
+    readFullData,
+    bounds: [0, 0, width, height],  // pixel space for rendering/tile indexing
+    geoBounds,
+    worldBounds: geoBounds,
+    crs,
+    width,
+    height,
+    sourceWidth: width,
+    sourceHeight: height,
+    tileWidth: tileWidth || 256,
+    tileHeight: tileHeight || 256,
+    resolution,
+    isCOG,
+    imageCount,
+  };
+}
+
+/**
+ * Load multiple local TIF files and mosaic them into a single raster.
+ * Each file is placed at its georeferenced position within the union bounding box.
+ * Output uses world coordinates as bounds.
+ *
+ * @param {File[]} files - Array of File objects
+ * @param {Function} [onProgress] - Progress callback (0-100)
+ * @returns {Promise<Object>} Mosaicked dataset
+ */
+export async function loadLocalTIFs(files, onProgress) {
+  const progress = onProgress || (() => {});
+
+  if (!files || files.length === 0) throw new Error('No files provided');
+  if (files.length === 1) return loadLocalTIF(files[0], onProgress);
+
+  console.log(`[COG Loader] Loading ${files.length} local TIFs for mosaic`);
+
+  // Load all files in parallel
+  const perFileWeight = 80 / files.length;
+  const slices = await Promise.all(
+    files.map((file, idx) =>
+      loadLocalTIF(file, (pct) => {
+        progress(Math.round(idx * perFileWeight + (pct / 100) * perFileWeight));
+      })
+    )
+  );
+
+  progress(82);
+
+  // Compute union geoBounds across all slices
+  let gMinX = Infinity, gMinY = Infinity, gMaxX = -Infinity, gMaxY = -Infinity;
+  for (const s of slices) {
+    const gb = s.geoBounds;
+    if (gb[0] < gMinX) gMinX = gb[0];
+    if (gb[1] < gMinY) gMinY = gb[1];
+    if (gb[2] > gMaxX) gMaxX = gb[2];
+    if (gb[3] > gMaxY) gMaxY = gb[3];
+  }
+  const unionGeoBounds = [gMinX, gMinY, gMaxX, gMaxY];
+  console.log('[COG Loader] Union geoBounds:', unionGeoBounds);
+
+  // Determine output resolution from the finest-resolution slice
+  let bestResX = Infinity, bestResY = Infinity;
+  for (const s of slices) {
+    const gb = s.geoBounds;
+    const rx = (gb[2] - gb[0]) / s.width;
+    const ry = (gb[3] - gb[1]) / s.height;
+    if (rx < bestResX) bestResX = rx;
+    if (ry < bestResY) bestResY = ry;
+  }
+
+  // Cap mosaic at ~64 MP (~256 MB Float32) to stay within browser memory.
+  const MAX_PIXELS = 64 * 1024 * 1024;
+  let mosaicWidth = Math.round((gMaxX - gMinX) / bestResX);
+  let mosaicHeight = Math.round((gMaxY - gMinY) / bestResY);
+
+  if (mosaicWidth * mosaicHeight > MAX_PIXELS) {
+    const scale = Math.sqrt(MAX_PIXELS / (mosaicWidth * mosaicHeight));
+    bestResX /= scale;
+    bestResY /= scale;
+    mosaicWidth = Math.round((gMaxX - gMinX) / bestResX);
+    mosaicHeight = Math.round((gMaxY - gMinY) / bestResY);
+    console.log(`[COG Loader] Mosaic downsampled to fit memory: ${mosaicWidth}x${mosaicHeight}`);
+  }
+
+  console.log(`[COG Loader] Mosaic: ${mosaicWidth}x${mosaicHeight} (res: ${bestResX.toExponential(3)}, ${bestResY.toExponential(3)})`);
+
+  progress(85);
+
+  // Create mosaic — fill with NaN (nodata)
+  const mosaic = new Float32Array(mosaicWidth * mosaicHeight);
+  mosaic.fill(NaN);
+
+  // Ensure all slices have full raster data (COGs read on demand by default)
+  for (let si = 0; si < slices.length; si++) {
+    if (!slices[si].data) {
+      await slices[si].readFullData();
+      slices[si].data = await slices[si].readFullData();
+    }
+  }
+
+  progress(88);
+
+  // Place each slice at its georeferenced position.
+  // Mosaic row 0 = north (gMaxY), rows increase southward.
+  for (let si = 0; si < slices.length; si++) {
+    const s = slices[si];
+    const gb = s.geoBounds;
+    const srcData = s.data;
+
+    // Detect Y-flip: positive Y resolution means row 0 = south
+    const res = s.resolution;
+    const yFlip = res && res[1] > 0;
+
+    const dstCol0 = Math.round((gb[0] - gMinX) / bestResX);
+    const dstRow0 = Math.round((gMaxY - gb[3]) / bestResY);
+
+    const srcW = s.width;
+    const srcH = s.height;
+    const dstW = Math.round((gb[2] - gb[0]) / bestResX);
+    const dstH = Math.round((gb[3] - gb[1]) / bestResY);
+
+    for (let r = 0; r < dstH; r++) {
+      const dstR = dstRow0 + r;
+      if (dstR < 0 || dstR >= mosaicHeight) continue;
+      const srcR = yFlip
+        ? Math.min(srcH - 1, Math.floor((dstH - 1 - r) * srcH / dstH))
+        : Math.min(srcH - 1, Math.floor(r * srcH / dstH));
+      for (let c = 0; c < dstW; c++) {
+        const dc = dstCol0 + c;
+        if (dc < 0 || dc >= mosaicWidth) continue;
+        const srcC = Math.min(srcW - 1, Math.floor(c * srcW / dstW));
+        const v = srcData[srcR * srcW + srcC];
+        if (!isNaN(v) && v !== 0) {
+          mosaic[dstR * mosaicWidth + dc] = v;
+        }
+      }
+    }
+
+    console.log(`[COG Loader] Placed slice ${si} (${files[si].name}): dst (${dstCol0}, ${dstRow0}) ${dstW}x${dstH}, yFlip=${yFlip}`);
+  }
+
+  progress(95);
+
+  const crs = slices[0].crs || 'EPSG:4326';
+
+  async function getTile() { return null; }
+
+  async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
+    const outCols = numCols || exportWidth;
+    const out = new Float32Array(outCols * numRows);
+    for (let r = 0; r < numRows; r++) {
+      for (let c = 0; c < outCols; c++) {
+        let sum = 0, cnt = 0;
+        const r0 = (startRow + r) * ml;
+        const c0 = (startCol + c) * ml;
+        for (let dr = 0; dr < ml && r0 + dr < mosaicHeight; dr++) {
+          for (let dc = 0; dc < ml && c0 + dc < mosaicWidth; dc++) {
+            const v = mosaic[(r0 + dr) * mosaicWidth + (c0 + dc)];
+            if (!isNaN(v) && v !== 0) { sum += v; cnt++; }
+          }
+        }
+        out[r * outCols + c] = cnt > 0 ? sum / cnt : NaN;
+      }
+    }
+    return { bands: { band0: out } };
+  }
+
+  async function getPixelValue(row, col) {
+    if (row < 0 || row >= mosaicHeight || col < 0 || col >= mosaicWidth) return NaN;
+    return mosaic[row * mosaicWidth + col];
+  }
+
+  progress(100);
+
+  const result = {
+    data: mosaic,
+    getTile,
+    getExportStripe,
+    getPixelValue,
+    bounds: [0, 0, mosaicWidth, mosaicHeight],  // pixel space for rendering
+    geoBounds: unionGeoBounds,
+    worldBounds: unionGeoBounds,
+    crs,
+    width: mosaicWidth,
+    height: mosaicHeight,
+    sourceWidth: mosaicWidth,
+    sourceHeight: mosaicHeight,
+    tileWidth: 256,
+    tileHeight: 256,
+    isCOG: false,
+    imageCount: 1,
+    sliceCount: slices.length,
+    sliceNames: files.map(f => f.name),
+  };
+
+  console.log('[COG Loader] Mosaic complete:', {
+    slices: files.length, width: mosaicWidth, height: mosaicHeight,
+    geoBounds: unionGeoBounds, crs,
+  });
+
+  return result;
 }
 
 export async function loadMultipleCOGs(urls) {

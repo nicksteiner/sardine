@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
+import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds } from '../src/utils/roi-subset.js';
@@ -231,12 +231,32 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
-  // Core state
-  const [fileType, setFileType] = useState('nisar'); // 'cog' | 'nisar' | 'remote'
+  // Data source state: format × source → derived fileType for conditional rendering
+  const [dataFormat, setDataFormat] = useState('geotiff'); // 'geotiff' | 'nisar'
+  const [dataSource, setDataSource] = useState('local');   // 'local' | 'url' | 's3' | 'catalog' | 'stac'
+
+  const fileType = useMemo(() => {
+    if (dataSource === 'catalog') return 'catalog';
+    if (dataSource === 'stac') return 'stac';
+    if (dataFormat === 'geotiff') return dataSource === 'local' ? 'local-tif' : 'cog';
+    return dataSource === 'local' ? 'nisar' : 'remote';
+  }, [dataFormat, dataSource]);
+
+  const setFileType = useCallback((ft) => {
+    const map = {
+      'local-tif': ['geotiff', 'local'], 'cog': ['geotiff', 'url'],
+      'nisar': ['nisar', 'local'], 'remote': ['nisar', 's3'],
+      'catalog': ['geotiff', 'catalog'], 'stac': ['geotiff', 'stac'],
+    };
+    const [f, s] = map[ft] || ['geotiff', 'local'];
+    setDataFormat(f);
+    setDataSource(s);
+  }, []);
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
   const [loading, setLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState(0);
   const [error, setError] = useState(null);
 
   // Load generation counter — incremented on each new load to discard stale results
@@ -1590,6 +1610,80 @@ function App() {
     }
   }, [addStatusLog]);
 
+  // Handle local TIF file selection (single or multi-select mosaic)
+  const handleLocalTIFMultiSelect = useCallback(async (files) => {
+    if (!files || files.length === 0) return;
+
+    setLoading(true);
+    setLoadProgress(0);
+    setError(null);
+    const names = files.map(f => f.name);
+    addStatusLog('info', `Loading ${files.length} local GeoTIFF${files.length > 1 ? 's' : ''}: ${names.join(', ')}`);
+
+    try {
+      const gen = ++loadGenRef.current;
+      const data = await loadLocalTIFs(files, (pct) => setLoadProgress(pct));
+      if (gen !== loadGenRef.current) return;
+
+      setImageData(data);
+      const label = data.sliceCount > 1
+        ? `Mosaic: ${data.sliceCount} slices, ${data.width}x${data.height} px`
+        : `Loaded: ${data.width}x${data.height} px`;
+      addStatusLog('success', label);
+
+      // Auto-contrast with dB detection
+      try {
+        const sampleData = data.data;
+        if (sampleData) {
+          const vals = [];
+          const stride = Math.max(1, Math.floor(sampleData.length / 10000));
+          for (let i = 0; i < sampleData.length; i += stride) {
+            const v = sampleData[i];
+            if (!isNaN(v) && v !== 0) vals.push(v);
+          }
+          vals.sort((a, b) => a - b);
+          const p02 = vals[Math.floor(vals.length * 0.02)] || 0;
+          const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
+
+          // Detect if values are raw power (needs dB) or already scaled:
+          // - Raw SAR power: large positive values (p98 >> 1), dB conversion useful
+          // - Calibrated sigma0/gamma0: mostly < 1, dB would work but linear range is fine
+          // - Already in dB or ratio: can have negatives, small range, skip dB
+          const hasNegatives = p02 < 0;
+          const needsDb = !hasNegatives && p98 > 1;
+          setUseDecibels(needsDb);
+
+          const displayVals = needsDb
+            ? vals.map(v => 10 * Math.log10(Math.max(v, 1e-10)))
+            : vals;
+          const lowIdx = Math.floor(0.02 * displayVals.length);
+          const highIdx = Math.floor(0.98 * displayVals.length);
+          const limits = [
+            displayVals[lowIdx] ?? (needsDb ? -30 : 0),
+            displayVals[Math.min(highIdx, displayVals.length - 1)] ?? (needsDb ? 0 : 1),
+          ];
+          setContrastMin(limits[0]);
+          setContrastMax(limits[1]);
+          addStatusLog('info', needsDb
+            ? `dB scaling enabled (p98=${p98.toFixed(2)}), contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`
+            : `Linear scaling (p98=${p98.toFixed(4)}), contrast: [${limits[0].toFixed(4)}, ${limits[1].toFixed(4)}]`);
+        }
+      } catch (statsErr) {
+        console.warn('Auto-contrast failed:', statsErr);
+      }
+
+      if (data.bounds) {
+        autoFitIfNewScene(data.bounds);
+      }
+      setLoadProgress(100);
+    } catch (e) {
+      setError(`Failed to load GeoTIFF: ${e.message}`);
+      addStatusLog('error', 'Failed to load GeoTIFF', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog, autoFitIfNewScene]);
+
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
     const { url, name, size, type } = fileInfo;
@@ -2644,16 +2738,72 @@ function App() {
           {/* Data Source Selection */}
           <CollapsibleSection title="Data Source">
             <div className="control-group">
-              <label>File Type</label>
-              <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
-                <option value="cog">Cloud Optimized GeoTIFF (URL)</option>
-                <option value="nisar">NISAR GCOV HDF5 (Local File)</option>
-                <option value="remote">Remote Bucket / S3</option>
+              <label>Format</label>
+              <select value={dataFormat} onChange={(e) => setDataFormat(e.target.value)}>
+                <option value="geotiff">GeoTIFF</option>
+                <option value="nisar">NISAR GCOV (HDF5)</option>
+              </select>
+            </div>
+            <div className="control-group">
+              <label>Source</label>
+              <select value={dataSource} onChange={(e) => setDataSource(e.target.value)}>
+                <option value="local">Local File</option>
+                <option value="url">URL</option>
+                <option value="s3">S3 / Remote Bucket</option>
                 <option value="catalog">Scene Catalog (GeoJSON)</option>
                 <option value="stac">STAC Catalog Search</option>
               </select>
             </div>
           </CollapsibleSection>
+
+          {/* Local GeoTIFF Input */}
+          {fileType === 'local-tif' && (
+            <CollapsibleSection title="Load Local GeoTIFF">
+              <div className="control-group">
+                <label>Select one or more .tif files</label>
+                <input
+                  type="file"
+                  accept=".tif,.tiff"
+                  multiple
+                  id="local-tif-input"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    if (files.length > 1) {
+                      handleLocalTIFMultiSelect(files);
+                    } else {
+                      handleLocalTIFMultiSelect(files);
+                    }
+                  }}
+                />
+                <button
+                  className="btn-secondary"
+                  onClick={() => document.getElementById('local-tif-input').click()}
+                  style={{ width: '100%' }}
+                >
+                  {imageData?.sliceCount > 1
+                    ? `${imageData.sliceCount} files loaded - Change...`
+                    : imageData?.data ? 'Change File...' : 'Choose File(s)...'}
+                </button>
+                {loading && loadProgress > 0 && loadProgress < 100 && (
+                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                    <div className="progress-fill" style={{ width: `${loadProgress}%`, transition: 'width 0.3s ease' }} />
+                  </div>
+                )}
+              </div>
+              {imageData?.sliceCount > 1 && (
+                <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  Mosaic: {imageData.sliceCount} slices, {imageData.width}x{imageData.height} px
+                </div>
+              )}
+              {imageData?.sliceNames && (
+                <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                  {imageData.sliceNames.join(', ')}
+                </div>
+              )}
+            </CollapsibleSection>
+          )}
 
           {/* COG URL Input */}
           {fileType === 'cog' && (
@@ -3919,7 +4069,9 @@ function App() {
 
           {!loading && !error && !imageData && fileType !== 'stac' && (
             <div className="loading">
-              {fileType === 'cog'
+              {fileType === 'local-tif'
+                ? 'Select one or more local GeoTIFF files to begin'
+                : fileType === 'cog'
                 ? 'Enter a Cloud Optimized GeoTIFF URL and click Load to begin'
                 : fileType === 'catalog'
                   ? 'Load a GeoJSON scene catalog and select a scene to begin'
