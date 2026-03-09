@@ -2,6 +2,7 @@ import { Layer, project32, picking } from '@deck.gl/core';
 import { Model, Geometry } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
+import { applyWebGLFilter, FILTER_TYPE_IDS } from '../gpu/webgl-spatial-filter.js';
 
 
 /**
@@ -329,6 +330,51 @@ export class SARGPULayer extends Layer {
       }
     }
 
+    // ── Speckle filter (WebGL2 FBO pass — no CPU readback) ─────────────
+    const { speckleFilterType, speckleKernelSize = 7, speckleENL = 4, speckleDamping = 1.0 } = props;
+    const filterActive = speckleFilterType && speckleFilterType !== 'none';
+    const filterChanged = speckleFilterType !== oldProps.speckleFilterType ||
+      speckleKernelSize !== oldProps.speckleKernelSize ||
+      (speckleENL || 4) !== (oldProps.speckleENL || 4) ||
+      (speckleDamping || 1) !== (oldProps.speckleDamping || 1);
+
+    // Detect whether any raw texture was just (re-)uploaded this cycle
+    const singleDataChanged = !isRGB && data && (data !== oldProps.data || width !== oldProps.width || height !== oldProps.height);
+    const rgbDataChanged = isRGB && dataR && dataG && dataB &&
+      (dataR !== oldProps.dataR || dataG !== oldProps.dataG || dataB !== oldProps.dataB ||
+       width !== oldProps.width || height !== oldProps.height);
+    const anyDataChanged = singleDataChanged || rgbDataChanged;
+
+    // Clean up old filtered textures when filter is deactivated or params change
+    if (filterChanged || anyDataChanged) {
+      if (this.state.filteredTexture) { gl.deleteTexture(this.state.filteredTexture); }
+      if (this.state.filteredTextureG) { gl.deleteTexture(this.state.filteredTextureG); }
+      if (this.state.filteredTextureB) { gl.deleteTexture(this.state.filteredTextureB); }
+      this.setState({ filteredTexture: null, filteredTextureG: null, filteredTextureB: null });
+    }
+
+    // Run filter if active and data or params changed
+    if (filterActive && (anyDataChanged || filterChanged)) {
+      const filterOpts = {
+        type: speckleFilterType,
+        kernelSize: speckleKernelSize,
+        enl: speckleENL || 4,
+        damping: speckleDamping || 1.0,
+      };
+
+      if (isRGB && this.state.texture && this.state.textureG && this.state.textureB) {
+        const fR = applyWebGLFilter(gl, this.state.texture, width, height, filterOpts);
+        const fG = applyWebGLFilter(gl, this.state.textureG, width, height, filterOpts);
+        const fB = applyWebGLFilter(gl, this.state.textureB, width, height, filterOpts);
+        if (fR) this.setState({ filteredTexture: fR });
+        if (fG) this.setState({ filteredTextureG: fG });
+        if (fB) this.setState({ filteredTextureB: fB });
+      } else if (!isRGB && this.state.texture) {
+        const fTex = applyWebGLFilter(gl, this.state.texture, width, height, filterOpts);
+        if (fTex) this.setState({ filteredTexture: fTex });
+      }
+    }
+
     // Upload mask texture when dataMask changes
     const { dataMask } = props;
     if (dataMask && (dataMask !== oldProps.dataMask || width !== oldProps.width || height !== oldProps.height)) {
@@ -396,9 +442,15 @@ export class SARGPULayer extends Layer {
   }
 
   draw({ uniforms }) {
-    const { model, texture, textureG, textureB, textureMask } = this.state;
+    const { model, texture, textureG, textureB, textureMask,
+            filteredTexture, filteredTextureG, filteredTextureB } = this.state;
 
     if (!model || !texture) return;
+
+    // Use filtered textures when available (GPU FBO filter output)
+    const displayTex = filteredTexture || texture;
+    const displayTexG = filteredTextureG || textureG;
+    const displayTexB = filteredTextureB || textureB;
 
     const {
       contrastLimits = [-25, 0],
@@ -415,9 +467,9 @@ export class SARGPULayer extends Layer {
     try {
       const { gl } = this.context;
 
-      // Bind R texture to unit 0 (always)
+      // Bind R texture to unit 0 (always) — use filtered if available
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.bindTexture(gl.TEXTURE_2D, displayTex);
 
       // Resolve per-channel contrast limits
       // contrastLimits can be [min, max] (uniform) or {R: [min,max], G: [min,max], B: [min,max]}
@@ -458,12 +510,12 @@ export class SARGPULayer extends Layer {
         uTextureMask: 3,
       };
 
-      if (isRGB && textureG && textureB) {
+      if (isRGB && displayTexG && displayTexB) {
         // Bind G and B textures to units 1 and 2
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, textureG);
+        gl.bindTexture(gl.TEXTURE_2D, displayTexG);
         gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, textureB);
+        gl.bindTexture(gl.TEXTURE_2D, displayTexB);
 
         layerUniforms.uTextureG = 1;
         layerUniforms.uTextureB = 2;
@@ -517,6 +569,10 @@ export class SARGPULayer extends Layer {
       if (this.state.textureG) gl.deleteTexture(this.state.textureG);
       if (this.state.textureB) gl.deleteTexture(this.state.textureB);
       if (this.state.textureMask) gl.deleteTexture(this.state.textureMask);
+      // Clean up FBO-filtered textures
+      if (this.state.filteredTexture) gl.deleteTexture(this.state.filteredTexture);
+      if (this.state.filteredTextureG) gl.deleteTexture(this.state.filteredTextureG);
+      if (this.state.filteredTextureB) gl.deleteTexture(this.state.filteredTextureB);
     }
   }
 }
@@ -542,5 +598,10 @@ SARGPULayer.defaultProps = {
   colormap: { type: 'string', value: 'grayscale', compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true },
+  // Speckle filter (WebGL2 FBO pass — WebGPU compute retained for export pipeline)
+  speckleFilterType: { type: 'string', value: 'none', compare: true },
+  speckleKernelSize: { type: 'number', value: 7, min: 3, max: 15, compare: true },
+  speckleENL: { type: 'number', value: 4, min: 1, compare: true },
+  speckleDamping: { type: 'number', value: 1.0, min: 0, compare: true },
   // Note: coordinateSystem is NOT defined here - it will inherit from parent layer
 };

@@ -2812,23 +2812,35 @@ export class H5Chunk {
 
     const result = new Float32Array(numRows * numCols * valuesPerPixel);
 
-    // Read all chunks in parallel (critical for remote URLs — avoids sequential round-trips)
-    const chunkPromises = [];
+    // Collect chunk coordinates needed
+    const coords = [];
     for (let cr = startChunkRow; cr <= endChunkRow; cr++) {
       for (let cc = startChunkCol; cc <= endChunkCol; cc++) {
-        chunkPromises.push(
-          this.readChunk(datasetId, cr, cc, { signal })
-            .then(data => ({ cr, cc, data }))
-            .catch(e => {
-              console.warn(`[h5chunk] Failed to read chunk (${cr}, ${cc}):`, e.message);
-              return { cr, cc, data: null };
-            })
-        );
+        coords.push([cr, cc]);
       }
     }
-    const chunks = await Promise.all(chunkPromises);
+
+    // Use readChunksBatch for coalesced reads (merges adjacent HTTP Range
+    // requests for remote URLs; parallel File.slice for local files).
+    let chunkMap;
+    try {
+      chunkMap = await this.readChunksBatch(datasetId, coords, { signal });
+    } catch (e) {
+      console.warn(`[h5chunk] readChunksBatch failed in readRegion, falling back:`, e.message);
+      // Fallback: individual parallel reads
+      chunkMap = new Map();
+      const promises = coords.map(([cr, cc]) =>
+        this.readChunk(datasetId, cr, cc, { signal })
+          .then(data => chunkMap.set(`${cr},${cc}`, data))
+          .catch(() => chunkMap.set(`${cr},${cc}`, null))
+      );
+      await Promise.all(promises);
+    }
 
     // Copy each chunk's relevant portion to result
+    const chunks = coords.map(([cr, cc]) => ({
+      cr, cc, data: chunkMap.get(`${cr},${cc}`) || null,
+    }));
     for (const { cr, cc, data: chunkData } of chunks) {
       if (!chunkData) continue;
 

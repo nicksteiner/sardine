@@ -3,13 +3,16 @@ import { getColormap } from '../utils/colormap.js';
 import { computeRGBBands } from '../utils/sar-composites.js';
 import { applyStretch } from '../utils/stretch.js';
 import { SARGPULayer } from './SARGPULayer.js';
-import { applySpeckleFilter } from '../gpu/spatial-filter.js';
 
 /**
  * SARTileLayer - A deck.gl TileLayer specialized for SAR imagery
  *
  * Raw float data is cached in getTileData; rendering (dB, colormap, contrast)
  * is applied in renderSubLayers so prop changes are instant without refetching.
+ *
+ * Speckle filtering is handled by SARGPULayer via WebGL2 FBO render-to-texture
+ * passes — the filter runs entirely on the GPU with no CPU readback.
+ * The WebGPU compute path (spatial-filter.js) is retained for the export pipeline.
  */
 export class SARTileLayer extends TileLayer {
   static componentName = 'SARTileLayer';
@@ -46,37 +49,13 @@ export class SARTileLayer extends TileLayer {
     }
     if (computedMinZoom === undefined) computedMinZoom = -8;
 
-    // dB/colormap/contrast are applied in renderSubLayers (instant).
-    // Include filter params in layer ID so tiles are re-processed when filter changes.
-    const filterSuffix = speckleFilterType !== 'none' ? `-${speckleFilterType}${speckleKernelSize}` : '';
-    const layerId = `${props.id || 'sar-tile-layer'}-${multiLook ? 'ml' : 'nn'}${filterSuffix}`;
-
-    // Helper: apply speckle filter to tile data bands
-    const filterTileData = async (tileData) => {
-      if (!tileData || speckleFilterType === 'none') return tileData;
-      const { width, height } = tileData;
-      if (tileData.data) {
-        tileData.data = await applySpeckleFilter(tileData.data, width, height, {
-          type: speckleFilterType,
-          kernelSize: speckleKernelSize,
-        });
-      }
-      if (tileData.bands) {
-        const filtered = {};
-        for (const [name, band] of Object.entries(tileData.bands)) {
-          filtered[name] = await applySpeckleFilter(band, width, height, {
-            type: speckleFilterType,
-            kernelSize: speckleKernelSize,
-          });
-        }
-        tileData.bands = filtered;
-      }
-      return tileData;
-    };
+    // No filter suffix in layer ID — filter changes no longer trigger tile re-fetch.
+    // Filter params are passed to SARGPULayer and applied via WebGL2 FBO on the GPU.
+    const layerId = `${props.id || 'sar-tile-layer'}-${multiLook ? 'ml' : 'nn'}`;
 
     // Use external getTileData if provided (stable reference from SARViewer),
     // otherwise create a default closure from getTile + multiLook.
-    const baseFn = externalGetTileData || (async (tile) => {
+    const getTileDataFn = externalGetTileData || (async (tile) => {
       const { bbox } = tile;
       const tileData = await getTile({
         x: tile.index.x,
@@ -88,12 +67,6 @@ export class SARTileLayer extends TileLayer {
       if (!tileData) return null;
       return tileData;
     });
-
-    // Wrap to apply speckle filter after loading
-    const getTileDataFn = async (tile) => {
-      const tileData = await baseFn(tile);
-      return filterTileData(tileData);
-    };
 
     super({
       id: layerId,
@@ -107,9 +80,9 @@ export class SARTileLayer extends TileLayer {
       tileSize,
       opacity,
 
-      // Force sublayer re-render when rendering params change
+      // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, useMask],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, useMask, speckleFilterType, speckleKernelSize],
       },
 
       renderSubLayers: (subProps) => {
@@ -124,9 +97,25 @@ export class SARTileLayer extends TileLayer {
         // Mask data (if available from tile)
         const maskProps = tileData.mask ? { dataMask: tileData.mask, useMask } : { useMask: false };
 
+        // Speckle filter props — SARGPULayer handles filtering via WebGL2 FBO
+        const filterProps = {
+          speckleFilterType,
+          speckleKernelSize,
+        };
+
         // RGB composite mode - GPU accelerated (3x R32F textures)
         if (tileData.bands && tileData.compositeId) {
-          const rgbBands = computeRGBBands(tileData.bands, tileData.compositeId, tileData.width);
+          // Cache computeRGBBands on the tile data — only recompute when
+          // bands or compositeId change, not on every visual prop update
+          // (contrast, colormap, stretch). This avoids ~65K Float32Array
+          // operations per tile on every slider drag.
+          if (!tileData._rgbCache || tileData._rgbCache.compositeId !== tileData.compositeId) {
+            tileData._rgbCache = {
+              compositeId: tileData.compositeId,
+              bands: computeRGBBands(tileData.bands, tileData.compositeId, tileData.width),
+            };
+          }
+          const rgbBands = tileData._rgbCache.bands;
 
           return new SARGPULayer({
             id: `${subProps.id}-gpu-rgb`,
@@ -145,6 +134,7 @@ export class SARTileLayer extends TileLayer {
             stretchMode,
             opacity: subProps.opacity,
             ...maskProps,
+            ...filterProps,
           });
         } else if (tileData.data) {
           return new SARGPULayer({
@@ -160,6 +150,7 @@ export class SARTileLayer extends TileLayer {
             stretchMode,
             opacity: subProps.opacity,
             ...maskProps,
+            ...filterProps,
           });
         } else {
           return null;

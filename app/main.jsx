@@ -1779,7 +1779,8 @@ function App() {
           compositeId,
           requiredPols,
           requiredComplexPols,
-          _streamReader: handleRemoteFileSelect._cachedReader || null,
+          _streamReader: handleRemoteFileSelect._cachedReader || imageData?._h5chunk || null,
+          _chunkCaches: imageData?._chunkCaches || null,
         });
 
         // In RGB mode, pass getRGBTile as getTile
@@ -1930,6 +1931,8 @@ function App() {
           compositeId,
           requiredPols,
           requiredComplexPols,
+          _streamReader: imageData?._h5chunk || null,
+          _chunkCaches: imageData?._chunkCaches || null,
         });
 
         // In RGB mode, pass getRGBTile as getTile

@@ -2212,6 +2212,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     hasMask: maskDatasetId != null,
     _streaming: true,
     _h5chunk: streamReader,
+    _chunkCaches: { [polarization]: chunkCache },
   };
 
   console.log('[NISAR Loader] NISAR GCOV loaded successfully (streaming mode):', {
@@ -2871,6 +2872,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     requiredPols = ['HHHH', 'HVHV', 'VVVV'],
     requiredComplexPols = [],
     _streamReader: existingReader = null,
+    _chunkCaches: externalCaches = null,
   } = options;
 
   console.log(`[NISAR Loader] Loading RGB composite: ${compositeId}`);
@@ -3114,12 +3116,13 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
   });
 
   // Per-dataset chunk caches (real + complex)
+  // Reuse external caches when available (e.g. from a previous single-band load)
   const chunkCaches = {};
   for (const pol of requiredPols) {
-    chunkCaches[pol] = new Map();
+    chunkCaches[pol] = externalCaches?.[pol] || new Map();
   }
   for (const cpol of requiredComplexPols) {
-    chunkCaches[cpol] = new Map();
+    chunkCaches[cpol] = externalCaches?.[cpol] || new Map();
   }
   const MAX_CHUNK_CACHE_PER_BAND = 300;
   const hasComplexData = requiredComplexPols.length > 0 && Object.keys(complexPolMap).length > 0;
@@ -3522,6 +3525,9 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
       await Promise.all(batchFetches);
 
       // --- Phase 3: sample pixels synchronously from pre-fetched chunks ---
+      // Use flat arrays indexed by band ordinal instead of per-pixel object allocation.
+      // This avoids creating 2 objects per pixel (65K iterations × 2 = 130K objects per tile).
+      const nPols = requiredPols.length;
       const bandArrays = {};
       for (const pol of requiredPols) {
         bandArrays[pol] = new Float32Array(tileSize * tileSize);
@@ -3534,13 +3540,16 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         }
       }
 
+      // Pre-allocate flat accumulator arrays (reused across all pixels)
+      const sums = new Float64Array(nPols);
+      const counts = new Int32Array(nPols);
+
       for (let ty = 0; ty < tileSize; ty++) {
         for (let tx = 0; tx < tileSize; tx++) {
-          const sums = {};
-          const counts = {};
-          for (const pol of requiredPols) {
-            sums[pol] = 0;
-            counts[pol] = 0;
+          // Reset accumulators (flat array fill — no object allocation)
+          for (let pi = 0; pi < nPols; pi++) {
+            sums[pi] = 0;
+            counts[pi] = 0;
           }
 
           for (let sy = 0; sy < nSub; sy++) {
@@ -3554,25 +3563,23 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
               const cc = Math.floor(srcX / chunkW);
 
               const chunkKey = `${cr},${cc}`;
-              for (const pol of requiredPols) {
-                const chunk = prefetched[pol][chunkKey];
+              for (let pi = 0; pi < nPols; pi++) {
+                const chunk = prefetched[requiredPols[pi]][chunkKey];
                 const v = samplePixel(chunk, srcY, srcX, cr, cc);
                 if (v > 0) {
-                  sums[pol] += v;
-                  counts[pol]++;
+                  sums[pi] += v;
+                  counts[pi]++;
                 }
               }
             }
           }
 
           const pixIdx = ty * tileSize + tx;
-          for (const pol of requiredPols) {
-            bandArrays[pol][pixIdx] = counts[pol] > 0 ? sums[pol] / counts[pol] : 0;
+          for (let pi = 0; pi < nPols; pi++) {
+            bandArrays[requiredPols[pi]][pixIdx] = counts[pi] > 0 ? sums[pi] / counts[pi] : 0;
           }
 
           // Complex bands: nearest-neighbor (center sample only, no averaging)
-          // Complex cross-products are not power values — averaging re/im separately is valid
-          // but NN is simpler and sufficient at tile resolution
           if (hasComplexData) {
             const centerY = top + Math.floor((ty + 0.5) * stepY);
             const centerX = left + Math.floor((tx + 0.5) * stepX);
@@ -3891,6 +3898,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     mode: 'streaming',
     _streaming: true,
     _h5chunk: streamReader,
+    _chunkCaches: chunkCaches,
   };
 
   console.log('[NISAR Loader] RGB composite loaded:', {
