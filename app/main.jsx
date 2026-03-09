@@ -1689,7 +1689,7 @@ function App() {
     }
   }, [addStatusLog]);
 
-  // Handle multiple local TIF file selection (multi-band)
+  // Handle multiple local TIF file selection — mosaic spatial slices into one raster
   const handleLocalTIFMultiSelect = useCallback(async (files) => {
     if (!files || files.length === 0) return;
 
@@ -1697,8 +1697,8 @@ function App() {
     setLoadProgress(0);
     setError(null);
     setFileType('cog');
-    const names = files.map(f => f.name).join(', ');
-    addStatusLog('info', `Loading ${files.length} local GeoTIFFs as multi-band: ${names}`);
+    const names = files.map(f => f.name);
+    addStatusLog('info', `Loading ${files.length} local GeoTIFFs: ${names.join(', ')}`);
 
     try {
       const gen = ++loadGenRef.current;
@@ -1706,15 +1706,12 @@ function App() {
       if (gen !== loadGenRef.current) return;
 
       setImageData(data);
-      if (data.bandNames) {
-        setBandNames(data.bandNames);
-      }
       addStatusLog('success',
-        `Multi-band loaded: ${data.bandNames?.join(', ')} (${data.width}×${data.height})`);
+        `Mosaic loaded: ${data.sliceCount} slices, ${data.width}×${data.height} px`);
 
-      // Auto-contrast from first band
+      // Auto-contrast
       try {
-        const sampleData = data.data || (await data.getTile({ x: 0, y: 0, z: 0 }))?.data;
+        const sampleData = data.data;
         if (sampleData) {
           const vals = [];
           const stride = Math.max(1, Math.floor(sampleData.length / 10000));
@@ -1740,10 +1737,10 @@ function App() {
           addStatusLog('info', `Auto-contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`);
         }
       } catch (statsErr) {
-        console.warn('Auto-contrast failed for multi-band:', statsErr);
+        console.warn('Auto-contrast failed for mosaic:', statsErr);
       }
 
-      // Fit view to bounds
+      // Fit view to mosaic bounds
       if (data.bounds) {
         autoFitIfNewScene(data.bounds);
       }
@@ -1751,7 +1748,7 @@ function App() {
       setLoadProgress(100);
     } catch (e) {
       setError(`Failed to load GeoTIFFs: ${e.message}`);
-      addStatusLog('error', 'Failed to load multi-band GeoTIFFs', e.message);
+      addStatusLog('error', 'Failed to load GeoTIFFs', e.message);
     } finally {
       setLoading(false);
     }
@@ -2882,9 +2879,9 @@ function App() {
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
               )}
-              {imageData?.type === 'multi-band' && imageData.bandNames && (
+              {imageData?.sliceCount > 1 && (
                 <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  {imageData.bandCount} bands: {imageData.bandNames.join(', ')}
+                  Mosaic: {imageData.sliceCount} slices ({imageData.width}x{imageData.height})
                 </div>
               )}
 
