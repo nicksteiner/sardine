@@ -231,27 +231,8 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
-  // Data source state: format × source → derived fileType for conditional rendering
-  const [dataFormat, setDataFormat] = useState('geotiff'); // 'geotiff' | 'nisar'
-  const [dataSource, setDataSource] = useState('local');   // 'local' | 'url' | 's3' | 'catalog' | 'stac'
-
-  const fileType = useMemo(() => {
-    if (dataSource === 'catalog') return 'catalog';
-    if (dataSource === 'stac') return 'stac';
-    if (dataFormat === 'geotiff') return dataSource === 'local' ? 'local-tif' : 'cog';
-    return dataSource === 'local' ? 'nisar' : 'remote';
-  }, [dataFormat, dataSource]);
-
-  const setFileType = useCallback((ft) => {
-    const map = {
-      'local-tif': ['geotiff', 'local'], 'cog': ['geotiff', 'url'],
-      'nisar': ['nisar', 'local'], 'remote': ['nisar', 's3'],
-      'catalog': ['geotiff', 'catalog'], 'stac': ['geotiff', 'stac'],
-    };
-    const [f, s] = map[ft] || ['geotiff', 'local'];
-    setDataFormat(f);
-    setDataSource(s);
-  }, []);
+  // Unified load mode — single selector replaces old format × source matrix
+  const [fileType, setFileType] = useState('nisar'); // 'nisar' | 'local-tif' | 'remote' | 'cog' | 'catalog' | 'stac'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
@@ -1154,20 +1135,47 @@ function App() {
           addStatusLog('info', `${scopeLabel} histogram: no valid pixels in region`);
         }
       } else {
-        // Single-band histogram — pass origin offset for correct viewport sampling
-        console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', useDecibels);
-        const stats = await sampleViewportStats(
-          imageData.getTile, regionW, regionH, useDecibels, 128,
-          regionX, regionY, imageData.height,
-          (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
-        );
-        console.log('[histogram] single-band stats:', stats ? { p2: stats.p2, p98: stats.p98, count: stats.count } : null);
-        if (stats) {
-          console.log('[histogram] CALLING setHistogramData, new min:', stats.min.toFixed(2), 'max:', stats.max.toFixed(2), 'count:', stats.count);
-          setHistogramData({ single: stats });
-          addStatusLog('success', `${scopeLabel} histogram: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)}`);
+        // Single-band histogram
+        // For global scope with HDF5 embedded stats, use synthetic histogram
+        // instead of reading 9 full-extent tiles (avoids minutes-long stall on large files)
+        const hasH5Stats = histogramScope === 'global' && imageData.stats
+          && imageData.stats.mean_value > 0 && imageData.stats.sample_stddev > 0;
+
+        if (hasH5Stats) {
+          const { mean_value, sample_stddev } = imageData.stats;
+          const meanDb = 10 * Math.log10(mean_value);
+          const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+          const syntheticMin = meanDb - 4 * stdDb;
+          const syntheticMax = meanDb + 4 * stdDb;
+          const numBins = 128;
+          const binWidth = (syntheticMax - syntheticMin) / numBins;
+          const bins = new Array(numBins).fill(0);
+          const syntheticCount = 100000;
+          for (let b = 0; b < numBins; b++) {
+            const binCenter = syntheticMin + (b + 0.5) * binWidth;
+            const z = (binCenter - meanDb) / stdDb;
+            bins[b] = Math.round(syntheticCount * Math.exp(-0.5 * z * z) / (stdDb * Math.sqrt(2 * Math.PI)) * binWidth);
+          }
+          const p2 = meanDb - 2 * stdDb;
+          const p98 = meanDb + 2 * stdDb;
+          setHistogramData({ single: { bins, min: syntheticMin, max: syntheticMax, mean: meanDb, binWidth, count: syntheticCount, p2, p98 } });
+          addStatusLog('success', `Global histogram from HDF5 statistics: ${p2.toFixed(1)} to ${p98.toFixed(1)} dB`);
         } else {
-          console.log('[histogram] single-band: no stats returned');
+          // Viewport/ROI scope or no HDF5 stats — sample tiles
+          console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', useDecibels);
+          const stats = await sampleViewportStats(
+            imageData.getTile, regionW, regionH, useDecibels, 128,
+            regionX, regionY, imageData.height,
+            (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
+          );
+          console.log('[histogram] single-band stats:', stats ? { p2: stats.p2, p98: stats.p98, count: stats.count } : null);
+          if (stats) {
+            console.log('[histogram] CALLING setHistogramData, new min:', stats.min.toFixed(2), 'max:', stats.max.toFixed(2), 'count:', stats.count);
+            setHistogramData({ single: stats });
+            addStatusLog('success', `${scopeLabel} histogram: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)}`);
+          } else {
+            console.log('[histogram] single-band: no stats returned');
+          }
         }
       }
     } catch (e) {
@@ -1686,8 +1694,12 @@ function App() {
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
-    const { url, name, size, type } = fileInfo;
+    const { url, name, size, type, token } = fileInfo;
     addStatusLog('info', `Remote file selected: ${name}`);
+
+    // Store auth token for subsequent data fetches (e.g. Earthdata bearer token from STAC search)
+    const fetchHeaders = token ? { 'Authorization': `Bearer ${token}` } : undefined;
+    handleRemoteFileSelect._fetchHeaders = fetchHeaders;
 
     if (type === 'cog') {
       // Load as COG directly
@@ -1706,7 +1718,7 @@ function App() {
 
     try {
       addStatusLog('info', `Streaming NISAR metadata from: ${name}`);
-      const result = await listNISARDatasetsFromUrl(url);
+      const result = await listNISARDatasetsFromUrl(url, { fetchHeaders });
       const datasets = result.datasets || result;
       // Store the stream reader to reuse when loading (avoids re-downloading metadata)
       if (result._streamReader) {
@@ -1781,6 +1793,7 @@ function App() {
           requiredComplexPols,
           _streamReader: handleRemoteFileSelect._cachedReader || imageData?._h5chunk || null,
           _chunkCaches: imageData?._chunkCaches || null,
+          fetchHeaders: handleRemoteFileSelect._fetchHeaders,
         });
 
         // In RGB mode, pass getRGBTile as getTile
@@ -1804,6 +1817,7 @@ function App() {
           frequency: selectedFrequency,
           polarization: selectedPolarization,
           _streamReader: handleRemoteFileSelect._cachedReader || null,
+          fetchHeaders: handleRemoteFileSelect._fetchHeaders,
         });
 
         // Progressive refinement: when background Phase 2 completes, bump version
@@ -2024,20 +2038,44 @@ function App() {
           addStatusLog('success', 'Per-channel contrast set (linear 2–98%)',
             ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
         } else if (data.getTile) {
-          addStatusLog('info', 'Computing histogram from tile samples...');
-          // Sample using world-coordinate bounds so getTile receives world-space bboxes
-          const [hMinX, hMinY, hMaxX, hMaxY] = data.bounds;
-          const stats = await sampleViewportStats(
-            data.getTile, hMaxX - hMinX, hMaxY - hMinY, useDecibels, 128,
-            hMinX, hMinY,
-          );
-          if (stats) {
-            setHistogramData({ single: stats });
-            // Keep decimal precision for dB values (don't round)
-            setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
-            setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
-            const unit = useDecibels ? 'dB' : '';
-            addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
+          const hasH5Stats = data.stats && data.stats.mean_value > 0 && data.stats.sample_stddev > 0;
+
+          if (hasH5Stats) {
+            // Use HDF5 embedded statistics for instant histogram — no tile reads needed.
+            // Synthetic Gaussian from mean/stddev. Switch to viewport scope for real pixel data.
+            const { mean_value, sample_stddev } = data.stats;
+            const meanDb = 10 * Math.log10(mean_value);
+            const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+            const syntheticMin = meanDb - 4 * stdDb;
+            const syntheticMax = meanDb + 4 * stdDb;
+            const numBins = 128;
+            const binWidth = (syntheticMax - syntheticMin) / numBins;
+            const bins = new Array(numBins).fill(0);
+            const syntheticCount = 100000;
+            for (let b = 0; b < numBins; b++) {
+              const binCenter = syntheticMin + (b + 0.5) * binWidth;
+              const z = (binCenter - meanDb) / stdDb;
+              bins[b] = Math.round(syntheticCount * Math.exp(-0.5 * z * z) / (stdDb * Math.sqrt(2 * Math.PI)) * binWidth);
+            }
+            const p2 = meanDb - 2 * stdDb;
+            const p98 = meanDb + 2 * stdDb;
+            setHistogramData({ single: { bins, min: syntheticMin, max: syntheticMax, mean: meanDb, binWidth, count: syntheticCount, p2, p98 } });
+            addStatusLog('success', `Histogram from HDF5 statistics: ${p2.toFixed(1)} to ${p98.toFixed(1)} dB`);
+          } else {
+            // No HDF5 stats — compute from tile samples
+            addStatusLog('info', 'Computing histogram from tile samples...');
+            const [hMinX, hMinY, hMaxX, hMaxY] = data.bounds;
+            const stats = await sampleViewportStats(
+              data.getTile, hMaxX - hMinX, hMaxY - hMinY, useDecibels, 128,
+              hMinX, hMinY,
+            );
+            if (stats) {
+              setHistogramData({ single: stats });
+              setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
+              setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
+              const unit = useDecibels ? 'dB' : '';
+              addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
+            }
           }
         }
       } catch (e) {
@@ -2741,20 +2779,12 @@ function App() {
           {/* Data Source Selection */}
           <CollapsibleSection title="Data Source">
             <div className="control-group">
-              <label>Format</label>
-              <select value={dataFormat} onChange={(e) => setDataFormat(e.target.value)}>
-                <option value="geotiff">GeoTIFF</option>
-                <option value="nisar">NISAR GCOV (HDF5)</option>
-              </select>
-            </div>
-            <div className="control-group">
-              <label>Source</label>
-              <select value={dataSource} onChange={(e) => setDataSource(e.target.value)}>
-                <option value="local">Local File</option>
-                <option value="url">URL</option>
-                <option value="s3">S3 / Remote Bucket</option>
+              <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
+                <option value="nisar">Local HDF5 (NISAR GCOV)</option>
+                <option value="local-tif">Local GeoTIFF</option>
+                <option value="remote">Remote URL / S3</option>
+                <option value="stac">ASF / STAC Search</option>
                 <option value="catalog">Scene Catalog (GeoJSON)</option>
-                <option value="stac">STAC Catalog Search</option>
               </select>
             </div>
           </CollapsibleSection>
@@ -2808,24 +2838,6 @@ function App() {
             </CollapsibleSection>
           )}
 
-          {/* COG URL Input */}
-          {fileType === 'cog' && (
-            <CollapsibleSection title="Load COG">
-              <div className="control-group">
-                <label>COG URL</label>
-                <input
-                  type="text"
-                  value={cogUrl}
-                  onChange={(e) => setCogUrl(e.target.value)}
-                  placeholder="https://bucket.s3.amazonaws.com/image.tif"
-                />
-              </div>
-              <button onClick={handleLoadCOG} disabled={loading}>
-                {loading ? 'Loading...' : 'Load COG'}
-              </button>
-            </CollapsibleSection>
-          )}
-
           {/* NISAR HDF5 Input */}
           {fileType === 'nisar' && (
             <CollapsibleSection title="Load NISAR GCOV">
@@ -2857,83 +2869,6 @@ function App() {
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
               )}
-
-              {nisarDatasets.length > 0 && (
-                <>
-                  <div className="control-group">
-                    <label>Frequency</label>
-                    <select
-                      value={selectedFrequency}
-                      onChange={(e) => {
-                        setSelectedFrequency(e.target.value);
-                        // Update polarization to first available for this frequency
-                        const freqDatasets = nisarDatasets.filter(d => d.frequency === e.target.value);
-                        if (freqDatasets.length > 0) {
-                          setSelectedPolarization(freqDatasets[0].polarization);
-                        }
-                      }}
-                    >
-                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
-                        <option key={f} value={f}>Frequency {f}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="control-group">
-                    <label>Polarization</label>
-                    <select
-                      value={selectedPolarization}
-                      onChange={(e) => setSelectedPolarization(e.target.value)}
-                    >
-                      {nisarDatasets
-                        .filter(d => d.frequency === selectedFrequency)
-                        .map(d => (
-                          <option key={d.polarization} value={d.polarization}>
-                            {d.polarization}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-
-                  {/* Display Mode */}
-                  <div className="control-group">
-                    <label>Display Mode</label>
-                    <select
-                      value={displayMode}
-                      onChange={(e) => setDisplayMode(e.target.value)}
-                    >
-                      <option value="single">Single Band</option>
-                      <option value="rgb" disabled={availableComposites.length === 0}>
-                        RGB Composite
-                      </option>
-                    </select>
-                  </div>
-
-                  {/* Composite preset selector (only in RGB mode) */}
-                  {displayMode === 'rgb' && availableComposites.length > 0 && (
-                    <div className="control-group">
-                      <label>Composite</label>
-                      <select
-                        value={compositeId || ''}
-                        onChange={(e) => setCompositeId(e.target.value)}
-                      >
-                        {availableComposites.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
-                      </div>
-                    </div>
-                  )}
-
-                  <button onClick={handleLoadNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
-                  </button>
-                </>
-              )}
             </CollapsibleSection>
           )}
 
@@ -2948,7 +2883,7 @@ function App() {
                   value={directUrl}
                   onChange={(e) => setDirectUrl(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleDirectUrlSubmit(); }}
-                  placeholder="https://…/NISAR_*.h5?X-Amz-Signature=…"
+                  placeholder="https://…/*.h5 or *.tif (auto-detected)"
                   style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}
                 />
               </div>
@@ -2967,84 +2902,6 @@ function App() {
                 serverOrigin=""
               />
 
-              {/* Show dataset selectors when remote NISAR metadata is loaded */}
-              {remoteUrl && nisarDatasets.length > 0 && (
-                <>
-                  <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                    🛰️ {remoteName}
-                  </div>
-
-                  <div className="control-group">
-                    <label>Frequency</label>
-                    <select
-                      value={selectedFrequency}
-                      onChange={(e) => {
-                        setSelectedFrequency(e.target.value);
-                        const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
-                        if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
-                      }}
-                    >
-                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
-                        <option key={f} value={f}>Frequency {f}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="control-group">
-                    <label>Polarization</label>
-                    <select
-                      value={selectedPolarization}
-                      onChange={(e) => setSelectedPolarization(e.target.value)}
-                    >
-                      {nisarDatasets
-                        .filter(d => d.frequency === selectedFrequency)
-                        .map(d => (
-                          <option key={d.polarization} value={d.polarization}>
-                            {d.polarization}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-
-                  {/* Display Mode (Single / RGB) */}
-                  <div className="control-group">
-                    <label>Display Mode</label>
-                    <select
-                      value={displayMode}
-                      onChange={(e) => setDisplayMode(e.target.value)}
-                    >
-                      <option value="single">Single Band</option>
-                      <option value="rgb" disabled={availableComposites.length === 0}>
-                        RGB Composite
-                      </option>
-                    </select>
-                  </div>
-
-                  {/* Composite preset selector (only in RGB mode) */}
-                  {displayMode === 'rgb' && availableComposites.length > 0 && (
-                    <div className="control-group">
-                      <label>Composite</label>
-                      <select
-                        value={compositeId || ''}
-                        onChange={(e) => setCompositeId(e.target.value)}
-                      >
-                        {availableComposites.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
-                      </div>
-                    </div>
-                  )}
-
-                  <button onClick={handleLoadRemoteNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Remote Dataset'}
-                  </button>
-                </>
-              )}
             </CollapsibleSection>
           )}
 
@@ -3053,7 +2910,6 @@ function App() {
             <CollapsibleSection title="Scene Catalog">
               <SceneCatalog
                 onSelectScene={(sceneInfo) => {
-                  // Route scene selection through the existing remote loader
                   handleRemoteFileSelect({
                     url: sceneInfo.url,
                     name: sceneInfo.name,
@@ -3064,84 +2920,6 @@ function App() {
                 onStatus={addStatusLog}
                 onLayersChange={setCatalogLayers}
               />
-
-              {/* Show dataset selectors when remote NISAR metadata is loaded (reuse remote pattern) */}
-              {remoteUrl && nisarDatasets.length > 0 && (
-                <>
-                  <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                    {remoteName}
-                  </div>
-
-                  <div className="control-group">
-                    <label>Frequency</label>
-                    <select
-                      value={selectedFrequency}
-                      onChange={(e) => {
-                        setSelectedFrequency(e.target.value);
-                        const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
-                        if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
-                      }}
-                    >
-                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
-                        <option key={f} value={f}>Frequency {f}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="control-group">
-                    <label>Polarization</label>
-                    <select
-                      value={selectedPolarization}
-                      onChange={(e) => setSelectedPolarization(e.target.value)}
-                    >
-                      {nisarDatasets
-                        .filter(d => d.frequency === selectedFrequency)
-                        .map(d => (
-                          <option key={d.polarization} value={d.polarization}>
-                            {d.polarization}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-
-                  {/* Display Mode (Single / RGB) */}
-                  <div className="control-group">
-                    <label>Display Mode</label>
-                    <select
-                      value={displayMode}
-                      onChange={(e) => setDisplayMode(e.target.value)}
-                    >
-                      <option value="single">Single Band</option>
-                      <option value="rgb" disabled={availableComposites.length === 0}>
-                        RGB Composite
-                      </option>
-                    </select>
-                  </div>
-
-                  {displayMode === 'rgb' && availableComposites.length > 0 && (
-                    <div className="control-group">
-                      <label>Composite</label>
-                      <select
-                        value={compositeId || ''}
-                        onChange={(e) => setCompositeId(e.target.value)}
-                      >
-                        {availableComposites.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
-                      </div>
-                    </div>
-                  )}
-
-                  <button onClick={handleLoadRemoteNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
-                  </button>
-                </>
-              )}
             </CollapsibleSection>
           )}
 
@@ -3155,6 +2933,7 @@ function App() {
                     name: sceneInfo.name,
                     size: sceneInfo.size || 0,
                     type: sceneInfo.type || 'nisar',
+                    token: sceneInfo.token,
                   });
                 }}
                 onSelectMultiple={async ({ scenes, mode }) => {
@@ -3223,84 +3002,89 @@ function App() {
                   setViewZoom(Math.log2(360 / span) - 1);
                 }}
               />
+            </CollapsibleSection>
+          )}
 
-              {/* Show dataset selectors when remote NISAR metadata is loaded */}
-              {remoteUrl && nisarDatasets.length > 0 && (
-                <>
-                  <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '8px' }}>
-                    {remoteName}
-                  </div>
+          {/* Shared NISAR Dataset Controls — shown whenever datasets are detected (local or remote) */}
+          {nisarDatasets.length > 0 && (
+            <CollapsibleSection title="Dataset" defaultOpen={true}>
+              {/* Source indicator */}
+              <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                {nisarFile ? nisarFile.name : remoteName || 'Remote'}
+                {nisarFile && ` (${(nisarFile.size / 1e9).toFixed(2)} GB)`}
+              </div>
 
-                  <div className="control-group">
-                    <label>Frequency</label>
-                    <select
-                      value={selectedFrequency}
-                      onChange={(e) => {
-                        setSelectedFrequency(e.target.value);
-                        const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
-                        if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
-                      }}
-                    >
-                      {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
-                        <option key={f} value={f}>Frequency {f}</option>
-                      ))}
-                    </select>
-                  </div>
+              <div className="control-group">
+                <label>Frequency</label>
+                <select
+                  value={selectedFrequency}
+                  onChange={(e) => {
+                    setSelectedFrequency(e.target.value);
+                    const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
+                    if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
+                  }}
+                >
+                  {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
+                    <option key={f} value={f}>Frequency {f}</option>
+                  ))}
+                </select>
+              </div>
 
-                  <div className="control-group">
-                    <label>Polarization</label>
-                    <select
-                      value={selectedPolarization}
-                      onChange={(e) => setSelectedPolarization(e.target.value)}
-                    >
-                      {nisarDatasets
-                        .filter(d => d.frequency === selectedFrequency)
-                        .map(d => (
-                          <option key={d.polarization} value={d.polarization}>
-                            {d.polarization}
-                          </option>
-                        ))}
-                    </select>
-                  </div>
-
-                  {/* Display Mode (Single / RGB) */}
-                  <div className="control-group">
-                    <label>Display Mode</label>
-                    <select
-                      value={displayMode}
-                      onChange={(e) => setDisplayMode(e.target.value)}
-                    >
-                      <option value="single">Single Band</option>
-                      <option value="rgb" disabled={availableComposites.length === 0}>
-                        RGB Composite
+              <div className="control-group">
+                <label>Polarization</label>
+                <select
+                  value={selectedPolarization}
+                  onChange={(e) => setSelectedPolarization(e.target.value)}
+                >
+                  {nisarDatasets
+                    .filter(d => d.frequency === selectedFrequency)
+                    .map(d => (
+                      <option key={d.polarization} value={d.polarization}>
+                        {d.polarization}
                       </option>
-                    </select>
+                    ))}
+                </select>
+              </div>
+
+              <div className="control-group">
+                <label>Display Mode</label>
+                <select
+                  value={displayMode}
+                  onChange={(e) => setDisplayMode(e.target.value)}
+                >
+                  <option value="single">Single Band</option>
+                  <option value="rgb" disabled={availableComposites.length === 0}>
+                    RGB Composite
+                  </option>
+                </select>
+              </div>
+
+              {displayMode === 'rgb' && availableComposites.length > 0 && (
+                <div className="control-group">
+                  <label>Composite</label>
+                  <select
+                    value={compositeId || ''}
+                    onChange={(e) => setCompositeId(e.target.value)}
+                  >
+                    {availableComposites.map(c => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {availableComposites.find(c => c.id === compositeId)?.description || ''}
                   </div>
-
-                  {displayMode === 'rgb' && availableComposites.length > 0 && (
-                    <div className="control-group">
-                      <label>Composite</label>
-                      <select
-                        value={compositeId || ''}
-                        onChange={(e) => setCompositeId(e.target.value)}
-                      >
-                        {availableComposites.map(c => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        {availableComposites.find(c => c.id === compositeId)?.description || ''}
-                      </div>
-                    </div>
-                  )}
-
-                  <button onClick={handleLoadRemoteNISAR} disabled={loading}>
-                    {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
-                  </button>
-                </>
+                </div>
               )}
+
+              <button
+                onClick={remoteUrl ? handleLoadRemoteNISAR : handleLoadNISAR}
+                disabled={loading}
+                style={{ width: '100%' }}
+              >
+                {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
+              </button>
             </CollapsibleSection>
           )}
 
@@ -3810,7 +3594,8 @@ function App() {
               <div className="control-group" style={{ marginBottom: '6px' }}>
                 <div style={{ display: 'flex', gap: '4px' }}>
                   {['global', 'viewport', 'roi'].map(scope => {
-                    const label = scope === 'global' ? 'Global' : scope === 'viewport' ? 'Viewport' : 'ROI';
+                    const hasH5Stats = imageData?.stats?.mean_value > 0 && imageData?.stats?.sample_stddev > 0;
+                    const label = scope === 'global' ? (hasH5Stats ? 'Metadata' : 'Global') : scope === 'viewport' ? 'Viewport' : 'ROI';
                     const disabled = scope === 'roi' && !roi;
                     return (
                       <button
@@ -4074,8 +3859,8 @@ function App() {
             <div className="loading">
               {fileType === 'local-tif'
                 ? 'Select one or more local GeoTIFF files to begin'
-                : fileType === 'cog'
-                ? 'Enter a Cloud Optimized GeoTIFF URL and click Load to begin'
+                : fileType === 'remote'
+                ? 'Enter a URL or browse remote data to begin'
                 : fileType === 'catalog'
                   ? 'Load a GeoJSON scene catalog and select a scene to begin'
                   : 'Select a NISAR GCOV HDF5 file to begin'}

@@ -2215,6 +2215,15 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     _chunkCaches: { [polarization]: chunkCache },
   };
 
+  // Eagerly load the B-tree chunk index so the first getTile call is fast.
+  // On a 40k×40k file this avoids a ~60s stall on the first tile render.
+  try {
+    await streamReader._ensureChunkIndex(selectedDatasetId);
+    if (maskDatasetId) await streamReader._ensureChunkIndex(maskDatasetId);
+  } catch (e) {
+    console.warn('[NISAR Loader] Eager B-tree load failed (will retry lazily):', e.message);
+  }
+
   console.log('[NISAR Loader] NISAR GCOV loaded successfully (streaming mode):', {
     width, height, bounds, worldBounds, crs, frequency, polarization,
     pixelSpacing: `${Math.abs(pixelSizeX).toFixed(1)}m x ${Math.abs(pixelSizeY).toFixed(1)}m`,
@@ -2873,6 +2882,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     requiredComplexPols = [],
     _streamReader: existingReader = null,
     _chunkCaches: externalCaches = null,
+    fetchHeaders,
   } = options;
 
   console.log(`[NISAR Loader] Loading RGB composite: ${compositeId}`);
@@ -2884,7 +2894,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
   // Open with h5chunk streaming — supports both local File and remote URL
   const streamReader = existingReader
     || (typeof fileOrUrl === 'string'
-      ? await openH5ChunkUrl(fileOrUrl)
+      ? await openH5ChunkUrl(fileOrUrl, null, { fetchHeaders })
       : await openH5ChunkFile(fileOrUrl));
   const h5Datasets = streamReader.getDatasets();
 
@@ -4051,12 +4061,12 @@ async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A'
  * @param {string} url — HTTPS URL to a NISAR HDF5 file
  * @returns {Promise<Array<{frequency: string, polarization: string, band: string}>>}
  */
-export async function listNISARDatasetsFromUrl(url, { useTransferAcceleration = false, cloudfrontDomain } = {}) {
+export async function listNISARDatasetsFromUrl(url, { useTransferAcceleration = false, cloudfrontDomain, fetchHeaders } = {}) {
   const resolvedUrl = normalizeS3Url(url, { useTransferAcceleration, cloudfrontDomain });
   console.log(`[NISAR Loader] Listing datasets from URL: ${resolvedUrl}`);
 
   try {
-    const streamReader = await openH5ChunkUrl(resolvedUrl); // Use lazy tree-walking
+    const streamReader = await openH5ChunkUrl(resolvedUrl, null, { fetchHeaders }); // Use lazy tree-walking
     const h5Datasets = streamReader.getDatasets();
 
     console.log(`[h5chunk] Found ${h5Datasets.length} datasets from URL`);
@@ -4102,6 +4112,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     _streamReader: existingReader = null,
     useTransferAcceleration = false,
     cloudfrontDomain,
+    fetchHeaders,
   } = options;
 
   // Normalize S3 URIs and optionally apply Transfer Acceleration / CloudFront
@@ -4111,7 +4122,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   console.log(`[NISAR Loader] Dataset: frequency${frequency}/${polarization}`);
 
   // Reuse reader from listNISARDatasetsFromUrl if available (avoids re-downloading metadata)
-  const streamReader = existingReader || await openH5ChunkUrl(resolvedUrl); // Use lazy tree-walking
+  const streamReader = existingReader || await openH5ChunkUrl(resolvedUrl, null, { fetchHeaders }); // Use lazy tree-walking
   const h5Datasets = streamReader.getDatasets();
 
   console.log(`[NISAR Loader] h5chunk discovered ${h5Datasets.length} datasets from URL`);
@@ -4943,6 +4954,16 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       _pendingRefinements.length = 0;
     },
   };
+
+  // Eagerly load the B-tree chunk index so the first getTile call is fast.
+  // On a 40k×40k file this avoids a ~60s stall on the first tile render.
+  try {
+    await streamReader._ensureChunkIndex(selectedDatasetId);
+    if (maskDatasetId) await streamReader._ensureChunkIndex(maskDatasetId);
+  } catch (e) {
+    console.warn('[NISAR Loader] Eager B-tree load failed (will retry lazily):', e.message);
+  }
+
   return result;
 }
 

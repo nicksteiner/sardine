@@ -217,6 +217,8 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
       onStatus?.('warning', `No loadable asset in ${item.id}`, 'Item has no HDF5 or COG assets');
       return;
     }
+    // Pass auth token so data fetches can authenticate (e.g. Earthdata bearer token)
+    if (token) scene.token = token;
     onSelectScene?.(scene);
     onStatus?.('info', `Selected: ${scene.name}`);
   }, [multiSelect, onSelectScene, onStatus]);
@@ -298,6 +300,7 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
     onSelectMultiple?.({
       scenes: resolved,
       mode: multiMode,
+      token: token || undefined,
     });
     onStatus?.('info', `Loading ${resolved.length} items as ${multiMode}`);
   }, [selectedIndices, filteredItems, multiMode, onSelectMultiple, onStatus]);
@@ -464,7 +467,11 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
             borderRadius: 'var(--radius-sm)',
           }}>
             <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
-              Bearer token (e.g. NASA Earthdata Login token). Stored in memory only.
+              Earthdata bearer token. Get one via:<br/>
+              <code style={{ fontSize: '0.6rem', color: 'var(--sardine-cyan)', userSelect: 'all' }}>
+                curl -n https://urs.earthdata.nasa.gov/api/users/tokens | jq '.[0].access_token'
+              </code>
+              <br/>Requires ~/.netrc with Earthdata credentials. Stored in memory only.
             </div>
             <input
               type="password"

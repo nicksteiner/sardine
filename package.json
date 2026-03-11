@@ -17,6 +17,9 @@
     "debug:gpu": "vite --config vite.test.config.js --open /test/gpu-debug.html --force",
     "benchmark": "vite --config vite.test.config.js --open /test/benchmarks/gpu-vs-cpu.html --force",
     "benchmark:compute": "vite --config vite.test.config.js --open /test/benchmarks/webgpu-compute-bench.html --force",
+    "test:gpu": "node test/test-gpu-compat.mjs",
+    "test:gpu:sw": "node test/test-gpu-compat.mjs --software",
+    "test:h5": "node test/test-h5-pipeline.mjs",
     "launch": "node server/launch.cjs",
     "launch:dev": "npm run build && node server/launch.cjs"
   },

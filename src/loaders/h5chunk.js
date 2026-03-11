@@ -1145,6 +1145,7 @@ export class H5Chunk {
     this.metadataBuffer = null;
     this.file = null;
     this.url = null;
+    this.fetchHeaders = {}; // Extra headers for all HTTP fetches (e.g. Authorization)
     this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
 
     // Adaptive concurrency: start at 12, measure throughput, adjust to 6–50
@@ -1212,8 +1213,9 @@ export class H5Chunk {
    * @param {string} url - HTTP(S) URL supporting range requests
    * @param {number} metadataSize - Bytes to read for metadata (default auto-sized for lazy/bulk)
    */
-  async openUrl(url, metadataSize = null) {
+  async openUrl(url, metadataSize = null, { fetchHeaders } = {}) {
     this.url = url;
+    if (fetchHeaders) this.fetchHeaders = fetchHeaders;
 
     console.log(`[h5chunk] Opening URL: ${url}`);
 
@@ -1229,6 +1231,7 @@ export class H5Chunk {
     const response = await fetch(url, {
       headers: {
         'Range': `bytes=0-${readSize - 1}`,
+        ...this.fetchHeaders,
       },
     });
 
@@ -1290,7 +1293,7 @@ export class H5Chunk {
       const READ_AHEAD = 512 * 1024; // 512 KB
       const actualLength = length < 65536 ? Math.max(length, READ_AHEAD) : length;
       const response = await fetch(this.url, {
-        headers: { 'Range': `bytes=${offset}-${offset + actualLength - 1}` },
+        headers: { 'Range': `bytes=${offset}-${offset + actualLength - 1}`, ...this.fetchHeaders },
       });
       const fullBuffer = await response.arrayBuffer();
 
@@ -2500,7 +2503,7 @@ export class H5Chunk {
     const chunkDims = layout.chunkDims || [512, 512];
     const numChunks = shape.reduce((n, dim, i) =>
       n * Math.ceil(dim / (chunkDims[i] || 1)), 1);
-    const estimatedBTreeSize = Math.max(256 * 1024, numChunks * 64);
+    const estimatedBTreeSize = Math.max(512 * 1024, numChunks * 128);
 
     if (layout.btreeAddress + estimatedBTreeSize <= this.metadataBuffer.byteLength) {
       btreeReader = new BufferReader(this.metadataBuffer, true, 0);
@@ -2582,6 +2585,7 @@ export class H5Chunk {
       const response = await fetch(this.url, {
         headers: {
           'Range': `bytes=${chunkInfo.offset}-${chunkInfo.offset + chunkInfo.size - 1}`,
+          ...this.fetchHeaders,
         },
         signal,
       });
@@ -2712,7 +2716,7 @@ export class H5Chunk {
       const batchStart = performance.now();
       let batchBytes = 0;
       const batchResults = await Promise.all(batch.map(async (range, idx) => {
-        const fetchOpts = { headers: { 'Range': `bytes=${range.start}-${range.end - 1}` } };
+        const fetchOpts = { headers: { 'Range': `bytes=${range.start}-${range.end - 1}`, ...this.fetchHeaders } };
         if (signal) fetchOpts.signal = signal;
         const response = await fetch(this.url, fetchOpts);
         const buf = await response.arrayBuffer();
@@ -3035,9 +3039,9 @@ export async function openH5ChunkFile(file, metadataSize = null) {
  * @param {number} metadataSize - Optional metadata size (defaults to auto-sized for lazy/bulk mode)
  * @returns {Promise<H5Chunk>}
  */
-export async function openH5ChunkUrl(url, metadataSize = null) {
+export async function openH5ChunkUrl(url, metadataSize = null, { fetchHeaders } = {}) {
   const reader = new H5Chunk();
-  await reader.openUrl(url, metadataSize);
+  await reader.openUrl(url, metadataSize, { fetchHeaders });
   return reader;
 }
 
