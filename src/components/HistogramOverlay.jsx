@@ -119,7 +119,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
 
   // ── Layout constants ──
   const margin = compact
-    ? { top: 28, right: 16, bottom: 36, left: 44 }
+    ? { top: 24, right: 16, bottom: 34, left: 48 }
     : { top: 48, right: 40, bottom: 56, left: 72 };
   const plotW = W - margin.left - margin.right;
   const plotH = H - margin.top - margin.bottom;
@@ -227,7 +227,9 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
     ctx.fillStyle = color;
     ctx.font = `600 ${compact ? 8 : 11}px 'JetBrains Mono', 'Fira Code', monospace`;
     ctx.textAlign = 'center';
-    ctx.fillText(label, x, margin.top - (compact ? 3 : 6));
+    ctx.textBaseline = 'top';
+    ctx.fillText(label, x, margin.top + (compact ? 2 : 4));
+    ctx.textBaseline = 'alphabetic';
     ctx.restore();
   };
 
@@ -296,13 +298,13 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
 
   // Y-axis title (rotated)
   ctx.save();
-  ctx.translate(compact ? 8 : 16, margin.top + plotH / 2);
+  ctx.translate(compact ? 10 : 16, margin.top + plotH / 2);
   ctx.rotate(-Math.PI / 2);
   ctx.fillStyle = 'rgba(232, 237, 245, 0.7)';
   ctx.font = `400 ${axisTitleSize}px 'Inter', 'Helvetica Neue', sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('Count (log₁₀)', 0, 0);
+  ctx.fillText(compact ? 'Count' : 'Count (log₁₀)', 0, 0);
   ctx.restore();
 
   // ── Legend ──
@@ -321,27 +323,27 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
       ? (chLabels[ch] || ch)
       : (polarization || 'Data');
 
-    const swatchOff = compact ? 60 : 84;
-    const labelOff = compact ? 46 : 68;
-
     // Swatch
     ctx.fillStyle = style.fill;
     ctx.strokeStyle = style.stroke;
     ctx.lineWidth = compact ? 1 : 1.5;
-    ctx.fillRect(legendX - swatchOff, legendY - 5, compact ? 10 : 12, compact ? 10 : 12);
-    ctx.strokeRect(legendX - swatchOff, legendY - 5, compact ? 10 : 12, compact ? 10 : 12);
+    const swatchSize = compact ? 8 : 12;
+    const swatchX = legendX - (compact ? 80 : 84);
+    ctx.fillRect(swatchX, legendY - swatchSize / 2, swatchSize, swatchSize);
+    ctx.strokeRect(swatchX, legendY - swatchSize / 2, swatchSize, swatchSize);
 
-    // Label
+    // Label (after swatch)
     ctx.fillStyle = 'rgba(232, 237, 245, 0.9)';
     ctx.font = `600 ${legendFontSize}px 'JetBrains Mono', 'Fira Code', monospace`;
     ctx.textAlign = 'left';
-    ctx.fillText(labelText, legendX - labelOff, legendY);
+    ctx.fillText(labelText, swatchX + swatchSize + 4, legendY);
 
-    // Stats
-    ctx.fillStyle = 'rgba(232, 237, 245, 0.55)';
+    // Count (right-aligned, separate line in compact to avoid overlap)
+    ctx.fillStyle = 'rgba(232, 237, 245, 0.45)';
     ctx.font = `400 ${statsFontSize}px 'JetBrains Mono', 'Fira Code', monospace`;
     ctx.textAlign = 'right';
-    ctx.fillText(`n=${s.count?.toLocaleString() || '?'}`, legendX, legendY);
+    const countStr = s.count != null ? `n=${s.count >= 1e6 ? (s.count / 1e6).toFixed(1) + 'M' : s.count >= 1e3 ? (s.count / 1e3).toFixed(0) + 'k' : s.count}` : '';
+    ctx.fillText(countStr, legendX, legendY);
 
     legendY += compact ? 15 : 20;
   }
@@ -370,9 +372,6 @@ export function HistogramOverlay({
 }) {
   const canvasRef = useRef(null);
   const [drawCount, setDrawCount] = useState(0);
-  const renderCount = useRef(0);
-  renderCount.current++;
-  console.log('[histogram-overlay] RENDER #' + renderCount.current, 'fingerprint:', histograms?.single?.count || 'none');
 
   // ── Fingerprint the histogram data so we can detect real changes ──
   const dataFingerprint = histograms
@@ -440,7 +439,7 @@ export function HistogramOverlay({
     <div style={{
       position: 'absolute',
       bottom: 16,
-      left: 16,
+      right: 16,
       width: 460,
       height: 260,
       background: 'rgba(10, 22, 40, 0.94)',
@@ -473,12 +472,6 @@ export function HistogramOverlay({
             fontSize: 16, padding: '0 4px', lineHeight: 1,
           }}>&times;</button>
         </div>
-      </div>
-      {/* Debug: show stats as HTML to verify data flow */}
-      <div style={{ padding: '2px 12px', fontSize: 9, color: '#ff0', fontFamily: 'monospace' }}>
-        {histograms && Object.entries(histograms).map(([k, v]) =>
-          v ? <span key={k}>{k}: min={v.min?.toFixed(2)} max={v.max?.toFixed(2)} p2={v.p2?.toFixed(2)} p98={v.p98?.toFixed(2)} n={v.count} </span> : null
-        )}
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />

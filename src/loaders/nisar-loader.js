@@ -1732,6 +1732,11 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   const tileCache = new Map();
   const MAX_TILE_CACHE = 200;  // ~200MB at 256x256 Float32 tiles
 
+  // Progressive refinement: coarse → fine without requiring zoom
+  const refinedTiles = new Map();
+  let _onRefine = null;
+  let _pendingRefinement = null;
+
   /**
    * Read a single chunk with caching (LRU)
    */
@@ -1800,6 +1805,11 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     // Include bbox in cache key so histogram samples from different regions aren't conflated
     const bboxSuffix = bbox ? `,${bbox.left|0},${bbox.top|0},${bbox.right|0},${bbox.bottom|0}` : '';
     const tileKey = `${x},${y},${z},${ml}${bboxSuffix}`;
+
+    // Return refined tile if progressive refinement has completed
+    if (refinedTiles.has(tileKey)) {
+      return refinedTiles.get(tileKey);
+    }
 
     // LRU: If tile exists, move it to end (most recently used)
     if (tileCache.has(tileKey)) {
@@ -1874,11 +1884,360 @@ async function loadNISARGCOVStreaming(file, options = {}) {
           maskData = resampleToTileSize(maskRegion.data, sliceW, sliceH, tileSize, 0, false);
         }
       } else {
-        // For large regions, sample by reading chunks
+        // For large regions, use coarse grid + GPU-native upscale when many chunks needed.
+        const startCR = Math.floor(top / chunkH);
+        const endCR = Math.floor((bottom - 1) / chunkH);
+        const startCC = Math.floor(left / chunkW);
+        const endCC = Math.floor((right - 1) / chunkW);
+        const totalCR = endCR - startCR + 1;
+        const totalCC = endCC - startCC + 1;
+        const totalChunks = totalCR * totalCC;
+
+        if (totalChunks > 32) {
+          // Coarse grid: sample 8×8 chunks max, build small mosaic, let GPU GL_LINEAR upscale.
+          const COARSE_MAX = 8;
+          const coarseStrideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
+          const coarseStrideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
+          const coarseRows = [];
+          for (let cr = startCR; cr <= endCR; cr += coarseStrideR) coarseRows.push(cr);
+          const coarseCols = [];
+          for (let cc = startCC; cc <= endCC; cc += coarseStrideC) coarseCols.push(cc);
+
+          // Batch-fetch coarse grid chunks
+          const coarseGrid = new Map();
+          const uncachedCoords = [];
+          for (const cr of coarseRows) {
+            for (const cc of coarseCols) {
+              const key = `${cr},${cc}`;
+              if (chunkCache.has(key)) {
+                coarseGrid.set(key, chunkCache.get(key));
+              } else {
+                uncachedCoords.push([cr, cc]);
+              }
+            }
+          }
+          if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
+            const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
+            for (const [key, data] of batchMap) {
+              const result = data?.data || data;
+              if (chunkCache.size >= MAX_CHUNK_CACHE) {
+                const oldest = Array.from(chunkCache.keys()).slice(0, 100);
+                oldest.forEach(k => chunkCache.delete(k));
+              }
+              chunkCache.set(key, result);
+              if (result) coarseGrid.set(key, result);
+            }
+          } else if (uncachedCoords.length > 0) {
+            await Promise.all(uncachedCoords.map(([cr, cc]) =>
+              getCachedChunk(cr, cc).then(data => {
+                if (data) coarseGrid.set(`${cr},${cc}`, data);
+              })
+            ));
+          }
+
+          // GPU-native upscale: sub-block mosaic + GL_LINEAR upscaling
+          // subN=4: each sub-block averages ~128×128 px (eliminates speckle aliasing)
+          // GL_LINEAR interpolates the 32×32 mosaic smoothly across the tile
+          const gR = coarseRows.length, gC = coarseCols.length;
+          const subN = 4;
+          const bH = Math.floor(chunkH / subN);
+          const bW = Math.floor(chunkW / subN);
+          const mosaicW = gC * subN, mosaicH = gR * subN;
+          const mosaic = new Float32Array(mosaicH * mosaicW);
+
+          for (let ri = 0; ri < gR; ri++) {
+            for (let ci = 0; ci < gC; ci++) {
+              const chunk = coarseGrid.get(`${coarseRows[ri]},${coarseCols[ci]}`);
+              if (!chunk) continue;
+              for (let si = 0; si < subN; si++) {
+                const y0 = si * bH, y1 = y0 + bH;
+                for (let sj = 0; sj < subN; sj++) {
+                  const x0 = sj * bW, x1 = x0 + bW;
+                  let sum = 0, cnt = 0;
+                  for (let yy = y0; yy < y1; yy++) {
+                    const row = yy * chunkW;
+                    for (let xx = x0; xx < x1; xx++) {
+                      const v = chunk[row + xx];
+                      if (v > 0 && v === v) { sum += v; cnt++; }
+                    }
+                  }
+                  mosaic[(ri * subN + si) * mosaicW + (ci * subN + sj)] =
+                    cnt > 0 ? sum / cnt : 0;
+                }
+              }
+            }
+          }
+          tileData = mosaic;
+
+          // Mask at mosaic resolution — initialized to 1 (valid)
+          if (maskDatasetId) {
+            maskData = new Float32Array(mosaicH * mosaicW).fill(1);
+            const uncachedMaskCoords = [];
+            for (const cr of coarseRows) {
+              for (const cc of coarseCols) {
+                if (!maskChunkCache.has(`${cr},${cc}`)) uncachedMaskCoords.push([cr, cc]);
+              }
+            }
+            if (uncachedMaskCoords.length > 0 && streamReader.readChunksBatch) {
+              try {
+                const maskBatch = await streamReader.readChunksBatch(maskDatasetId, uncachedMaskCoords);
+                for (const [key, data] of maskBatch) {
+                  if (maskChunkCache.size >= MAX_CHUNK_CACHE) maskChunkCache.delete(maskChunkCache.keys().next().value);
+                  maskChunkCache.set(key, data);
+                }
+              } catch (e) {
+                console.warn('[NISAR Loader] Mask batch read failed:', e.message);
+              }
+            }
+            for (let ri = 0; ri < gR; ri++) {
+              for (let ci = 0; ci < gC; ci++) {
+                const mChunk = maskChunkCache.get(`${coarseRows[ri]},${coarseCols[ci]}`);
+                if (!mChunk) continue;
+                for (let si = 0; si < subN; si++) {
+                  const srcY = si * bH + Math.floor(bH / 2);
+                  for (let sj = 0; sj < subN; sj++) {
+                    const srcX = sj * bW + Math.floor(bW / 2);
+                    const idx = srcY * chunkW + srcX;
+                    if (idx >= 0 && idx < mChunk.length) {
+                      maskData[(ri * subN + si) * mosaicW + (ci * subN + sj)] = mChunk[idx];
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          console.log(`[NISAR Loader] Coarse mosaic: ${gR}×${gC} grid → ${mosaicW}×${mosaicH} texture (${totalChunks} total chunks)`);
+          const tile = { data: tileData, width: mosaicW, height: mosaicH };
+          if (maskData) tile.mask = maskData;
+          if (tileCache.size >= MAX_TILE_CACHE) {
+            const oldestKeys = Array.from(tileCache.keys()).slice(0, 50);
+            oldestKeys.forEach(k => tileCache.delete(k));
+          }
+          tileCache.set(tileKey, tile);
+
+          // Multi-level progressive refinement: 8→16→32→full
+          // Each level doubles grid density, updating the display at each step.
+          // Runs automatically — no zoom required.
+          if (_pendingRefinement) {
+            // Cancel previous refinement if still running (e.g. tile re-requested)
+            _pendingRefinement = null;
+          }
+          const refinementId = Date.now();
+          _pendingRefinement = refinementId;
+          (async () => {
+            try {
+              await new Promise(r => setTimeout(r, 50)); // yield to render coarse first
+              if (_pendingRefinement !== refinementId) return; // cancelled
+
+              // Refinement levels: grid sizes to iterate through
+              const levels = [16, 32, 64];
+              // Final level: point-sample at full tileSize resolution
+              const allLevels = levels.filter(g => g < Math.min(totalCR, totalCC));
+
+              for (const gridMax of allLevels) {
+                if (_pendingRefinement !== refinementId) return; // cancelled
+                const strR = Math.max(1, Math.ceil(totalCR / gridMax));
+                const strC = Math.max(1, Math.ceil(totalCC / gridMax));
+                const rows = [];
+                for (let cr = startCR; cr <= endCR; cr += strR) rows.push(cr);
+                const cols = [];
+                for (let cc = startCC; cc <= endCC; cc += strC) cols.push(cc);
+
+                // Fetch uncached chunks for this level
+                const uncached = [];
+                for (const cr of rows) {
+                  for (const cc of cols) {
+                    if (!chunkCache.has(`${cr},${cc}`)) uncached.push([cr, cc]);
+                  }
+                }
+                if (uncached.length > 0) {
+                  if (streamReader.readChunksBatch) {
+                    const bm = await streamReader.readChunksBatch(selectedDatasetId, uncached);
+                    for (const [key, data] of bm) {
+                      if (chunkCache.size >= MAX_CHUNK_CACHE) {
+                        const oldest = Array.from(chunkCache.keys()).slice(0, 100);
+                        oldest.forEach(k => chunkCache.delete(k));
+                      }
+                      chunkCache.set(key, data);
+                    }
+                  } else {
+                    await Promise.all(uncached.map(([cr, cc]) => getCachedChunk(cr, cc)));
+                  }
+                }
+
+                // Build mosaic at this level
+                const lvlGR = rows.length, lvlGC = cols.length;
+                const lvlSubN = 4;
+                const lvlBH = Math.floor(chunkH / lvlSubN);
+                const lvlBW = Math.floor(chunkW / lvlSubN);
+                const lvlW = lvlGC * lvlSubN, lvlH = lvlGR * lvlSubN;
+                const lvlMosaic = new Float32Array(lvlH * lvlW);
+                for (let ri = 0; ri < lvlGR; ri++) {
+                  for (let ci = 0; ci < lvlGC; ci++) {
+                    const chunk = chunkCache.get(`${rows[ri]},${cols[ci]}`);
+                    if (!chunk) continue;
+                    for (let si = 0; si < lvlSubN; si++) {
+                      const y0 = si * lvlBH, y1 = y0 + lvlBH;
+                      for (let sj = 0; sj < lvlSubN; sj++) {
+                        const x0 = sj * lvlBW, x1 = x0 + lvlBW;
+                        let sum = 0, cnt = 0;
+                        for (let yy = y0; yy < y1; yy++) {
+                          const row = yy * chunkW;
+                          for (let xx = x0; xx < x1; xx++) {
+                            const v = chunk[row + xx];
+                            if (v > 0 && v === v) { sum += v; cnt++; }
+                          }
+                        }
+                        lvlMosaic[(ri * lvlSubN + si) * lvlW + (ci * lvlSubN + sj)] =
+                          cnt > 0 ? sum / cnt : 0;
+                      }
+                    }
+                  }
+                }
+
+                // Build mask at this level
+                let lvlMask = null;
+                if (maskDatasetId) {
+                  lvlMask = new Float32Array(lvlH * lvlW).fill(1);
+                  // Fetch mask chunks (use whatever is cached)
+                  const maskUncached = [];
+                  for (const cr of rows) {
+                    for (const cc of cols) {
+                      if (!maskChunkCache.has(`${cr},${cc}`)) maskUncached.push([cr, cc]);
+                    }
+                  }
+                  if (maskUncached.length > 0 && streamReader.readChunksBatch) {
+                    try {
+                      const mbm = await streamReader.readChunksBatch(maskDatasetId, maskUncached);
+                      for (const [key, data] of mbm) {
+                        if (maskChunkCache.size >= MAX_CHUNK_CACHE) maskChunkCache.delete(maskChunkCache.keys().next().value);
+                        maskChunkCache.set(key, data);
+                      }
+                    } catch (_) { /* mask fetch is best-effort */ }
+                  }
+                  for (let ri = 0; ri < lvlGR; ri++) {
+                    for (let ci = 0; ci < lvlGC; ci++) {
+                      const mChunk = maskChunkCache.get(`${rows[ri]},${cols[ci]}`);
+                      if (!mChunk) continue;
+                      for (let si = 0; si < lvlSubN; si++) {
+                        const srcY = si * lvlBH + Math.floor(lvlBH / 2);
+                        for (let sj = 0; sj < lvlSubN; sj++) {
+                          const srcX = sj * lvlBW + Math.floor(lvlBW / 2);
+                          const idx = srcY * chunkW + srcX;
+                          if (idx >= 0 && idx < mChunk.length) {
+                            lvlMask[(ri * lvlSubN + si) * lvlW + (ci * lvlSubN + sj)] = mChunk[idx];
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                const lvlTile = { data: lvlMosaic, width: lvlW, height: lvlH };
+                if (lvlMask) lvlTile.mask = lvlMask;
+                refinedTiles.set(tileKey, lvlTile);
+                tileCache.delete(tileKey);
+                console.log(`[NISAR Loader] Progressive level ${gridMax}: ${lvlGR}×${lvlGC} grid → ${lvlW}×${lvlH} (${uncached.length} new chunks)`);
+                if (_onRefine) _onRefine(tileKey);
+                await new Promise(r => setTimeout(r, 30)); // yield for render
+              }
+
+              // Final level: point-sample at full tileSize resolution
+              if (_pendingRefinement !== refinementId) return; // cancelled
+              const stepX = sliceW / tileSize;
+              const stepY = sliceH / tileSize;
+              const neededChunks = new Set();
+              for (let ty = 0; ty < tileSize; ty++) {
+                for (let tx = 0; tx < tileSize; tx++) {
+                  const srcY = top + Math.floor((ty + 0.5) * stepY);
+                  const srcX = left + Math.floor((tx + 0.5) * stepX);
+                  if (srcY >= 0 && srcY < height && srcX >= 0 && srcX < width) {
+                    neededChunks.add(`${Math.floor(srcY / chunkH)},${Math.floor(srcX / chunkW)}`);
+                  }
+                }
+              }
+              const finalUncached = [];
+              for (const key of neededChunks) {
+                if (!chunkCache.has(key)) finalUncached.push(key.split(',').map(Number));
+              }
+              if (finalUncached.length > 0) {
+                if (streamReader.readChunksBatch) {
+                  const bm = await streamReader.readChunksBatch(selectedDatasetId, finalUncached);
+                  for (const [key, data] of bm) {
+                    if (chunkCache.size >= MAX_CHUNK_CACHE) {
+                      const oldest = Array.from(chunkCache.keys()).slice(0, 100);
+                      oldest.forEach(k => chunkCache.delete(k));
+                    }
+                    chunkCache.set(key, data);
+                  }
+                } else {
+                  await Promise.all(finalUncached.map(([cr, cc]) => getCachedChunk(cr, cc)));
+                }
+              }
+              // Also fetch final mask chunks
+              if (maskDatasetId) {
+                const maskNeeded = [];
+                for (const key of neededChunks) {
+                  if (!maskChunkCache.has(key)) maskNeeded.push(key.split(',').map(Number));
+                }
+                if (maskNeeded.length > 0 && streamReader.readChunksBatch) {
+                  try {
+                    const mbm = await streamReader.readChunksBatch(maskDatasetId, maskNeeded);
+                    for (const [key, data] of mbm) {
+                      if (maskChunkCache.size >= MAX_CHUNK_CACHE) maskChunkCache.delete(maskChunkCache.keys().next().value);
+                      maskChunkCache.set(key, data);
+                    }
+                  } catch (_) { /* best-effort */ }
+                }
+              }
+
+              const fineTile = new Float32Array(tileSize * tileSize);
+              let fineMask = maskDatasetId ? new Float32Array(tileSize * tileSize).fill(1) : null;
+              for (let ty = 0; ty < tileSize; ty++) {
+                for (let tx = 0; tx < tileSize; tx++) {
+                  const srcY = top + Math.floor((ty + 0.5) * stepY);
+                  const srcX = left + Math.floor((tx + 0.5) * stepX);
+                  if (srcY < 0 || srcY >= height || srcX < 0 || srcX >= width) continue;
+                  const cr = Math.floor(srcY / chunkH);
+                  const cc = Math.floor(srcX / chunkW);
+                  const chunk = chunkCache.get(`${cr},${cc}`);
+                  if (chunk) {
+                    const idx = (srcY - cr * chunkH) * chunkW + (srcX - cc * chunkW);
+                    if (idx >= 0 && idx < chunk.length) {
+                      const v = chunk[idx];
+                      if (v > 0 && v === v) fineTile[ty * tileSize + tx] = v;
+                    }
+                  }
+                  if (fineMask) {
+                    const mChunk = maskChunkCache.get(`${cr},${cc}`);
+                    if (mChunk) {
+                      const idx = (srcY - cr * chunkH) * chunkW + (srcX - cc * chunkW);
+                      if (idx >= 0 && idx < mChunk.length) fineMask[ty * tileSize + tx] = mChunk[idx];
+                    }
+                  }
+                }
+              }
+
+              const refined = { data: fineTile, width: tileSize, height: tileSize };
+              if (fineMask) refined.mask = fineMask;
+              refinedTiles.set(tileKey, refined);
+              tileCache.delete(tileKey);
+              console.log(`[NISAR Loader] Final refinement: ${tileKey} (${finalUncached.length} chunks fetched)`);
+              if (_onRefine) _onRefine(tileKey);
+            } catch (e) {
+              console.warn('[NISAR Loader] Background refinement failed:', e.message);
+            }
+          })();
+
+          return tile;
+        }
+
+        // Moderate regions: sample all chunks point-by-point
         const stepX = sliceW / tileSize;
         const stepY = sliceH / tileSize;
         tileData = new Float32Array(tileSize * tileSize);
-        if (maskDatasetId) maskData = new Float32Array(tileSize * tileSize);
+        if (maskDatasetId) maskData = new Float32Array(tileSize * tileSize).fill(1);
 
         // multiLook=false → 1 sample (nearest-neighbour, instant preview)
         // multiLook=true  → 4–8 sub-samples per axis (16–64 look area average)
@@ -1887,8 +2246,6 @@ async function loadNISARGCOVStreaming(file, options = {}) {
           : 1;
 
         // Phase A: Collect all unique chunk coordinates needed for this tile.
-        // This avoids sequential await inside nested loops — instead we batch-fetch
-        // all uncached chunks in parallel, then sample pixels from the cache.
         const neededChunks = new Set();
         const neededMaskChunks = new Set();
         for (let ty = 0; ty < tileSize; ty++) {
@@ -1904,7 +2261,6 @@ async function loadNISARGCOVStreaming(file, options = {}) {
                 neededChunks.add(`${cr},${cc}`);
               }
             }
-            // Mask chunk for center pixel
             if (maskDatasetId) {
               const centerSrcY = top + Math.floor((ty + 0.5) * stepY);
               const centerSrcX = left + Math.floor((tx + 0.5) * stepX);
@@ -1915,9 +2271,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
           }
         }
 
-        // Phase B: Batch-fetch all uncached chunks using coalesced HTTP Range requests.
-        // readChunksBatch sorts by file offset and merges adjacent ranges, reducing
-        // hundreds of individual HTTP requests to ~10-30 larger reads.
+        // Phase B: Batch-fetch all uncached chunks.
         const uncachedData = [];
         const uncachedMask = [];
         for (const key of neededChunks) {
@@ -1949,7 +2303,6 @@ async function loadNISARGCOVStreaming(file, options = {}) {
               })
           );
         } else if (uncachedData.length > 0) {
-          // Fallback: parallel individual reads
           batchPromises.push(...uncachedData.map(([cr, cc]) => getCachedChunk(cr, cc)));
         }
         if (uncachedMask.length > 0 && maskDatasetId && streamReader.readChunksBatch) {
@@ -2213,6 +2566,8 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     _streaming: true,
     _h5chunk: streamReader,
     _chunkCaches: { [polarization]: chunkCache },
+    set onRefine(fn) { _onRefine = fn; },
+    get onRefine() { return _onRefine; },
   };
 
   // Eagerly load the B-tree chunk index so the first getTile call is fast.
@@ -2765,7 +3120,7 @@ function lanczosKernel(x) {
  * @param {number} chunkH - Chunk height in pixels
  * @param {number} chunkW - Chunk width in pixels
  */
-function buildMosaicTile(grid, rows, cols, pxTop, pxLeft, sliceH, sliceW, tileSize, chunkH, chunkW) {
+function buildMosaicTile(grid, rows, cols, pxTop, pxLeft, sliceH, sliceW, tileSize, chunkH, chunkW, interpolation = 'lanczos') {
   const gR = rows.length, gC = cols.length;
   if (gR === 0 || gC === 0) return new Float32Array(tileSize * tileSize);
 
@@ -2813,51 +3168,84 @@ function buildMosaicTile(grid, rows, cols, pxTop, pxLeft, sliceH, sliceW, tileSi
     }
   }
 
-  // Phase B: Lanczos-3 interpolation from mosaic to output tile.
-  // Uses local fractional grid indices via binary search to handle
-  // non-uniform spacing from strided chunk grids.
+  // Phase B: Interpolate mosaic to output tile.
   const out = new Float32Array(tileSize * tileSize);
-  let ySearch = 0;
-  for (let ty = 0; ty < tileSize; ty++) {
-    const srcY = pxTop + (ty + 0.5) * sliceH / tileSize;
 
-    // Find interval: mY[ySearch] <= srcY < mY[ySearch+1]
-    while (ySearch < mH - 2 && mY[ySearch + 1] <= srcY) ySearch++;
-    const yNext = Math.min(ySearch + 1, mH - 1);
-    const fyi = ySearch === yNext ? ySearch :
-      ySearch + Math.max(0, Math.min(1, (srcY - mY[ySearch]) / (mY[yNext] - mY[ySearch])));
-    const cyI = Math.round(fyi);
+  if (interpolation === 'bilinear' || interpolation === 'nearest') {
+    // Bilinear: blends only the 4 nearest mosaic cells — preserves per-channel
+    // contrast for RGB while avoiding blocky grid artifacts of nearest-neighbor.
+    let ySearch = 0;
+    for (let ty = 0; ty < tileSize; ty++) {
+      const srcY = pxTop + (ty + 0.5) * sliceH / tileSize;
+      while (ySearch < mH - 2 && mY[ySearch + 1] <= srcY) ySearch++;
+      const yNext = Math.min(ySearch + 1, mH - 1);
+      const fy = ySearch === yNext ? 0 :
+        Math.max(0, Math.min(1, (srcY - mY[ySearch]) / (mY[yNext] - mY[ySearch])));
 
-    let xSearch = 0;
-    for (let tx = 0; tx < tileSize; tx++) {
-      const srcX = pxLeft + (tx + 0.5) * sliceW / tileSize;
+      let xSearch = 0;
+      for (let tx = 0; tx < tileSize; tx++) {
+        const srcX = pxLeft + (tx + 0.5) * sliceW / tileSize;
+        while (xSearch < mW - 2 && mX[xSearch + 1] <= srcX) xSearch++;
+        const xNext = Math.min(xSearch + 1, mW - 1);
+        const fx = xSearch === xNext ? 0 :
+          Math.max(0, Math.min(1, (srcX - mX[xSearch]) / (mX[xNext] - mX[xSearch])));
 
-      while (xSearch < mW - 2 && mX[xSearch + 1] <= srcX) xSearch++;
-      const xNext = Math.min(xSearch + 1, mW - 1);
-      const fxi = xSearch === xNext ? xSearch :
-        xSearch + Math.max(0, Math.min(1, (srcX - mX[xSearch]) / (mX[xNext] - mX[xSearch])));
-      const cxI = Math.round(fxi);
+        const v00 = mosaic[ySearch * mW + xSearch];
+        const v10 = mosaic[ySearch * mW + xNext];
+        const v01 = mosaic[yNext * mW + xSearch];
+        const v11 = mosaic[yNext * mW + xNext];
+        let vS = 0, wS = 0;
+        const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+        if (v00 > 0) { vS += v00 * w00; wS += w00; }
+        if (v10 > 0) { vS += v10 * w10; wS += w10; }
+        if (v01 > 0) { vS += v01 * w01; wS += w01; }
+        if (v11 > 0) { vS += v11 * w11; wS += w11; }
+        out[ty * tileSize + tx] = wS > 0 ? vS / wS : 0;
+      }
+    }
+  } else {
+    // Lanczos-3: smooth interpolation for single-band visualization.
+    let ySearch = 0;
+    for (let ty = 0; ty < tileSize; ty++) {
+      const srcY = pxTop + (ty + 0.5) * sliceH / tileSize;
 
-      let vS = 0, wS = 0;
-      for (let dy = -LANCZOS_A + 1; dy <= LANCZOS_A; dy++) {
-        const yi = cyI + dy;
-        if (yi < 0 || yi >= mH) continue;
-        const ly = lanczosKernel(fyi - yi);
-        if (ly === 0) continue;
-        const rowOff = yi * mW;
+      while (ySearch < mH - 2 && mY[ySearch + 1] <= srcY) ySearch++;
+      const yNext = Math.min(ySearch + 1, mH - 1);
+      const fyi = ySearch === yNext ? ySearch :
+        ySearch + Math.max(0, Math.min(1, (srcY - mY[ySearch]) / (mY[yNext] - mY[ySearch])));
+      const cyI = Math.round(fyi);
 
-        for (let dx = -LANCZOS_A + 1; dx <= LANCZOS_A; dx++) {
-          const xi = cxI + dx;
-          if (xi < 0 || xi >= mW) continue;
-          const v = mosaic[rowOff + xi];
-          if (v > 0 && v === v) {
-            const w = ly * lanczosKernel(fxi - xi);
-            vS += v * w;
-            wS += w;
+      let xSearch = 0;
+      for (let tx = 0; tx < tileSize; tx++) {
+        const srcX = pxLeft + (tx + 0.5) * sliceW / tileSize;
+
+        while (xSearch < mW - 2 && mX[xSearch + 1] <= srcX) xSearch++;
+        const xNext = Math.min(xSearch + 1, mW - 1);
+        const fxi = xSearch === xNext ? xSearch :
+          xSearch + Math.max(0, Math.min(1, (srcX - mX[xSearch]) / (mX[xNext] - mX[xSearch])));
+        const cxI = Math.round(fxi);
+
+        let vS = 0, wS = 0;
+        for (let dy = -LANCZOS_A + 1; dy <= LANCZOS_A; dy++) {
+          const yi = cyI + dy;
+          if (yi < 0 || yi >= mH) continue;
+          const ly = lanczosKernel(fyi - yi);
+          if (ly === 0) continue;
+          const rowOff = yi * mW;
+
+          for (let dx = -LANCZOS_A + 1; dx <= LANCZOS_A; dx++) {
+            const xi = cxI + dx;
+            if (xi < 0 || xi >= mW) continue;
+            const v = mosaic[rowOff + xi];
+            if (v > 0 && v === v) {
+              const w = ly * lanczosKernel(fxi - xi);
+              vS += v * w;
+              wS += w;
+            }
           }
         }
+        out[ty * tileSize + tx] = wS > 0 ? vS / wS : 0;
       }
-      out[ty * tileSize + tx] = wS > 0 ? vS / wS : 0;
     }
   }
   return out;
@@ -3331,9 +3719,9 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
       const totalCC = endCC - startCC + 1;
       const totalChunksPerBand = totalCR * totalCC;
 
-      // Threshold: if we need more than 16 chunks per band, use coarse mosaic
-      if (totalChunksPerBand > 16) {
-        const COARSE_MAX = 8;
+      // Threshold: if we need more than 32 chunks per band, use coarse mosaic
+      if (totalChunksPerBand > 32) {
+        const COARSE_MAX = 16;
         const coarseStrideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
         const coarseStrideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
         const coarseRows = [];
@@ -3398,27 +3786,55 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         }
         await Promise.all(batchFetches);
 
-        // Build mosaic tile per band using Lanczos interpolation
+        // GPU-native upscale: build a small mosaic and return it at native size.
+        // subN=4: large averaging blocks eliminate speckle aliasing.
+        // GL_LINEAR on the GPU handles smooth upscaling.
         const bandArrays = {};
+        const subN = 4;
+        const mosaicW = coarseCols.length * subN;
+        const mosaicH = coarseRows.length * subN;
+        const bH = Math.floor(chunkH / subN);
+        const bW = Math.floor(chunkW / subN);
+
         for (const pol of requiredPols) {
-          bandArrays[pol] = buildMosaicTile(
-            bandGrids[pol], coarseRows, coarseCols,
-            top, left, sliceH, sliceW, tileSize, chunkH, chunkW
-          );
+          const mosaic = new Float32Array(mosaicH * mosaicW);
+          for (let ri = 0; ri < coarseRows.length; ri++) {
+            for (let ci = 0; ci < coarseCols.length; ci++) {
+              const chunk = bandGrids[pol].get(`${coarseRows[ri]},${coarseCols[ci]}`);
+              if (!chunk) continue;
+              for (let si = 0; si < subN; si++) {
+                const y0 = si * bH, y1 = y0 + bH;
+                for (let sj = 0; sj < subN; sj++) {
+                  const x0 = sj * bW, x1 = x0 + bW;
+                  let sum = 0, cnt = 0;
+                  for (let yy = y0; yy < y1; yy++) {
+                    const row = yy * chunkW;
+                    for (let xx = x0; xx < x1; xx++) {
+                      const v = chunk[row + xx];
+                      if (v > 0 && v === v) { sum += v; cnt++; }
+                    }
+                  }
+                  mosaic[(ri * subN + si) * mosaicW + (ci * subN + sj)] =
+                    cnt > 0 ? sum / cnt : 0;
+                }
+              }
+            }
+          }
+          bandArrays[pol] = mosaic;
         }
 
-        // Complex bands: not supported in coarse mode (rare, require NN sampling)
+        // Complex bands: not supported in coarse mode
         for (const cpol of requiredComplexPols) {
           if (complexPolMap[cpol]) {
-            bandArrays[`${cpol}_re`] = new Float32Array(tileSize * tileSize);
-            bandArrays[`${cpol}_im`] = new Float32Array(tileSize * tileSize);
+            bandArrays[`${cpol}_re`] = new Float32Array(mosaicH * mosaicW);
+            bandArrays[`${cpol}_im`] = new Float32Array(mosaicH * mosaicW);
           }
         }
 
         const tile = {
           bands: bandArrays,
-          width: tileSize,
-          height: tileSize,
+          width: mosaicW,
+          height: mosaicH,
           compositeId,
         };
 
@@ -4571,25 +4987,57 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         ));
       }
 
-      tileData = buildMosaicTile(coarseGrid, coarseRows, coarseCols,
-        pxTop, pxLeft, sliceH, sliceW, tileSize, chunkH, chunkW);
+      // GPU-native upscale: sub-block mosaic + GL_LINEAR upscaling
+      // subN=4: each sub-block averages ~128×128 px (eliminates speckle aliasing)
+      const gR = coarseRows.length, gC = coarseCols.length;
+      const subN = 4;
+      const bH = Math.floor(chunkH / subN);
+      const bW = Math.floor(chunkW / subN);
+      const mosaicH = gR * subN, mosaicW = gC * subN;
+      const mosaic = new Float32Array(mosaicH * mosaicW);
 
-      // Mask deferred to Phase 2 refinement to reduce foreground HTTP requests.
-      // Use any already-cached mask chunks for the coarse phase (no new fetches).
+      for (let ri = 0; ri < gR; ri++) {
+        for (let ci = 0; ci < gC; ci++) {
+          const chunk = coarseGrid.get(`${coarseRows[ri]},${coarseCols[ci]}`);
+          if (!chunk) continue;
+          for (let si = 0; si < subN; si++) {
+            const y0 = si * bH, y1 = y0 + bH;
+            for (let sj = 0; sj < subN; sj++) {
+              const x0 = sj * bW, x1 = x0 + bW;
+              let sum = 0, cnt = 0;
+              for (let yy = y0; yy < y1; yy++) {
+                const row = yy * chunkW;
+                for (let xx = x0; xx < x1; xx++) {
+                  const v = chunk[row + xx];
+                  if (v > 0 && v === v) { sum += v; cnt++; }
+                }
+              }
+              mosaic[(ri * subN + si) * mosaicW + (ci * subN + sj)] =
+                cnt > 0 ? sum / cnt : 0;
+            }
+          }
+        }
+      }
+      tileData = mosaic;
+
+      // Mask at mosaic resolution — initialized to 1 (valid) so missing chunks show data.
       if (maskDatasetId) {
-        maskData = new Float32Array(tileSize * tileSize);
-        const stepX = sliceW / tileSize;
-        const stepY = sliceH / tileSize;
-        for (let ty = 0; ty < tileSize; ty++) {
-          const srcY = Math.min(Math.floor(pxTop + (ty + 0.5) * stepY), height - 1);
-          const cr = Math.floor(srcY / chunkH);
-          for (let tx = 0; tx < tileSize; tx++) {
-            const srcX = Math.min(Math.floor(pxLeft + (tx + 0.5) * stepX), width - 1);
-            const cc = Math.floor(srcX / chunkW);
+        maskData = new Float32Array(mosaicH * mosaicW).fill(1);
+        for (let ri = 0; ri < gR; ri++) {
+          const cr = coarseRows[ri];
+          for (let ci = 0; ci < gC; ci++) {
+            const cc = coarseCols[ci];
             const mChunk = maskChunkCache.get(`${cr},${cc}`);
-            if (mChunk) {
-              const idx = (srcY - cr * chunkH) * chunkW + (srcX - cc * chunkW);
-              if (idx >= 0 && idx < mChunk.length) maskData[ty * tileSize + tx] = mChunk[idx];
+            if (!mChunk) continue;
+            for (let si = 0; si < subN; si++) {
+              const srcY = si * bH + Math.floor(bH / 2);
+              for (let sj = 0; sj < subN; sj++) {
+                const srcX = sj * bW + Math.floor(bW / 2);
+                const idx = srcY * chunkW + srcX;
+                if (idx >= 0 && idx < mChunk.length) {
+                  maskData[(ri * subN + si) * mosaicW + (ci * subN + sj)] = mChunk[idx];
+                }
+              }
             }
           }
         }
@@ -4668,7 +5116,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
                   maskChunkCache.set(key, data);
                 }
               }
-              const fineMask = new Float32Array(tileSize * tileSize);
+              const fineMask = new Float32Array(tileSize * tileSize).fill(1);
               const stepX = sliceW / tileSize;
               const stepY = sliceH / tileSize;
               for (let ty = 0; ty < tileSize; ty++) {
@@ -4709,7 +5157,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         }
       }
 
-      const tile = { data: tileData, width: tileSize, height: tileSize };
+      const tileW = typeof mosaicW !== 'undefined' ? mosaicW : tileSize;
+      const tileH = typeof mosaicH !== 'undefined' ? mosaicH : tileSize;
+      const tile = { data: tileData, width: tileW, height: tileH };
       if (maskData) tile.mask = maskData;
       if (tileResultCache.size >= MAX_TILE_CACHE) tileResultCache.delete(tileResultCache.keys().next().value);
       tileResultCache.set(tileCacheKey, tile);

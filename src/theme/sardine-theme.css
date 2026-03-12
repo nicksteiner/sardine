@@ -734,8 +734,11 @@ button.btn-danger:hover {
 }
 
 .overview-map-toggle-icon {
-  font-size: 18px;
-  line-height: 1;
+  color: var(--sardine-cyan-dim);
+  transition: color var(--transition-fast, 0.15s);
+}
+.overview-map-toggle:hover .overview-map-toggle-icon {
+  color: var(--sardine-cyan);
 }
 
 /* ── Expanded overview map panel ── */
@@ -743,10 +746,10 @@ button.btn-danger:hover {
   position: absolute;
   bottom: calc(var(--bottom-dock, 40px) + 50px);
   left: var(--space-md, 12px);
-  width: 400px;
-  background: rgba(10, 22, 40, 0.94);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  width: 420px;
+  background: rgba(10, 22, 40, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--sardine-border);
   border-radius: var(--radius-md, 8px);
   z-index: 1010;
@@ -790,13 +793,19 @@ button.btn-danger:hover {
 }
 
 .overview-map-loading {
-  color: var(--sardine-cyan-dim);
-  animation: spin 1s linear infinite;
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--sardine-cyan-dim);
+  animation: overview-pulse 1s ease-in-out infinite;
+  vertical-align: middle;
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+@keyframes overview-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
 }
 
 /* ── Control buttons ── */
