@@ -2245,31 +2245,26 @@ async function loadNISARGCOVStreaming(file, options = {}) {
           ? Math.min(Math.max(Math.round(Math.sqrt(stepX * stepY)), 4), 8)
           : 1;
 
-        // Phase A: Collect all unique chunk coordinates needed for this tile.
+        // Phase A: Compute bounding box of source pixels, derive chunk range directly.
+        // This replaces the O(tileSize² × nSub²) loop with O(numChunks) iteration.
+        const srcYMin = Math.max(0, top);
+        const srcYMax = Math.min(height - 1, top + Math.floor((tileSize - 1) * stepY + stepY - 1));
+        const srcXMin = Math.max(0, left);
+        const srcXMax = Math.min(width - 1, left + Math.floor((tileSize - 1) * stepX + stepX - 1));
+
+        const minChunkRow = Math.floor(srcYMin / chunkH);
+        const maxChunkRow = Math.floor(srcYMax / chunkH);
+        const minChunkCol = Math.floor(srcXMin / chunkW);
+        const maxChunkCol = Math.floor(srcXMax / chunkW);
+
         const neededChunks = new Set();
-        const neededMaskChunks = new Set();
-        for (let ty = 0; ty < tileSize; ty++) {
-          for (let tx = 0; tx < tileSize; tx++) {
-            for (let sy = 0; sy < nSub; sy++) {
-              const srcY = top + Math.floor(ty * stepY + (sy + 0.5) * stepY / nSub);
-              if (srcY < 0 || srcY >= height) continue;
-              const cr = Math.floor(srcY / chunkH);
-              for (let sx = 0; sx < nSub; sx++) {
-                const srcX = left + Math.floor(tx * stepX + (sx + 0.5) * stepX / nSub);
-                if (srcX < 0 || srcX >= width) continue;
-                const cc = Math.floor(srcX / chunkW);
-                neededChunks.add(`${cr},${cc}`);
-              }
-            }
-            if (maskDatasetId) {
-              const centerSrcY = top + Math.floor((ty + 0.5) * stepY);
-              const centerSrcX = left + Math.floor((tx + 0.5) * stepX);
-              if (centerSrcY >= 0 && centerSrcY < height && centerSrcX >= 0 && centerSrcX < width) {
-                neededMaskChunks.add(`${Math.floor(centerSrcY / chunkH)},${Math.floor(centerSrcX / chunkW)}`);
-              }
-            }
+        for (let cr = minChunkRow; cr <= maxChunkRow; cr++) {
+          for (let cc = minChunkCol; cc <= maxChunkCol; cc++) {
+            neededChunks.add(`${cr},${cc}`);
           }
         }
+        // Mask chunks cover the same spatial region
+        const neededMaskChunks = maskDatasetId ? new Set(neededChunks) : new Set();
 
         // Phase B: Batch-fetch all uncached chunks.
         const uncachedData = [];
@@ -3513,6 +3508,23 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     pixelSpacing: { x: Math.abs(pixelSizeX), y: Math.abs(pixelSizeY) }
   });
 
+  // ── Mask dataset (NISAR spec §4.3.3) ──
+  // uint8 layer with same grid/chunks as data: 0=invalid, 1-5=valid, 255=fill
+  let maskDatasetId = null;
+  try {
+    const maskId = streamReader.findDatasetByPath(paths.mask(activeFreq));
+    if (maskId != null) {
+      const maskDs = h5Datasets.find(d => d.id === maskId);
+      if (maskDs?.shape?.length === 2) {
+        maskDatasetId = maskId;
+        console.log(`[NISAR RGB Loader] Mask dataset found: ${maskDs.path} [${maskDs.shape.join(', ')}] dtype=${maskDs.dtype}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[NISAR RGB Loader] Could not find mask dataset:', e.message);
+  }
+  const maskChunkCache = new Map();
+
   // Per-dataset chunk caches (real + complex)
   // Reuse external caches when available (e.g. from a previous single-band load)
   const chunkCaches = {};
@@ -3648,6 +3660,33 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
       return { re: isNaN(re) ? 0 : re, im: isNaN(im) ? 0 : im };
     }
     return { re: 0, im: 0 };
+  }
+
+  /**
+   * Read a mask chunk with LRU caching (RGB path).
+   */
+  async function getCachedMaskChunk(cr, cc) {
+    if (!maskDatasetId) return null;
+    const key = `${cr},${cc}`;
+    if (maskChunkCache.has(key)) {
+      const chunk = maskChunkCache.get(key);
+      maskChunkCache.delete(key);
+      maskChunkCache.set(key, chunk);
+      return chunk;
+    }
+    let chunk;
+    try {
+      chunk = await _throttled(() => streamReader.readChunk(maskDatasetId, cr, cc));
+    } catch (e) {
+      console.warn(`[NISAR RGB] Mask chunk (${cr},${cc}) read failed:`, e.message);
+      return null;
+    }
+    if (maskChunkCache.size >= MAX_CHUNK_CACHE_PER_BAND) {
+      const keys = Array.from(maskChunkCache.keys()).slice(0, 50);
+      keys.forEach(k => maskChunkCache.delete(k));
+    }
+    maskChunkCache.set(key, chunk);
+    return chunk;
   }
 
   /**
@@ -3831,12 +3870,52 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
           }
         }
 
+        // Mask at mosaic resolution — nearest-neighbor from center of each block
+        let maskData = null;
+        if (maskDatasetId) {
+          maskData = new Float32Array(mosaicH * mosaicW).fill(1);
+          const uncachedMaskCoords = [];
+          for (const cr of coarseRows) {
+            for (const cc of coarseCols) {
+              if (!maskChunkCache.has(`${cr},${cc}`)) uncachedMaskCoords.push([cr, cc]);
+            }
+          }
+          if (uncachedMaskCoords.length > 0 && streamReader.readChunksBatch) {
+            try {
+              const maskBatch = await streamReader.readChunksBatch(maskDatasetId, uncachedMaskCoords);
+              for (const [key, data] of maskBatch) {
+                if (maskChunkCache.size >= MAX_CHUNK_CACHE_PER_BAND) maskChunkCache.delete(maskChunkCache.keys().next().value);
+                maskChunkCache.set(key, data);
+              }
+            } catch (e) {
+              console.warn('[NISAR RGB] Mask batch read failed:', e.message);
+            }
+          }
+          for (let ri = 0; ri < coarseRows.length; ri++) {
+            for (let ci = 0; ci < coarseCols.length; ci++) {
+              const mChunk = maskChunkCache.get(`${coarseRows[ri]},${coarseCols[ci]}`);
+              if (!mChunk) continue;
+              for (let si = 0; si < subN; si++) {
+                const srcY = si * bH + Math.floor(bH / 2);
+                for (let sj = 0; sj < subN; sj++) {
+                  const srcX = sj * bW + Math.floor(bW / 2);
+                  const idx = srcY * chunkW + srcX;
+                  if (idx >= 0 && idx < mChunk.length) {
+                    maskData[(ri * subN + si) * mosaicW + (ci * subN + sj)] = mChunk[idx];
+                  }
+                }
+              }
+            }
+          }
+        }
+
         const tile = {
           bands: bandArrays,
           width: mosaicW,
           height: mosaicH,
           compositeId,
         };
+        if (maskData) tile.mask = maskData;
 
         if (tileCache.size >= MAX_TILE_CACHE) {
           const oldestKeys = Array.from(tileCache.keys()).slice(0, 25);
@@ -3946,6 +4025,28 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         }
       }
 
+      // Batch-fetch mask chunks (same coords as data)
+      if (maskDatasetId) {
+        const uncachedMask = chunkCoords.filter(([cr, cc]) => !maskChunkCache.has(`${cr},${cc}`));
+        if (uncachedMask.length > 0 && streamReader.readChunksBatch) {
+          batchFetches.push(
+            streamReader.readChunksBatch(maskDatasetId, uncachedMask)
+              .then(batchMap => {
+                for (const [key, data] of batchMap) {
+                  if (maskChunkCache.size >= MAX_CHUNK_CACHE_PER_BAND) {
+                    const oldest = Array.from(maskChunkCache.keys()).slice(0, 50);
+                    oldest.forEach(k => maskChunkCache.delete(k));
+                  }
+                  maskChunkCache.set(key, data);
+                }
+              })
+              .catch(e => console.warn('[NISAR RGB] Batch mask read failed:', e.message))
+          );
+        } else if (uncachedMask.length > 0) {
+          batchFetches.push(...uncachedMask.map(([cr, cc]) => getCachedMaskChunk(cr, cc)));
+        }
+      }
+
       console.log(`[NISAR RGB Tile] Batch-fetching ${chunkCoords.length} chunks × ${requiredPols.length} bands`);
 
       await Promise.all(batchFetches);
@@ -4025,6 +4126,31 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         }
       }
 
+      // Mask: nearest-neighbor from center pixel
+      let maskData = null;
+      if (maskDatasetId) {
+        maskData = new Float32Array(tileSize * tileSize).fill(1);
+        for (let ty = 0; ty < tileSize; ty++) {
+          const centerSrcY = top + Math.floor((ty + 0.5) * stepY);
+          if (centerSrcY < 0 || centerSrcY >= height) continue;
+          const cr = Math.floor(centerSrcY / chunkH);
+          for (let tx = 0; tx < tileSize; tx++) {
+            const centerSrcX = left + Math.floor((tx + 0.5) * stepX);
+            if (centerSrcX < 0 || centerSrcX >= width) continue;
+            const cc = Math.floor(centerSrcX / chunkW);
+            const mChunk = maskChunkCache.get(`${cr},${cc}`);
+            if (mChunk) {
+              const localY = centerSrcY - cr * chunkH;
+              const localX = centerSrcX - cc * chunkW;
+              const idx = localY * chunkW + localX;
+              if (idx >= 0 && idx < mChunk.length) {
+                maskData[ty * tileSize + tx] = mChunk[idx];
+              }
+            }
+          }
+        }
+      }
+
       // Return raw band data — the composite formula and RGB conversion
       // are applied downstream by SARTileLayer + createRGBTexture
       const tile = {
@@ -4033,6 +4159,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
         height: tileSize,
         compositeId,
       };
+      if (maskData) tile.mask = maskData;
 
       // LRU cache eviction: remove oldest entries (from beginning of Map)
       if (tileCache.size >= MAX_TILE_CACHE) {
@@ -4321,6 +4448,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     band,
     identification,
     availableDatasets,
+    hasMask: maskDatasetId != null,
     mode: 'streaming',
     _streaming: true,
     _h5chunk: streamReader,
@@ -4331,7 +4459,13 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     width, height, bounds, worldBounds, crs, compositeId,
     mappedPols: Object.keys(polMap),
     complexPols: Object.keys(complexPolMap),
+    hasMask: maskDatasetId != null,
   });
+
+  // Eagerly index mask B-tree so first tile fetch is fast
+  if (maskDatasetId) {
+    streamReader._ensureChunkIndex(maskDatasetId).catch(() => {});
+  }
 
   return result;
 }

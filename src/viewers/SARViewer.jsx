@@ -156,34 +156,81 @@ export const SARViewer = forwardRef(function SARViewer({
     setLoadingStatus(status);
   }, []);
 
+  // Debounce the parent callback so expensive work (histogram, stats) doesn't
+  // fire 60x/sec during pan/zoom. Local viewState updates remain immediate.
+  const debouncedParentCb = useRef(null);
+  const debounceTimer = useRef(null);
+  debouncedParentCb.current = onViewStateChange;
+
   const handleViewStateChange = useCallback(
     ({ viewState: newViewState }) => {
       setViewState(newViewState);
-      if (onViewStateChange) {
-        onViewStateChange({ viewState: newViewState });
+      if (debouncedParentCb.current) {
+        clearTimeout(debounceTimer.current);
+        debounceTimer.current = setTimeout(() => {
+          debouncedParentCb.current({ viewState: newViewState });
+        }, 150);
       }
     },
-    [onViewStateChange]
+    []
   );
+
+  // Store visual props in a ref so we can read current values in the layer
+  // factory without adding them as useMemo dependencies. A separate
+  // RAF-throttled tick drives re-renders only when visual props change,
+  // preventing redundant layer recreations during rapid slider drags.
+  const visualRef = useRef({
+    contrastLimits, useDecibels, colormap, gamma, stretchMode,
+    opacity, useMask, speckleFilterType, speckleKernelSize, toneMapping,
+  });
+  const [visualTick, setVisualTick] = useState(0);
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    const prev = visualRef.current;
+    const changed = (
+      contrastLimits !== prev.contrastLimits ||
+      useDecibels !== prev.useDecibels ||
+      colormap !== prev.colormap ||
+      gamma !== prev.gamma ||
+      stretchMode !== prev.stretchMode ||
+      opacity !== prev.opacity ||
+      useMask !== prev.useMask ||
+      speckleFilterType !== prev.speckleFilterType ||
+      speckleKernelSize !== prev.speckleKernelSize ||
+      toneMapping !== prev.toneMapping
+    );
+    visualRef.current = {
+      contrastLimits, useDecibels, colormap, gamma, stretchMode,
+      opacity, useMask, speckleFilterType, speckleKernelSize, toneMapping,
+    };
+    if (changed && !rafRef.current) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        setVisualTick(t => t + 1);
+      });
+    }
+  }, [contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, useMask, speckleFilterType, speckleKernelSize, toneMapping]);
 
   // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
+    const v = visualRef.current;
+
     // Use SARTiledCOGLayer if cogUrl is provided (best for projected COGs)
     if (cogUrl) {
-      console.log('[SARViewer] Using SARTiledCOGLayer with COG URL');
       return [
         new SARTiledCOGLayer({
           id: 'sar-tiled-cog-layer',
           url: cogUrl,
           bounds,
-          contrastLimits,
-          useDecibels,
-          colormap,
-          gamma,
-          stretchMode,
-          opacity,
-          useMask,
-          toneMapping,
+          contrastLimits: v.contrastLimits,
+          useDecibels: v.useDecibels,
+          colormap: v.colormap,
+          gamma: v.gamma,
+          stretchMode: v.stretchMode,
+          opacity: v.opacity,
+          useMask: v.useMask,
+          toneMapping: v.toneMapping,
           onLoadingChange: handleLoadingChange,
         }),
       ];
@@ -191,7 +238,6 @@ export const SARViewer = forwardRef(function SARViewer({
 
     // Use BitmapLayer if full image data is provided
     if (imageData && imageData.data) {
-      console.log('[SARViewer] Using BitmapLayer with full image data');
       return [
         new SARBitmapLayer({
           id: 'sar-bitmap-layer',
@@ -200,42 +246,41 @@ export const SARViewer = forwardRef(function SARViewer({
           width: imageData.width,
           height: imageData.height,
           bounds,
-          contrastLimits,
-          useDecibels,
-          colormap,
-          gamma,
-          stretchMode,
-          opacity,
-          useMask,
+          contrastLimits: v.contrastLimits,
+          useDecibels: v.useDecibels,
+          colormap: v.colormap,
+          gamma: v.gamma,
+          stretchMode: v.stretchMode,
+          opacity: v.opacity,
+          useMask: v.useMask,
         }),
       ];
     }
 
     // Otherwise use TileLayer
     if (getTile) {
-      console.log('[SARViewer] Using TileLayer with getTile function');
       return [
         new SARTileLayer({
           id: 'sar-tile-layer',
           getTileData: stableGetTileData,
           bounds,
-          contrastLimits,
-          useDecibels,
-          colormap,
-          gamma,
-          stretchMode,
-          opacity,
+          contrastLimits: v.contrastLimits,
+          useDecibels: v.useDecibels,
+          colormap: v.colormap,
+          gamma: v.gamma,
+          stretchMode: v.stretchMode,
+          opacity: v.opacity,
           multiLook,
-          useMask,
-          speckleFilterType,
-          speckleKernelSize,
+          useMask: v.useMask,
+          speckleFilterType: v.speckleFilterType,
+          speckleKernelSize: v.speckleKernelSize,
         }),
       ];
     }
 
     return [];
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- redrawTick forces layer recreation after canvas capture
-  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, multiLook, useMask, speckleFilterType, speckleKernelSize, toneMapping, handleLoadingChange, redrawTick]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- visualTick drives visual prop updates via RAF throttle; redrawTick forces recreation after canvas capture
+  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, multiLook, handleLoadingChange, redrawTick, visualTick]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;

@@ -10,38 +10,52 @@
  * @returns {Object} Statistics object with min, max, mean, std, median
  */
 export function computeStats(data, useDecibels = true) {
-  const values = [];
+  // O(n) two-pass: find min/max/mean/std, estimate median via histogram bin-walk
+  let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
 
   for (let i = 0; i < data.length; i++) {
     let val = data[i];
-    if (val === 0 || isNaN(val)) continue; // Skip no-data
-
-    if (useDecibels) {
-      val = 10 * Math.log10(Math.max(val, 1e-10));
-    }
-    values.push(val);
+    if (val === 0 || isNaN(val)) continue;
+    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    if (val < min) min = val;
+    if (val > max) max = val;
+    sum += val;
+    sqSum += val * val;
+    count++;
   }
 
-  if (values.length === 0) {
+  if (count === 0) {
     return { min: 0, max: 0, mean: 0, std: 0, median: 0 };
   }
 
-  values.sort((a, b) => a - b);
+  const mean = sum / count;
+  const std = Math.sqrt(sqSum / count - mean * mean);
 
-  const min = values[0];
-  const max = values[values.length - 1];
-  const sum = values.reduce((a, b) => a + b, 0);
-  const mean = sum / values.length;
-  const mid = Math.floor(values.length / 2);
-  const median = values.length % 2 === 1
-    ? values[mid]
-    : (values[mid - 1] + values[mid]) / 2;
+  // Estimate median via histogram bin-walk (O(n) instead of O(n log n) sort)
+  const numBins = 256;
+  const binWidth = (max - min) / numBins || 1;
+  const bins = new Array(numBins).fill(0);
 
-  // Standard deviation
-  const sqDiffSum = values.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0);
-  const std = Math.sqrt(sqDiffSum / values.length);
+  for (let i = 0; i < data.length; i++) {
+    let val = data[i];
+    if (val === 0 || isNaN(val)) continue;
+    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    const idx = Math.floor((val - min) / binWidth);
+    bins[Math.max(0, Math.min(numBins - 1, idx))]++;
+  }
 
-  return { min, max, mean, std, median, count: values.length };
+  const medianTarget = Math.floor(count / 2);
+  let cumulative = 0;
+  let median = mean;
+  for (let b = 0; b < numBins; b++) {
+    cumulative += bins[b];
+    if (cumulative > medianTarget) {
+      median = min + (b + 0.5) * binWidth;
+      break;
+    }
+  }
+
+  return { min, max, mean, std, median, count };
 }
 
 /**
@@ -59,31 +73,53 @@ export function autoContrastLimits(
   lowPercentile = 2,
   highPercentile = 98
 ) {
-  const values = [];
+  // O(n) histogram bin-walk for percentiles instead of O(n log n) sort
+  let min = Infinity, max = -Infinity, count = 0;
 
   for (let i = 0; i < data.length; i++) {
     let val = data[i];
-    if (val === 0 || isNaN(val)) continue; // Skip no-data
-
-    if (useDecibels) {
-      val = 10 * Math.log10(Math.max(val, 1e-10));
-    }
-    values.push(val);
+    if (val === 0 || isNaN(val)) continue;
+    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    if (val < min) min = val;
+    if (val > max) max = val;
+    count++;
   }
 
-  if (values.length === 0) {
+  if (count === 0) {
     return useDecibels ? [-30, 0] : [0, 1];
   }
 
-  values.sort((a, b) => a - b);
+  const numBins = 256;
+  const binWidth = (max - min) / numBins || 1;
+  const bins = new Array(numBins).fill(0);
 
-  const lowIdx = Math.floor((lowPercentile / 100) * values.length);
-  const highIdx = Math.floor((highPercentile / 100) * values.length);
+  for (let i = 0; i < data.length; i++) {
+    let val = data[i];
+    if (val === 0 || isNaN(val)) continue;
+    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    const idx = Math.floor((val - min) / binWidth);
+    bins[Math.max(0, Math.min(numBins - 1, idx))]++;
+  }
 
-  const min = values[lowIdx];
-  const max = values[Math.min(highIdx, values.length - 1)];
+  const lowTarget = Math.floor((lowPercentile / 100) * count);
+  const highTarget = Math.min(Math.floor((highPercentile / 100) * count), count - 1);
+  let cumulative = 0;
+  let pLow = min, pHigh = max;
+  let foundLow = false;
 
-  return [min, max];
+  for (let b = 0; b < numBins; b++) {
+    cumulative += bins[b];
+    if (!foundLow && cumulative > lowTarget) {
+      pLow = min + b * binWidth;
+      foundLow = true;
+    }
+    if (cumulative > highTarget) {
+      pHigh = min + (b + 1) * binWidth;
+      break;
+    }
+  }
+
+  return [pLow, pHigh];
 }
 
 /**
@@ -95,19 +131,25 @@ export function autoContrastLimits(
  * @returns {Object} Histogram object with bins, counts, edges
  */
 export function computeHistogram(data, useDecibels = true, numBins = 256, range = null) {
-  const values = [];
+  // Single-pass min/max + binning (no sort needed)
+  let min, max;
 
-  for (let i = 0; i < data.length; i++) {
-    let val = data[i];
-    if (val === 0 || isNaN(val)) continue;
-
-    if (useDecibels) {
-      val = 10 * Math.log10(Math.max(val, 1e-10));
+  if (range) {
+    [min, max] = range;
+  } else {
+    // O(n) scan for min/max instead of O(n log n) sort
+    min = Infinity;
+    max = -Infinity;
+    for (let i = 0; i < data.length; i++) {
+      let val = data[i];
+      if (val === 0 || isNaN(val)) continue;
+      if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+      if (val < min) min = val;
+      if (val > max) max = val;
     }
-    values.push(val);
   }
 
-  if (values.length === 0) {
+  if (min === Infinity) {
     return {
       bins: new Array(numBins).fill(0),
       edges: new Array(numBins + 1).fill(0),
@@ -116,16 +158,7 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
     };
   }
 
-  let min, max;
-  if (range) {
-    [min, max] = range;
-  } else {
-    values.sort((a, b) => a - b);
-    min = values[0];
-    max = values[values.length - 1];
-  }
-
-  const binWidth = (max - min) / numBins;
+  const binWidth = (max - min) / numBins || 1;
   const bins = new Array(numBins).fill(0);
   const edges = new Array(numBins + 1);
 
@@ -133,13 +166,17 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
     edges[i] = min + i * binWidth;
   }
 
-  for (const val of values) {
+  let totalCount = 0;
+  for (let i = 0; i < data.length; i++) {
+    let val = data[i];
+    if (val === 0 || isNaN(val)) continue;
+    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
     const binIdx = Math.floor((val - min) / binWidth);
-    const clampedIdx = Math.max(0, Math.min(numBins - 1, binIdx));
-    bins[clampedIdx]++;
+    bins[Math.max(0, Math.min(numBins - 1, binIdx))]++;
+    totalCount++;
   }
 
-  return { bins, edges, min, max, binWidth, totalCount: values.length };
+  return { bins, edges, min, max, binWidth, totalCount };
 }
 
 /**
@@ -150,63 +187,71 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
  * @returns {Promise<Object>} Combined statistics
  */
 export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = true) {
+  // Collect values with streaming min/max/sum to avoid O(n log n) sort
+  let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
+  const numBins = 256;
+  // We'll do a two-pass approach: first collect all values for min/max, then bin
   const allValues = [];
   const gridSize = Math.ceil(Math.sqrt(sampleSize));
 
-  // Sample tiles from a grid pattern
   for (let y = 0; y < gridSize; y++) {
     for (let x = 0; x < gridSize; x++) {
-      if (allValues.length >= sampleSize * 65536) break;
-
+      if (count >= sampleSize * 65536) break;
       try {
-        const tile = await getTile({ x, y, z: 2 }); // Use zoom level 2 for overview
+        const tile = await getTile({ x, y, z: 2 });
         if (tile && tile.data) {
           for (let i = 0; i < tile.data.length; i++) {
             let val = tile.data[i];
             if (val === 0 || isNaN(val)) continue;
-
-            if (useDecibels) {
-              val = 10 * Math.log10(Math.max(val, 1e-10));
-            }
+            if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+            if (val < min) min = val;
+            if (val > max) max = val;
+            sum += val;
+            sqSum += val * val;
             allValues.push(val);
+            count++;
           }
         }
       } catch (e) {
-        // Skip failed tiles
         continue;
       }
     }
   }
 
-  if (allValues.length === 0) {
+  if (count === 0) {
     return {
       contrastLimits: useDecibels ? [-30, 0] : [0, 1],
       stats: { min: 0, max: 0, mean: 0, std: 0, median: 0, count: 0 },
     };
   }
 
-  allValues.sort((a, b) => a - b);
+  const mean = sum / count;
+  const std = Math.sqrt(sqSum / count - mean * mean);
 
-  const min = allValues[0];
-  const max = allValues[allValues.length - 1];
-  const sum = allValues.reduce((a, b) => a + b, 0);
-  const mean = sum / allValues.length;
-  const mid = Math.floor(allValues.length / 2);
-  const median = allValues.length % 2 === 1
-    ? allValues[mid]
-    : (allValues[mid - 1] + allValues[mid]) / 2;
+  // Bin-walk CDF for percentiles and median
+  const binWidth = (max - min) / numBins || 1;
+  const bins = new Array(numBins).fill(0);
+  for (const val of allValues) {
+    const idx = Math.floor((val - min) / binWidth);
+    bins[Math.max(0, Math.min(numBins - 1, idx))]++;
+  }
 
-  const sqDiffSum = allValues.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0);
-  const std = Math.sqrt(sqDiffSum / allValues.length);
+  const p2Target = Math.floor(0.02 * count);
+  const medTarget = Math.floor(count / 2);
+  const p98Target = Math.min(Math.floor(0.98 * count), count - 1);
+  let cumulative = 0, p2 = min, median = mean, p98 = max;
+  let foundP2 = false, foundMed = false;
 
-  // Percentile-based contrast limits
-  const lowIdx = Math.floor(0.02 * allValues.length);
-  const highIdx = Math.floor(0.98 * allValues.length);
-  const contrastLimits = [allValues[lowIdx], allValues[highIdx]];
+  for (let b = 0; b < numBins; b++) {
+    cumulative += bins[b];
+    if (!foundP2 && cumulative > p2Target) { p2 = min + b * binWidth; foundP2 = true; }
+    if (!foundMed && cumulative > medTarget) { median = min + (b + 0.5) * binWidth; foundMed = true; }
+    if (cumulative > p98Target) { p98 = min + (b + 1) * binWidth; break; }
+  }
 
   return {
-    contrastLimits,
-    stats: { min, max, mean, std, median, count: allValues.length },
+    contrastLimits: [p2, p98],
+    stats: { min, max, mean, std, median, count },
   };
 }
 

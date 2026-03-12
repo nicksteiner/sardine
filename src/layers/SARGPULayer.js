@@ -232,7 +232,9 @@ export class SARGPULayer extends Layer {
       return;
     }
 
-    // Create model when bounds change (geometry needs world coordinates)
+    // Create or update model geometry when bounds change.
+    // Shader program is compiled only once; subsequent bounds changes just
+    // update the vertex attributes via setGeometry() to avoid recompilation.
     if (this.state.needsGeometryUpdate || bounds !== oldProps.bounds) {
       if (!bounds || bounds.length !== 4) {
         console.error('[SARGPULayer] Cannot create geometry without valid bounds');
@@ -241,22 +243,13 @@ export class SARGPULayer extends Layer {
 
       const [minX, minY, maxX, maxY] = bounds;
 
-      // Create quad with world coordinates from bounds
       const positions = new Float32Array([
-        // Triangle 1
-        minX, minY, 0,
-        maxX, minY, 0,
-        maxX, maxY, 0,
-        // Triangle 2
-        minX, minY, 0,
-        maxX, maxY, 0,
-        minX, maxY, 0
+        minX, minY, 0,  maxX, minY, 0,  maxX, maxY, 0,
+        minX, minY, 0,  maxX, maxY, 0,  minX, maxY, 0
       ]);
 
       const texCoords = new Float32Array([
-        // Triangle 1
         0, 1,  1, 1,  1, 0,
-        // Triangle 2
         0, 1,  1, 0,  0, 0
       ]);
 
@@ -268,30 +261,35 @@ export class SARGPULayer extends Layer {
         }
       });
 
-      // Clean up old model
-      if (this.state.model) {
-        this.state.model.delete();
-      }
+      if (this.state.model && !this.state.needsGeometryUpdate) {
+        // Model exists and shader hasn't changed — just update geometry
+        this.state.model.setGeometry(geometry);
+      } else {
+        // First creation or context restore — compile shader + create model
+        if (this.state.model) {
+          this.state.model.delete();
+        }
 
-      let model;
-      try {
-        model = new Model(gl, {
-          ...this.getShaders(),
-          geometry,
-          parameters: {
-            blend: true,
-            blendFunc: [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA],
-            depthTest: false  // Don't use depth test for 2D imagery
-          }
-        });
-      } catch (err) {
-        console.error('[SARGPULayer] Shader compilation failed:', err.message);
-        const infoLog = err.infoLog || err.shaderLog || '';
-        if (infoLog) console.error('[SARGPULayer] Shader log:', infoLog);
-        return;
-      }
+        let model;
+        try {
+          model = new Model(gl, {
+            ...this.getShaders(),
+            geometry,
+            parameters: {
+              blend: true,
+              blendFunc: [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA],
+              depthTest: false
+            }
+          });
+        } catch (err) {
+          console.error('[SARGPULayer] Shader compilation failed:', err.message);
+          const infoLog = err.infoLog || err.shaderLog || '';
+          if (infoLog) console.error('[SARGPULayer] Shader log:', infoLog);
+          return;
+        }
 
-      this.setState({ model, needsGeometryUpdate: false });
+        this.setState({ model, needsGeometryUpdate: false });
+      }
     }
 
     // Upload R32F texture(s) when data changes

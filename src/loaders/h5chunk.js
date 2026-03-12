@@ -1565,57 +1565,91 @@ export class H5Chunk {
     }
 
     // ── Follow continuation blocks (v1 headers often have these) ────────
-    // Use index-based loop because nested continuations may append entries.
-    for (let ci = 0; ci < continuationBlocks.length; ci++) {
-      const cont = continuationBlocks[ci];
-      try {
-        let contBuffer;
+    // Process in waves: batch-fetch all remote blocks in parallel per wave,
+    // then process results and repeat for any nested continuations discovered.
+    const processContinuationBuffer = (contBuffer) => {
+      const nested = [];
+      const contMessages = parseV1ContinuationBlock(contBuffer, this.superblock);
+      for (const cmsg of contMessages) {
+        try {
+          const cr = cmsg._reader;
+          if (cmsg.type === MSG_SYMBOL_TABLE) {
+            cr.seek(cmsg.offset);
+            symbolTableBTree = cr.readOffset(this.superblock.offsetSize);
+            symbolTableHeap = cr.readOffset(this.superblock.offsetSize);
+          } else if (cmsg.type === MSG_DATASPACE) {
+            dataspace = parseDataspaceMessage(cr, cmsg.offset);
+          } else if (cmsg.type === MSG_DATATYPE) {
+            datatype = parseDatatypeMessage(cr, cmsg.offset);
+          } else if (cmsg.type === MSG_DATA_LAYOUT) {
+            layout = parseDataLayoutMessage(cr, cmsg.offset, this.superblock);
+          } else if (cmsg.type === MSG_FILTER_PIPELINE) {
+            filters = parseFilterPipelineMessage(cr, cmsg.offset);
+          } else if (cmsg.type === MSG_ATTRIBUTE) {
+            const attr = parseAttributeMessage(cr, cmsg.offset, contBuffer);
+            if (attr && attr.name) {
+              attributes.set(attr.name, attr.value);
+            }
+          } else if (cmsg.type === MSG_OBJ_HEADER_CONTINUATION) {
+            cr.seek(cmsg.offset);
+            const nestedOffset = cr.readOffset(this.superblock.offsetSize);
+            const nestedLength = cr.readLength(this.superblock.lengthSize);
+            if (nestedOffset > 0 && nestedLength > 0 && nestedLength < 64 * 1024) {
+              nested.push({ offset: nestedOffset, length: nestedLength });
+            }
+          }
+        } catch (e) {
+          // Skip bad continuation messages
+        }
+      }
+      return nested;
+    };
+
+    let pendingBlocks = continuationBlocks;
+    while (pendingBlocks.length > 0) {
+      const localBlocks = [];
+      const remoteBlocks = [];
+      for (const cont of pendingBlocks) {
         if (cont.offset < this.metadataBuffer.byteLength &&
             cont.offset + cont.length <= this.metadataBuffer.byteLength) {
-          // Continuation is within our metadata buffer
-          contBuffer = this.metadataBuffer.slice(cont.offset, cont.offset + cont.length);
+          localBlocks.push(cont);
         } else {
-          // Need to fetch from file
-          contBuffer = await this._fetchBytes(cont.offset, cont.length);
+          remoteBlocks.push(cont);
         }
+      }
 
-        const contMessages = parseV1ContinuationBlock(contBuffer, this.superblock);
-        for (const cmsg of contMessages) {
-          try {
-            const cr = cmsg._reader;
-            if (cmsg.type === MSG_SYMBOL_TABLE) {
-              cr.seek(cmsg.offset);
-              symbolTableBTree = cr.readOffset(this.superblock.offsetSize);
-              symbolTableHeap = cr.readOffset(this.superblock.offsetSize);
-            } else if (cmsg.type === MSG_DATASPACE) {
-              dataspace = parseDataspaceMessage(cr, cmsg.offset);
-            } else if (cmsg.type === MSG_DATATYPE) {
-              datatype = parseDatatypeMessage(cr, cmsg.offset);
-            } else if (cmsg.type === MSG_DATA_LAYOUT) {
-              layout = parseDataLayoutMessage(cr, cmsg.offset, this.superblock);
-            } else if (cmsg.type === MSG_FILTER_PIPELINE) {
-              filters = parseFilterPipelineMessage(cr, cmsg.offset);
-            } else if (cmsg.type === MSG_ATTRIBUTE) {
-              const attr = parseAttributeMessage(cr, cmsg.offset, contBuffer);
-              if (attr && attr.name) {
-                attributes.set(attr.name, attr.value);
-              }
-            } else if (cmsg.type === MSG_OBJ_HEADER_CONTINUATION) {
-              // Nested continuation — follow the chain
-              cr.seek(cmsg.offset);
-              const nestedOffset = cr.readOffset(this.superblock.offsetSize);
-              const nestedLength = cr.readLength(this.superblock.lengthSize);
-              if (nestedOffset > 0 && nestedLength > 0 && nestedLength < 64 * 1024) {
-                continuationBlocks.push({ offset: nestedOffset, length: nestedLength });
-              }
-            }
-          } catch (e) {
-            // Skip bad continuation messages
+      const nextPending = [];
+
+      // Process local blocks synchronously
+      for (const cont of localBlocks) {
+        try {
+          const contBuffer = this.metadataBuffer.slice(cont.offset, cont.offset + cont.length);
+          nextPending.push(...processContinuationBuffer(contBuffer));
+        } catch (e) {
+          console.warn(`[h5chunk] Failed to read continuation at 0x${cont.offset.toString(16)}:`, e.message);
+        }
+      }
+
+      // Batch-fetch all remote blocks in parallel
+      if (remoteBlocks.length > 0) {
+        const fetched = await Promise.all(
+          remoteBlocks.map(cont =>
+            this._fetchBytes(cont.offset, cont.length)
+              .then(buf => ({ buf, cont }))
+              .catch(e => {
+                console.warn(`[h5chunk] Failed to read continuation at 0x${cont.offset.toString(16)}:`, e.message);
+                return null;
+              })
+          )
+        );
+        for (const result of fetched) {
+          if (result) {
+            nextPending.push(...processContinuationBuffer(result.buf));
           }
         }
-      } catch (e) {
-        console.warn(`[h5chunk] Failed to read continuation at 0x${cont.offset.toString(16)}:`, e.message);
       }
+
+      pendingBlocks = nextPending;
     }
 
     // ── Handle v1 groups via Symbol Table traversal ─────────────────────

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 
 /**
  * HistogramPanel - Per-channel histogram display with contrast controls.
@@ -83,6 +83,21 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
   const WIDTH = 200;
   const HEIGHT = 50;
 
+  // Debounce slider changes: update local preview immediately, propagate to
+  // parent (which triggers layer re-render) after 100ms of inactivity.
+  const debounceRef = useRef(null);
+  const [localLimits, setLocalLimits] = useState(null);
+  const debouncedOnChange = useCallback((newLimits) => {
+    setLocalLimits(newLimits);
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      onChange(newLimits);
+      setLocalLimits(null);
+    }, 100);
+  }, [onChange]);
+  // Use local limits during drag, fall back to prop
+  const effectiveLimits = localLimits || limits;
+
   useEffect(() => {
     if (!canvasRef.current || !stats) return;
 
@@ -110,8 +125,8 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
     }
 
     // Shade clipped regions and draw limit lines
-    if (limits) {
-      const [lo, hi] = limits;
+    if (effectiveLimits) {
+      const [lo, hi] = effectiveLimits;
       const loX = ((lo - stats.min) / dataRange) * WIDTH;
       const hiX = ((hi - stats.min) / dataRange) * WIDTH;
 
@@ -126,11 +141,11 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
       ctx.moveTo(hiX, 0); ctx.lineTo(hiX, HEIGHT);
       ctx.stroke();
     }
-  }, [stats, limits, color]);
+  }, [stats, effectiveLimits, color]);
 
   if (!stats) return null;
 
-  const [lo, hi] = limits;
+  const [lo, hi] = effectiveLimits;
   const step = (stats.max - stats.min) / 200 || 0.001;
 
   const fmt = (v) => {
@@ -206,7 +221,7 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
             onChange={(e) => setEditMinVal(e.target.value)}
             onBlur={() => {
               const v = parseFloat(editMinVal);
-              if (!isNaN(v)) onChange([Math.max(stats.min, Math.min(v, hi)), hi]);
+              if (!isNaN(v)) debouncedOnChange([Math.max(stats.min, Math.min(v, hi)), hi]);
               setEditingMin(false);
             }}
             onKeyDown={(e) => {
@@ -228,7 +243,7 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
           max={stats.max}
           step={step}
           value={lo}
-          onChange={(e) => onChange([Math.min(Number(e.target.value), hi), hi])}
+          onChange={(e) => debouncedOnChange([Math.min(Number(e.target.value), hi), hi])}
           style={{ flex: 1 }}
         />
       </div>
@@ -265,7 +280,7 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
           max={stats.max}
           step={step}
           value={hi}
-          onChange={(e) => onChange([lo, Math.max(Number(e.target.value), lo)])}
+          onChange={(e) => debouncedOnChange([lo, Math.max(Number(e.target.value), lo)])}
           style={{ flex: 1 }}
         />
       </div>

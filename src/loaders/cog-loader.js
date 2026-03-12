@@ -180,6 +180,16 @@ export async function loadCOG(url) {
 
   // tileWidth and tileHeight already retrieved during validation above
 
+  // Pre-cache overview hierarchy at load time to avoid repeated async
+  // tiff.getImage() calls on every tile request.
+  const maxZoom = Math.ceil(Math.log2(Math.max(width, height) / 256));
+  const overviewCache = new Map(); // overviewIndex → {image, width, height}
+  for (let i = 0; i < imageCount; i++) {
+    const img = await tiff.getImage(i);
+    overviewCache.set(i, { image: img, width: img.getWidth(), height: img.getHeight() });
+  }
+  console.log(`[COG Loader] Cached ${overviewCache.size} overview levels, maxZoom: ${maxZoom}`);
+
   /**
    * Get tile data for deck.gl TileLayer
    * @param {Object} params - Tile parameters
@@ -190,19 +200,14 @@ export async function loadCOG(url) {
    */
   async function getTile({ x, y, z }) {
     try {
-      console.log(`[COG Loader] Requesting tile x:${x}, y:${y}, z:${z}`);
-
-      // Calculate which image (overview) to use based on zoom level
-      const maxZoom = Math.ceil(Math.log2(Math.max(width, height) / 256));
+      // Use pre-cached overview lookup
       const targetZoom = Math.min(z, maxZoom);
       const overviewIndex = Math.max(0, Math.min(imageCount - 1, maxZoom - targetZoom));
 
-      console.log(`[COG Loader] Using overview ${overviewIndex}, maxZoom: ${maxZoom}`);
-
-      // Get the appropriate image (overview)
-      const targetImage = await tiff.getImage(overviewIndex);
-      const imgWidth = targetImage.getWidth();
-      const imgHeight = targetImage.getHeight();
+      const cached = overviewCache.get(overviewIndex);
+      const targetImage = cached.image;
+      const imgWidth = cached.width;
+      const imgHeight = cached.height;
 
       // Calculate pixel coordinates for this tile
       const scale = Math.pow(2, z);
@@ -236,8 +241,8 @@ export async function loadCOG(url) {
         resampleMethod: 'bilinear',
       });
 
-      // Convert to Float32Array for consistent processing
-      const data = new Float32Array(rasters[0]);
+      // Reuse raster directly if already Float32Array, otherwise convert
+      const data = rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]);
 
       console.log(`[COG Loader] Tile x:${x}, y:${y}, z:${z} loaded successfully (${data.length} pixels)`);
 
