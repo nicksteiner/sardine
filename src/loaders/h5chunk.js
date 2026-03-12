@@ -1137,6 +1137,93 @@ function parseGroup(reader, superblock, groupAddress, path = '/') {
 /**
  * H5Chunk - Cloud-Optimized HDF5 Reader
  */
+// ── Worker pool for parallel decompression ──────────────────────────
+// Shared across all H5Chunk instances. Lazily initialized on first use.
+let _workerPool = null;
+
+class DecompressWorkerPool {
+  constructor(size) {
+    this.size = size;
+    this.workers = [];
+    this.idle = [];
+    this.queue = [];     // pending tasks: {resolve, reject, msg}
+    this.pending = new Map(); // id → {resolve, reject}
+    this._nextId = 0;
+
+    for (let i = 0; i < size; i++) {
+      const worker = new Worker(
+        new URL('./decompress-worker.js', import.meta.url),
+        { type: 'module' }
+      );
+      worker.onmessage = (e) => this._onMessage(i, e);
+      worker.onerror = (e) => this._onError(i, e);
+      this.workers.push(worker);
+      this.idle.push(i);
+    }
+    console.log(`[h5chunk] Decompression worker pool: ${size} threads`);
+  }
+
+  _onMessage(workerIdx, e) {
+    const { id, data, error } = e.data;
+    const task = this.pending.get(id);
+    if (task) {
+      this.pending.delete(id);
+      if (error) {
+        task.reject(new Error(error));
+      } else {
+        task.resolve(data);
+      }
+    }
+    // Worker is now idle — dispatch next queued task
+    this.idle.push(workerIdx);
+    this._dispatch();
+  }
+
+  _onError(workerIdx, e) {
+    console.warn(`[h5chunk] Worker ${workerIdx} error:`, e.message);
+    this.idle.push(workerIdx);
+    this._dispatch();
+  }
+
+  _dispatch() {
+    while (this.idle.length > 0 && this.queue.length > 0) {
+      const workerIdx = this.idle.pop();
+      const task = this.queue.shift();
+      this.pending.set(task.msg.id, { resolve: task.resolve, reject: task.reject });
+      this.workers[workerIdx].postMessage(task.msg, [task.msg.buffer]);
+    }
+  }
+
+  /**
+   * Submit a chunk for decompression. Returns a Promise<ArrayBuffer>.
+   * The compressed buffer is transferred (zero-copy) to the worker.
+   */
+  decompress(compressedBuffer, filters, dtype) {
+    const id = this._nextId++;
+    const msg = { id, buffer: compressedBuffer, filters, dtype };
+    return new Promise((resolve, reject) => {
+      this.queue.push({ resolve, reject, msg });
+      this._dispatch();
+    });
+  }
+
+  terminate() {
+    for (const w of this.workers) w.terminate();
+    this.workers = [];
+    this.idle = [];
+  }
+}
+
+function getWorkerPool() {
+  if (!_workerPool) {
+    const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency
+      ? navigator.hardwareConcurrency : 4;
+    // Use min(cores, 8) to avoid spawning too many workers
+    _workerPool = new DecompressWorkerPool(Math.min(cores, 8));
+  }
+  return _workerPool;
+}
+
 export class H5Chunk {
   constructor() {
     this.superblock = null;
@@ -1147,6 +1234,7 @@ export class H5Chunk {
     this.url = null;
     this.fetchHeaders = {}; // Extra headers for all HTTP fetches (e.g. Authorization)
     this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
+    this.useWorkerPool = true; // Enable multi-threaded decompression
 
     // Adaptive concurrency: start at 12, measure throughput, adjust to 6–50
     this._concurrency = 12;
@@ -2761,25 +2849,59 @@ export class H5Chunk {
    * Shared logic between readChunk and readChunksBatch.
    */
   async _decompressAndDecode(buffer, dataset, filterMask) {
-    let data = buffer;
+    // Determine which filters to apply
+    let filters = null;
     const chunkDimsProduct = (dataset.layout?.chunkDims || [])
       .slice(0, -1)
       .reduce((a, b) => a * b, 1);
     const expectedBytes = chunkDimsProduct * dataset.bytesPerElement;
 
     if (dataset.filters && filterMask === 0) {
-      data = await this._decompressChunk(buffer, dataset.filters);
+      filters = dataset.filters;
     } else if (!dataset.filters && buffer.byteLength < expectedBytes) {
+      // Try deflate, then shuffle+deflate
+      filters = [{ id: FILTER_DEFLATE }];
+    }
+
+    // Worker pool path: offload decompress+decode to a worker thread.
+    // Copy the buffer before transfer so main-thread fallback still works.
+    if (this.useWorkerPool && filters) {
       try {
-        data = await this._decompressChunk(buffer, [{ id: FILTER_DEFLATE }]);
+        const pool = getWorkerPool();
+        const bufCopy = buffer.slice ? buffer.slice(0) : buffer;
+        const resultBuffer = await pool.decompress(bufCopy, filters, dataset.dtype);
+        return new Float32Array(resultBuffer);
       } catch (e) {
-        try {
-          data = await this._decompressChunk(buffer, [
-            { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
-            { id: FILTER_DEFLATE },
-          ]);
-        } catch (e2) {
-          // Use raw data as-is
+        // Worker failed — try shuffle+deflate if we haven't, or fall through to main thread
+        if (!dataset.filters && filters.length === 1) {
+          try {
+            const pool = getWorkerPool();
+            const bufCopy2 = buffer.slice ? buffer.slice(0) : buffer;
+            const resultBuffer = await pool.decompress(bufCopy2,
+              [{ id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] }, { id: FILTER_DEFLATE }],
+              dataset.dtype);
+            return new Float32Array(resultBuffer);
+          } catch (_) { /* fall through to main thread */ }
+        }
+        // Fall through to main-thread decompression
+      }
+    }
+
+    // Main-thread fallback
+    let data = buffer;
+    if (filters) {
+      try {
+        data = await this._decompressChunk(buffer, filters);
+      } catch (e) {
+        if (!dataset.filters) {
+          try {
+            data = await this._decompressChunk(buffer, [
+              { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
+              { id: FILTER_DEFLATE },
+            ]);
+          } catch (e2) {
+            // Use raw data as-is
+          }
         }
       }
     }

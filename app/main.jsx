@@ -12,6 +12,7 @@ import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/ut
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
+import { probeGPU } from '../src/utils/gpu-detect.js';
 import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
@@ -231,6 +232,9 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
+  // GPU capability detection (cached, runs once)
+  const gpuInfo = useMemo(() => probeGPU(), []);
+
   // Unified load mode — single selector replaces old format × source matrix
   const [fileType, setFileType] = useState('nisar'); // 'nisar' | 'local-tif' | 'remote' | 'cog' | 'catalog' | 'stac'
   const [cogUrl, setCogUrl] = useState('');
@@ -1083,40 +1087,38 @@ function App() {
       }
 
       if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
-        // RGB histogram — sample 3×3 tiles from the region
+        // RGB histogram — sample 3×3 tiles from the region (concurrent)
         const tileSize = 256;
         const rawValues = { R: [], G: [], B: [] };
         const gridSize = 3;
-        const totalTiles = gridSize * gridSize;
         const stepX = regionW / gridSize;
         const stepY = regionH / gridSize;
-        let done = 0;
 
+        const tilePromises = [];
         for (let ty = 0; ty < gridSize; ty++) {
           for (let tx = 0; tx < gridSize; tx++) {
             const left = regionX + tx * stepX;
             const right = regionX + (tx + 1) * stepX;
             const top = regionY + ty * stepY;
             const bottom = regionY + (ty + 1) * stepY;
-
-            const tileData = await imageData.getRGBTile({
+            tilePromises.push(imageData.getRGBTile({
               x: tx, y: ty, z: 0,
               bbox: { left, top, right, bottom },
-            });
+            }));
+          }
+        }
+        addStatusLog('info', `Histogram: sampling ${tilePromises.length} tiles...`);
+        const tileResults = await Promise.allSettled(tilePromises);
 
-            if (tileData && tileData.bands) {
-              const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
-              for (const ch of ['R', 'G', 'B']) {
-                const arr = rgbBands[ch];
-                // Subsample every 4th pixel for efficiency
-                for (let i = 0; i < arr.length; i += 4) {
-                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
-                }
+        for (const result of tileResults) {
+          if (result.status === 'fulfilled' && result.value?.bands) {
+            const rgbBands = computeRGBBands(result.value.bands, compositeId, tileSize);
+            for (const ch of ['R', 'G', 'B']) {
+              const arr = rgbBands[ch];
+              for (let i = 0; i < arr.length; i += 4) {
+                if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
               }
             }
-
-            done++;
-            addStatusLog('info', `Histogram: sampling tile ${done}/${totalTiles}`);
           }
         }
 
@@ -1200,26 +1202,30 @@ function App() {
   }, [roi, histogramScope]);
 
   // Auto-recompute histogram when viewport changes (viewport scope, debounced)
+  // Disabled without WebGPU — CPU histogram is too slow for live viewport updates.
   const recomputeRef = useRef(handleRecomputeHistogram);
   recomputeRef.current = handleRecomputeHistogram;
   const vcx = viewCenter[0];
   const vcy = viewCenter[1];
   useEffect(() => {
+    if (!gpuInfo.webgpu) return; // Skip auto-refresh without WebGPU compute
     if (!imageData || !showHistogramOverlay || histogramScope !== 'viewport') return;
     const timer = setTimeout(() => {
       recomputeRef.current();
     }, 800);
     return () => clearTimeout(timer);
-  }, [vcx, vcy, viewZoom, imageData, showHistogramOverlay, histogramScope]);
+  }, [vcx, vcy, viewZoom, imageData, showHistogramOverlay, histogramScope, gpuInfo.webgpu]);
 
   // Auto-recompute histogram when ROI changes (ROI scope only)
+  // Disabled without WebGPU — CPU histogram is too slow for live ROI updates.
   useEffect(() => {
+    if (!gpuInfo.webgpu) return; // Skip auto-refresh without WebGPU compute
     if (!imageData || !roi || histogramScope !== 'roi') return;
     const timer = setTimeout(() => {
       recomputeRef.current();
     }, 300);
     return () => clearTimeout(timer);
-  }, [roi, imageData, histogramScope]);
+  }, [roi, imageData, histogramScope, gpuInfo.webgpu]);
 
   // Recompute histogram when switching between dB and linear mode
   const useDecibelsRef = useRef(useDecibels);
@@ -1966,6 +1972,9 @@ function App() {
         addStatusLog('success', 'NISAR dataset loaded',
           `${data.width}x${data.height}, CRS: ${data.crs}`);
 
+        // Progressive refinement: coarse grid → full-res in background
+        data.onRefine = () => setTileVersion(v => v + 1);
+
         // Use embedded statistics for auto-contrast if available
         if (data.stats && data.stats.mean_value !== undefined) {
           const { mean_value, sample_stddev } = data.stats;
@@ -1997,27 +2006,29 @@ function App() {
           const stepY = (rgbMaxY - rgbMinY) / gridSize;
           const rawValues = { R: [], G: [], B: [] };
 
+          // Fetch all 9 tiles concurrently
+          const tilePromises = [];
           for (let ty = 0; ty < gridSize; ty++) {
             for (let tx = 0; tx < gridSize; tx++) {
               const left = rgbMinX + tx * stepX;
               const right = rgbMinX + (tx + 1) * stepX;
-              // OrthographicView bbox: top = min Y (south), bottom = max Y (north)
               const top = rgbMinY + ty * stepY;
               const bottom = rgbMinY + (ty + 1) * stepY;
-
-              const tileData = await data.getRGBTile({
+              tilePromises.push(data.getRGBTile({
                 x: tx, y: ty, z: 0,
                 bbox: { left, top, right, bottom },
-              });
+              }));
+            }
+          }
+          const tileResults = await Promise.allSettled(tilePromises);
 
-              if (tileData && tileData.bands) {
-                const rgbBands = computeRGBBands(tileData.bands, compositeId, tileSize);
-                for (const ch of ['R', 'G', 'B']) {
-                  const arr = rgbBands[ch];
-                  // Subsample every 4th pixel for efficiency
-                  for (let i = 0; i < arr.length; i += 4) {
-                    if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
-                  }
+          for (const result of tileResults) {
+            if (result.status === 'fulfilled' && result.value?.bands) {
+              const rgbBands = computeRGBBands(result.value.bands, compositeId, tileSize);
+              for (const ch of ['R', 'G', 'B']) {
+                const arr = rgbBands[ch];
+                for (let i = 0; i < arr.length; i += 4) {
+                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
                 }
               }
             }
@@ -3753,67 +3764,8 @@ function App() {
               </div>
             )}
 
-            {/* Multi-look toggle */}
-            <div className="control-group">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <input
-                  type="checkbox"
-                  id="multiLook"
-                  checked={multiLook}
-                  onChange={(e) => {
-                    setMultiLook(e.target.checked);
-                    addStatusLog('info', e.target.checked
-                      ? 'Multi-look enabled — area-averaged resampling (slower, less speckle)'
-                      : 'Multi-look disabled — nearest-neighbour preview (fast)');
-                  }}
-                />
-                <label htmlFor="multiLook" style={{ margin: 0 }}>
-                  Multi-look
-                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
-                    {multiLook ? '(area avg)' : '(fast preview)'}
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            {/* Speckle filter */}
-            <div className="control-group">
-              <label>Speckle Filter</label>
-              <select
-                value={speckleFilterType}
-                onChange={(e) => {
-                  setSpeckleFilterType(e.target.value);
-                  addStatusLog('info', e.target.value === 'none'
-                    ? 'Speckle filter disabled'
-                    : `Speckle filter: ${e.target.value} ${speckleKernelSize}×${speckleKernelSize}`);
-                }}
-              >
-                <option value="none">None</option>
-                {getFilterTypes().map(f => (
-                  <option key={f.id} value={f.id}>{f.name}</option>
-                ))}
-              </select>
-              {speckleFilterType !== 'none' && (
-                <div style={{ marginTop: '4px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Kernel</label>
-                    <span className="value-display">{speckleKernelSize}×{speckleKernelSize}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={3}
-                    max={11}
-                    step={2}
-                    value={speckleKernelSize}
-                    onChange={(e) => {
-                      const ks = Number(e.target.value);
-                      setSpeckleKernelSize(ks);
-                      addStatusLog('info', `Speckle filter kernel: ${ks}×${ks}`);
-                    }}
-                  />
-                </div>
-              )}
-            </div>
+            {/* Multi-look toggle — hidden on main branch, needs more work */}
+            {/* Speckle filter — hidden on main branch, needs more work */}
 
             {/* Mask toggle — only shown when mask dataset is available */}
             {imageData?.hasMask && (
@@ -4128,7 +4080,10 @@ function App() {
         <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>SARdine</a> v1.0 · MIT</span>
         <span>steinerlab - ccny</span>
         <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6 }}>
-          deck.gl {multiLook ? '· multi-look' : '· nearest-neighbour'}
+          deck.gl{multiLook ? ' · multi-look' : ''}
+          {gpuInfo.webgpu
+            ? ' · WebGPU'
+            : <span style={{ color: '#f5a623' }}> · no WebGPU (histogram CPU-only)</span>}
         </span>
       </footer>
 

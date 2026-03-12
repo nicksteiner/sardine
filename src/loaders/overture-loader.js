@@ -141,6 +141,19 @@ export function projectedToWGS84(bounds, crs) {
     return utmToWGS84(bounds, zone, false);
   }
 
+  // Polar Stereographic North — NSIDC Sea Ice (EPSG:3413) and UPS North (EPSG:32661)
+  if (epsg === 3413 || epsg === 32661) {
+    return polarStereoToWGS84(bounds, epsg === 3413 ? 70 : 90, -45);
+  }
+  // Polar Stereographic South — Antarctic (EPSG:3031) and UPS South (EPSG:32761)
+  if (epsg === 3031 || epsg === 32761) {
+    return polarStereoToWGS84(bounds, -71, 0);
+  }
+  // Arctic Canada (EPSG:3411 — SSM/I polar stereo, lat_ts=70, lon_0=-45, Hughes 1980 ellipsoid)
+  if (epsg === 3411) {
+    return polarStereoToWGS84(bounds, 70, -45);
+  }
+
   // Unknown CRS — return as-is and hope for the best
   console.warn(`[Overture] Unknown CRS ${crs}, cannot convert to WGS84`);
   return bounds;
@@ -177,6 +190,88 @@ function utmToWGS84(bounds, zone, isNorth) {
     Math.min(minLat, maxLat),
     Math.max(minLon, maxLon),
     Math.max(minLat, maxLat),
+  ];
+}
+
+/**
+ * Polar Stereographic → WGS84 inverse projection.
+ * Handles both north and south pole projections.
+ *
+ * @param {number[]} bounds - [minX, minY, maxX, maxY] in projection meters
+ * @param {number} latTs - Latitude of true scale (positive for north, negative for south)
+ * @param {number} lon0 - Central meridian in degrees
+ */
+function polarStereoToWGS84(bounds, latTs, lon0) {
+  const [minX, minY, maxX, maxY] = bounds;
+  const DEG = Math.PI / 180;
+  const a = 6378137;           // WGS84 semi-major axis
+  const f = 1 / 298.257223563; // WGS84 flattening
+  const e = Math.sqrt(2 * f - f * f); // eccentricity
+  const isNorth = latTs > 0;
+  const phiTs = Math.abs(latTs) * DEG; // latitude of true scale (positive)
+
+  // Scale factor at latitude of true scale
+  const sinPhiTs = Math.sin(phiTs);
+  const cosPhiTs = Math.cos(phiTs);
+  const tTs = Math.tan(Math.PI / 4 - phiTs / 2) /
+    Math.pow((1 - e * sinPhiTs) / (1 + e * sinPhiTs), e / 2);
+  const mTs = cosPhiTs / Math.sqrt(1 - e * e * sinPhiTs * sinPhiTs);
+
+  function xyToLatLon(x, y) {
+    // Flip y for south pole
+    const xp = x;
+    const yp = isNorth ? -y : y;
+
+    const rho = Math.sqrt(xp * xp + yp * yp);
+    if (rho < 1e-10) {
+      return [isNorth ? 90 : -90, lon0];
+    }
+
+    const t = rho * tTs / (a * mTs);
+
+    // Iterative inverse for latitude (converges in 3-4 iterations)
+    let phi = Math.PI / 2 - 2 * Math.atan(t);
+    for (let i = 0; i < 10; i++) {
+      const sinPhi = Math.sin(phi);
+      const phiNew = Math.PI / 2 - 2 * Math.atan(
+        t * Math.pow((1 - e * sinPhi) / (1 + e * sinPhi), e / 2)
+      );
+      if (Math.abs(phiNew - phi) < 1e-12) break;
+      phi = phiNew;
+    }
+
+    let lon = Math.atan2(xp, yp) / DEG + lon0;
+    let lat = phi / DEG;
+    if (!isNorth) lat = -lat;
+
+    // Normalize longitude to [-180, 180]
+    while (lon > 180) lon -= 360;
+    while (lon < -180) lon += 360;
+
+    return [lat, lon];
+  }
+
+  // Convert all four corners for better bbox accuracy
+  const corners = [
+    xyToLatLon(minX, minY),
+    xyToLatLon(minX, maxY),
+    xyToLatLon(maxX, minY),
+    xyToLatLon(maxX, maxY),
+    // Also sample midpoints of edges for curved projections
+    xyToLatLon((minX + maxX) / 2, minY),
+    xyToLatLon((minX + maxX) / 2, maxY),
+    xyToLatLon(minX, (minY + maxY) / 2),
+    xyToLatLon(maxX, (minY + maxY) / 2),
+  ];
+
+  const lats = corners.map(c => c[0]);
+  const lons = corners.map(c => c[1]);
+
+  return [
+    Math.min(...lons),
+    Math.min(...lats),
+    Math.max(...lons),
+    Math.max(...lats),
   ];
 }
 
