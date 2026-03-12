@@ -2677,8 +2677,8 @@ function App() {
     }
   }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, displayMode, addStatusLog]);
 
-  // Reload/restart current rendering
-  const handleReload = useCallback(() => {
+  // Reload/restart current rendering — full data + state refresh
+  const handleReload = useCallback(async () => {
     if (!imageData) {
       addStatusLog('warning', 'No data loaded to reload');
       return;
@@ -2686,22 +2686,35 @@ function App() {
 
     addStatusLog('info', 'Reloading current view...');
 
-    // Force re-render by clearing and re-loading
+    // Clear all derived state
     setImageData(null);
     setHistogramData(null);
+    setRoiRGBData(null);
+    setRoiRGBBounds(null);
+    setRoiRGBContrastLimits(null);
+    setRoiRGBHistogramData(null);
+    setRoiTSFrames(null);
+    setRoiTSBounds(null);
+    setRoiTSContrastLimits(null);
+    setRoiTSHistogramData(null);
+    setRoiTSPlaying(false);
+    setRoiTSIndex(0);
+    setActiveViewer('main');
+    setTileVersion(0);
 
-    // Trigger re-load after a short delay
-    setTimeout(() => {
-      if (fileType === 'nisar' && nisarFile) {
-        // Re-trigger NISAR load by updating a dependency
-        setSelectedFrequency(prev => prev); // Force useEffect re-run
-      } else if (fileType === 'cog' && cogUrl) {
-        // Re-trigger COG load
-        setCogUrl(prev => prev);
-      }
-      addStatusLog('success', 'Reload triggered');
-    }, 100);
-  }, [imageData, fileType, nisarFile, cogUrl, addStatusLog]);
+    // Re-load from source after state clears
+    await new Promise(r => setTimeout(r, 50));
+
+    if (fileType === 'nisar' && nisarFile) {
+      handleLoadNISAR();
+    } else if (fileType === 'nisar' && remoteUrl) {
+      handleLoadRemoteNISAR();
+    } else if ((fileType === 'cog' || fileType === 'remote') && cogUrl) {
+      handleLoadCOG();
+    } else {
+      addStatusLog('warning', 'Could not determine data source for reload');
+    }
+  }, [imageData, fileType, nisarFile, remoteUrl, cogUrl, addStatusLog, handleLoadNISAR, handleLoadRemoteNISAR, handleLoadCOG]);
 
   // Fetch Overture features when viewport changes (debounced)
   useEffect(() => {
