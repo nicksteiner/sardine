@@ -1227,17 +1227,27 @@ function App() {
     return () => clearTimeout(timer);
   }, [roi, imageData, histogramScope, gpuInfo.webgpu]);
 
-  // Recompute histogram when switching between dB and linear mode
+  // Recompute histogram when switching between dB and linear mode, then auto-stretch
   const useDecibelsRef = useRef(useDecibels);
+  const pendingAutoStretchRef = useRef(false);
   useEffect(() => {
     if (useDecibels !== useDecibelsRef.current) {
       useDecibelsRef.current = useDecibels;
+      pendingAutoStretchRef.current = true;
       // Recompute histogram in the new scale (both single-band and RGB)
       if (imageData) {
         handleRecomputeHistogram();
       }
     }
   }, [useDecibels, imageData, handleRecomputeHistogram]);
+
+  // Auto-stretch after dB-triggered histogram recompute completes
+  useEffect(() => {
+    if (pendingAutoStretchRef.current && (histogramData || roiRGBHistogramData || roiTSHistogramData)) {
+      pendingAutoStretchRef.current = false;
+      handleAutoStretch();
+    }
+  }, [histogramData, roiRGBHistogramData, roiTSHistogramData, handleAutoStretch]);
 
   // Tone mapping config — hidden, see tone mapping NOTE in JSX below
   // const toneMapping = useMemo(() => ({
@@ -3689,7 +3699,7 @@ function App() {
                 contrastLimits={sidebarIsRoiRGB
                   ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
                   : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })}
-                useDecibels={sidebarIsRoiRGB ? false : useDecibels}
+                useDecibels={useDecibels}
                 onContrastChange={sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
@@ -3907,7 +3917,7 @@ function App() {
                       getTile={roiRGBData.getTile}
                       bounds={roiRGBBounds}
                       contrastLimits={roiRGBContrastLimits}
-                      useDecibels={false}
+                      useDecibels={useDecibels}
                       colormap={colormap}
                       gamma={gamma}
                       stretchMode={stretchMode}

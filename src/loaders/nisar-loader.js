@@ -2018,9 +2018,17 @@ async function loadNISARGCOVStreaming(file, options = {}) {
 
           // Multi-level progressive refinement: 8→16→32→full
           // Each level doubles grid density, updating the display at each step.
-          _pendingRefinement = (async () => {
+          // Runs automatically — no zoom required.
+          if (_pendingRefinement) {
+            // Cancel previous refinement if still running (e.g. tile re-requested)
+            _pendingRefinement = null;
+          }
+          const refinementId = Date.now();
+          _pendingRefinement = refinementId;
+          (async () => {
             try {
               await new Promise(r => setTimeout(r, 50)); // yield to render coarse first
+              if (_pendingRefinement !== refinementId) return; // cancelled
 
               // Refinement levels: grid sizes to iterate through
               const levels = [16, 32, 64];
@@ -2028,6 +2036,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
               const allLevels = levels.filter(g => g < Math.min(totalCR, totalCC));
 
               for (const gridMax of allLevels) {
+                if (_pendingRefinement !== refinementId) return; // cancelled
                 const strR = Math.max(1, Math.ceil(totalCR / gridMax));
                 const strC = Math.max(1, Math.ceil(totalCC / gridMax));
                 const rows = [];
@@ -2135,6 +2144,7 @@ async function loadNISARGCOVStreaming(file, options = {}) {
               }
 
               // Final level: point-sample at full tileSize resolution
+              if (_pendingRefinement !== refinementId) return; // cancelled
               const stepX = sliceW / tileSize;
               const stepY = sliceH / tileSize;
               const neededChunks = new Set();
