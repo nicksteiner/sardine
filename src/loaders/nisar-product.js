@@ -250,7 +250,7 @@ export const RENDER_MODES = {
   'gunw:unwrappedPhase': {
     transform: 'linear',
     colormap: 'rdbu',
-    defaultRange: null,
+    defaultRange: [-50, 50],  // ~6 fringes at L-band; refined from metadata if available
     unit: 'radians',
     nodata: [NaN],
   },
@@ -280,14 +280,14 @@ export const RENDER_MODES = {
   'gunw:ionospherePhaseScreen': {
     transform: 'linear',
     colormap: 'rdbu',
-    defaultRange: null,
+    defaultRange: [-20, 20],
     unit: 'radians',
     nodata: [NaN],
   },
   'gunw:ionospherePhaseScreenUncertainty': {
     transform: 'linear',
     colormap: 'viridis',
-    defaultRange: null,
+    defaultRange: [0, 10],
     unit: 'radians',
     nodata: [NaN],
   },

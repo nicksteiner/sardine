@@ -87,6 +87,74 @@ export const GUNW_DATASET_LABELS = {
  * @param {Object} [options._streamReader] — pre-opened h5chunk reader
  * @returns {Promise<Object>} Dataset listing
  */
+/**
+ * Read GUNW-specific metadata from HDF5.
+ * Reads identification fields + GUNW-specific fields (centerFrequency, temporal baseline, dates).
+ */
+async function readGUNWMetadata(streamReader, paths, freq = 'A') {
+  const meta = {};
+  const base = paths.base;
+
+  // Helper: read a small scalar dataset
+  const readScalar = async (path) => {
+    try {
+      const dsId = streamReader.findDatasetByPath(path);
+      if (dsId == null) return undefined;
+      const result = await streamReader.readSmallDataset(dsId);
+      if (!result?.data?.length) return undefined;
+      const v = result.data[0];
+      if (typeof v === 'string') return v.trim() || undefined;
+      if (typeof v === 'number' && !isNaN(v)) return v;
+      // Try decoding raw bytes as string
+      if (result.data.buffer) {
+        const bytes = new Uint8Array(result.data.buffer);
+        let str = '';
+        for (let i = 0; i < bytes.length; i++) {
+          if (bytes[i] === 0) break;
+          str += String.fromCharCode(bytes[i]);
+        }
+        return str.trim() || undefined;
+      }
+      return v;
+    } catch { return undefined; }
+  };
+
+  // Read all fields in parallel
+  const fields = [
+    // Identification
+    { key: 'lookDirection', path: paths.lookDirection },
+    { key: 'orbitPassDirection', path: paths.orbitPassDirection },
+    { key: 'trackNumber', path: paths.trackNumber },
+    { key: 'frameNumber', path: paths.frameNumber },
+    { key: 'boundingPolygon', path: paths.boundingPolygon },
+    { key: 'granuleId', path: paths.granuleId },
+    { key: 'productVersion', path: paths.productVersion },
+    // GUNW-specific identification
+    { key: 'referenceZeroDopplerStartTime', path: `${paths.identification}/referenceZeroDopplerStartTime` },
+    { key: 'secondaryZeroDopplerStartTime', path: `${paths.identification}/secondaryZeroDopplerStartTime` },
+    { key: 'referenceAbsoluteOrbitNumber', path: `${paths.identification}/referenceAbsoluteOrbitNumber` },
+    { key: 'secondaryAbsoluteOrbitNumber', path: `${paths.identification}/secondaryAbsoluteOrbitNumber` },
+    // Frequency metadata
+    { key: 'centerFrequency', path: `${base}/grids/frequency${freq}/centerFrequency` },
+    // Orbit metadata
+    { key: 'temporalBaseline', path: `${base}/metadata/orbit/temporalBaseline` },
+  ];
+
+  const results = await Promise.all(fields.map(f => readScalar(f.path)));
+  for (let i = 0; i < fields.length; i++) {
+    if (results[i] != null && results[i] !== undefined) {
+      meta[fields[i].key] = results[i];
+    }
+  }
+
+  // Compute wavelength from center frequency (speed of light / freq)
+  if (meta.centerFrequency && typeof meta.centerFrequency === 'number') {
+    meta.wavelength = 299792458.0 / meta.centerFrequency;
+  }
+
+  return meta;
+}
+
 export async function listNISARGUNWDatasets(file, options = {}) {
   const { band = 'LSAR', _streamReader } = options;
   const streamReader = _streamReader || await openNISARReader(file);
@@ -95,6 +163,10 @@ export async function listNISARGUNWDatasets(file, options = {}) {
 
   // Discover frequencies
   const frequencies = await detectFrequencies(streamReader, h5Datasets, paths);
+
+  // Read product metadata in parallel with dataset discovery
+  const activeFreq = frequencies[0] || 'A';
+  const metadataPromise = readGUNWMetadata(streamReader, paths, activeFreq);
 
   const datasets = [];
   const coordinatesByLayer = {};
@@ -151,6 +223,11 @@ export async function listNISARGUNWDatasets(file, options = {}) {
     }
   }
 
+  // Await metadata (was started in parallel with dataset discovery)
+  const metadata = await metadataPromise;
+
+  console.log('[nisar-gunw] Product metadata:', metadata);
+
   return {
     source: file.name || file,
     productType: 'GUNW',
@@ -158,6 +235,7 @@ export async function listNISARGUNWDatasets(file, options = {}) {
     frequencies: [...frequencies],
     datasets,
     coordinatesByLayer,
+    metadata,
     _streamReader: streamReader,
   };
 }

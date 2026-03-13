@@ -1705,6 +1705,25 @@ function App() {
         const layers = [...new Set(datasets.map(d => d.layer))];
         addStatusLog('success', `Found ${datasets.length} GUNW datasets across ${layers.length} layer groups`,
           layers.map(l => GUNW_LAYER_LABELS[l] || l).join(', '));
+
+        // Log GUNW metadata
+        const meta = gunwResult.metadata;
+        if (meta) {
+          const parts = [];
+          if (meta.trackNumber != null) parts.push(`Track ${meta.trackNumber}`);
+          if (meta.frameNumber != null) parts.push(`Frame ${meta.frameNumber}`);
+          if (meta.orbitPassDirection) parts.push(meta.orbitPassDirection);
+          if (meta.temporalBaseline != null) parts.push(`${meta.temporalBaseline} day baseline`);
+          if (meta.wavelength) parts.push(`λ=${(meta.wavelength * 100).toFixed(1)} cm`);
+          if (meta.referenceZeroDopplerStartTime) {
+            const refDate = meta.referenceZeroDopplerStartTime.slice(0, 10);
+            const secDate = meta.secondaryZeroDopplerStartTime?.slice(0, 10);
+            parts.push(secDate ? `${refDate} → ${secDate}` : refDate);
+          }
+          if (parts.length > 0) {
+            addStatusLog('info', 'GUNW metadata', parts.join(' · '));
+          }
+        }
       } else {
         // GCOV path — existing behavior
         const datasets = await listNISARDatasets(file);
