@@ -152,6 +152,59 @@ async function readGUNWMetadata(streamReader, paths, freq = 'A') {
     meta.wavelength = 299792458.0 / meta.centerFrequency;
   }
 
+  // Read processing correction flags — which corrections were already applied
+  // These live under processingInformation/parameters/ and tell us what the
+  // ISCE3 processor already subtracted from the unwrapped phase.
+  const procBase = `${base}/metadata/processingInformation/parameters`;
+  const correctionPaths = [
+    // Geocoding correction flags
+    { key: 'appliedIonosphereCorrection', path: `${procBase}/geocoding/ionosphereCorrection` },
+    { key: 'appliedTroposphereCorrection', path: `${procBase}/geocoding/troposphereCorrection` },
+    { key: 'appliedSolidEarthTidesCorrection', path: `${procBase}/geocoding/solidEarthTidesCorrection` },
+    // Alternative paths (ISCE3 variations)
+    { key: 'appliedIonosphereCorrection', path: `${procBase}/unwrappedInterferogram/frequency${freq}/ionosphereCorrection` },
+    { key: 'appliedTroposphereCorrection', path: `${procBase}/unwrappedInterferogram/frequency${freq}/troposphereCorrection` },
+    { key: 'appliedSolidEarthTidesCorrection', path: `${procBase}/unwrappedInterferogram/frequency${freq}/solidEarthTidesCorrection` },
+    // Ionosphere estimation method
+    { key: 'ionosphereMethod', path: `${procBase}/ionosphere/ionosphereFilteringMethod` },
+    { key: 'ionosphereEnabled', path: `${procBase}/ionosphere/isEnabled` },
+  ];
+
+  // Also scan all datasets under processingInformation for any correction-related keys
+  const h5Datasets = streamReader.getDatasets();
+  const procDatasets = h5Datasets.filter(d => d.path && d.path.includes('processingInformation'));
+  const correctionRelated = procDatasets.filter(d =>
+    d.path.includes('orrection') || d.path.includes('ionosphere') ||
+    d.path.includes('troposphere') || d.path.includes('solidEarth') ||
+    d.path.includes('isApplied') || d.path.includes('isEnabled')
+  );
+
+  // Read known correction flag paths
+  const corrResults = await Promise.all(correctionPaths.map(f => readScalar(f.path)));
+  meta.appliedCorrections = {};
+  for (let i = 0; i < correctionPaths.length; i++) {
+    if (corrResults[i] != null && corrResults[i] !== undefined) {
+      meta.appliedCorrections[correctionPaths[i].key] = corrResults[i];
+    }
+  }
+
+  // Read any discovered correction-related datasets we didn't know about
+  if (correctionRelated.length > 0) {
+    meta._correctionDatasetPaths = correctionRelated.map(d => d.path);
+    for (const ds of correctionRelated) {
+      if (!ds.path) continue;
+      const val = await readScalar(ds.path);
+      if (val != null) {
+        const shortKey = ds.path.split('/').slice(-2).join('/');
+        meta.appliedCorrections[shortKey] = val;
+      }
+    }
+  }
+
+  if (Object.keys(meta.appliedCorrections).length > 0) {
+    console.log('[nisar-gunw] Processing correction flags:', meta.appliedCorrections);
+  }
+
   return meta;
 }
 
@@ -313,6 +366,13 @@ export async function loadNISARGUNW(file, options = {}) {
     }
   }
 
+  // Resolve ionosphere dataset ID (same resolution as unwrappedPhase, fetched per-tile)
+  let ionoDsId = null;
+  if (dataset === 'unwrappedPhase') {
+    const ionoPath = `${polPath}/ionospherePhaseScreen`;
+    ionoDsId = streamReader.findDatasetByPath(ionoPath);
+  }
+
   // Bounds for bbox → pixel conversion (same as GCOV loader)
   const bounds = coords?.bounds || [0, 0, width, height];
 
@@ -360,6 +420,16 @@ export async function loadNISARGUNW(file, options = {}) {
         result.coherenceData = cohRegion.data || cohRegion;
       } catch (e) {
         // Non-fatal: proceed without coherence
+      }
+    }
+
+    // Fetch ionosphere per-tile (same resolution/grid as phase data)
+    if (ionoDsId !== null) {
+      try {
+        const ionoRegion = await streamReader.readRegion(ionoDsId, top, left, numRows, numCols);
+        result.ionosphereData = ionoRegion.data || ionoRegion;
+      } catch (e) {
+        // Non-fatal: proceed without ionosphere
       }
     }
 

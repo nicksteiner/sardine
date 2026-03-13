@@ -25,7 +25,7 @@ import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
 import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
-import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
+import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84, wgs84ToProjectedPoint } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
@@ -35,6 +35,7 @@ import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
 import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
 import { loadMetadataCube } from '../src/utils/metadata-cube.js';
+import { loadAllCorrections, fitPlanarRamp, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -281,6 +282,11 @@ function App() {
   const [verticalDisplacement, setVerticalDisplacement] = useState(false); // LOS → vertical via cos(θ)
   const [gunwIncidenceAngleGrid, setGunwIncidenceAngleGrid] = useState(null); // {data, width, height}
   const [gunwPairedView, setGunwPairedView] = useState(null); // {left, right} image configs for ComparisonViewer
+
+  // GUNW phase corrections — individual layers uploaded to GPU as separate textures
+  const [correctionLayers, setCorrectionLayers] = useState(null); // {ionosphere, troposphereWet, ...}
+  const [enabledCorrections, setEnabledCorrections] = useState(new Set()); // Set of enabled correction keys
+  const [rampCoefficients, setRampCoefficients] = useState(null); // {a, b, c, nPixels}
 
   // Drag-and-drop state
   const [dragOver, setDragOver] = useState(false);
@@ -2291,7 +2297,7 @@ function App() {
           layer: selectedLayer,
           polarization: selectedPolarization,
           dataset: selectedGunwDataset,
-          withCoherence: useCoherenceMask,
+          withCoherence: true,  // Always load coherence — checkbox controls shader masking
           _streamReader: gunwDatasets?._streamReader || null,
         });
 
@@ -2354,6 +2360,37 @@ function App() {
         } catch (e) {
           console.warn('[main] Failed to load GUNW incidence angle grid:', e);
           setGunwIncidenceAngleGrid(null);
+        }
+
+        // Load phase correction layers (iono, tropo, SET) in background
+        if (selectedGunwDataset === 'unwrappedPhase') {
+          try {
+            const reader = data._streamReader || gunwDatasets?._streamReader;
+            const band = data.band || 'LSAR';
+            if (reader) {
+              addStatusLog('info', 'Loading phase correction layers...');
+              const corrections = await loadAllCorrections(
+                reader, band, selectedFrequency, selectedPolarization,
+                { bounds: data.bounds, width: data.width, height: data.height }
+              );
+              setCorrectionLayers(corrections);
+              setEnabledCorrections(new Set());
+              setRampCoefficients(null);
+              const available = Object.keys(corrections);
+              if (available.length > 0) {
+                addStatusLog('success', `Phase corrections available: ${available.map(k => CORRECTION_TYPES[k]?.label || k).join(', ')}`);
+              } else {
+                addStatusLog('info', 'No phase correction layers found in this GUNW product');
+              }
+            }
+          } catch (e) {
+            console.warn('[main] Failed to load phase corrections:', e);
+            setCorrectionLayers(null);
+          }
+        } else {
+          setCorrectionLayers(null);
+          setEnabledCorrections(new Set());
+          setRampCoefficients(null);
         }
       } else if (displayMode === 'rgb' && compositeId) {
         // ── GCOV RGB composite mode ──
@@ -2509,7 +2546,84 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [nisarFile, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, useCoherenceMask, addStatusLog, autoFitIfNewScene]);
+  }, [nisarFile, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene]);
+
+  // Handle planar ramp toggle — needs phase + coherence data to fit
+  const handleToggleRamp = useCallback(async () => {
+    const newEnabled = new Set(enabledCorrections);
+    if (newEnabled.has('planarRamp')) {
+      // Disable ramp
+      newEnabled.delete('planarRamp');
+      if (correctionLayers) {
+        const updated = { ...correctionLayers };
+        delete updated.planarRamp;
+        setCorrectionLayers(updated);
+      }
+      setRampCoefficients(null);
+      setEnabledCorrections(newEnabled);
+      return;
+    }
+
+    // Compute ramp from current phase data
+    if (!imageData?.getTile) {
+      addStatusLog('error', 'No phase data loaded for ramp fitting');
+      return;
+    }
+
+    addStatusLog('info', 'Computing planar ramp from high-coherence pixels...');
+    try {
+      if (!imageData?.getExportStripe) {
+        addStatusLog('error', 'No export stripe reader available for ramp fitting');
+        return;
+      }
+
+      // Read full image with multilook to get ~500x500 for fitting
+      const ml = Math.max(1, Math.floor(Math.max(imageData.width, imageData.height) / 500));
+      addStatusLog('info', `Reading phase data (ml=${ml}) for ramp fit...`);
+      const stripe = await imageData.getExportStripe({ startRow: 0, numRows: imageData.height, ml });
+
+      if (!stripe?.data) {
+        addStatusLog('error', 'Could not read phase data for ramp fitting');
+        return;
+      }
+
+      // Load coherence and downsample to match phase
+      let cohData = null;
+      if (imageData.loadCoherenceData) {
+        const coh = await imageData.loadCoherenceData();
+        if (coh?.data && ml > 1) {
+          // Downsample coherence to match multilooked phase
+          const { multilookFloat32 } = await import('../src/loaders/nisar-product.js');
+          const mlCoh = multilookFloat32(coh.data, coh.height, coh.width, ml);
+          cohData = mlCoh.data;
+        } else if (coh?.data) {
+          cohData = coh.data;
+        }
+      }
+
+      const result = fitPlanarRamp(stripe.data, cohData, stripe.width, stripe.height, {
+        coherenceThreshold: coherenceThreshold || 0.7,
+      });
+
+      if (result.nPixels < 10) {
+        addStatusLog('error', `Ramp fit failed: only ${result.nPixels} valid pixels`);
+        return;
+      }
+
+      setRampCoefficients({ ...result.coefficients, nPixels: result.nPixels });
+
+      // Store ramp as a correction layer at the multilooked resolution
+      const updated = { ...correctionLayers, planarRamp: { data: result.ramp, width: stripe.width, height: stripe.height } };
+      setCorrectionLayers(updated);
+      newEnabled.add('planarRamp');
+      setEnabledCorrections(newEnabled);
+
+      addStatusLog('success',
+        `Ramp fit: a=${result.coefficients.a.toFixed(3)}, b=${result.coefficients.b.toFixed(3)}, c=${result.coefficients.c.toFixed(3)} (${result.nPixels} pixels)`);
+    } catch (e) {
+      addStatusLog('error', `Ramp fitting failed: ${e.message}`);
+    }
+  }, [enabledCorrections, correctionLayers, imageData, coherenceThreshold, addStatusLog]);
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
@@ -3162,6 +3276,32 @@ function App() {
   // Build GeoJSON overlay layers from dropped files
   const geojsonOverlayLayers = useMemo(() => {
     if (droppedGeoJSON.length === 0) return [];
+    const crs = imageData?.crs || 'EPSG:4326';
+
+    // Reproject GeoJSON coordinates from WGS84 to image CRS
+    function reprojectCoords(coords) {
+      if (!coords) return coords;
+      if (typeof coords[0] === 'number') {
+        const [x, y] = wgs84ToProjectedPoint(coords[0], coords[1], crs);
+        return coords.length > 2 ? [x, y, coords[2]] : [x, y];
+      }
+      return coords.map(c => reprojectCoords(c));
+    }
+    function reprojectFeature(feature) {
+      if (!feature?.geometry?.coordinates) return feature;
+      return {
+        ...feature,
+        geometry: { ...feature.geometry, coordinates: reprojectCoords(feature.geometry.coordinates) },
+      };
+    }
+    function reprojectData(data) {
+      if (data.type === 'FeatureCollection') {
+        return { ...data, features: data.features.map(f => reprojectFeature(f)) };
+      }
+      return reprojectFeature(data);
+    }
+
+    const needsReproject = crs && crs !== 'EPSG:4326';
     const colors = [
       [255, 200, 0],   // yellow
       [0, 200, 255],   // cyan
@@ -3171,9 +3311,10 @@ function App() {
     ];
     return droppedGeoJSON.map((entry, i) => {
       const color = colors[i % colors.length];
+      const data = needsReproject ? reprojectData(entry.data) : entry.data;
       return new GeoJsonLayer({
         id: entry.id,
-        data: entry.data,
+        data,
         pickable: true,
         stroked: true,
         filled: true,
@@ -3196,7 +3337,7 @@ function App() {
         },
       });
     });
-  }, [droppedGeoJSON]);
+  }, [droppedGeoJSON, imageData]);
 
   // NOTE: Duplicate block removed — all handlers defined above
   return (
@@ -4494,6 +4635,51 @@ function App() {
                     ));
                   })()}
                 </div>
+
+                {/* Phase corrections panel */}
+                {selectedGunwDataset === 'unwrappedPhase' && correctionLayers && Object.keys(correctionLayers).length > 0 && (
+                  <div style={{ marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                      Phase Corrections
+                    </span>
+                    {Object.entries(CORRECTION_TYPES).map(([key, { label }]) => {
+                      const isRamp = key === 'planarRamp';
+                      const available = isRamp || !!correctionLayers[key];
+                      if (!available && !isRamp) return null;
+                      return (
+                        <div key={key} className="control-row" style={{ marginBottom: '3px' }}>
+                          <input
+                            type="checkbox"
+                            id={`cor-${key}`}
+                            checked={enabledCorrections.has(key)}
+                            disabled={!available && !isRamp}
+                            onChange={(e) => {
+                              if (isRamp) {
+                                handleToggleRamp();
+                                return;
+                              }
+                              const next = new Set(enabledCorrections);
+                              if (e.target.checked) next.add(key);
+                              else next.delete(key);
+                              setEnabledCorrections(next);
+                            }}
+                          />
+                          <label htmlFor={`cor-${key}`} style={{ fontSize: '0.7rem' }}>
+                            {label}
+                            {!correctionLayers[key] && !isRamp && (
+                              <span style={{ color: 'var(--text-disabled)', marginLeft: '4px' }}>(N/A)</span>
+                            )}
+                          </label>
+                        </div>
+                      );
+                    })}
+                    {rampCoefficients && (
+                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '2px', fontFamily: 'monospace' }}>
+                        a={rampCoefficients.a.toFixed(2)} b={rampCoefficients.b.toFixed(2)} c={rampCoefficients.c.toFixed(2)} ({rampCoefficients.nPixels} px)
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -4754,6 +4940,8 @@ function App() {
                   coherenceMaskMode={useIncidenceAngleMask ? 1 : 0}
                   incidenceAngleData={useIncidenceAngleMask ? incidenceAngleGrid : (verticalDisplacement ? gunwIncidenceAngleGrid : null)}
                   verticalDisplacement={verticalDisplacement}
+                  correctionLayers={correctionLayers}
+                  enabledCorrections={enabledCorrections}
                   speckleFilterType={speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
                   showGrid={showGrid}

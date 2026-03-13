@@ -134,6 +134,9 @@ export { createOvertureLayers } from './layers/OvertureLayer.js';
 // Metadata Cube
 export { MetadataCube, loadMetadataCube } from './utils/metadata-cube.js';
 
+// Phase Corrections
+export { loadAllCorrections, fitPlanarRamp, buildCombinedCorrection, CORRECTION_TYPES } from './utils/phase-corrections.js';
+
 // S3 Pre-signed URL generation
 export {
   presignS3Url,

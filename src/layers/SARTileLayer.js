@@ -37,6 +37,8 @@ export class SARTileLayer extends TileLayer {
       coherenceMaskMode = 0,
       incidenceAngleData = null,
       verticalDisplacement = false,
+      correctionLayers = null, // {ionosphere, troposphereWet, ...} each {data, width, height}
+      enabledCorrections = null, // Set of enabled correction keys
       speckleFilterType = 'none',
       speckleKernelSize = 7,
       minZoom,
@@ -89,7 +91,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, speckleFilterType, speckleKernelSize],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize],
       },
 
       renderSubLayers: (subProps) => {
@@ -164,12 +166,47 @@ export class SARTileLayer extends TileLayer {
           } : {});
 
           // Incidence angle props for vertical displacement correction
+          // Incidence angle is a full-extent grid — needs imageBounds for UV remap
           const incProps = (verticalDisplacement && incidenceAngleData) ? {
             dataIncidence: incidenceAngleData.data,
             incidenceWidth: incidenceAngleData.width,
             incidenceHeight: incidenceAngleData.height,
             verticalDisplacement,
+            imageBounds: bounds,
           } : {};
+
+          // Phase correction props — ionosphere is per-tile; cube corrections are full-extent
+          const corProps = {};
+          if (enabledCorrections?.size > 0) {
+            // Ionosphere: per-tile data (same grid as phase), fetched in getTileData
+            if (enabledCorrections.has('ionosphere') && tileData.ionosphereData) {
+              corProps.dataCorIono = tileData.ionosphereData;
+              corProps.corIonoWidth = tileData.width;
+              corProps.corIonoHeight = tileData.height;
+              corProps.corIono = true;
+            }
+            // Full-extent cube corrections: tropo, SET, ramp — need imageBounds for UV remap
+            if (correctionLayers) {
+              const cubeMap = {
+                troposphereWet: { data: 'dataCorTropo', w: 'corTropoWidth', h: 'corTropoHeight', flag: 'corTropo' },
+                troposphereHydrostatic: { data: 'dataCorTropo', w: 'corTropoWidth', h: 'corTropoHeight', flag: 'corTropo' },
+                solidEarthTides: { data: 'dataCorSET', w: 'corSETWidth', h: 'corSETHeight', flag: 'corSET' },
+                planarRamp: { data: 'dataCorRamp', w: 'corRampWidth', h: 'corRampHeight', flag: 'corRamp' },
+              };
+              for (const key of enabledCorrections) {
+                const slot = cubeMap[key];
+                const layer = correctionLayers[key];
+                if (slot && layer?.data) {
+                  corProps[slot.data] = layer.data;
+                  corProps[slot.w] = layer.width;
+                  corProps[slot.h] = layer.height;
+                  corProps[slot.flag] = true;
+                }
+              }
+            }
+            // Pass full image bounds for UV remapping of full-extent corrections
+            if (bounds) corProps.imageBounds = bounds;
+          }
 
           return new SARGPULayer({
             id: `${subProps.id}-gpu`,
@@ -187,6 +224,7 @@ export class SARTileLayer extends TileLayer {
             ...filterProps,
             ...cohProps,
             ...incProps,
+            ...corProps,
           });
         } else {
           return null;

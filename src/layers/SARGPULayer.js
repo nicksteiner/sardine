@@ -48,6 +48,14 @@ uniform sampler2D uTextureMask;
 uniform sampler2D uTextureCoherence;
 // Incidence angle texture (for vertical displacement correction)
 uniform sampler2D uTextureIncidence;
+// Phase correction textures — individual layers, subtracted independently on GPU
+uniform sampler2D uTexCorIono;       // unit 6: ionosphere (per-tile, same grid as data)
+uniform sampler2D uTexCorTropo;      // unit 7: troposphere (full-extent, needs UV remap)
+uniform sampler2D uTexCorSET;        // unit 8: solid earth tides (full-extent, needs UV remap)
+uniform sampler2D uTexCorRamp;       // unit 9: planar ramp (full-extent, needs UV remap)
+// Bounds for UV remapping: full-extent corrections cover imageBounds, tile covers tileBounds
+uniform vec4 uImageBounds;          // [minX, minY, maxX, maxY] of full image
+uniform vec4 uTileBounds;           // [minX, minY, maxX, maxY] of this tile
 
 uniform float uMin;
 uniform float uMax;
@@ -63,6 +71,11 @@ uniform float uCoherenceThreshold;  // Lower threshold (mask below this)
 uniform float uCoherenceThresholdMax;  // Upper threshold (mask above this, for range mode)
 uniform float uCoherenceMaskMode;  // 0 = mask below min, 1 = mask outside [min,max]
 uniform float uVerticalDisplacement;  // > 0.5 = divide by cos(incidence angle)
+// Per-correction enable flags (> 0.5 = subtract this correction)
+uniform float uCorIono;
+uniform float uCorTropo;
+uniform float uCorSET;
+uniform float uCorRamp;
 // Per-channel min/max for RGB mode (falls back to uMin/uMax if equal)
 uniform float uMinR;
 uniform float uMaxR;
@@ -136,15 +149,73 @@ void main() {
       if (uMaskLayoverShadow > 0.5 && maskVal > 1.5 && maskVal < 254.5) alpha = 0.0;
     }
 
+    // Coherence/auxiliary mask (same logic as single-band path)
+    if (uUseCoherenceMask > 0.5) {
+      float auxVal = texture(uTextureCoherence, vTexCoord).r;
+      if (isnan(auxVal)) {
+        alpha = 0.0;
+      } else if (uCoherenceMaskMode < 0.5) {
+        if (auxVal < uCoherenceThreshold) alpha = 0.0;
+      } else {
+        if (auxVal < uCoherenceThreshold || auxVal > uCoherenceThresholdMax) alpha = 0.0;
+      }
+    }
+
     fragColor = vec4(rgb, alpha);
   } else {
     // ── Single-band mode: R32F texture + colormap ──
     float amplitude = texture(uTexture, vTexCoord).r;
 
+    // Phase corrections: subtract each enabled correction directly from GPU textures
+    if (!isnan(amplitude) && amplitude != 0.0) {
+      // Ionosphere: per-tile texture, same grid as data — use vTexCoord directly
+      if (uCorIono > 0.5) {
+        float v = texture(uTexCorIono, vTexCoord).r;
+        if (!isnan(v)) amplitude -= v;
+      }
+      // Full-extent corrections: remap tile UV → image UV for proper sampling
+      if (uCorTropo > 0.5 || uCorSET > 0.5 || uCorRamp > 0.5) {
+        // vTexCoord mapping: x: 0→west(minX), 1→east(maxX)
+        //                    y: 0→north(maxY), 1→south(minY) (image is north-up)
+        vec2 geoPos = vec2(
+          mix(uTileBounds.x, uTileBounds.z, vTexCoord.x),
+          mix(uTileBounds.w, uTileBounds.y, vTexCoord.y)
+        );
+        // Map geo position to correction texture UV (correction also north-up: y=0 is north)
+        vec2 corUV = vec2(
+          (geoPos.x - uImageBounds.x) / (uImageBounds.z - uImageBounds.x),
+          (uImageBounds.w - geoPos.y) / (uImageBounds.w - uImageBounds.y)
+        );
+        // Clamp to valid range (tiles at image edge may extend slightly)
+        corUV = clamp(corUV, 0.0, 1.0);
+
+        if (uCorTropo > 0.5) {
+          float v = texture(uTexCorTropo, corUV).r;
+          if (!isnan(v)) amplitude -= v;
+        }
+        if (uCorSET > 0.5) {
+          float v = texture(uTexCorSET, corUV).r;
+          if (!isnan(v)) amplitude -= v;
+        }
+        if (uCorRamp > 0.5) {
+          float v = texture(uTexCorRamp, corUV).r;
+          if (!isnan(v)) amplitude -= v;
+        }
+      }
+    }
+
     // Vertical displacement: divide LOS by cos(θ) to get vertical component
-    // Incidence angle texture stores degrees; convert to radians for cos()
+    // Incidence angle is a full-extent grid — remap UV like cube corrections
     if (uVerticalDisplacement > 0.5) {
-      float thetaDeg = texture(uTextureIncidence, vTexCoord).r;
+      vec2 incGeoPos = vec2(
+        mix(uTileBounds.x, uTileBounds.z, vTexCoord.x),
+        mix(uTileBounds.w, uTileBounds.y, vTexCoord.y)
+      );
+      vec2 incUV = clamp(vec2(
+        (incGeoPos.x - uImageBounds.x) / (uImageBounds.z - uImageBounds.x),
+        (uImageBounds.w - incGeoPos.y) / (uImageBounds.w - uImageBounds.y)
+      ), 0.0, 1.0);
+      float thetaDeg = texture(uTextureIncidence, incUV).r;
       if (!isnan(thetaDeg) && thetaDeg > 0.0) {
         float thetaRad = thetaDeg * 3.14159265 / 180.0;
         amplitude = amplitude / cos(thetaRad);
@@ -253,7 +324,11 @@ export class SARGPULayer extends Layer {
           textureB: null,
           textureMask: null,
           textureCoherence: null,
-          textureIncidence: null
+          textureIncidence: null,
+          texCorIono: null,
+          texCorTropo: null,
+          texCorSET: null,
+          texCorRamp: null,
         });
         // Trigger re-render by setting needsUpdate
         this.setNeedsUpdate();
@@ -455,6 +530,32 @@ export class SARGPULayer extends Layer {
         this.setState({ textureIncidence: texInc });
       }
     }
+
+    // Upload individual phase correction textures (each at its own native resolution)
+    const corSlots = [
+      { prop: 'dataCorIono', state: 'texCorIono', wProp: 'corIonoWidth', hProp: 'corIonoHeight' },
+      { prop: 'dataCorTropo', state: 'texCorTropo', wProp: 'corTropoWidth', hProp: 'corTropoHeight' },
+      { prop: 'dataCorSET', state: 'texCorSET', wProp: 'corSETWidth', hProp: 'corSETHeight' },
+      { prop: 'dataCorRamp', state: 'texCorRamp', wProp: 'corRampWidth', hProp: 'corRampHeight' },
+    ];
+    for (const slot of corSlots) {
+      const data = props[slot.prop];
+      const oldData = oldProps[slot.prop];
+      const w = props[slot.wProp] || width;
+      const h = props[slot.hProp] || height;
+      if (data && (data !== oldData || w !== (oldProps[slot.wProp] || oldProps.width) || h !== (oldProps[slot.hProp] || oldProps.height))) {
+        const tex = this._createR32FTexture(data, w, h);
+        if (tex) {
+          if (this.state[slot.state]) gl.deleteTexture(this.state[slot.state]);
+          this.setState({ [slot.state]: tex });
+        }
+      }
+      // Clear when removed
+      if (!data && oldData && this.state[slot.state]) {
+        gl.deleteTexture(this.state[slot.state]);
+        this.setState({ [slot.state]: null });
+      }
+    }
   }
 
   _createR32FTexture(data, width, height, nearest = false) {
@@ -514,7 +615,8 @@ export class SARGPULayer extends Layer {
 
   draw({ uniforms }) {
     const { model, texture, textureG, textureB, textureMask, textureCoherence,
-            textureIncidence, filteredTexture, filteredTextureG, filteredTextureB } = this.state;
+            textureIncidence, texCorIono, texCorTropo, texCorSET, texCorRamp,
+            filteredTexture, filteredTextureG, filteredTextureB } = this.state;
 
     if (!model || !texture) return;
 
@@ -537,6 +639,12 @@ export class SARGPULayer extends Layer {
       coherenceThresholdMax = 1.0,
       coherenceMaskMode = 0,
       verticalDisplacement = false,
+      corIono = false,
+      corTropo = false,
+      corSET = false,
+      corRamp = false,
+      bounds = [-180, -90, 180, 90],
+      imageBounds = null,
     } = this.props;
 
     const isRGB = mode === 'rgb';
@@ -593,6 +701,18 @@ export class SARGPULayer extends Layer {
         uTextureCoherence: 4,
         uVerticalDisplacement: (verticalDisplacement && textureIncidence) ? 1.0 : 0.0,
         uTextureIncidence: 5,
+        // Individual phase correction textures
+        uCorIono: (corIono && texCorIono) ? 1.0 : 0.0,
+        uTexCorIono: 6,
+        uCorTropo: (corTropo && texCorTropo) ? 1.0 : 0.0,
+        uTexCorTropo: 7,
+        uCorSET: (corSET && texCorSET) ? 1.0 : 0.0,
+        uTexCorSET: 8,
+        uCorRamp: (corRamp && texCorRamp) ? 1.0 : 0.0,
+        uTexCorRamp: 9,
+        // Bounds for full-extent correction UV remapping
+        uTileBounds: bounds,
+        uImageBounds: imageBounds || bounds,
       };
 
       if (isRGB && displayTexG && displayTexB) {
@@ -624,10 +744,20 @@ export class SARGPULayer extends Layer {
         gl.bindTexture(gl.TEXTURE_2D, textureIncidence);
       }
 
+      // Bind individual phase correction textures to units 6–9
+      if (texCorIono) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, texCorIono); }
+      if (texCorTropo) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, texCorTropo); }
+      if (texCorSET) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, texCorSET); }
+      if (texCorRamp) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, texCorRamp); }
+
       model.setUniforms(layerUniforms);
       model.draw();
 
       // Unbind textures
+      if (texCorRamp) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, null); }
+      if (texCorSET) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, null); }
+      if (texCorTropo) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, null); }
+      if (texCorIono) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, null); }
       if (textureIncidence) {
         gl.activeTexture(gl.TEXTURE5);
         gl.bindTexture(gl.TEXTURE_2D, null);
@@ -676,6 +806,10 @@ export class SARGPULayer extends Layer {
       if (this.state.textureMask) gl.deleteTexture(this.state.textureMask);
       if (this.state.textureCoherence) gl.deleteTexture(this.state.textureCoherence);
       if (this.state.textureIncidence) gl.deleteTexture(this.state.textureIncidence);
+      if (this.state.texCorIono) gl.deleteTexture(this.state.texCorIono);
+      if (this.state.texCorTropo) gl.deleteTexture(this.state.texCorTropo);
+      if (this.state.texCorSET) gl.deleteTexture(this.state.texCorSET);
+      if (this.state.texCorRamp) gl.deleteTexture(this.state.texCorRamp);
       // Clean up FBO-filtered textures
       if (this.state.filteredTexture) gl.deleteTexture(this.state.filteredTexture);
       if (this.state.filteredTextureG) gl.deleteTexture(this.state.filteredTextureG);
@@ -709,10 +843,28 @@ SARGPULayer.defaultProps = {
   incidenceWidth: { type: 'number', value: 0, min: 0 },
   incidenceHeight: { type: 'number', value: 0, min: 0 },
   verticalDisplacement: { type: 'boolean', value: false, compare: true },
+  // Individual phase correction textures (each at native resolution)
+  dataCorIono: { type: 'object', value: null, compare: false },
+  corIonoWidth: { type: 'number', value: 0, min: 0 },
+  corIonoHeight: { type: 'number', value: 0, min: 0 },
+  corIono: { type: 'boolean', value: false, compare: true },
+  dataCorTropo: { type: 'object', value: null, compare: false },
+  corTropoWidth: { type: 'number', value: 0, min: 0 },
+  corTropoHeight: { type: 'number', value: 0, min: 0 },
+  corTropo: { type: 'boolean', value: false, compare: true },
+  dataCorSET: { type: 'object', value: null, compare: false },
+  corSETWidth: { type: 'number', value: 0, min: 0 },
+  corSETHeight: { type: 'number', value: 0, min: 0 },
+  corSET: { type: 'boolean', value: false, compare: true },
+  dataCorRamp: { type: 'object', value: null, compare: false },
+  corRampWidth: { type: 'number', value: 0, min: 0 },
+  corRampHeight: { type: 'number', value: 0, min: 0 },
+  corRamp: { type: 'boolean', value: false, compare: true },
   mode: { type: 'string', value: 'single', compare: true },  // 'single' or 'rgb'
   width: { type: 'number', value: 256, min: 1 },
   height: { type: 'number', value: 256, min: 1 },
   bounds: { type: 'array', value: [-180, -90, 180, 90], compare: true },
+  imageBounds: { type: 'array', value: null, compare: true },
   // type: 'object' to accept both [min,max] and {R:[],G:[],B:[]} formats
   contrastLimits: { type: 'object', value: [-25, 0], compare: true },
   useDecibels: { type: 'boolean', value: true, compare: true },
