@@ -271,6 +271,9 @@ export async function loadNISARGUNW(file, options = {}) {
   const streamReader = _streamReader || await openNISARReader(file);
   const paths = nisarPaths(band, 'GUNW');
 
+  // Read product metadata (dates, orbit info) in parallel with dataset loading
+  const metadataPromise = readGUNWMetadata(streamReader, paths, frequency);
+
   // Build dataset path
   const polPath = `${paths.freqGrid(frequency)}/${layer}/${polarization}`;
   const dsPath = `${polPath}/${dataset}`;
@@ -440,6 +443,9 @@ export async function loadNISARGUNW(file, options = {}) {
     }
   }
 
+  // Await metadata (started in parallel above)
+  const identification = await metadataPromise;
+
   return {
     productType: 'GUNW',
     band,
@@ -458,6 +464,7 @@ export async function loadNISARGUNW(file, options = {}) {
     shape: [height, width],
     renderMode,
     attributes: dsAttrs,
+    identification,
     getTile,
     getPixelValue,
     getExportStripe,

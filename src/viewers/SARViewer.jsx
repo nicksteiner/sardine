@@ -279,7 +279,7 @@ export const SARViewer = forwardRef(function SARViewer({
     if (getTile) {
       return [
         new SARTileLayer({
-          id: 'sar-tile-layer',
+          id: `sar-tile-layer-v${tileVersion}`,
           getTileData: stableGetTileData,
           bounds,
           contrastLimits: v.contrastLimits,

@@ -27,6 +27,7 @@ import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+import { GeoJsonLayer } from '@deck.gl/layers';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
@@ -375,6 +376,10 @@ function App() {
 
   // STAC search overlay layers
   const [stacLayers, setStacLayers] = useState([]);
+
+  // Dropped GeoJSON overlay data and popup state
+  const [droppedGeoJSON, setDroppedGeoJSON] = useState([]);  // array of {id, name, data}
+  const [geojsonPopup, setGeojsonPopup] = useState(null);    // {x, y, properties, geometry}
 
   // CMR footprints for OverviewMap (lat/lon geometry from CMR search results)
   const [cmrFootprints, setCmrFootprints] = useState([]);
@@ -859,19 +864,39 @@ function App() {
 
       addStatusLog('info', `Loading time-series: ${roiTSFiles.length} files for ROI`);
 
+      const isGUNW = nisarProductType === 'GUNW';
       const frames = [];
       for (let i = 0; i < roiTSFiles.length; i++) {
         const file = roiTSFiles[i];
         addStatusLog('info', `Loading file ${i + 1}/${roiTSFiles.length}: ${file.name}`);
         try {
-          const data = await loadNISARGCOV(file, {
-            frequency: selectedFrequency,
-            polarization: selectedPolarization,
-          });
+          let data;
+          if (isGUNW) {
+            data = await loadNISARGUNW(file, {
+              frequency: selectedFrequency,
+              layer: selectedLayer,
+              dataset: selectedGunwDataset,
+              polarization: selectedPolarization,
+            });
+          } else {
+            data = await loadNISARGCOV(file, {
+              frequency: selectedFrequency,
+              polarization: selectedPolarization,
+            });
+          }
           // Extract date from identification metadata or filename
-          const ident = data.identification || {};
-          const date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || file.name;
-          const label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
+          let date, label;
+          if (isGUNW) {
+            // GUNW: use reference acquisition date from metadata, or parse from filename
+            const ident = data.identification || {};
+            date = ident.referenceZeroDopplerStartTime || ident.secondaryZeroDopplerStartTime || file.name;
+            // GUNW filenames often contain date pairs; extract for label
+            label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
+          } else {
+            const ident = data.identification || {};
+            date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || file.name;
+            label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
+          }
           frames.push({
             getTile: data.getTile,
             bounds: data.bounds,
@@ -879,6 +904,7 @@ function App() {
             date,
             width: data.width,
             height: data.height,
+            renderMode: data.renderMode || null,
           });
         } catch (fileErr) {
           addStatusLog('warning', `Skipping ${file.name}: ${fileErr.message}`);
@@ -894,23 +920,36 @@ function App() {
       // Sort by date label
       frames.sort((a, b) => a.label.localeCompare(b.label));
 
-      // Compute histogram from first frame for contrast
+      // Compute per-frame histogram stats for auto-contrast
       const [minX, minY, maxX, maxY] = subBounds;
       const regionW = maxX - minX;
       const regionH = maxY - minY;
-      let tsHist = null;
-      let tsContrast = [-25, 0]; // dB default
-      try {
-        const stats = await sampleViewportStats(
-          frames[0].getTile, regionW, regionH, useDecibels, 128,
-          minX, minY, frames[0].height,
-        );
-        if (stats) {
-          tsHist = { single: stats };
-          tsContrast = [Number(stats.p2.toFixed(1)), Number(stats.p98.toFixed(1))];
+      const applyDeci = isGUNW ? false : useDecibels;
+
+      for (let fi = 0; fi < frames.length; fi++) {
+        try {
+          const stats = await sampleViewportStats(
+            frames[fi].getTile, regionW, regionH, applyDeci, 128,
+            minX, minY, frames[fi].height,
+          );
+          frames[fi].stats = stats || null;
+        } catch {
+          frames[fi].stats = null;
         }
-      } catch (histErr) {
-        addStatusLog('warning', `Time-series histogram error: ${histErr.message}`);
+      }
+
+      // Set initial contrast from first frame
+      const firstStats = frames[0].stats;
+      let tsContrast;
+      let tsHist = null;
+      if (firstStats) {
+        tsContrast = [Number(firstStats.p2.toFixed(1)), Number(firstStats.p98.toFixed(1))];
+        tsHist = { single: firstStats };
+      } else {
+        const renderMode = frames[0].renderMode;
+        tsContrast = isGUNW && renderMode?.defaultRange
+          ? [...renderMode.defaultRange]
+          : [-25, 0];
       }
 
       setRoiTSBounds(subBounds);
@@ -919,14 +958,25 @@ function App() {
       setRoiTSHistogramData(tsHist);
       setActiveViewer('roi-ts');
 
-      addStatusLog('success', `Time-series loaded: ${frames.length} frames`,
+      const dsLabel = isGUNW ? `${GUNW_DATASET_LABELS[selectedGunwDataset] || selectedGunwDataset}` : selectedPolarization;
+      addStatusLog('success', `Time-series loaded: ${frames.length} frames (${dsLabel})`,
         frames.map(f => f.label).join(', '));
     } catch (err) {
       addStatusLog('error', `Time-series load failed: ${err.message}`);
     } finally {
       setRoiTSLoading(false);
     }
-  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, useDecibels, addStatusLog]);
+  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, addStatusLog]);
+
+  // Update histogram and contrast when time-series frame changes
+  useEffect(() => {
+    if (!roiTSFrames || !roiTSFrames[roiTSIndex]) return;
+    const frame = roiTSFrames[roiTSIndex];
+    if (frame.stats) {
+      setRoiTSHistogramData({ single: frame.stats });
+      setRoiTSContrastLimits([Number(frame.stats.p2.toFixed(1)), Number(frame.stats.p98.toFixed(1))]);
+    }
+  }, [roiTSIndex, roiTSFrames]);
 
   // Animation timer for time-series playback
   useEffect(() => {
@@ -1866,8 +1916,31 @@ function App() {
     } else if (name.endsWith('.tif') || name.endsWith('.tiff')) {
       setFileType('local-tif');
       handleLocalTIFMultiSelect(files);
+    } else if (name.endsWith('.geojson') || name.endsWith('.json')) {
+      // Read GeoJSON and add as overlay
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        try {
+          const geojson = JSON.parse(evt.target.result);
+          if (!geojson.type || (geojson.type !== 'FeatureCollection' && geojson.type !== 'Feature' && geojson.type !== 'GeometryCollection')) {
+            addStatusLog('warning', `Not a valid GeoJSON: ${file.name}`);
+            return;
+          }
+          // Wrap bare Feature in a FeatureCollection
+          const data = geojson.type === 'Feature'
+            ? { type: 'FeatureCollection', features: [geojson] }
+            : geojson;
+          const id = `geojson-${Date.now()}`;
+          setDroppedGeoJSON(prev => [...prev, { id, name: file.name, data }]);
+          addStatusLog('info', `GeoJSON loaded: ${file.name}`,
+            `${(data.features?.length || 0)} features`);
+        } catch (parseErr) {
+          addStatusLog('error', `Failed to parse GeoJSON: ${file.name}`, parseErr.message);
+        }
+      };
+      reader.readAsText(file);
     } else {
-      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5 or .tif files');
+      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, or .geojson files');
     }
   }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog]);
 
@@ -3086,6 +3159,45 @@ function App() {
     return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs });
   }, [overtureEnabled, overtureData, overtureOpacity, imageData]);
 
+  // Build GeoJSON overlay layers from dropped files
+  const geojsonOverlayLayers = useMemo(() => {
+    if (droppedGeoJSON.length === 0) return [];
+    const colors = [
+      [255, 200, 0],   // yellow
+      [0, 200, 255],   // cyan
+      [255, 100, 200], // pink
+      [100, 255, 100], // green
+      [255, 140, 0],   // orange
+    ];
+    return droppedGeoJSON.map((entry, i) => {
+      const color = colors[i % colors.length];
+      return new GeoJsonLayer({
+        id: entry.id,
+        data: entry.data,
+        pickable: true,
+        stroked: true,
+        filled: true,
+        lineWidthMinPixels: 2,
+        pointRadiusMinPixels: 5,
+        getLineColor: [...color, 220],
+        getFillColor: [...color, 40],
+        getPointRadius: 5,
+        getLineWidth: 2,
+        onClick: (info) => {
+          if (info.object) {
+            setGeojsonPopup({
+              x: info.x,
+              y: info.y,
+              properties: info.object.properties || {},
+              geometry: info.object.geometry,
+              layer: entry.name,
+            });
+          }
+        },
+      });
+    });
+  }, [droppedGeoJSON]);
+
   // NOTE: Duplicate block removed — all handlers defined above
   return (
     <div id="app"
@@ -3107,8 +3219,57 @@ function App() {
             background: 'rgba(0, 0, 0, 0.7)', color: '#fff',
             fontSize: '1.2rem', fontWeight: 600,
           }}>
-            Drop NISAR HDF5 or GeoTIFF file
+            Drop HDF5, GeoTIFF, or GeoJSON file
           </div>
+        </div>
+      )}
+      {/* GeoJSON feature popup */}
+      {geojsonPopup && (
+        <div
+          style={{
+            position: 'fixed',
+            left: geojsonPopup.x + 12,
+            top: geojsonPopup.y - 12,
+            zIndex: 10000,
+            background: 'rgba(20, 20, 30, 0.95)',
+            border: '1px solid rgba(255, 255, 255, 0.2)',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            color: '#fff',
+            fontSize: '0.82rem',
+            maxWidth: '360px',
+            maxHeight: '400px',
+            overflow: 'auto',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
+            fontFamily: 'monospace',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <span style={{ fontWeight: 600, color: '#ffcc00', fontSize: '0.85rem' }}>
+              {geojsonPopup.geometry?.type || 'Feature'}
+            </span>
+            <button
+              onClick={() => setGeojsonPopup(null)}
+              style={{
+                background: 'none', border: 'none', color: '#aaa', cursor: 'pointer',
+                fontSize: '1rem', padding: '0 4px', lineHeight: 1,
+              }}
+            >x</button>
+          </div>
+          <div style={{ fontSize: '0.72rem', color: '#888', marginBottom: '6px' }}>{geojsonPopup.layer}</div>
+          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+            <tbody>
+              {Object.entries(geojsonPopup.properties).map(([key, val]) => (
+                <tr key={key} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <td style={{ padding: '3px 8px 3px 0', color: '#aaa', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{key}</td>
+                  <td style={{ padding: '3px 0', wordBreak: 'break-word' }}>{String(val ?? '')}</td>
+                </tr>
+              ))}
+              {Object.keys(geojsonPopup.properties).length === 0 && (
+                <tr><td style={{ color: '#666', fontStyle: 'italic' }}>No properties</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
       )}
       {/* Header */}
@@ -4601,7 +4762,7 @@ function App() {
                   height="100%"
                   onViewStateChange={handleViewStateChange}
                   initialViewState={initialViewState}
-                  extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers]}
+                  extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
                   roi={roi}
                   onROIChange={setROI}
                   imageWidth={imageData?.sourceWidth || imageData?.width}
@@ -4738,9 +4899,10 @@ function App() {
                     </div>
                     <SARViewer
                       getTile={roiTSFrames[roiTSIndex]?.getTile}
+                      tileVersion={roiTSIndex}
                       bounds={roiTSBounds}
                       contrastLimits={roiTSContrastLimits}
-                      useDecibels={useDecibels}
+                      useDecibels={nisarProductType === 'GUNW' ? false : useDecibels}
                       colormap={colormap}
                       gamma={gamma}
                       stretchMode={stretchMode}
