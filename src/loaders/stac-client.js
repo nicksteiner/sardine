@@ -37,28 +37,28 @@ export async function checkLocalStacAvailable() {
 
 export const STAC_ENDPOINTS = [
   {
-    id: 'local',
-    label: 'Local Catalog',
-    url: '__local__', // resolved dynamically via resolveLocalStacUrl()
-    description: 'Local DuckDB-backed STAC catalog (requires sardine server with --stac-db)',
-    requiresAuth: false,
-    dynamic: true,
-  },
-  {
-    id: 'cmr-stac',
-    label: 'NASA CMR-STAC',
-    url: 'https://cmr.earthdata.nasa.gov/stac',
-    description: 'NASA Common Metadata Repository — NISAR, Sentinel-1, ALOS, UAVSAR',
-    requiresAuth: true,
-    authType: 'earthdata',
-  },
-  {
     id: 'asf',
     label: 'ASF DAAC',
     url: 'https://stac.asf.alaska.edu',
     description: 'Alaska Satellite Facility — NISAR primary DAAC',
     requiresAuth: true,
     authType: 'earthdata',
+  },
+  {
+    id: 'cmr-stac-asf',
+    label: 'NASA CMR-STAC (ASF)',
+    url: 'https://cmr.earthdata.nasa.gov/stac/ASF',
+    description: 'CMR — ASF provider: NISAR, Sentinel-1, ALOS, UAVSAR',
+    requiresAuth: true,
+    authType: 'earthdata',
+  },
+  {
+    id: 'local',
+    label: 'Local Catalog',
+    url: '__local__', // resolved dynamically via resolveLocalStacUrl()
+    description: 'Local DuckDB-backed STAC catalog (requires sardine server with --stac-db)',
+    requiresAuth: false,
+    dynamic: true,
   },
   {
     id: 'planetary-computer',
@@ -364,7 +364,29 @@ export function extractItemFilters(items) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
+ * Check if a URL is external (not same-origin) and needs CORS proxying.
+ */
+function needsProxy(url) {
+  try {
+    const u = new URL(url);
+    return u.origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Route an external URL through the Vite dev server CORS proxy.
+ * In production (with sardine-launch), requests go direct or through the backend proxy.
+ */
+function proxyUrl(url) {
+  if (!needsProxy(url)) return url;
+  return `${window.location.origin}/stac-proxy/${encodeURIComponent(url)}`;
+}
+
+/**
  * Fetch wrapper with auth and error handling.
+ * External STAC URLs are routed through /stac-proxy/ to avoid CORS.
  */
 async function stacFetch(url, { method = 'GET', body, token } = {}) {
   const headers = {
@@ -376,7 +398,7 @@ async function stacFetch(url, { method = 'GET', body, token } = {}) {
   const opts = { method, headers };
   if (body && method !== 'GET') opts.body = body;
 
-  const resp = await fetch(url, opts);
+  const resp = await fetch(proxyUrl(url), opts);
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error(`STAC API ${resp.status}: ${text.slice(0, 200) || resp.statusText}`);

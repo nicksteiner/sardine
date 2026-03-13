@@ -276,8 +276,13 @@ export function computeChannelStats(values, useDecibels = false, numBins = 128, 
 
   for (let i = 0; i < values.length; i += stride) {
     let val = values[i];
-    if (val <= 0 || isNaN(val)) continue;
-    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    if (isNaN(val)) continue;
+    if (useDecibels) {
+      if (val <= 0) continue; // dB needs positive input
+      val = 10 * Math.log10(Math.max(val, 1e-10));
+    } else {
+      if (val === 0) continue; // skip exact zero (nodata)
+    }
     if (val < min) min = val;
     if (val > max) max = val;
     sum += val;
@@ -293,8 +298,13 @@ export function computeChannelStats(values, useDecibels = false, numBins = 128, 
   // Pass 2: bin all values
   for (let i = 0; i < values.length; i += stride) {
     let val = values[i];
-    if (val <= 0 || isNaN(val)) continue;
-    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    if (isNaN(val)) continue;
+    if (useDecibels) {
+      if (val <= 0) continue;
+      val = 10 * Math.log10(Math.max(val, 1e-10));
+    } else {
+      if (val === 0) continue;
+    }
     const idx = Math.floor((val - min) / binWidth);
     bins[Math.max(0, Math.min(numBins - 1, idx))]++;
   }
@@ -379,7 +389,12 @@ export async function sampleViewportStats(
       const stride = Math.max(4, Math.floor(tileData.data.length / 50000));
       for (let j = 0; j < tileData.data.length; j += stride) {
         const v = tileData.data[j];
-        if (v > 0 && !isNaN(v)) allValues.push(v);
+        // For dB mode: skip zeros/NaN (nodata) but keep positive values
+        // For linear mode: keep all finite non-NaN values (phase/offset data can be negative)
+        if (isNaN(v)) continue;
+        if (useDecibels && v <= 0) continue; // dB needs positive input
+        if (!useDecibels && v === 0) continue; // skip exact zero (nodata)
+        allValues.push(v);
       }
     }
     if (onProgress) onProgress(i + 1, totalTiles);

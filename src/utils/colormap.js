@@ -7,8 +7,9 @@
  * Available colormap names
  */
 export const COLORMAP_NAMES = [
-  'grayscale', 'viridis', 'inferno', 'plasma', 'phase',
-  'sardine', 'flood', 'diverging', 'polarimetric',
+  'grayscale', 'viridis', 'inferno', 'plasma', 'phase', 'twilight',
+  'sardine', 'flood', 'diverging', 'polarimetric', 'label',
+  'rdbu', 'romaO',
 ];
 
 /**
@@ -116,6 +117,38 @@ export function phase(t) {
   const g = Math.round((0.5 + 0.5 * Math.cos(angle + (2 * Math.PI) / 3)) * 255);
   const b = Math.round((0.5 + 0.5 * Math.cos(angle + (4 * Math.PI) / 3)) * 255);
   return [r, g, b];
+}
+
+/**
+ * Twilight colormap - cyclic perceptually uniform (Matplotlib)
+ * Symmetric: light lavender → cool purples → dark teal → warm reds → light lavender
+ * Ideal for unwrapped phase or any cyclic quantity.
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function twilight(t) {
+  t = Math.max(0, Math.min(1, t));
+  // 9 key stops sampled from Matplotlib twilight (every 0.125)
+  const stops = [
+    [0.886, 0.850, 0.888],  // 0.000 - light lavender
+    [0.695, 0.625, 0.831],  // 0.125 - light purple
+    [0.418, 0.365, 0.733],  // 0.250 - medium purple
+    [0.196, 0.225, 0.558],  // 0.375 - dark blue-purple
+    [0.188, 0.329, 0.367],  // 0.500 - dark teal (nadir)
+    [0.394, 0.303, 0.262],  // 0.625 - dark brown
+    [0.610, 0.278, 0.225],  // 0.750 - brownish red
+    [0.769, 0.390, 0.382],  // 0.875 - salmon
+    [0.886, 0.850, 0.888],  // 1.000 - light lavender (cyclic)
+  ];
+  const seg = t * 8;
+  const i = Math.min(Math.floor(seg), 7);
+  const s = seg - i;
+  const a = stops[i], b = stops[i + 1];
+  return [
+    Math.round((a[0] + s * (b[0] - a[0])) * 255),
+    Math.round((a[1] + s * (b[1] - a[1])) * 255),
+    Math.round((a[2] + s * (b[2] - a[2])) * 255),
+  ];
 }
 
 // ── SARdine brand colorramps ─────────────────────────────────────────────────
@@ -231,6 +264,110 @@ export function polarimetric(t) {
 }
 
 /**
+ * Label colormap — deterministic hash-based colors for integer labels.
+ * Used for connected components and classification maps.
+ * Label 0 is transparent (nodata); positive integers get distinct colors.
+ * @param {number} t - Value between 0 and 1 (normalized label)
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function label(t) {
+  t = Math.max(0, Math.min(1, t));
+  // Map t back to an integer-like index for hashing
+  const idx = Math.round(t * 255);
+  if (idx === 0) return [0, 0, 0]; // nodata — will be masked to transparent
+  // Golden-ratio hue cycling for maximum visual separation
+  const hue = (idx * 0.618033988749895) % 1.0;
+  const sat = 0.7 + 0.3 * ((idx * 13) % 7) / 6;
+  const val = 0.75 + 0.25 * ((idx * 7) % 5) / 4;
+  // HSV to RGB
+  const h = hue * 6;
+  const i = Math.floor(h);
+  const f = h - i;
+  const p = val * (1 - sat);
+  const q = val * (1 - sat * f);
+  const tt = val * (1 - sat * (1 - f));
+  let r, g, b;
+  switch (i % 6) {
+    case 0: r = val; g = tt; b = p; break;
+    case 1: r = q; g = val; b = p; break;
+    case 2: r = p; g = val; b = tt; break;
+    case 3: r = p; g = q; b = val; break;
+    case 4: r = tt; g = p; b = val; break;
+    default: r = val; g = p; b = q; break;
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+/**
+ * RdBu (Red-Blue) diverging colormap — the InSAR community standard for
+ * displacement visualization. White center with saturated red/blue endpoints.
+ * Blue = range decrease (toward satellite), Red = range increase (away).
+ * Perceptually uniform, colorblind-accessible, symmetric luminance.
+ * Sampled from matplotlib's RdBu_r (reversed so blue=negative, red=positive).
+ * @param {number} t - Value between 0 and 1 (0.5 = zero/center)
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function rdbu(t) {
+  t = Math.max(0, Math.min(1, t));
+  // 11-stop RdBu_r sampled from matplotlib (blue at 0, white at 0.5, red at 1)
+  const stops = [
+    [0.020, 0.188, 0.380],  // 0.0  - dark blue
+    [0.129, 0.400, 0.674],  // 0.1  - medium blue
+    [0.263, 0.576, 0.765],  // 0.2  - steel blue
+    [0.573, 0.773, 0.871],  // 0.3  - light blue
+    [0.820, 0.898, 0.941],  // 0.4  - pale blue
+    [0.969, 0.969, 0.969],  // 0.5  - near-white center
+    [0.992, 0.859, 0.780],  // 0.6  - pale red
+    [0.957, 0.647, 0.510],  // 0.7  - light red
+    [0.839, 0.376, 0.302],  // 0.8  - medium red
+    [0.698, 0.094, 0.169],  // 0.9  - dark red
+    [0.404, 0.000, 0.122],  // 1.0  - deep red
+  ];
+  const seg = t * 10;
+  const i = Math.min(Math.floor(seg), 9);
+  const s = seg - i;
+  const a = stops[i], b = stops[i + 1];
+  return [
+    Math.round((a[0] + s * (b[0] - a[0])) * 255),
+    Math.round((a[1] + s * (b[1] - a[1])) * 255),
+    Math.round((a[2] + s * (b[2] - a[2])) * 255),
+  ];
+}
+
+/**
+ * romaO — cyclic perceptually uniform colormap from Crameri's Scientific
+ * Colour Maps. The standard for wrapped interferometric phase display.
+ * Bright, saturated, uniform luminance around the cycle, colorblind-safe.
+ * Goes: teal → yellow → red/magenta → blue → teal (cyclic).
+ * @param {number} t - Value between 0 and 1 (wraps at boundaries)
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function romaO(t) {
+  t = Math.max(0, Math.min(1, t));
+  // 9 key stops sampled from Crameri romaO (batlow-cyclic variant)
+  const stops = [
+    [0.110, 0.498, 0.420],  // 0.000 - dark teal
+    [0.337, 0.620, 0.310],  // 0.125 - olive green
+    [0.671, 0.718, 0.251],  // 0.250 - yellow-green
+    [0.922, 0.718, 0.353],  // 0.375 - warm yellow
+    [0.906, 0.514, 0.443],  // 0.500 - salmon/coral
+    [0.718, 0.333, 0.518],  // 0.625 - purple-pink
+    [0.443, 0.275, 0.584],  // 0.750 - medium purple
+    [0.200, 0.341, 0.561],  // 0.875 - steel blue
+    [0.110, 0.498, 0.420],  // 1.000 - dark teal (cyclic)
+  ];
+  const seg = t * 8;
+  const i = Math.min(Math.floor(seg), 7);
+  const s = seg - i;
+  const a = stops[i], b = stops[i + 1];
+  return [
+    Math.round((a[0] + s * (b[0] - a[0])) * 255),
+    Math.round((a[1] + s * (b[1] - a[1])) * 255),
+    Math.round((a[2] + s * (b[2] - a[2])) * 255),
+  ];
+}
+
+/**
  * Get colormap function by name
  * @param {string} name - Colormap name
  * @returns {Function} Colormap function
@@ -242,10 +379,14 @@ export function getColormap(name) {
     inferno,
     plasma,
     phase,
+    twilight,
     sardine,
     flood,
     diverging,
     polarimetric,
+    label,
+    rdbu,
+    romaO,
   };
 
   return colormaps[name] || colormaps.grayscale;
@@ -338,10 +479,14 @@ export default {
   inferno,
   plasma,
   phase,
+  twilight,
   sardine,
   flood,
   diverging,
   polarimetric,
+  label,
+  rdbu,
+  romaO,
   getColormap,
   generateColorbar,
   createColorbarCanvas,

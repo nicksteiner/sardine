@@ -323,7 +323,8 @@ export class MetadataCube {
  * @returns {Promise<MetadataCube|null>} MetadataCube instance, or null if not found
  */
 export async function loadMetadataCube(reader, band, options = {}) {
-  const basePath = `/science/${band}/GCOV/metadata/radarGrid`;
+  const product = options.product || 'GCOV';
+  const basePath = `/science/${band}/${product}/metadata/radarGrid`;
 
   const defaultFields = [
     'incidenceAngle',

@@ -29,7 +29,14 @@ export class SARTileLayer extends TileLayer {
       stretchMode = 'linear',
       opacity = 1,
       multiLook = false,
-      useMask = false,
+      maskInvalid = false,
+      maskLayoverShadow = false,
+      useCoherenceMask = false,
+      coherenceThreshold = 0.3,
+      coherenceThresholdMax = 1.0,
+      coherenceMaskMode = 0,
+      incidenceAngleData = null,
+      verticalDisplacement = false,
       speckleFilterType = 'none',
       speckleKernelSize = 7,
       minZoom,
@@ -82,7 +89,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, useMask, speckleFilterType, speckleKernelSize],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, speckleFilterType, speckleKernelSize],
       },
 
       renderSubLayers: (subProps) => {
@@ -95,7 +102,7 @@ export class SARTileLayer extends TileLayer {
           : [bbox.left, Math.min(bbox.top, bbox.bottom), bbox.right, Math.max(bbox.top, bbox.bottom)];
 
         // Mask data (if available from tile)
-        const maskProps = tileData.mask ? { dataMask: tileData.mask, useMask } : { useMask: false };
+        const maskProps = tileData.mask ? { dataMask: tileData.mask, maskInvalid, maskLayoverShadow } : { maskInvalid: false, maskLayoverShadow: false };
 
         // Speckle filter props — SARGPULayer handles filtering via WebGL2 FBO
         const filterProps = {
@@ -137,6 +144,33 @@ export class SARTileLayer extends TileLayer {
             ...filterProps,
           });
         } else if (tileData.data) {
+          // Auxiliary mask props: coherence (GUNW) or incidence angle (GCOV)
+          const cohProps = tileData.coherenceData ? {
+            dataCoherence: tileData.coherenceData,
+            coherenceWidth: tileData.width,
+            coherenceHeight: tileData.height,
+            useCoherenceMask,
+            coherenceThreshold,
+            coherenceThresholdMax,
+            coherenceMaskMode,
+          } : (incidenceAngleData ? {
+            dataCoherence: incidenceAngleData.data,
+            coherenceWidth: incidenceAngleData.width,
+            coherenceHeight: incidenceAngleData.height,
+            useCoherenceMask,
+            coherenceThreshold,
+            coherenceThresholdMax,
+            coherenceMaskMode,
+          } : {});
+
+          // Incidence angle props for vertical displacement correction
+          const incProps = (verticalDisplacement && incidenceAngleData) ? {
+            dataIncidence: incidenceAngleData.data,
+            incidenceWidth: incidenceAngleData.width,
+            incidenceHeight: incidenceAngleData.height,
+            verticalDisplacement,
+          } : {};
+
           return new SARGPULayer({
             id: `${subProps.id}-gpu`,
             data: tileData.data,  // Raw Float32Array - uploaded as R32F texture
@@ -151,6 +185,8 @@ export class SARTileLayer extends TileLayer {
             opacity: subProps.opacity,
             ...maskProps,
             ...filterProps,
+            ...cohProps,
+            ...incProps,
           });
         } else {
           return null;

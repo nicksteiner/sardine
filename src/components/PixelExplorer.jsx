@@ -153,10 +153,16 @@ function PixelTooltip({ info, useDecibels, windowSize, geoLabel }) {
 
   const formatSingle = (v) => {
     if (v === undefined) return '\u2026'; // ellipsis = loading
-    if (isNaN(v) || v === null) return 'nodata';
-    if (v === 0) return 'nodata';
-    if (useDecibels) return `${(10 * Math.log10(v)).toFixed(2)} dB`;
-    return v < 0.001 || v > 10000 ? v.toExponential(3) : v.toFixed(4);
+    if (v === null || (typeof v === 'number' && isNaN(v))) return 'nodata';
+    if (useDecibels) {
+      if (v === 0) return 'nodata';
+      return `${(10 * Math.log10(v)).toFixed(2)} dB`;
+    }
+    // Linear mode: format with appropriate precision
+    const abs = Math.abs(v);
+    if (abs === 0) return '0.0000';
+    if (abs < 0.001 || abs > 10000) return v.toExponential(3);
+    return v.toFixed(4);
   };
 
   const formatValue = (v) => {

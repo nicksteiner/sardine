@@ -77,12 +77,14 @@ export class SARGPUBitmapLayer extends BitmapLayer {
           } else if (colormapId == 4) {
             rgb = phaseColormap(value);
           } else if (colormapId == 5) {
-            rgb = sardineMap(value);
+            rgb = twilightMap(value);
           } else if (colormapId == 6) {
-            rgb = floodMap(value);
+            rgb = sardineMap(value);
           } else if (colormapId == 7) {
-            rgb = divergingMap(value);
+            rgb = floodMap(value);
           } else if (colormapId == 8) {
+            rgb = divergingMap(value);
+          } else if (colormapId == 9) {
             rgb = polarimetricMap(value);
           } else {
             rgb = grayscale(value);

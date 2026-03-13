@@ -705,7 +705,13 @@ export async function listNISARDatasets(file) {
       for (const freq of frequencies) {
         const terms = await detectCovarianceTerms(streamReader, h5Datasets, paths, freq);
         for (const term of terms) {
-          datasets.push({ frequency: freq, polarization: term, band });
+          const dsPath = paths.dataset(freq, term);
+          const dsId = streamReader.findDatasetByPath(dsPath);
+          const attrs = dsId != null ? (streamReader.getDatasetAttributes?.(dsId) || {}) : {};
+          const stats = (attrs.mean_value != null && attrs.sample_stddev != null)
+            ? { mean_value: attrs.mean_value, sample_stddev: attrs.sample_stddev }
+            : null;
+          datasets.push({ frequency: freq, polarization: term, band, stats });
         }
       }
 
@@ -782,7 +788,11 @@ export async function listNISARDatasets(file) {
           const dataset = safeGet(h5file, datasetPath);
 
           if (dataset && dataset.shape && dataset.shape.length === 2) {
-            datasets.push({ frequency: freq, polarization: term, band });
+            const dsStats = getDatasetStats(dataset);
+            const stats = (dsStats.mean_value != null && dsStats.sample_stddev != null)
+              ? { mean_value: dsStats.mean_value, sample_stddev: dsStats.sample_stddev }
+              : null;
+            datasets.push({ frequency: freq, polarization: term, band, stats });
             console.log(`[NISAR Loader] Found dataset: frequency${freq}/${term}`);
           }
         }
@@ -4431,6 +4441,42 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
   // Wait for identification to resolve (should be done by now)
   await identPromise;
 
+  // ── Per-band stats from center chunk (instant initial contrast) ──
+  // Read one chunk per required polarization band from the image center.
+  // This gives mean/stddev for each RGB channel so the UI can render with
+  // sensible contrast immediately, without waiting for a full histogram pass.
+  const bandStats = {};
+  const midRow = Math.floor(height / chunkH / 2);
+  const midCol = Math.floor(width / chunkW / 2);
+  try {
+    const chunkPromises = requiredPols.map(pol => getCachedChunk(pol, midRow, midCol));
+    const chunks = await Promise.all(chunkPromises);
+    for (let i = 0; i < requiredPols.length; i++) {
+      const pol = requiredPols[i];
+      const chunk = chunks[i];
+      if (!chunk) continue;
+      let sum = 0, sumSq = 0, count = 0;
+      for (let j = 0; j < chunk.length; j++) {
+        const v = chunk[j];
+        if (isNaN(v) || v <= 0) continue;
+        sum += v;
+        sumSq += v * v;
+        count++;
+      }
+      if (count > 0) {
+        bandStats[pol] = {
+          mean_value: sum / count,
+          sample_stddev: Math.sqrt(sumSq / count - (sum / count) ** 2),
+          count,
+        };
+      }
+    }
+    console.log(`[NISAR Loader] RGB per-band stats from center chunk:`,
+      Object.entries(bandStats).map(([p, s]) => `${p}: mean=${s.mean_value.toExponential(2)}, std=${s.sample_stddev.toExponential(2)}`).join(', '));
+  } catch (e) {
+    console.warn('[NISAR Loader] Could not compute per-band stats:', e.message);
+  }
+
   const result = {
     getRGBTile,
     getExportStripe,
@@ -4448,6 +4494,7 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
     band,
     identification,
     availableDatasets,
+    bandStats,
     hasMask: maskDatasetId != null,
     mode: 'streaming',
     _streaming: true,
@@ -4632,7 +4679,14 @@ export async function listNISARDatasetsFromUrl(url, { useTransferAcceleration = 
     for (const freq of frequencies) {
       const terms = await detectCovarianceTerms(streamReader, h5Datasets, paths, freq);
       for (const term of terms) {
-        datasets.push({ frequency: freq, polarization: term, band });
+        // Extract stats from HDF5 dataset attributes (mean_value, sample_stddev)
+        const dsPath = paths.dataset(freq, term);
+        const dsId = streamReader.findDatasetByPath(dsPath);
+        const attrs = dsId != null ? (streamReader.getDatasetAttributes?.(dsId) || {}) : {};
+        const stats = (attrs.mean_value != null && attrs.sample_stddev != null)
+          ? { mean_value: attrs.mean_value, sample_stddev: attrs.sample_stddev }
+          : null;
+        datasets.push({ frequency: freq, polarization: term, band, stats });
       }
     }
 
@@ -5455,6 +5509,44 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     return count > 0 ? sum / count : NaN;
   }
 
+  // ── Extract stats from HDF5 dataset attributes or center chunk ──
+  const dsAttrs = streamReader.getDatasetAttributes?.(selectedDatasetId) || {};
+  const stats = {
+    mean_value: dsAttrs.mean_value ?? undefined,
+    sample_stddev: dsAttrs.sample_stddev ?? undefined,
+    min_value: dsAttrs.min_value ?? undefined,
+    max_value: dsAttrs.max_value ?? undefined,
+  };
+  if (stats.mean_value !== undefined) {
+    console.log(`[NISAR Loader] Stats from HDF5 attributes: mean=${stats.mean_value.toFixed?.(4) ?? stats.mean_value}, std=${stats.sample_stddev?.toFixed?.(4) ?? stats.sample_stddev}`);
+  } else {
+    // Fallback: compute stats from center chunk (same as local file path)
+    try {
+      const midRow = Math.floor(Math.ceil(height / chunkH) / 2);
+      const midCol = Math.floor(Math.ceil(width / chunkW) / 2);
+      const centerChunk = await getStreamChunk(midRow, midCol);
+      if (centerChunk) {
+        let sum = 0, sumSq = 0, count = 0, min = Infinity, max = -Infinity;
+        for (let i = 0; i < centerChunk.length; i++) {
+          const v = centerChunk[i];
+          if (isNaN(v) || v <= 0) continue;
+          sum += v; sumSq += v * v; count++;
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        if (count > 0) {
+          stats.mean_value = sum / count;
+          stats.sample_stddev = Math.sqrt(sumSq / count - (sum / count) ** 2);
+          stats.min_value = min;
+          stats.max_value = max;
+          console.log(`[NISAR Loader] Stats from center chunk: mean=${stats.mean_value.toFixed(4)}, std=${stats.sample_stddev.toFixed(4)}`);
+        }
+      }
+    } catch (e) {
+      console.warn('[NISAR Loader] Could not compute center chunk stats:', e.message);
+    }
+  }
+
   const result = {
     width,
     height,
@@ -5465,6 +5557,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     getTile,
     getExportStripe,
     getPixelValue,
+    stats,
     mode: 'streaming',
     source: 'url',
     sourceUrl: url,

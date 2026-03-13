@@ -6,6 +6,8 @@
  * arrays and CRS.
  */
 
+import { wgs84ToProjectedPoint } from '../loaders/overture-loader.js';
+
 /**
  * Binary search: find first index where arr[i] >= target in a sorted ascending array.
  * Returns arr.length if target > all values.
@@ -35,41 +37,8 @@ function searchLE(arr, target) {
 }
 
 /**
- * Convert WGS84 (EPSG:4326) bbox to UTM projected coordinates.
- * Inverse of the utmToWGS84 pattern from overture-loader.js.
- *
- * @param {number[]} bbox — [west, south, east, north] in degrees
- * @param {number} zone — UTM zone number (1-60)
- * @param {boolean} isNorth — true for northern hemisphere
- * @returns {number[]} [minEasting, minNorthing, maxEasting, maxNorthing] in meters
- */
-function wgs84ToUtm(bbox, zone, isNorth) {
-  const [west, south, east, north] = bbox;
-  const lon0 = (zone - 1) * 6 - 180 + 3;
-  const k0 = 0.9996;
-  const a = 6378137; // WGS84 semi-major axis
-
-  function latLonToUtm(lon, lat) {
-    const latRad = lat * Math.PI / 180;
-    const easting = 500000 + k0 * a * (lon - lon0) * Math.PI / 180 * Math.cos(latRad);
-    const rawNorthing = k0 * a * lat * Math.PI / 180;
-    const northing = isNorth ? rawNorthing : rawNorthing + 10000000;
-    return [easting, northing];
-  }
-
-  const [e1, n1] = latLonToUtm(west, south);
-  const [e2, n2] = latLonToUtm(east, north);
-
-  return [
-    Math.min(e1, e2),
-    Math.min(n1, n2),
-    Math.max(e1, e2),
-    Math.max(n1, n2),
-  ];
-}
-
-/**
  * Reproject a bbox from EPSG:4326 to the file's CRS if needed.
+ * Uses proj4 via wgs84ToProjectedPoint for accurate reprojection.
  *
  * @param {number[]} bbox4326 — [west, south, east, north] in EPSG:4326
  * @param {string} fileCrs — target CRS string like "EPSG:32610"
@@ -84,17 +53,16 @@ export function reprojectBbox(bbox4326, fileCrs) {
   const epsg = parseInt(epsgMatch[1]);
   if (epsg === 4326) return bbox4326;
 
-  // UTM north (326xx)
-  if (epsg >= 32601 && epsg <= 32660) {
-    return wgs84ToUtm(bbox4326, epsg - 32600, true);
-  }
-  // UTM south (327xx)
-  if (epsg >= 32701 && epsg <= 32760) {
-    return wgs84ToUtm(bbox4326, epsg - 32700, false);
-  }
+  const [west, south, east, north] = bbox4326;
+  const [e1, n1] = wgs84ToProjectedPoint(west, south, fileCrs);
+  const [e2, n2] = wgs84ToProjectedPoint(east, north, fileCrs);
 
-  console.warn(`[ROI Subset] Unknown CRS ${fileCrs}, using bbox as-is`);
-  return bbox4326;
+  return [
+    Math.min(e1, e2),
+    Math.min(n1, n2),
+    Math.max(e1, e2),
+    Math.max(n1, n2),
+  ];
 }
 
 /**

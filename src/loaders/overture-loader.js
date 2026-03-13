@@ -22,6 +22,7 @@
  */
 
 import { PMTiles } from 'pmtiles';
+import proj4 from 'proj4';
 
 // ── Overture S3 endpoints ──
 const OVERTURE_BASE_URL = 'https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com';
@@ -30,14 +31,34 @@ const DEFAULT_RELEASE = '2024-12-18.0';
 const DEFAULT_TILES_RELEASE = '2024-12-18';  // PMTiles use date without minor version
 
 /**
+ * Get the PMTiles URL for an Overture theme.
+ * @param {string} theme - e.g. 'base', 'buildings', 'transportation', 'divisions'
+ * @param {string} release - Release date
+ * @returns {string} PMTiles URL
+ */
+export function getOverturePMTilesUrl(theme, release = DEFAULT_TILES_RELEASE) {
+  return `${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`;
+}
+
+/**
  * Available Overture themes and their types.
  */
 export const OVERTURE_THEMES = {
-  buildings: {
-    label: 'Buildings',
-    types: ['building'],
-    color: [255, 140, 0, 180],      // orange
-    lineColor: [255, 140, 0, 220],
+  base_water: {
+    label: 'Coastlines',
+    types: ['water'],
+    theme: 'base',
+    lineColor: [100, 180, 220, 200],
+    lineWidth: 1.5,
+    coastlineStroke: true,             // extract polygon edges, filter tile-clip artifacts
+  },
+  divisions_boundary: {
+    label: 'Borders',
+    types: ['division_boundary'],
+    theme: 'divisions',
+    color: [200, 200, 200, 0],
+    lineColor: [255, 220, 100, 200],
+    lineWidth: 2,
   },
   transportation: {
     label: 'Roads',
@@ -46,17 +67,17 @@ export const OVERTURE_THEMES = {
     lineColor: [200, 200, 200, 200],
     lineWidth: 1,
   },
+  buildings: {
+    label: 'Buildings',
+    types: ['building'],
+    color: [255, 140, 0, 180],      // orange
+    lineColor: [255, 140, 0, 220],
+  },
   places: {
     label: 'Places',
     types: ['place'],
     color: [78, 201, 212, 200],      // sardine cyan
     pointRadius: 4,
-  },
-  base_water: {
-    label: 'Water',
-    types: ['water'],
-    theme: 'base',
-    color: [30, 100, 200, 120],
   },
   base_land_use: {
     label: 'Land Use',
@@ -108,171 +129,76 @@ export function getOvertureUrl(theme, type, release = DEFAULT_RELEASE) {
  * @param {Function} options.onProgress - Progress callback
  * @returns {Promise<GeoJSON.FeatureCollection>}
  */
+// ─── proj4 Projection Utilities ─────────────────────────────────────────
+
 /**
- * Convert projected coordinates (UTM, etc.) to WGS84 for Overture queries.
- *
- * SARdine internally uses projected coordinates (e.g., UTM meters) for
- * NISAR data. Overture data is in WGS84 (EPSG:4326). This function
- * does a simple approximate conversion for bbox queries.
- *
- * For precise conversion, use proj4js. This approximation is sufficient
- * for determining which Overture tiles to fetch.
+ * Get or build a proj4 projection string for a CRS.
+ * proj4 has built-in support for common EPSG codes via +proj strings.
+ */
+function getProj4Def(crs) {
+  const epsgMatch = crs?.match(/EPSG:(\d+)/);
+  if (!epsgMatch) return null;
+  const epsg = parseInt(epsgMatch[1]);
+  if (epsg === 4326) return null; // identity
+
+  // UTM zones
+  if (epsg >= 32601 && epsg <= 32660) {
+    const zone = epsg - 32600;
+    return `+proj=utm +zone=${zone} +datum=WGS84 +units=m +no_defs`;
+  }
+  if (epsg >= 32701 && epsg <= 32760) {
+    const zone = epsg - 32700;
+    return `+proj=utm +zone=${zone} +south +datum=WGS84 +units=m +no_defs`;
+  }
+
+  // Polar Stereographic
+  if (epsg === 3413) return '+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs';
+  if (epsg === 3031) return '+proj=stere +lat_0=-90 +lat_ts=-71 +lon_0=0 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs';
+  if (epsg === 32661) return '+proj=stere +lat_0=90 +lat_ts=90 +lon_0=0 +x_0=2000000 +y_0=2000000 +datum=WGS84 +units=m +no_defs';
+  if (epsg === 32761) return '+proj=stere +lat_0=-90 +lat_ts=-90 +lon_0=0 +x_0=2000000 +y_0=2000000 +datum=WGS84 +units=m +no_defs';
+  if (epsg === 3411) return '+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +x_0=0 +y_0=0 +a=6378273 +b=6356889.449 +units=m +no_defs';
+
+  return null;
+}
+
+/**
+ * Convert projected bounds to WGS84 using proj4.
  *
  * @param {number[]} bounds - [minX, minY, maxX, maxY] in projected CRS
  * @param {string} crs - CRS string like "EPSG:32610"
  * @returns {number[]} [minLon, minLat, maxLon, maxLat] in WGS84
  */
 export function projectedToWGS84(bounds, crs) {
-  const epsgMatch = crs?.match(/EPSG:(\d+)/);
-  if (!epsgMatch) return bounds; // Assume already WGS84
+  const projDef = getProj4Def(crs);
+  if (!projDef) return bounds; // Already WGS84 or unknown
 
-  const epsg = parseInt(epsgMatch[1]);
-
-  // Already WGS84
-  if (epsg === 4326) return bounds;
-
-  // UTM zones (326xx for north, 327xx for south)
-  if (epsg >= 32601 && epsg <= 32660) {
-    const zone = epsg - 32600;
-    return utmToWGS84(bounds, zone, true);
-  }
-  if (epsg >= 32701 && epsg <= 32760) {
-    const zone = epsg - 32700;
-    return utmToWGS84(bounds, zone, false);
-  }
-
-  // Polar Stereographic North — NSIDC Sea Ice (EPSG:3413) and UPS North (EPSG:32661)
-  if (epsg === 3413 || epsg === 32661) {
-    return polarStereoToWGS84(bounds, epsg === 3413 ? 70 : 90, -45);
-  }
-  // Polar Stereographic South — Antarctic (EPSG:3031) and UPS South (EPSG:32761)
-  if (epsg === 3031 || epsg === 32761) {
-    return polarStereoToWGS84(bounds, -71, 0);
-  }
-  // Arctic Canada (EPSG:3411 — SSM/I polar stereo, lat_ts=70, lon_0=-45, Hughes 1980 ellipsoid)
-  if (epsg === 3411) {
-    return polarStereoToWGS84(bounds, 70, -45);
-  }
-
-  // Unknown CRS — return as-is and hope for the best
-  console.warn(`[Overture] Unknown CRS ${crs}, cannot convert to WGS84`);
-  return bounds;
-}
-
-/**
- * Approximate UTM → WGS84 conversion (sufficient for bbox queries).
- */
-function utmToWGS84(bounds, zone, isNorth) {
   const [minX, minY, maxX, maxY] = bounds;
-
-  // Central meridian of UTM zone
-  const lon0 = (zone - 1) * 6 - 180 + 3;
-
-  // Approximate conversion (good to ~0.01° for bbox purposes)
-  const k0 = 0.9996;
-  const a = 6378137; // WGS84 semi-major axis
-
-  function utmToLatLon(easting, northing) {
-    const x = (easting - 500000) / k0;
-    const y = isNorth ? northing / k0 : (northing - 10000000) / k0;
-
-    const lat = y / a * (180 / Math.PI);
-    const lon = lon0 + x / (a * Math.cos(lat * Math.PI / 180)) * (180 / Math.PI);
-
-    return [lon, lat];
-  }
-
-  const [minLon, minLat] = utmToLatLon(minX, minY);
-  const [maxLon, maxLat] = utmToLatLon(maxX, maxY);
-
-  return [
-    Math.min(minLon, maxLon),
-    Math.min(minLat, maxLat),
-    Math.max(minLon, maxLon),
-    Math.max(minLat, maxLat),
+  // Sample corners and edge midpoints for accuracy with curved projections
+  const points = [
+    [minX, minY], [minX, maxY], [maxX, minY], [maxX, maxY],
+    [(minX + maxX) / 2, minY], [(minX + maxX) / 2, maxY],
+    [minX, (minY + maxY) / 2], [maxX, (minY + maxY) / 2],
   ];
+
+  const wgs84Points = points.map(p => proj4(projDef, 'WGS84', p));
+  const lons = wgs84Points.map(p => p[0]);
+  const lats = wgs84Points.map(p => p[1]);
+
+  return [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)];
 }
 
 /**
- * Polar Stereographic → WGS84 inverse projection.
- * Handles both north and south pole projections.
+ * Convert a single WGS84 [lon, lat] point to projected CRS coordinates.
  *
- * @param {number[]} bounds - [minX, minY, maxX, maxY] in projection meters
- * @param {number} latTs - Latitude of true scale (positive for north, negative for south)
- * @param {number} lon0 - Central meridian in degrees
+ * @param {number} lon - Longitude in degrees
+ * @param {number} lat - Latitude in degrees
+ * @param {string} crs - Target CRS string (e.g. 'EPSG:32610')
+ * @returns {number[]} [x, y] in projected coordinates
  */
-function polarStereoToWGS84(bounds, latTs, lon0) {
-  const [minX, minY, maxX, maxY] = bounds;
-  const DEG = Math.PI / 180;
-  const a = 6378137;           // WGS84 semi-major axis
-  const f = 1 / 298.257223563; // WGS84 flattening
-  const e = Math.sqrt(2 * f - f * f); // eccentricity
-  const isNorth = latTs > 0;
-  const phiTs = Math.abs(latTs) * DEG; // latitude of true scale (positive)
-
-  // Scale factor at latitude of true scale
-  const sinPhiTs = Math.sin(phiTs);
-  const cosPhiTs = Math.cos(phiTs);
-  const tTs = Math.tan(Math.PI / 4 - phiTs / 2) /
-    Math.pow((1 - e * sinPhiTs) / (1 + e * sinPhiTs), e / 2);
-  const mTs = cosPhiTs / Math.sqrt(1 - e * e * sinPhiTs * sinPhiTs);
-
-  function xyToLatLon(x, y) {
-    // Flip y for south pole
-    const xp = x;
-    const yp = isNorth ? -y : y;
-
-    const rho = Math.sqrt(xp * xp + yp * yp);
-    if (rho < 1e-10) {
-      return [isNorth ? 90 : -90, lon0];
-    }
-
-    const t = rho * tTs / (a * mTs);
-
-    // Iterative inverse for latitude (converges in 3-4 iterations)
-    let phi = Math.PI / 2 - 2 * Math.atan(t);
-    for (let i = 0; i < 10; i++) {
-      const sinPhi = Math.sin(phi);
-      const phiNew = Math.PI / 2 - 2 * Math.atan(
-        t * Math.pow((1 - e * sinPhi) / (1 + e * sinPhi), e / 2)
-      );
-      if (Math.abs(phiNew - phi) < 1e-12) break;
-      phi = phiNew;
-    }
-
-    let lon = Math.atan2(xp, yp) / DEG + lon0;
-    let lat = phi / DEG;
-    if (!isNorth) lat = -lat;
-
-    // Normalize longitude to [-180, 180]
-    while (lon > 180) lon -= 360;
-    while (lon < -180) lon += 360;
-
-    return [lat, lon];
-  }
-
-  // Convert all four corners for better bbox accuracy
-  const corners = [
-    xyToLatLon(minX, minY),
-    xyToLatLon(minX, maxY),
-    xyToLatLon(maxX, minY),
-    xyToLatLon(maxX, maxY),
-    // Also sample midpoints of edges for curved projections
-    xyToLatLon((minX + maxX) / 2, minY),
-    xyToLatLon((minX + maxX) / 2, maxY),
-    xyToLatLon(minX, (minY + maxY) / 2),
-    xyToLatLon(maxX, (minY + maxY) / 2),
-  ];
-
-  const lats = corners.map(c => c[0]);
-  const lons = corners.map(c => c[1]);
-
-  return [
-    Math.min(...lons),
-    Math.min(...lats),
-    Math.max(...lons),
-    Math.max(...lats),
-  ];
+export function wgs84ToProjectedPoint(lon, lat, crs) {
+  const projDef = getProj4Def(crs);
+  if (!projDef) return [lon, lat];
+  return proj4('WGS84', projDef, [lon, lat]);
 }
 
 /**
@@ -369,6 +295,7 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
 
     const actualTheme = themeDef.theme || themeKey;
     const features = [];
+    const tileGroups = []; // For tile-clipped rendering
 
     let tilesLoaded = 0;
     // Fetch all tiles that cover the bbox
@@ -376,9 +303,22 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
       for (let y = tiles.minY; y <= tiles.maxY && tilesLoaded < maxTiles; y++) {
         try {
           const tileData = await fetchOvertureTile(actualTheme, zoom, x, y, release);
-          // PMTiles MVT tiles have multiple layers — extract all features
+          const tileFeatures = [];
           for (const layerFeatures of Object.values(tileData.layers || {})) {
+            tileFeatures.push(...layerFeatures);
             features.push(...layerFeatures);
+          }
+          // Compute tile WGS84 bounds for scissor clipping
+          if (tileFeatures.length > 0 && themeDef.coastlineStroke) {
+            const n = Math.pow(2, zoom);
+            const tileMinLon = (x / n) * 360 - 180;
+            const tileMaxLon = ((x + 1) / n) * 360 - 180;
+            const tileMaxLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
+            const tileMinLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180 / Math.PI;
+            tileGroups.push({
+              features: tileFeatures,
+              bounds: [tileMinLon, tileMinLat, tileMaxLon, tileMaxLat],
+            });
           }
           tilesLoaded++;
         } catch (e) {
@@ -392,6 +332,7 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
     results[themeKey] = {
       type: 'FeatureCollection',
       features,
+      tileGroups: tileGroups.length > 0 ? tileGroups : undefined,
     };
   });
 

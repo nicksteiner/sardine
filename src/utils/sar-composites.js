@@ -343,11 +343,12 @@ export function computeRGBBands(bandData, compositeId, tileSize, numPixels) {
  * @param {boolean} useDecibels - Whether to apply 10*log10 before stretching
  * @param {number} gamma - Gamma exponent (default 1.0)
  * @param {string} stretchMode - Stretch mode (default 'linear')
- * @param {Uint8Array|null} dataMask - Optional mask array (NISAR convention: 0=invalid, 1-5=valid, 255=fill)
- * @param {boolean} useMask - Whether to apply mask (if dataMask provided)
+ * @param {Uint8Array|null} dataMask - Optional mask array (NISAR 3-digit encoding)
+ * @param {boolean} maskInvalid - Hide invalid (0) and fill (255) pixels
+ * @param {boolean} maskLayoverShadow - Hide layover/shadow pixels (mask < 100)
  * @returns {ImageData}
  */
-export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear', dataMask = null, useMask = false) {
+export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear', dataMask = null, maskInvalid = false, maskLayoverShadow = false) {
   // Support per-channel contrast: {R: [min,max], G: [min,max], B: [min,max]}
   // or uniform: [min, max]
   const channelKeys = ['R', 'G', 'B'];
@@ -397,10 +398,11 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
     }
 
     let alpha = anyValid ? 255 : 0;
-    // Apply mask if enabled (NISAR convention: 0=invalid, 255=fill → transparent; 1-5=valid)
-    if (useMask && dataMask && dataMask[i] !== undefined) {
+    if (dataMask && dataMask[i] !== undefined) {
       const maskVal = dataMask[i];
-      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0;
+      if (maskInvalid && (maskVal < 0.5 || maskVal > 254.5)) alpha = 0;
+      // Layover/shadow: mask > 1 (not pure-valid) and not fill
+      if (maskLayoverShadow && maskVal > 1.5 && maskVal < 254.5) alpha = 0;
     }
     rgba[idx + 3] = alpha;
   }

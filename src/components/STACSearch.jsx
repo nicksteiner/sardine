@@ -115,11 +115,11 @@ export function STACSearch({ onSelectScene, onSelectMultiple, onStatus, onLayers
       setCollections(colls);
       onStatus?.('success', `Found ${colls.length} collections`);
 
-      // Auto-select first SAR/NISAR collection if available
-      const nisar = colls.find(c =>
-        c.id.toLowerCase().includes('nisar') ||
-        c.id.toLowerCase().includes('gcov')
-      );
+      // Auto-select first NISAR GUNW or GCOV collection
+      const nisar = colls.find(c => {
+        const id = c.id.toLowerCase();
+        return id.includes('nisar') && (id.includes('gunw') || id.includes('gcov'));
+      });
       if (nisar) setSelectedCollection(nisar.id);
     } catch (e) {
       onStatus?.('error', 'Failed to load collections', e.message);

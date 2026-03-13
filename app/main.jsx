@@ -1,11 +1,13 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '../src/index.js';
+import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
+import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
+import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds } from '../src/utils/roi-subset.js';
-import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets } from '../src/utils/sar-composites.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
@@ -25,10 +27,12 @@ import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
-import { STACSearch } from '../src/components/STACSearch.jsx';
+import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
+import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
+import { loadMetadataCube } from '../src/utils/metadata-cube.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -236,7 +240,7 @@ function App() {
   const gpuInfo = useMemo(() => probeGPU(), []);
 
   // Unified load mode — single selector replaces old format × source matrix
-  const [fileType, setFileType] = useState('nisar'); // 'nisar' | 'local-tif' | 'remote' | 'cog' | 'catalog' | 'stac'
+  const [fileType, setFileType] = useState('nisar'); // 'nisar' | 'local-tif' | 'remote' | 'cog' | 'catalog' | 'cmr'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
@@ -255,8 +259,25 @@ function App() {
   // NISAR-specific state
   const [nisarFile, setNisarFile] = useState(null);
   const [nisarDatasets, setNisarDatasets] = useState([]);
-  const [selectedFrequency, setSelectedFrequency] = useState('A');
+  const [selectedFrequency, setSelectedFrequency] = useState('B');
   const [selectedPolarization, setSelectedPolarization] = useState('HHHH');
+
+  // NISAR product type detection (auto-detected on file open)
+  const [nisarProductType, setNisarProductType] = useState('GCOV'); // 'GCOV' | 'GUNW'
+
+  // GUNW-specific state
+  const [gunwDatasets, setGunwDatasets] = useState(null); // listNISARGUNWDatasets result
+  const [selectedLayer, setSelectedLayer] = useState('unwrappedInterferogram');
+  const [selectedGunwDataset, setSelectedGunwDataset] = useState('unwrappedPhase');
+  const [useCoherenceMask, setUseCoherenceMask] = useState(false);
+  const [coherenceThreshold, setCoherenceThreshold] = useState(0.3);
+  const [losDisplacement, setLosDisplacement] = useState(false); // radians → meters
+  const [verticalDisplacement, setVerticalDisplacement] = useState(false); // LOS → vertical via cos(θ)
+  const [gunwIncidenceAngleGrid, setGunwIncidenceAngleGrid] = useState(null); // {data, width, height}
+  const [gunwPairedView, setGunwPairedView] = useState(null); // {left, right} image configs for ComparisonViewer
+
+  // Drag-and-drop state
+  const [dragOver, setDragOver] = useState(false);
 
   // RGB composite state
   const [displayMode, setDisplayMode] = useState('single'); // 'single' | 'rgb'
@@ -285,7 +306,13 @@ function App() {
   const [gamma, setGamma] = useState(1.0);
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
-  const [useMask, setUseMask] = useState(false);
+  const [maskInvalid, setMaskInvalid] = useState(false);
+  const [maskLayoverShadow, setMaskLayoverShadow] = useState(false);
+  const [useIncidenceAngleMask, setUseIncidenceAngleMask] = useState(false);
+  const [incAngleMin, setIncAngleMin] = useState(30);  // degrees
+  const [incAngleMax, setIncAngleMax] = useState(47);  // degrees
+  const [incidenceAngleGrid, setIncidenceAngleGrid] = useState(null); // {data, width, height}
+  const [incidenceScatterData, setIncidenceScatterData] = useState(null);
   const [speckleFilterType, setSpeckleFilterType] = useState('none'); // 'none' | 'boxcar' | 'lee' | 'enhanced-lee' | 'frost' | 'gamma-map'
   const [speckleKernelSize, setSpeckleKernelSize] = useState(7);      // 3, 5, 7, 9, 11
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
@@ -344,9 +371,16 @@ function App() {
   // STAC search overlay layers
   const [stacLayers, setStacLayers] = useState([]);
 
+  // CMR footprints for OverviewMap (lat/lon geometry from CMR search results)
+  const [cmrFootprints, setCmrFootprints] = useState([]);
+  // Earthdata token shared between NISARSearch and OverviewMap footprint clicks
+  const [earthdataToken, setEarthdataToken] = useState('');
+  // Overview map visible extent for CMR bbox filtering [west, south, east, north]
+  const [overviewBounds, setOverviewBounds] = useState(null);
+
   // Overture Maps overlay state
   const [overtureEnabled, setOvertureEnabled] = useState(false);
-  const [overtureThemes, setOvertureThemes] = useState(['buildings']); // enabled themes
+  const [overtureThemes, setOvertureThemes] = useState(['base_water', 'divisions_boundary']); // enabled themes
   const [overtureData, setOvertureData] = useState(null);
   const [overtureLoading, setOvertureLoading] = useState(false);
   const [overtureOpacity, setOvertureOpacity] = useState(0.7);
@@ -1027,7 +1061,7 @@ function App() {
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
     console.log('[histogram] handleRecomputeHistogram called, scope:', histogramScope, 'displayMode:', displayMode, 'hasGetTile:', !!imageData?.getTile, 'hasGetRGBTile:', !!imageData?.getRGBTile, 'compositeId:', compositeId);
-    if (!imageData || !imageData.getTile) {
+    if (!imageData || !imageData.getTile || !imageData.bounds) {
       addStatusLog('warning', 'No tile data available for histogram');
       return;
     }
@@ -1132,7 +1166,14 @@ function App() {
         }
         if (hasAnyStats) {
           setHistogramData(hists);
-          addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`);
+          // Set per-channel contrast limits from p2/p98 percentiles
+          const lims = {};
+          for (const ch of ['R', 'G', 'B']) {
+            lims[ch] = hists[ch] ? [hists[ch].p2, hists[ch].p98] : [0, 1];
+          }
+          setRgbContrastLimits(lims);
+          addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`,
+            ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
         } else {
           addStatusLog('info', `${scopeLabel} histogram: no valid pixels in region`);
         }
@@ -1186,9 +1227,16 @@ function App() {
     }
   }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, roi, addStatusLog]);
 
-  // Recompute histogram when scope changes
+  // Recompute histogram when scope changes — but skip on initial load if
+  // metadata-based contrast was already applied (avoids redundant tile reads).
+  const skipInitialHistogramRef = useRef(false);
   useEffect(() => {
-    if (imageData) recomputeRef.current();
+    if (!imageData) return;
+    if (skipInitialHistogramRef.current) {
+      skipInitialHistogramRef.current = false;
+      return;
+    }
+    recomputeRef.current();
   }, [histogramScope, imageData]);
 
   // Auto-show histogram overlay when histogram data becomes available
@@ -1233,6 +1281,8 @@ function App() {
   useEffect(() => {
     if (useDecibels !== useDecibelsRef.current) {
       useDecibelsRef.current = useDecibels;
+      // Skip histogram recompute if initial metadata contrast was just applied
+      if (skipInitialHistogramRef.current) return;
       pendingAutoStretchRef.current = true;
       // Recompute histogram in the new scale (both single-band and RGB)
       if (imageData) {
@@ -1263,7 +1313,7 @@ function App() {
   const currentState = useMemo(() => ({
     source: fileType,
     file: fileType === 'cog' ? cogUrl : (nisarFile?.name || ''),
-    dataset: fileType === 'nisar' ? { frequency: selectedFrequency, polarization: selectedPolarization } : null,
+    dataset: (fileType === 'nisar' || fileType === 'nisar-gunw') ? { frequency: selectedFrequency, polarization: selectedPolarization } : null,
     displayMode,
     composite: compositeId,
     contrastMin,
@@ -1564,6 +1614,7 @@ function App() {
    */
   const autoFitIfNewScene = useCallback((newBounds) => {
     if (!newBounds) return;
+    console.log('[SARdine] autoFitIfNewScene:', newBounds, 'prev:', prevBoundsRef.current);
     const prev = prevBoundsRef.current;
     if (prev) {
       // Check if bounds overlap significantly (same track-frame)
@@ -1590,42 +1641,102 @@ function App() {
     prevBoundsRef.current = newBounds;
   }, []);
 
+  // Reset view to fit current image bounds (unconditional — ignores same-scene check)
+  const fitToBounds = useCallback(() => {
+    const bounds = imageData?.bounds;
+    if (!bounds) return;
+    const [minX, minY, maxX, maxY] = bounds;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    setViewCenter([cx, cy]);
+    const maxSpan = Math.max(maxX - minX, maxY - minY);
+    const viewportSize = 1000;
+    const zoom = Math.log2(viewportSize / maxSpan);
+    setViewZoom(zoom);
+    addStatusLog('info', 'View reset to image bounds');
+  }, [imageData, addStatusLog]);
+
   // Handle NISAR file selection - read metadata to get available datasets
   const handleNISARFileSelect = useCallback(async (file) => {
     if (!file) return;
 
     setNisarFile(file);
     setNisarDatasets([]);
+    setGunwDatasets(null);
     setLoading(true);
     setError(null);
-    addStatusLog('info', `Reading NISAR GCOV metadata from: ${file.name}`);
+    addStatusLog('info', `Reading NISAR metadata from: ${file.name}`);
 
     try {
-      const datasets = await listNISARDatasets(file);
-      setNisarDatasets(datasets);
+      // Auto-detect product type
+      const streamReader = await openNISARReader(file);
+      const { band, productType } = await detectNISARProduct(streamReader);
+      setNisarProductType(productType);
+      addStatusLog('info', `Detected product type: ${productType} (${band})`);
 
-      // Set defaults to first available dataset
-      if (datasets.length > 0) {
-        setSelectedFrequency(datasets[0].frequency);
-        setSelectedPolarization(datasets[0].polarization);
+      if (productType === 'GUNW') {
+        // GUNW path — list layers and datasets
+        const gunwResult = await listNISARGUNWDatasets(file, { band, _streamReader: streamReader });
+        setGunwDatasets(gunwResult);
+
+        // Build a flat dataset list for the shared UI (frequency + polarization)
+        const datasets = gunwResult.datasets;
+        setNisarDatasets(datasets);
+
+        // Set defaults — prefer frequency B when available
+        if (datasets.length > 0) {
+          const preferB = datasets.find(d => d.frequency === 'B') || datasets[0];
+          setSelectedFrequency(preferB.frequency);
+          setSelectedPolarization(preferB.polarization);
+          setSelectedLayer(preferB.layer);
+          setSelectedGunwDataset(preferB.dataset);
+        }
+
+        // No RGB composites for GUNW
+        setAvailableComposites([]);
+        setCompositeId(null);
+        setDisplayMode('single');
+
+        const layers = [...new Set(datasets.map(d => d.layer))];
+        addStatusLog('success', `Found ${datasets.length} GUNW datasets across ${layers.length} layer groups`,
+          layers.map(l => GUNW_LAYER_LABELS[l] || l).join(', '));
+      } else {
+        // GCOV path — existing behavior
+        const datasets = await listNISARDatasets(file);
+        setNisarDatasets(datasets);
+
+        if (datasets.length > 0) {
+          // Prefer frequency B when available
+          const preferB = datasets.find(d => d.frequency === 'B') || datasets[0];
+          setSelectedFrequency(preferB.frequency);
+          setSelectedPolarization(preferB.polarization);
+
+          // Apply auto-contrast immediately from metadata stats
+          const firstStats = preferB.stats;
+          if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
+            const meanDb = 10 * Math.log10(firstStats.mean_value);
+            const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
+            setContrastMin(Math.round(meanDb - 2 * stdDb));
+            setContrastMax(Math.round(meanDb + 2 * stdDb));
+            addStatusLog('info', 'Auto-contrast from metadata',
+              `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
+          }
+        }
+
+        const composites = getAvailableComposites(datasets);
+        setAvailableComposites(composites);
+
+        const autoComposite = autoSelectComposite(datasets);
+        setCompositeId(autoComposite);
+        setDisplayMode('single');
+
+        if (autoComposite) {
+          addStatusLog('info', `RGB composite available: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
+        }
+
+        addStatusLog('success', `Found ${datasets.length} datasets`,
+          datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
       }
-
-      // Compute available composites and auto-select
-      const composites = getAvailableComposites(datasets);
-      setAvailableComposites(composites);
-
-      // Pre-select a composite for when the user switches to RGB mode,
-      // but always default to single-band display
-      const autoComposite = autoSelectComposite(datasets);
-      setCompositeId(autoComposite);
-      setDisplayMode('single');
-
-      if (autoComposite) {
-        addStatusLog('info', `RGB composite available: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
-      }
-
-      addStatusLog('success', `Found ${datasets.length} datasets`,
-        datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
     } catch (e) {
       setError(`Failed to read NISAR file: ${e.message}`);
       addStatusLog('error', 'Failed to read NISAR metadata', e.message);
@@ -1708,25 +1819,69 @@ function App() {
     }
   }, [addStatusLog, autoFitIfNewScene]);
 
+  // Drag-and-drop handler — auto-detect file type from name/extension
+  const handleFileDrop = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length === 0) return;
+
+    const file = files[0];
+    const name = file.name.toLowerCase();
+
+    if (name.endsWith('.h5') || name.endsWith('.hdf5') || name.endsWith('.he5')) {
+      // Auto-detect GCOV vs GUNW from filename
+      if (name.includes('gunw') || name.includes('_unw_')) {
+        setFileType('nisar-gunw');
+      } else {
+        setFileType('nisar');
+      }
+      handleNISARFileSelect(file);
+    } else if (name.endsWith('.tif') || name.endsWith('.tiff')) {
+      setFileType('local-tif');
+      handleLocalTIFMultiSelect(files);
+    } else {
+      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5 or .tif files');
+    }
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog]);
+
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
     const { url, name, size, type, token } = fileInfo;
     addStatusLog('info', `Remote file selected: ${name}`);
 
     // Store auth token for subsequent data fetches (e.g. Earthdata bearer token from STAC search)
-    const fetchHeaders = token ? { 'Authorization': `Bearer ${token}` } : undefined;
+    // Strip "Bearer " prefix if user already included it
+    const cleanToken = token?.replace(/^Bearer\s+/i, '').trim();
+    const fetchHeaders = cleanToken ? { 'Authorization': `Bearer ${cleanToken}` } : undefined;
     handleRemoteFileSelect._fetchHeaders = fetchHeaders;
+    console.log(`[SARdine] Token: ${cleanToken ? `set (${cleanToken.slice(0, 8)}...)` : 'none'}, URL: ${url.slice(0, 80)}`);
+    if (!cleanToken) {
+      addStatusLog('warning', 'No Earthdata token — DAAC data URLs require authentication');
+    }
+
+    // Route external URLs through the Vite CORS proxy (dev only).
+    // h5chunk makes Range requests directly to this.url, so we rewrite once here.
+    let resolvedUrl = url;
+    try {
+      const u = new URL(url);
+      if (u.origin !== window.location.origin) {
+        resolvedUrl = `${window.location.origin}/stac-proxy/${encodeURIComponent(url)}`;
+      }
+    } catch { /* keep original if URL parsing fails */ }
 
     if (type === 'cog') {
       // Load as COG directly
-      setCogUrl(url);
+      setCogUrl(resolvedUrl);
       setFileType('cog');
       addStatusLog('info', `Loading COG from: ${url}`);
       return;
     }
 
     // NISAR HDF5 — stream from URL
-    setRemoteUrl(url);
+    setRemoteUrl(resolvedUrl);
     setRemoteName(name);
     setNisarDatasets([]);
     setLoading(true);
@@ -1734,7 +1889,7 @@ function App() {
 
     try {
       addStatusLog('info', `Streaming NISAR metadata from: ${name}`);
-      const result = await listNISARDatasetsFromUrl(url, { fetchHeaders });
+      const result = await listNISARDatasetsFromUrl(resolvedUrl, { fetchHeaders });
       const datasets = result.datasets || result;
       // Store the stream reader to reuse when loading (avoids re-downloading metadata)
       if (result._streamReader) {
@@ -1743,8 +1898,21 @@ function App() {
       setNisarDatasets(datasets);
 
       if (datasets.length > 0) {
-        setSelectedFrequency(datasets[0].frequency);
-        setSelectedPolarization(datasets[0].polarization);
+        // Prefer frequency B when available
+        const preferB = datasets.find(d => d.frequency === 'B') || datasets[0];
+        setSelectedFrequency(preferB.frequency);
+        setSelectedPolarization(preferB.polarization);
+
+        // Apply auto-contrast immediately from metadata stats (before data loads)
+        const firstStats = preferB.stats;
+        if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
+          const meanDb = 10 * Math.log10(firstStats.mean_value);
+          const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
+          setContrastMin(Math.round(meanDb - 2 * stdDb));
+          setContrastMax(Math.round(meanDb + 2 * stdDb));
+          addStatusLog('info', 'Auto-contrast from metadata',
+            `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
+        }
       }
 
       const composites = getAvailableComposites(datasets);
@@ -1755,9 +1923,17 @@ function App() {
 
       addStatusLog('success', `Found ${datasets.length} remote datasets`,
         datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
+
+      // Show dataset controls — user clicks "Load" manually (NISAR files are large)
     } catch (e) {
-      setError(`Failed to read remote NISAR file: ${e.message}`);
-      addStatusLog('error', 'Remote metadata read failed', e.message);
+      const isAuthErr = e.message?.includes('401') || e.message?.includes('403') || e.message?.includes('Unauthorized');
+      const hint = isAuthErr
+        ? (token
+            ? ' — Token may be expired. Run: curl -n https://urs.earthdata.nasa.gov/api/users/tokens and paste the access_token value'
+            : ' — Set your Earthdata token in the NISAR Search panel')
+        : '';
+      setError(`Failed to read remote NISAR file: ${e.message}${hint}`);
+      addStatusLog('error', `Remote metadata read failed${hint}`, e.message);
     } finally {
       setLoading(false);
     }
@@ -1825,6 +2001,39 @@ function App() {
 
         addStatusLog('success', 'Remote RGB composite loaded',
           `${data.width}x${data.height}, Composite: ${compositeId}`);
+
+        // Instant initial contrast from per-band stats (same as local file path)
+        setUseDecibels(false);
+        if (data.bandStats && Object.keys(data.bandStats).length > 0) {
+          const preset = SAR_COMPOSITES[compositeId];
+          if (preset?.channels) {
+            const lims = {};
+            for (const ch of ['R', 'G', 'B']) {
+              const chDef = preset.channels[ch];
+              if (chDef?.dataset && data.bandStats[chDef.dataset]) {
+                const s = data.bandStats[chDef.dataset];
+                const lo = Math.max(0, s.mean_value - 2 * s.sample_stddev);
+                const hi = s.mean_value + 2 * s.sample_stddev;
+                lims[ch] = [lo, hi];
+              } else if (chDef?.datasets && chDef.datasets.length === 2) {
+                const s0 = data.bandStats[chDef.datasets[0]];
+                const s1 = data.bandStats[chDef.datasets[1]];
+                if (s0 && s1) {
+                  const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
+                  lims[ch] = [ratio * 0.3, ratio * 3];
+                } else {
+                  lims[ch] = [0, 1];
+                }
+              } else {
+                lims[ch] = [0, 1];
+              }
+            }
+            setRgbContrastLimits(lims);
+            setHistogramScope('viewport');
+            addStatusLog('info', 'Initial contrast from band statistics',
+              ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
+          }
+        }
       } else {
         // Single band mode
         addStatusLog('info', `Loading remote NISAR: ${selectedFrequency}/${selectedPolarization}`);
@@ -1851,13 +2060,35 @@ function App() {
 
         addStatusLog('success', `Remote NISAR loaded: ${data.width}×${data.height}`,
           `URL: ${remoteUrl}`);
+
+        // Use embedded HDF5 statistics for auto-contrast (same as local file path)
+        if (data.stats && data.stats.mean_value !== undefined) {
+          const { mean_value, sample_stddev } = data.stats;
+          if (mean_value > 0 && sample_stddev > 0) {
+            const meanDb = 10 * Math.log10(mean_value);
+            const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+            setContrastMin(Math.round(meanDb - 2 * stdDb));
+            setContrastMax(Math.round(meanDb + 2 * stdDb));
+            addStatusLog('info', 'Auto-contrast from HDF5 statistics',
+              `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
+          }
+        }
       }
 
-      if (gen !== loadGenRef.current) return; // stale load
+      if (gen !== loadGenRef.current) {
+        console.log('[SARdine] Stale load gen, skipping setImageData');
+        return;
+      }
+      console.log('[SARdine] Setting imageData:', data.width, 'x', data.height, 'bounds:', data.bounds);
       setImageData(data);
 
       // Auto-fit view only if this is a new scene (different track-frame)
       autoFitIfNewScene(data.bounds);
+
+      // Auto-open OverviewMap when loading from CMR so user sees geographic context
+      if (fileType === 'cmr') {
+        setOverviewMapVisible(true);
+      }
 
       // Compute histograms in background (don't block loading)
       if (displayMode === 'rgb' && data.getRGBTile) {
@@ -1934,12 +2165,15 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, addStatusLog, autoFitIfNewScene]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene]);
+
+  // Note: Auto-load removed — NISAR files are large (multi-GB), user clicks "Load" manually
+  // after selecting a granule and reviewing the dataset/frequency/polarization options.
 
   // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
     if (!nisarFile) {
-      setError('Please select a NISAR GCOV HDF5 file');
+      setError('Please select a NISAR HDF5 file');
       addStatusLog('error', 'No NISAR file selected');
       return;
     }
@@ -1950,8 +2184,82 @@ function App() {
     try {
       let data;
 
-      if (displayMode === 'rgb' && compositeId) {
-        // RGB composite mode
+      if (nisarProductType === 'GUNW') {
+        // ── GUNW loading path ──
+        const dsLabel = `${selectedLayer}/${selectedGunwDataset} (${selectedPolarization})`;
+        addStatusLog('info', `Loading GUNW dataset: ${dsLabel}`);
+
+        data = await loadNISARGUNW(nisarFile, {
+          frequency: selectedFrequency,
+          layer: selectedLayer,
+          polarization: selectedPolarization,
+          dataset: selectedGunwDataset,
+          withCoherence: useCoherenceMask,
+          _streamReader: gunwDatasets?._streamReader || null,
+        });
+
+        addStatusLog('success', 'GUNW dataset loaded',
+          `${data.width}x${data.height}, CRS: ${data.crs || 'N/A'}, bounds: [${(data.bounds || []).map(b => b.toFixed(2)).join(', ')}]`);
+
+        // Apply render mode defaults — GUNW uses linear scaling, not dB
+        const rm = data.renderMode || {};
+        setUseDecibels(rm.transform === 'dB');
+        if (rm.colormap) setColormap(rm.colormap);
+        if (rm.defaultRange) {
+          setContrastMin(rm.defaultRange[0]);
+          setContrastMax(rm.defaultRange[1]);
+        } else if (data.attributes) {
+          // Use HDF5 valid_min/valid_max attributes for initial contrast if available
+          const attrs = data.attributes;
+          const vMin = attrs.valid_min ?? attrs.valid_range?.[0];
+          const vMax = attrs.valid_max ?? attrs.valid_range?.[1];
+          if (vMin != null && vMax != null && isFinite(vMin) && isFinite(vMax)) {
+            const isDiverging = rm.colormap === 'rdbu' || rm.colormap === 'diverging';
+            if (isDiverging) {
+              const absMax = Math.max(Math.abs(vMin), Math.abs(vMax));
+              setContrastMin(Number((-absMax).toFixed(3)));
+              setContrastMax(Number(absMax.toFixed(3)));
+            } else {
+              setContrastMin(Number(Number(vMin).toFixed(3)));
+              setContrastMax(Number(Number(vMax).toFixed(3)));
+            }
+            addStatusLog('info', `Initial contrast from metadata: ${vMin} to ${vMax} ${rm.unit || ''}`);
+          }
+        }
+
+        // Load incidence angle grid from GUNW radarGrid metadata cube
+        try {
+          const reader = data._streamReader || gunwDatasets?._streamReader;
+          const band = data.band || 'LSAR';
+          if (reader) {
+            const cube = await loadMetadataCube(reader, band, { product: 'GUNW', fields: ['incidenceAngle'] });
+            if (cube && cube.fields.incidenceAngle) {
+              // Evaluate on a coarse grid matching image extent
+              const iaWidth = Math.min(512, data.width);
+              const iaHeight = Math.min(512, data.height);
+              // Build coordinate arrays spanning the image bounds
+              const [bMinX, bMinY, bMaxX, bMaxY] = data.bounds;
+              const iaXCoords = new Float64Array(iaWidth);
+              const iaYCoords = new Float64Array(iaHeight);
+              for (let i = 0; i < iaWidth; i++) iaXCoords[i] = bMinX + (i / (iaWidth - 1)) * (bMaxX - bMinX);
+              for (let i = 0; i < iaHeight; i++) iaYCoords[i] = bMaxY - (i / (iaHeight - 1)) * (bMaxY - bMinY);
+              const iaGrid = cube.evaluateOnGrid('incidenceAngle', iaXCoords, iaYCoords, iaWidth, iaHeight, null, 4);
+              setGunwIncidenceAngleGrid({ data: iaGrid, width: iaWidth, height: iaHeight });
+              const angles = Array.from(iaGrid).filter(v => !isNaN(v));
+              if (angles.length > 0) {
+                const sorted = angles.sort((a, b) => a - b);
+                addStatusLog('info', `GUNW incidence angle: ${sorted[0].toFixed(1)}°–${sorted[sorted.length - 1].toFixed(1)}°`);
+              }
+            } else {
+              setGunwIncidenceAngleGrid(null);
+            }
+          }
+        } catch (e) {
+          console.warn('[main] Failed to load GUNW incidence angle grid:', e);
+          setGunwIncidenceAngleGrid(null);
+        }
+      } else if (displayMode === 'rgb' && compositeId) {
+        // ── GCOV RGB composite mode ──
         const requiredPols = getRequiredDatasets(compositeId);
         const requiredComplexPols = getRequiredComplexDatasets(compositeId);
         addStatusLog('info', `Loading RGB composite: ${compositeId} (${requiredPols.join(', ')}${requiredComplexPols.length ? ' + complex: ' + requiredComplexPols.join(', ') : ''})`);
@@ -1971,7 +2279,7 @@ function App() {
         addStatusLog('success', 'RGB composite loaded',
           `${data.width}x${data.height}, Composite: ${compositeId}`);
       } else {
-        // Single band mode
+        // ── GCOV single band mode ──
         addStatusLog('info', `Loading NISAR dataset: ${selectedFrequency}/${selectedPolarization}`);
 
         data = await loadNISARGCOV(nisarFile, {
@@ -2001,109 +2309,101 @@ function App() {
 
       setImageData(data);
 
+      // Compute incidence angle grid from metadata cube (GCOV only)
+      if (data.metadataCube && data.xCoords && data.yCoords) {
+        try {
+          const iaWidth = Math.min(512, data.width);
+          const iaHeight = Math.min(512, data.height);
+          const ml = Math.max(1, Math.floor(data.width / iaWidth));
+          const iaGrid = data.metadataCube.evaluateAllFields(
+            data.xCoords, data.yCoords, iaWidth, iaHeight, ml
+          );
+          if (iaGrid.incidenceAngle) {
+            setIncidenceAngleGrid({ data: iaGrid.incidenceAngle, width: iaWidth, height: iaHeight });
+            const angles = Array.from(iaGrid.incidenceAngle).filter(v => !isNaN(v));
+            if (angles.length > 0) {
+              const sorted = angles.sort((a, b) => a - b);
+              setIncAngleMin(Math.floor(sorted[0]));
+              setIncAngleMax(Math.ceil(sorted[sorted.length - 1]));
+              addStatusLog('info', `Incidence angle: ${sorted[0].toFixed(1)}° – ${sorted[sorted.length - 1].toFixed(1)}°`);
+            }
+          }
+          // Compute scatter plot data (backscatter vs incidence angle)
+          sampleScatterData(data).then(sd => {
+            if (sd) setIncidenceScatterData(sd);
+          }).catch(() => {});
+        } catch (e) {
+          console.warn('[main] Failed to compute incidence angle grid:', e);
+        }
+      } else {
+        setIncidenceAngleGrid(null);
+        setIncidenceScatterData(null);
+      }
+
       // Auto-fit view only if this is a new scene (different track-frame)
       autoFitIfNewScene(data.bounds);
 
-      // Compute histograms for per-channel contrast
-      try {
-        if (displayMode === 'rgb' && data.getRGBTile) {
-          addStatusLog('info', 'Computing per-channel histograms (linear)...');
-          const tileSize = 256;
-          const gridSize = 3;
-          // Use world-coordinate bounds for bbox sampling
-          const [rgbMinX, rgbMinY, rgbMaxX, rgbMaxY] = data.bounds;
-          const stepX = (rgbMaxX - rgbMinX) / gridSize;
-          const stepY = (rgbMaxY - rgbMinY) / gridSize;
-          const rawValues = { R: [], G: [], B: [] };
+      // Set scale mode for RGB — React 18 batches this with setImageData above,
+      // so the useEffect-triggered histogram recompute sees useDecibels=false.
+      if (displayMode === 'rgb') {
+        setUseDecibels(false);
 
-          // Fetch all 9 tiles concurrently
-          const tilePromises = [];
-          for (let ty = 0; ty < gridSize; ty++) {
-            for (let tx = 0; tx < gridSize; tx++) {
-              const left = rgbMinX + tx * stepX;
-              const right = rgbMinX + (tx + 1) * stepX;
-              const top = rgbMinY + ty * stepY;
-              const bottom = rgbMinY + (ty + 1) * stepY;
-              tilePromises.push(data.getRGBTile({
-                x: tx, y: ty, z: 0,
-                bbox: { left, top, right, bottom },
-              }));
-            }
-          }
-          const tileResults = await Promise.allSettled(tilePromises);
-
-          for (const result of tileResults) {
-            if (result.status === 'fulfilled' && result.value?.bands) {
-              const rgbBands = computeRGBBands(result.value.bands, compositeId, tileSize);
-              for (const ch of ['R', 'G', 'B']) {
-                const arr = rgbBands[ch];
-                for (let i = 0; i < arr.length; i += 4) {
-                  if (arr[i] > 0 && !isNaN(arr[i])) rawValues[ch].push(arr[i]);
+        // Instant initial contrast from per-band center-chunk statistics.
+        // Uses mean ± 2*stddev as p2/p98 proxy — rough but immediate.
+        // Viewport histogram refines contrast once the user sees the image.
+        if (data.bandStats && Object.keys(data.bandStats).length > 0) {
+          const preset = SAR_COMPOSITES[compositeId];
+          if (preset?.channels) {
+            const lims = {};
+            for (const ch of ['R', 'G', 'B']) {
+              const chDef = preset.channels[ch];
+              if (chDef?.dataset && data.bandStats[chDef.dataset]) {
+                // Direct band → channel: use band stats
+                const s = data.bandStats[chDef.dataset];
+                const lo = Math.max(0, s.mean_value - 2 * s.sample_stddev);
+                const hi = s.mean_value + 2 * s.sample_stddev;
+                lims[ch] = [lo, hi];
+              } else if (chDef?.datasets && chDef.datasets.length === 2) {
+                // Ratio channel (e.g. HH/HV): estimate from constituent bands
+                const s0 = data.bandStats[chDef.datasets[0]];
+                const s1 = data.bandStats[chDef.datasets[1]];
+                if (s0 && s1) {
+                  const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
+                  lims[ch] = [ratio * 0.3, ratio * 3];
+                } else {
+                  lims[ch] = [0, 1];
                 }
+              } else {
+                lims[ch] = [0, 1];
               }
             }
-          }
-
-          const hists = {};
-          const lims = {};
-          for (const ch of ['R', 'G', 'B']) {
-            const arr = rawValues[ch] instanceof Float32Array ? rawValues[ch] : new Float32Array(rawValues[ch]);
-            const st = await computeChannelStatsAuto(arr, false);
-            hists[ch] = st;
-            lims[ch] = st ? [st.p2, st.p98] : [0, 1];
-          }
-
-          setHistogramData(hists);
-          setRgbContrastLimits(lims);
-          setUseDecibels(false); // Linear for RGB composites
-          addStatusLog('success', 'Per-channel contrast set (linear 2–98%)',
-            ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
-        } else if (data.getTile) {
-          const hasH5Stats = data.stats && data.stats.mean_value > 0 && data.stats.sample_stddev > 0;
-
-          if (hasH5Stats) {
-            // Use HDF5 embedded statistics for instant histogram — no tile reads needed.
-            // Synthetic Gaussian from mean/stddev. Switch to viewport scope for real pixel data.
-            const { mean_value, sample_stddev } = data.stats;
-            const meanDb = 10 * Math.log10(mean_value);
-            const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
-            const syntheticMin = meanDb - 4 * stdDb;
-            const syntheticMax = meanDb + 4 * stdDb;
-            const numBins = 128;
-            const binWidth = (syntheticMax - syntheticMin) / numBins;
-            const bins = new Array(numBins).fill(0);
-            const syntheticCount = 100000;
-            for (let b = 0; b < numBins; b++) {
-              const binCenter = syntheticMin + (b + 0.5) * binWidth;
-              const z = (binCenter - meanDb) / stdDb;
-              bins[b] = Math.round(syntheticCount * Math.exp(-0.5 * z * z) / (stdDb * Math.sqrt(2 * Math.PI)) * binWidth);
-            }
-            const p2 = meanDb - 2 * stdDb;
-            const p98 = meanDb + 2 * stdDb;
-            setHistogramData({ single: { bins, min: syntheticMin, max: syntheticMax, mean: meanDb, binWidth, count: syntheticCount, p2, p98 } });
-            addStatusLog('success', `Histogram from HDF5 statistics: ${p2.toFixed(1)} to ${p98.toFixed(1)} dB`);
-          } else {
-            // No HDF5 stats — compute from tile samples
-            addStatusLog('info', 'Computing histogram from tile samples...');
-            const [hMinX, hMinY, hMaxX, hMaxY] = data.bounds;
-            const stats = await sampleViewportStats(
-              data.getTile, hMaxX - hMinX, hMaxY - hMinY, useDecibels, 128,
-              hMinX, hMinY,
-            );
-            if (stats) {
-              setHistogramData({ single: stats });
-              setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
-              setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
-              const unit = useDecibels ? 'dB' : '';
-              addStatusLog('success', `Auto-contrast from 2–98%: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
-            }
+            setRgbContrastLimits(lims);
+            setHistogramScope('viewport');
+            // Suppress all useEffect-triggered histogram recomputes on initial load —
+            // metadata contrast is good enough until the user navigates.
+            skipInitialHistogramRef.current = true;
+            // Pre-sync the useDecibels ref so its change-detection effect doesn't fire
+            useDecibelsRef.current = false;
+            addStatusLog('info', 'Initial contrast from metadata (viewport histogram will refine)',
+              ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
           }
         }
-      } catch (e) {
-        addStatusLog('warning', 'Could not compute histogram', e.message);
       }
 
-      addStatusLog('success', 'NISAR GCOV loaded and ready to display');
+      // For GUNW with a default render-mode range, apply it immediately (no tile reads)
+      if (nisarProductType === 'GUNW' && data.renderMode?.defaultRange) {
+        const rm = data.renderMode;
+        addStatusLog('success', `Using default range: ${rm.defaultRange[0]} to ${rm.defaultRange[1]} ${rm.unit || ''}`);
+      }
+
+      // Single-band auto-contrast from HDF5 stats is already applied above
+      // (inside the GCOV single-band loading block, lines ~2156-2167).
+
+      // Histogram computation runs non-blocking via useEffect → handleRecomputeHistogram
+      // after setImageData triggers a re-render. This avoids blocking the UI for
+      // large files (previously 60+ seconds for 7 GB GCOV RGB composites).
+
+      addStatusLog('success', `NISAR ${nisarProductType} loaded and ready to display`);
     } catch (e) {
       setError(`Failed to load NISAR dataset: ${e.message}`);
       setImageData(null);
@@ -2112,7 +2412,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [nisarFile, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog, autoFitIfNewScene]);
+  }, [nisarFile, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, useCoherenceMask, addStatusLog, autoFitIfNewScene]);
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
@@ -2541,7 +2841,7 @@ function App() {
         compositeId: displayMode === 'rgb' ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
-        filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
+        filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
         crs: imageData?.crs || '',
         histogramData: showHistogramOverlay ? histogramData : null,
         polarization: selectedPolarization,
@@ -2585,7 +2885,7 @@ function App() {
         compositeId: displayMode === 'rgb' ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
-        filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
+        filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
         crs: imageData?.crs || '',
         roi,
         profileData: null,
@@ -2705,9 +3005,9 @@ function App() {
     // Re-load from source after state clears
     await new Promise(r => setTimeout(r, 50));
 
-    if (fileType === 'nisar' && nisarFile) {
+    if ((fileType === 'nisar' || fileType === 'nisar-gunw') && nisarFile) {
       handleLoadNISAR();
-    } else if (fileType === 'nisar' && remoteUrl) {
+    } else if ((fileType === 'nisar' || fileType === 'nisar-gunw' || fileType === 'cmr') && remoteUrl) {
       handleLoadRemoteNISAR();
     } else if ((fileType === 'cog' || fileType === 'remote') && cogUrl) {
       handleLoadCOG();
@@ -2716,60 +3016,29 @@ function App() {
     }
   }, [imageData, fileType, nisarFile, remoteUrl, cogUrl, addStatusLog, handleLoadNISAR, handleLoadRemoteNISAR, handleLoadCOG]);
 
-  // Fetch Overture features when viewport changes (debounced)
+  // Fetch Overture features for entire scene extent (once per enable/theme/data change)
   useEffect(() => {
     if (!overtureEnabled || overtureThemes.length === 0) return;
 
-    // Clear previous debounce
-    if (overtureDebounceRef.current) {
-      clearTimeout(overtureDebounceRef.current);
-    }
+    if (overtureDebounceRef.current) clearTimeout(overtureDebounceRef.current);
 
     overtureDebounceRef.current = setTimeout(async () => {
       try {
         setOvertureLoading(true);
-
         let wgs84Bbox;
 
         if (imageData) {
-          // Calculate viewport bbox in pixel/projected coordinates
-          const vpHalfW = (imageData.width / Math.pow(2, viewZoom)) * 500;
-          const vpHalfH = (imageData.height / Math.pow(2, viewZoom)) * 500;
-          const cx = viewCenter[0];
-          const cy = viewCenter[1];
-
-          const projBbox = [
-            cx - vpHalfW,
-            cy - vpHalfH,
-            cx + vpHalfW,
-            cy + vpHalfH,
-          ];
-
-          // Convert to WGS84 for Overture queries
+          // Use full image extent — fetch once, no viewport tracking
+          const globalBounds = imageData.worldBounds || imageData.bounds;
           const crs = imageData.crs || 'EPSG:4326';
-          wgs84Bbox = projectedToWGS84(
-            imageData.worldBounds || projBbox,
-            crs
-          );
+          wgs84Bbox = projectedToWGS84(globalBounds, crs);
         } else {
-          // No imageData (STAC mode) - compute bbox from viewCenter/viewZoom
-          const cx = viewCenter[0];
-          const cy = viewCenter[1];
-          const span = 360 / Math.pow(2, viewZoom + 1);
-          // Clamp latitude to avoid poles (Web Mercator limit)
-          const minLat = Math.max(-85, cy - span/2);
-          const maxLat = Math.min(85, cy + span/2);
-          wgs84Bbox = [cx - span/2, minLat, cx + span/2, maxLat];
+          // No image loaded — use a default global bbox
+          wgs84Bbox = [-180, -85, 180, 85];
         }
 
-        addStatusLog('info', `Fetching Overture data: [${wgs84Bbox.map(b => b.toFixed(4)).join(', ')}]`);
-
-        const data = await fetchAllOvertureThemes(overtureThemes, wgs84Bbox, {
-          onProgress: (pct) => {
-            if (pct === 100) addStatusLog('info', 'Overture fetch complete');
-          },
-        });
-
+        addStatusLog('info', `Fetching Overture for scene extent...`);
+        const data = await fetchAllOvertureThemes(overtureThemes, wgs84Bbox);
         setOvertureData(data);
 
         const totalFeatures = Object.values(data).reduce(
@@ -2781,14 +3050,10 @@ function App() {
       } finally {
         setOvertureLoading(false);
       }
-    }, 800); // 800ms debounce
+    }, 300);
 
-    return () => {
-      if (overtureDebounceRef.current) {
-        clearTimeout(overtureDebounceRef.current);
-      }
-    };
-  }, [overtureEnabled, overtureThemes, viewCenter, viewZoom, imageData, addStatusLog]);
+    return () => { if (overtureDebounceRef.current) clearTimeout(overtureDebounceRef.current); };
+  }, [overtureEnabled, overtureThemes, imageData, addStatusLog]);
 
   // Build Overture overlay layers for deck.gl
   const overtureLayers = useMemo(() => {
@@ -2799,7 +3064,29 @@ function App() {
 
   // NOTE: Duplicate block removed — all handlers defined above
   return (
-    <div id="app">
+    <div id="app"
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDragOver(false); }}
+      onDrop={handleFileDrop}
+    >
+      {/* Drag-and-drop overlay */}
+      {dragOver && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9999,
+          background: 'rgba(0, 180, 220, 0.15)',
+          border: '3px dashed rgba(0, 180, 220, 0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          pointerEvents: 'none',
+        }}>
+          <div style={{
+            padding: '24px 48px', borderRadius: '12px',
+            background: 'rgba(0, 0, 0, 0.7)', color: '#fff',
+            fontSize: '1.2rem', fontWeight: 600,
+          }}>
+            Drop NISAR HDF5 or GeoTIFF file
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="header">
         <h1><span className="sar">SAR</span>dine</h1>
@@ -2815,10 +3102,10 @@ function App() {
             <div className="control-group">
               <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
                 <option value="nisar">Local HDF5 (NISAR GCOV)</option>
+                <option value="nisar-gunw">Local HDF5 (NISAR GUNW)</option>
                 <option value="local-tif">Local GeoTIFF</option>
                 <option value="remote">Remote URL / S3</option>
-                <option value="stac">ASF / STAC Search</option>
-                <option value="catalog">Scene Catalog (GeoJSON)</option>
+                <option value="cmr">NISAR Search (CMR)</option>
               </select>
             </div>
           </CollapsibleSection>
@@ -2873,8 +3160,8 @@ function App() {
           )}
 
           {/* NISAR HDF5 Input */}
-          {fileType === 'nisar' && (
-            <CollapsibleSection title="Load NISAR GCOV">
+          {(fileType === 'nisar' || fileType === 'nisar-gunw') && (
+            <CollapsibleSection title={`Load NISAR ${nisarProductType}`}>
               <div className="control-group">
                 <label>HDF5 File</label>
                 <input
@@ -2957,11 +3244,12 @@ function App() {
             </CollapsibleSection>
           )}
 
-          {/* STAC Catalog Search */}
-          {fileType === 'stac' && (
-            <CollapsibleSection title="STAC Catalog Search">
-              <STACSearch
+          {/* NISAR CMR Search */}
+          {fileType === 'cmr' && (
+            <CollapsibleSection title="NISAR Search (CMR)">
+              <NISARSearch
                 onSelectScene={(sceneInfo) => {
+                  // Fetch metadata only — user clicks "Load Dataset" to stream data
                   handleRemoteFileSelect({
                     url: sceneInfo.url,
                     name: sceneInfo.name,
@@ -2969,66 +3257,49 @@ function App() {
                     type: sceneInfo.type || 'nisar',
                     token: sceneInfo.token,
                   });
+                  // Auto-open OverviewMap to show geographic context
+                  setOverviewMapVisible(true);
                 }}
-                onSelectMultiple={async ({ scenes, mode }) => {
-                  // Route multi-select to existing multi-file COG loaders
-                  const cogScenes = scenes.filter(s => s.type === 'cog');
-                  const nisarScenes = scenes.filter(s => s.type === 'nisar');
+                onSelectTimeSeries={async ({ scenes, token: tsToken, type }) => {
+                  addStatusLog('info', `Loading time series: ${scenes.length} scenes`);
+                  setLoading(true);
+                  setError(null);
+                  try {
+                    const fetchHeaders = tsToken ? { 'Authorization': `Bearer ${tsToken}` } : undefined;
+                    const urls = scenes.map(s => s.url);
 
-                  if (cogScenes.length >= 2) {
-                    // Load COGs via existing multi-file pipeline
-                    const urls = cogScenes.map(s => s.url);
-                    const names = cogScenes.map(s => s.name);
-                    addStatusLog('info', `Loading ${cogScenes.length} COGs as ${mode}`);
-
-                    setLoading(true);
-                    setError(null);
-                    try {
-                      let data;
-                      if (mode === 'multi-band') {
-                        data = await loadMultiBandCOG({ urls, bands: names });
-                        addStatusLog('success', `Multi-band loaded: ${data.bandNames?.join(', ')}`);
-                      } else {
-                        const acquisitions = cogScenes.map(s => ({
-                          url: s.url,
-                          date: s.datetime || s.name,
-                          label: s.name,
-                        }));
-                        data = await loadTemporalCOGs(acquisitions);
-                        addStatusLog('success', `Temporal stack loaded: ${data.acquisitionCount} dates`);
-                      }
-                      setImageData(data);
-                      if (data.bounds) {
-                        const [minX, minY, maxX, maxY] = data.bounds;
-                        setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
-                        const span = Math.max(maxX - minX, maxY - minY);
-                        setViewZoom(Math.log2(360 / span) - 1);
-                      }
-                    } catch (e) {
-                      setError(`Multi-file load failed: ${e.message}`);
-                      addStatusLog('error', 'Multi-file load failed', e.message);
-                    } finally {
-                      setLoading(false);
-                    }
-                  } else if (nisarScenes.length >= 1) {
-                    // For NISAR HDF5 — load first selected, note that multi-HDF5 isn't supported yet
-                    addStatusLog('info', `Loading first NISAR scene: ${nisarScenes[0].name}`);
-                    if (nisarScenes.length > 1) {
-                      addStatusLog('warning', `Multi-HDF5 loading not yet supported — loading first of ${nisarScenes.length}`);
-                    }
-                    handleRemoteFileSelect({
-                      url: nisarScenes[0].url,
-                      name: nisarScenes[0].name,
+                    // Load first scene fully to get datasets and viewer state
+                    const firstScene = scenes[0];
+                    await handleRemoteFileSelect({
+                      url: firstScene.url,
+                      name: `${scenes.length}-scene time series (${firstScene.name})`,
                       size: 0,
-                      type: 'nisar',
+                      type: type || 'nisar',
+                      token: tsToken,
                     });
-                  } else {
-                    addStatusLog('warning', 'No loadable scenes in selection');
+
+                    addStatusLog('success', `Time series initialized with ${scenes.length} scenes`,
+                      scenes.map(s => {
+                        const date = s.datetime ? new Date(s.datetime).toISOString().slice(0, 10) : '?';
+                        return `${date}: ${s.name.slice(-30)}`;
+                      }).join('\n'));
+
+                    // Store the full scene list for later ROI-based time series extraction
+                    // (loadNISARTimeSeriesROI can be called once user defines an ROI)
+                    handleRemoteFileSelect._timeSeriesScenes = scenes;
+                    handleRemoteFileSelect._timeSeriesToken = tsToken;
+                  } catch (e) {
+                    setError(`Time series load failed: ${e.message}`);
+                    addStatusLog('error', 'Time series load failed', e.message);
+                  } finally {
+                    setLoading(false);
                   }
                 }}
+                onTokenChange={setEarthdataToken}
                 onStatus={addStatusLog}
                 onLayersChange={setStacLayers}
-                viewBounds={computedViewBounds}
+                onGranulesChange={setCmrFootprints}
+                viewBounds={overviewBounds}
                 onZoomToBounds={(bbox) => {
                   const [minX, minY, maxX, maxY] = bbox;
                   setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
@@ -3046,6 +3317,11 @@ function App() {
               <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                 {nisarFile ? nisarFile.name : remoteName || 'Remote'}
                 {nisarFile && ` (${(nisarFile.size / 1e9).toFixed(2)} GB)`}
+                {nisarProductType !== 'GCOV' && (
+                  <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)', fontWeight: 600 }}>
+                    {nisarProductType}
+                  </span>
+                )}
               </div>
 
               <div className="control-group">
@@ -3055,7 +3331,21 @@ function App() {
                   onChange={(e) => {
                     setSelectedFrequency(e.target.value);
                     const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
-                    if (freqDs.length > 0) setSelectedPolarization(freqDs[0].polarization);
+                    if (freqDs.length > 0) {
+                      setSelectedPolarization(freqDs[0].polarization);
+                      if (nisarProductType === 'GUNW') {
+                        setSelectedLayer(freqDs[0].layer);
+                        setSelectedGunwDataset(freqDs[0].dataset);
+                      }
+                      // Update contrast from metadata stats for the new frequency
+                      const ds = freqDs[0];
+                      if (ds?.stats?.mean_value > 0 && ds?.stats?.sample_stddev > 0) {
+                        const meanDb = 10 * Math.log10(ds.stats.mean_value);
+                        const stdDb = Math.abs(10 * Math.log10(ds.stats.sample_stddev / ds.stats.mean_value));
+                        setContrastMin(Math.round(meanDb - 2 * stdDb));
+                        setContrastMax(Math.round(meanDb + 2 * stdDb));
+                      }
+                    }
                   }}
                 >
                   {[...new Set(nisarDatasets.map(d => d.frequency))].map(f => (
@@ -3064,36 +3354,107 @@ function App() {
                 </select>
               </div>
 
+              {/* GUNW-specific: Layer group selector */}
+              {nisarProductType === 'GUNW' && (
+                <div className="control-group">
+                  <label>Layer</label>
+                  <select
+                    value={selectedLayer}
+                    onChange={(e) => {
+                      setSelectedLayer(e.target.value);
+                      // Auto-select first dataset + polarization in the new layer
+                      const layerDs = nisarDatasets.filter(d =>
+                        d.frequency === selectedFrequency && d.layer === e.target.value
+                      );
+                      if (layerDs.length > 0) {
+                        setSelectedPolarization(layerDs[0].polarization);
+                        setSelectedGunwDataset(layerDs[0].dataset);
+                      }
+                    }}
+                  >
+                    {[...new Set(nisarDatasets
+                      .filter(d => d.frequency === selectedFrequency)
+                      .map(d => d.layer)
+                    )].map(l => (
+                      <option key={l} value={l}>
+                        {GUNW_LAYER_LABELS[l] || l}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* GUNW-specific: Dataset selector within layer */}
+              {nisarProductType === 'GUNW' && (
+                <div className="control-group">
+                  <label>Dataset</label>
+                  <select
+                    value={selectedGunwDataset}
+                    onChange={(e) => setSelectedGunwDataset(e.target.value)}
+                  >
+                    {[...new Set(nisarDatasets
+                      .filter(d =>
+                        d.frequency === selectedFrequency &&
+                        d.layer === selectedLayer
+                      )
+                      .map(d => d.dataset)
+                    )].map(ds => (
+                      <option key={ds} value={ds}>
+                        {GUNW_DATASET_LABELS[ds] || ds}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="control-group">
                 <label>Polarization</label>
                 <select
                   value={selectedPolarization}
-                  onChange={(e) => setSelectedPolarization(e.target.value)}
+                  onChange={(e) => {
+                    const pol = e.target.value;
+                    setSelectedPolarization(pol);
+                    // Update contrast from metadata stats for the new polarization
+                    const ds = nisarDatasets.find(d => d.frequency === selectedFrequency && d.polarization === pol);
+                    if (ds?.stats?.mean_value > 0 && ds?.stats?.sample_stddev > 0) {
+                      const meanDb = 10 * Math.log10(ds.stats.mean_value);
+                      const stdDb = Math.abs(10 * Math.log10(ds.stats.sample_stddev / ds.stats.mean_value));
+                      setContrastMin(Math.round(meanDb - 2 * stdDb));
+                      setContrastMax(Math.round(meanDb + 2 * stdDb));
+                    }
+                  }}
                 >
-                  {nisarDatasets
-                    .filter(d => d.frequency === selectedFrequency)
-                    .map(d => (
-                      <option key={d.polarization} value={d.polarization}>
-                        {d.polarization}
-                      </option>
-                    ))}
+                  {[...new Set(nisarDatasets
+                    .filter(d => nisarProductType === 'GUNW'
+                      ? (d.frequency === selectedFrequency && d.layer === selectedLayer)
+                      : d.frequency === selectedFrequency
+                    )
+                    .map(d => d.polarization)
+                  )].map(pol => (
+                    <option key={pol} value={pol}>
+                      {pol}
+                    </option>
+                  ))}
                 </select>
               </div>
 
-              <div className="control-group">
-                <label>Display Mode</label>
-                <select
-                  value={displayMode}
-                  onChange={(e) => setDisplayMode(e.target.value)}
-                >
-                  <option value="single">Single Band</option>
-                  <option value="rgb" disabled={availableComposites.length === 0}>
-                    RGB Composite
-                  </option>
-                </select>
-              </div>
+              {/* Display mode — only for GCOV (GUNW has no RGB composites) */}
+              {nisarProductType === 'GCOV' && (
+                <div className="control-group">
+                  <label>Display Mode</label>
+                  <select
+                    value={displayMode}
+                    onChange={(e) => setDisplayMode(e.target.value)}
+                  >
+                    <option value="single">Single Band</option>
+                    <option value="rgb" disabled={availableComposites.length === 0}>
+                      RGB Composite
+                    </option>
+                  </select>
+                </div>
+              )}
 
-              {displayMode === 'rgb' && availableComposites.length > 0 && (
+              {displayMode === 'rgb' && availableComposites.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
                   <label>Composite</label>
                   <select
@@ -3112,13 +3473,94 @@ function App() {
                 </div>
               )}
 
-              <button
-                onClick={remoteUrl ? handleLoadRemoteNISAR : handleLoadNISAR}
-                disabled={loading}
-                style={{ width: '100%' }}
-              >
-                {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
-              </button>
+              {/* GUNW-specific: Coherence mask toggle */}
+              {nisarProductType === 'GUNW' && selectedGunwDataset !== 'coherenceMagnitude' && (
+                <div className="control-group">
+                  <div className="control-row">
+                    <input
+                      type="checkbox"
+                      id="cohMask"
+                      checked={useCoherenceMask}
+                      onChange={(e) => setUseCoherenceMask(e.target.checked)}
+                    />
+                    <label htmlFor="cohMask">Coherence Mask</label>
+                  </div>
+                  {useCoherenceMask && (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Threshold</span>
+                        <span className="value-display">{coherenceThreshold.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={coherenceThreshold}
+                        onChange={(e) => setCoherenceThreshold(Number(e.target.value))}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '4px' }}>
+                <button
+                  onClick={remoteUrl ? handleLoadRemoteNISAR : handleLoadNISAR}
+                  disabled={loading}
+                  style={{ flex: 1 }}
+                >
+                  {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
+                </button>
+
+                {/* GUNW paired view: phase + coherence side-by-side */}
+                {nisarProductType === 'GUNW' && (
+                  <button
+                    className="btn-secondary"
+                    disabled={loading}
+                    style={{ fontSize: '0.65rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                    title="Load unwrapped phase + coherence side-by-side"
+                    onClick={async () => {
+                      setLoading(true);
+                      try {
+                        const reader = gunwDatasets?._streamReader || null;
+                        const opts = { frequency: selectedFrequency, polarization: selectedPolarization, band: nisarFile ? undefined : 'LSAR' };
+
+                        // Load phase
+                        const phase = await loadNISARGUNW(nisarFile, {
+                          ...opts, layer: 'unwrappedInterferogram', dataset: 'unwrappedPhase', _streamReader: reader,
+                        });
+                        // Load coherence
+                        const coh = await loadNISARGUNW(nisarFile, {
+                          ...opts, layer: 'unwrappedInterferogram', dataset: 'coherenceMagnitude', _streamReader: reader,
+                        });
+
+                        const phaseRm = phase.renderMode || {};
+                        const cohRm = coh.renderMode || {};
+                        setGunwPairedView({
+                          left: {
+                            getTile: phase.getTile, bounds: phase.bounds,
+                            contrastLimits: phaseRm.defaultRange || [-Math.PI, Math.PI],
+                            useDecibels: false, colormap: phaseRm.colormap || 'twilight',
+                          },
+                          right: {
+                            getTile: coh.getTile, bounds: coh.bounds,
+                            contrastLimits: cohRm.defaultRange || [0, 1],
+                            useDecibels: false, colormap: cohRm.colormap || 'viridis',
+                          },
+                        });
+                        addStatusLog('success', 'Paired view loaded: Phase + Coherence');
+                      } catch (e) {
+                        addStatusLog('error', 'Failed to load paired view', e.message);
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                  >
+                    Paired
+                  </button>
+                )}
+              </div>
             </CollapsibleSection>
           )}
 
@@ -3186,6 +3628,39 @@ function App() {
               >
                 {loading ? '⟳ Reloading...' : '⟳ Reload'}
               </button>
+              <button
+                onClick={fitToBounds}
+                disabled={!imageData?.bounds}
+                title="Reset view to image bounds"
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.7rem',
+                  color: 'var(--text-muted)',
+                  background: 'var(--surface-alt)',
+                  border: '1px solid var(--border)',
+                  padding: '4px 12px',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: imageData?.bounds ? 'pointer' : 'not-allowed',
+                  transition: 'all var(--transition-fast)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  opacity: imageData?.bounds ? 1 : 0.5,
+                }}
+                onMouseEnter={(e) => {
+                  if (imageData?.bounds) {
+                    e.target.style.background = 'var(--sardine-cyan-bg)';
+                    e.target.style.color = 'var(--sardine-cyan)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (imageData?.bounds) {
+                    e.target.style.background = 'var(--surface-alt)';
+                    e.target.style.color = 'var(--text-muted)';
+                  }
+                }}
+              >
+                ⊞ Fit View
+              </button>
             </div>
           )}
 
@@ -3236,7 +3711,7 @@ function App() {
                           width: '10px',
                           height: '10px',
                           borderRadius: '2px',
-                          backgroundColor: `rgba(${theme.color.join(',')})`,
+                          backgroundColor: `rgba(${(theme.color || theme.lineColor || [150,150,150,200]).join(',')})`,
                           marginRight: '6px',
                           verticalAlign: 'middle',
                         }} />
@@ -3288,7 +3763,11 @@ function App() {
                   <option value="phase">Phase</option>
                   <option value="flood">Flood Alert</option>
                   <option value="diverging">Diverging</option>
+                  <option value="twilight">Twilight</option>
+                  <option value="rdbu">RdBu (InSAR)</option>
+                  <option value="romaO">romaO (Phase)</option>
                   <option value="polarimetric">Polarimetric</option>
+                  <option value="label">Label</option>
                 </select>
               </div>
             )}
@@ -3712,7 +4191,7 @@ function App() {
                 contrastLimits={sidebarIsRoiRGB
                   ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
                   : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })}
-                useDecibels={useDecibels}
+                useDecibels={sidebarIsRoiRGB ? false : useDecibels}
                 onContrastChange={sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
@@ -3733,6 +4212,104 @@ function App() {
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
               />
+            )}
+
+            {/* GUNW phase controls: LOS displacement toggle + symmetric range presets */}
+            {nisarProductType === 'GUNW' && imageData && (
+              <div className="control-group">
+                {/* LOS displacement toggle (radians → meters) */}
+                {(selectedGunwDataset === 'unwrappedPhase' || selectedGunwDataset === 'wrappedInterferogram' || selectedGunwDataset === 'ionospherePhaseScreen') && (
+                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                    <input
+                      type="checkbox"
+                      id="losToggle"
+                      checked={losDisplacement}
+                      onChange={(e) => {
+                        const toLOS = e.target.checked;
+                        setLosDisplacement(toLOS);
+                        // λ = 0.2384m (NISAR L-band), d = phase * λ/(4π)
+                        const scale = 0.2384 / (4 * Math.PI);
+                        if (toLOS) {
+                          // radians → meters
+                          setContrastMin(Number((contrastMin * scale).toFixed(4)));
+                          setContrastMax(Number((contrastMax * scale).toFixed(4)));
+                        } else {
+                          // meters → radians
+                          setContrastMin(Number((contrastMin / scale).toFixed(3)));
+                          setContrastMax(Number((contrastMax / scale).toFixed(3)));
+                          setVerticalDisplacement(false);
+                        }
+                      }}
+                    />
+                    <label htmlFor="losToggle">
+                      LOS Displacement
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                        {losDisplacement ? '(m)' : '(rad)'}
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {/* Vertical displacement toggle — requires incidence angle grid */}
+                {losDisplacement && gunwIncidenceAngleGrid && (
+                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                    <input
+                      type="checkbox"
+                      id="vertDispToggle"
+                      checked={verticalDisplacement}
+                      onChange={(e) => setVerticalDisplacement(e.target.checked)}
+                    />
+                    <label htmlFor="vertDispToggle">
+                      Vertical Displacement
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                        d<sub>vert</sub> = d<sub>LOS</sub> / cos({'\u03B8'})
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {/* Symmetric range presets */}
+                <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', width: '100%', marginBottom: '2px' }}>Range Presets</span>
+                  {(() => {
+                    const scale = losDisplacement ? 0.2384 / (4 * Math.PI) : 1;
+                    const unit = losDisplacement ? 'm' : 'rad';
+                    const presets = [
+                      { label: String.fromCharCode(0xB1) + String.fromCharCode(0x03C0), val: Math.PI },
+                      { label: String.fromCharCode(0xB1) + '2' + String.fromCharCode(0x03C0), val: 2 * Math.PI },
+                      { label: String.fromCharCode(0xB1) + '10' + String.fromCharCode(0x03C0), val: 10 * Math.PI },
+                      { label: 'Auto', val: null },
+                    ];
+                    return presets.map(p => (
+                      <button
+                        key={p.label}
+                        className="btn-secondary"
+                        style={{ flex: 1, fontSize: '0.65rem', padding: '2px 4px', minWidth: '40px' }}
+                        onClick={() => {
+                          if (p.val === null) {
+                            // Auto: use histogram p2/p98 if available
+                            const stats = histogramData?.single;
+                            if (stats) {
+                              const p2 = losDisplacement ? stats.p2 * scale : stats.p2;
+                              const p98 = losDisplacement ? stats.p98 * scale : stats.p98;
+                              const absMax = Math.max(Math.abs(p2), Math.abs(p98));
+                              setContrastMin(Number((-absMax).toFixed(3)));
+                              setContrastMax(Number(absMax.toFixed(3)));
+                            }
+                          } else {
+                            const v = p.val * scale;
+                            setContrastMin(Number((-v).toFixed(4)));
+                            setContrastMax(Number(v.toFixed(4)));
+                          }
+                        }}
+                        title={p.val !== null ? `${(-p.val * scale).toFixed(3)} to ${(p.val * scale).toFixed(3)} ${unit}` : 'Auto symmetric from histogram'}
+                      >
+                        {p.label}
+                      </button>
+                    ));
+                  })()}
+                </div>
+              </div>
             )}
 
             {/* Brightness (Window/Level) slider — shifts window center (single-band only) */}
@@ -3790,28 +4367,101 @@ function App() {
             {/* Multi-look toggle — hidden on main branch, needs more work */}
             {/* Speckle filter — hidden on main branch, needs more work */}
 
-            {/* Mask toggle — only shown when mask dataset is available */}
+            {/* Mask toggles — only shown when mask dataset is available */}
             {imageData?.hasMask && (
               <div className="control-group">
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <input
                     type="checkbox"
-                    id="useMask"
-                    checked={useMask}
+                    id="maskInvalid"
+                    checked={maskInvalid}
                     onChange={(e) => {
-                      setUseMask(e.target.checked);
+                      setMaskInvalid(e.target.checked);
                       addStatusLog('info', e.target.checked
-                        ? 'Mask enabled — invalid/fill pixels hidden'
-                        : 'Mask disabled — all pixels shown');
+                        ? 'Invalid mask enabled — invalid/fill pixels hidden'
+                        : 'Invalid mask disabled');
                     }}
                   />
-                  <label htmlFor="useMask" style={{ margin: 0 }}>
-                    Apply mask
+                  <label htmlFor="maskInvalid" style={{ margin: 0 }}>
+                    Mask invalid
                     <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
-                      {useMask ? '(0=invalid, 255=fill)' : '(off)'}
+                      {maskInvalid ? '(0, 255)' : '(off)'}
                     </span>
                   </label>
                 </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+                  <input
+                    type="checkbox"
+                    id="maskLayoverShadow"
+                    checked={maskLayoverShadow}
+                    onChange={(e) => {
+                      setMaskLayoverShadow(e.target.checked);
+                      addStatusLog('info', e.target.checked
+                        ? 'Layover/shadow mask enabled'
+                        : 'Layover/shadow mask disabled');
+                    }}
+                  />
+                  <label htmlFor="maskLayoverShadow" style={{ margin: 0 }}>
+                    Mask layover/shadow
+                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      {maskLayoverShadow ? '(active)' : '(off)'}
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Incidence angle mask — only for GCOV with metadata cube */}
+            {incidenceAngleGrid && nisarProductType === 'GCOV' && (
+              <div className="control-group">
+                <div className="control-row">
+                  <input
+                    type="checkbox"
+                    id="incAngleMask"
+                    checked={useIncidenceAngleMask}
+                    onChange={(e) => setUseIncidenceAngleMask(e.target.checked)}
+                  />
+                  <label htmlFor="incAngleMask">
+                    Incidence Angle Mask
+                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      {useIncidenceAngleMask ? `${incAngleMin}°–${incAngleMax}°` : '(off)'}
+                    </span>
+                  </label>
+                </div>
+                {useIncidenceAngleMask && (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Near range (min)</span>
+                      <span className="value-display">{incAngleMin}°</span>
+                    </div>
+                    <input
+                      type="range" min={0} max={60} step={1}
+                      value={incAngleMin}
+                      onChange={(e) => setIncAngleMin(Number(e.target.value))}
+                    />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Far range (max)</span>
+                      <span className="value-display">{incAngleMax}°</span>
+                    </div>
+                    <input
+                      type="range" min={0} max={60} step={1}
+                      value={incAngleMax}
+                      onChange={(e) => setIncAngleMax(Number(e.target.value))}
+                    />
+                  </>
+                )}
+                {incidenceScatterData && (
+                  <IncidenceScatter
+                    scatterData={incidenceScatterData}
+                    angleMin={incAngleMin}
+                    angleMax={incAngleMax}
+                    onAngleRangeChange={({ min, max }) => {
+                      if (min !== undefined) setIncAngleMin(min);
+                      if (max !== undefined) setIncAngleMax(max);
+                    }}
+                    style={{ marginTop: '6px' }}
+                  />
+                )}
               </div>
             )}
           </CollapsibleSection>
@@ -3826,24 +4476,69 @@ function App() {
 
         {/* Viewer Container */}
         <div className="viewer-container" style={{ '--bottom-dock': statusCollapsed ? '32px' : '310px' }}>
-          {loading && <div className="loading">Loading COG...</div>}
+          {loading && <div className="loading">{fileType === 'cmr' ? 'Streaming NISAR metadata from DAAC...' : 'Loading...'}</div>}
 
           {error && <div className="error">{error}</div>}
 
-          {!loading && !error && !imageData && fileType !== 'stac' && (
+          {!loading && !error && !imageData && (
             <div className="loading">
-              {fileType === 'local-tif'
+              {fileType === 'cmr'
+                ? (nisarDatasets.length > 0
+                  ? 'Metadata loaded — select dataset options, then click "Load Dataset"'
+                  : 'Search CMR and select a granule to begin')
+                : fileType === 'local-tif'
                 ? 'Select one or more local GeoTIFF files to begin'
                 : fileType === 'remote'
                 ? 'Enter a URL or browse remote data to begin'
                 : fileType === 'catalog'
                   ? 'Load a GeoJSON scene catalog and select a scene to begin'
-                  : 'Select a NISAR GCOV HDF5 file to begin'}
+                  : 'Select a NISAR HDF5 file to begin'}
             </div>
           )}
 
-          {(imageData || fileType === 'stac') && (
-            <div style={{ display: 'flex', width: '100%', height: '100%' }}>
+          {/* GUNW Paired View: Phase + Coherence side-by-side */}
+          {gunwPairedView && !imageData && (
+            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+              <button
+                onClick={() => setGunwPairedView(null)}
+                style={{
+                  position: 'absolute', top: '8px', right: '8px', zIndex: 10,
+                  background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                }}
+              >
+                Close Paired View
+              </button>
+              <ComparisonViewer
+                leftImage={gunwPairedView.left}
+                rightImage={gunwPairedView.right}
+                leftLabel="Unwrapped Phase"
+                rightLabel="Coherence"
+                width="100%"
+                height="100%"
+              />
+            </div>
+          )}
+
+          {imageData && (
+            <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
+              {/* Loading overlay — shown on top of existing data while new data streams */}
+              {loading && (
+                <div style={{
+                  position: 'absolute', inset: 0, zIndex: 10,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'rgba(10, 22, 40, 0.75)',
+                  pointerEvents: 'none',
+                }}>
+                  <div style={{
+                    fontFamily: 'var(--font-mono)', fontSize: '0.9rem',
+                    color: 'var(--sardine-cyan, #4ec9d4)', letterSpacing: '1px',
+                  }}>
+                    Loading dataset...
+                  </div>
+                </div>
+              )}
               {/* Main viewer (single-channel full extent) */}
               <div
                 onClick={() => roiRGBData && setActiveViewer('main')}
@@ -3866,7 +4561,14 @@ function App() {
                   stretchMode={stretchMode}
                   compositeId={displayMode === 'rgb' ? compositeId : null}
                   multiLook={multiLook}
-                  useMask={useMask}
+                  maskInvalid={maskInvalid}
+                  maskLayoverShadow={maskLayoverShadow}
+                  useCoherenceMask={useCoherenceMask || useIncidenceAngleMask}
+                  coherenceThreshold={useIncidenceAngleMask ? incAngleMin : coherenceThreshold}
+                  coherenceThresholdMax={useIncidenceAngleMask ? incAngleMax : 1.0}
+                  coherenceMaskMode={useIncidenceAngleMask ? 1 : 0}
+                  incidenceAngleData={useIncidenceAngleMask ? incidenceAngleGrid : (verticalDisplacement ? gunwIncidenceAngleGrid : null)}
+                  verticalDisplacement={verticalDisplacement}
                   speckleFilterType={speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
                   showGrid={showGrid}
@@ -3930,7 +4632,7 @@ function App() {
                       getTile={roiRGBData.getTile}
                       bounds={roiRGBBounds}
                       contrastLimits={roiRGBContrastLimits}
-                      useDecibels={useDecibels}
+                      useDecibels={false}
                       colormap={colormap}
                       gamma={gamma}
                       stretchMode={stretchMode}
@@ -4034,6 +4736,24 @@ function App() {
             wgs84Bounds={wgs84Bounds}
             visible={overviewMapVisible}
             onToggle={() => setOverviewMapVisible(v => !v)}
+            cmrFootprints={fileType === 'cmr' ? cmrFootprints : null}
+            onSelectFootprint={fileType === 'cmr' ? (idx) => {
+              const fp = cmrFootprints[idx];
+              if (!fp?.dataUrl) {
+                addStatusLog('warning', `No data URL for granule ${fp?.id || idx}`);
+                return;
+              }
+              // Fetch metadata — user then clicks "Load Dataset" to stream
+              handleRemoteFileSelect({
+                url: fp.dataUrl,
+                name: fp.id || `Granule ${idx}`,
+                size: 0,
+                type: 'nisar',
+                token: earthdataToken || undefined,
+              });
+              addStatusLog('info', `Selected: ${fp.id}`);
+            } : null}
+            onViewBoundsChange={fileType === 'cmr' ? setOverviewBounds : null}
           />
 
           {/* Metadata Panel — overlaid on viewer, top-right */}

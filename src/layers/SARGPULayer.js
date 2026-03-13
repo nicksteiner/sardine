@@ -44,6 +44,10 @@ uniform sampler2D uTextureG;
 uniform sampler2D uTextureB;
 // Mask texture (NISAR §4.3.3: 0=invalid, 1-5=valid, 255=fill)
 uniform sampler2D uTextureMask;
+// Coherence mask texture (GUNW: threshold low-coherence pixels)
+uniform sampler2D uTextureCoherence;
+// Incidence angle texture (for vertical displacement correction)
+uniform sampler2D uTextureIncidence;
 
 uniform float uMin;
 uniform float uMax;
@@ -52,7 +56,13 @@ uniform float uColormap;
 uniform float uGamma;
 uniform float uStretchMode;
 uniform float uMode;  // 0 = single-band + colormap, 1 = RGB composite
-uniform float uUseMask;  // > 0.5 = apply mask
+uniform float uMaskInvalid;        // > 0.5 = hide invalid (0) and fill (255) pixels
+uniform float uMaskLayoverShadow;  // > 0.5 = hide layover/shadow (mask < 100)
+uniform float uUseCoherenceMask;  // > 0.5 = apply coherence/auxiliary mask
+uniform float uCoherenceThreshold;  // Lower threshold (mask below this)
+uniform float uCoherenceThresholdMax;  // Upper threshold (mask above this, for range mode)
+uniform float uCoherenceMaskMode;  // 0 = mask below min, 1 = mask outside [min,max]
+uniform float uVerticalDisplacement;  // > 0.5 = divide by cos(incidence angle)
 // Per-channel min/max for RGB mode (falls back to uMin/uMax if equal)
 uniform float uMinR;
 uniform float uMaxR;
@@ -117,16 +127,30 @@ void main() {
                     (ampB != 0.0 && !isnan(ampB));
     float alpha = anyValid ? 1.0 : 0.0;
 
-    // Apply mask: 0=invalid, 255=fill → transparent; 1-5=valid
-    if (uUseMask > 0.5) {
+    // Apply mask: NISAR uint8 mask
+    // 0=invalid, 1=valid, 2+=layover/shadow flags, 255=fill
+    if (uMaskInvalid > 0.5 || uMaskLayoverShadow > 0.5) {
       float maskVal = texture(uTextureMask, vTexCoord).r;
-      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0.0;
+      if (uMaskInvalid > 0.5 && (maskVal < 0.5 || maskVal > 254.5)) alpha = 0.0;
+      // Layover/shadow: mask > 1 (not pure-valid) and not fill
+      if (uMaskLayoverShadow > 0.5 && maskVal > 1.5 && maskVal < 254.5) alpha = 0.0;
     }
 
     fragColor = vec4(rgb, alpha);
   } else {
     // ── Single-band mode: R32F texture + colormap ──
     float amplitude = texture(uTexture, vTexCoord).r;
+
+    // Vertical displacement: divide LOS by cos(θ) to get vertical component
+    // Incidence angle texture stores degrees; convert to radians for cos()
+    if (uVerticalDisplacement > 0.5) {
+      float thetaDeg = texture(uTextureIncidence, vTexCoord).r;
+      if (!isnan(thetaDeg) && thetaDeg > 0.0) {
+        float thetaRad = thetaDeg * 3.14159265 / 180.0;
+        amplitude = amplitude / cos(thetaRad);
+      }
+    }
+
     float value = processChannel(amplitude, uMin, uMax);
 
     vec3 rgb;
@@ -142,23 +166,46 @@ void main() {
     } else if (colormapId == 4) {
       rgb = phaseColormap(value);
     } else if (colormapId == 5) {
-      rgb = sardineMap(value);
+      rgb = twilightMap(value);
     } else if (colormapId == 6) {
-      rgb = floodMap(value);
+      rgb = sardineMap(value);
     } else if (colormapId == 7) {
-      rgb = divergingMap(value);
+      rgb = floodMap(value);
     } else if (colormapId == 8) {
+      rgb = divergingMap(value);
+    } else if (colormapId == 9) {
       rgb = polarimetricMap(value);
+    } else if (colormapId == 10) {
+      rgb = labelMap(value);
+    } else if (colormapId == 11) {
+      rgb = rdbuMap(value);
+    } else if (colormapId == 12) {
+      rgb = romaOMap(value);
     } else {
       rgb = grayscale(value);
     }
 
     float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
 
-    // Apply mask: 0=invalid, 255=fill → transparent; 1-5=valid
-    if (uUseMask > 0.5) {
+    // Apply mask: NISAR uint8 (0=invalid, 1=valid, 2+=layover/shadow, 255=fill)
+    if (uMaskInvalid > 0.5 || uMaskLayoverShadow > 0.5) {
       float maskVal = texture(uTextureMask, vTexCoord).r;
-      if (maskVal < 0.5 || maskVal > 254.5) alpha = 0.0;
+      if (uMaskInvalid > 0.5 && (maskVal < 0.5 || maskVal > 254.5)) alpha = 0.0;
+      if (uMaskLayoverShadow > 0.5 && maskVal > 1.5 && maskVal < 254.5) alpha = 0.0;
+    }
+
+    // Auxiliary mask (coherence for GUNW, incidence angle for GCOV)
+    if (uUseCoherenceMask > 0.5) {
+      float auxVal = texture(uTextureCoherence, vTexCoord).r;
+      if (isnan(auxVal)) {
+        alpha = 0.0;
+      } else if (uCoherenceMaskMode < 0.5) {
+        // Mode 0: mask below min threshold (coherence mode)
+        if (auxVal < uCoherenceThreshold) alpha = 0.0;
+      } else {
+        // Mode 1: mask outside [min, max] range (incidence angle mode)
+        if (auxVal < uCoherenceThreshold || auxVal > uCoherenceThresholdMax) alpha = 0.0;
+      }
     }
 
     fragColor = vec4(rgb, alpha);
@@ -204,7 +251,9 @@ export class SARGPULayer extends Layer {
           texture: null,
           textureG: null,
           textureB: null,
-          textureMask: null
+          textureMask: null,
+          textureCoherence: null,
+          textureIncidence: null
         });
         // Trigger re-render by setting needsUpdate
         this.setNeedsUpdate();
@@ -382,6 +431,30 @@ export class SARGPULayer extends Layer {
         this.setState({ textureMask: texMask });
       }
     }
+
+    // Upload coherence texture when dataCoherence changes
+    const { dataCoherence, coherenceWidth, coherenceHeight } = props;
+    const cohW = coherenceWidth || width;
+    const cohH = coherenceHeight || height;
+    if (dataCoherence && (dataCoherence !== oldProps.dataCoherence || cohW !== (oldProps.coherenceWidth || oldProps.width) || cohH !== (oldProps.coherenceHeight || oldProps.height))) {
+      const texCoh = this._createR32FTexture(dataCoherence, cohW, cohH);
+      if (texCoh) {
+        if (this.state.textureCoherence) gl.deleteTexture(this.state.textureCoherence);
+        this.setState({ textureCoherence: texCoh });
+      }
+    }
+
+    // Upload incidence angle texture (for vertical displacement correction)
+    const { dataIncidence, incidenceWidth, incidenceHeight } = props;
+    const incW = incidenceWidth || width;
+    const incH = incidenceHeight || height;
+    if (dataIncidence && (dataIncidence !== oldProps.dataIncidence || incW !== (oldProps.incidenceWidth || oldProps.width) || incH !== (oldProps.incidenceHeight || oldProps.height))) {
+      const texInc = this._createR32FTexture(dataIncidence, incW, incH);
+      if (texInc) {
+        if (this.state.textureIncidence) gl.deleteTexture(this.state.textureIncidence);
+        this.setState({ textureIncidence: texInc });
+      }
+    }
   }
 
   _createR32FTexture(data, width, height, nearest = false) {
@@ -440,8 +513,8 @@ export class SARGPULayer extends Layer {
   }
 
   draw({ uniforms }) {
-    const { model, texture, textureG, textureB, textureMask,
-            filteredTexture, filteredTextureG, filteredTextureB } = this.state;
+    const { model, texture, textureG, textureB, textureMask, textureCoherence,
+            textureIncidence, filteredTexture, filteredTextureG, filteredTextureB } = this.state;
 
     if (!model || !texture) return;
 
@@ -457,7 +530,13 @@ export class SARGPULayer extends Layer {
       gamma = 1.0,
       stretchMode = 'linear',
       mode = 'single',
-      useMask = false
+      maskInvalid = false,
+      maskLayoverShadow = false,
+      useCoherenceMask = false,
+      coherenceThreshold = 0.3,
+      coherenceThresholdMax = 1.0,
+      coherenceMaskMode = 0,
+      verticalDisplacement = false,
     } = this.props;
 
     const isRGB = mode === 'rgb';
@@ -504,8 +583,16 @@ export class SARGPULayer extends Layer {
         uGamma: gamma,
         uStretchMode: getStretchModeId(stretchMode),
         uMode: isRGB ? 1.0 : 0.0,
-        uUseMask: (useMask && textureMask) ? 1.0 : 0.0,
+        uMaskInvalid: (maskInvalid && textureMask) ? 1.0 : 0.0,
+        uMaskLayoverShadow: (maskLayoverShadow && textureMask) ? 1.0 : 0.0,
         uTextureMask: 3,
+        uUseCoherenceMask: (useCoherenceMask && textureCoherence) ? 1.0 : 0.0,
+        uCoherenceThreshold: coherenceThreshold,
+        uCoherenceThresholdMax: coherenceThresholdMax,
+        uCoherenceMaskMode: coherenceMaskMode,
+        uTextureCoherence: 4,
+        uVerticalDisplacement: (verticalDisplacement && textureIncidence) ? 1.0 : 0.0,
+        uTextureIncidence: 5,
       };
 
       if (isRGB && displayTexG && displayTexB) {
@@ -525,10 +612,30 @@ export class SARGPULayer extends Layer {
         gl.bindTexture(gl.TEXTURE_2D, textureMask);
       }
 
+      // Bind coherence texture to unit 4
+      if (textureCoherence) {
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, textureCoherence);
+      }
+
+      // Bind incidence angle texture to unit 5
+      if (textureIncidence) {
+        gl.activeTexture(gl.TEXTURE5);
+        gl.bindTexture(gl.TEXTURE_2D, textureIncidence);
+      }
+
       model.setUniforms(layerUniforms);
       model.draw();
 
       // Unbind textures
+      if (textureIncidence) {
+        gl.activeTexture(gl.TEXTURE5);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+      }
+      if (textureCoherence) {
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+      }
       if (textureMask) {
         gl.activeTexture(gl.TEXTURE3);
         gl.bindTexture(gl.TEXTURE_2D, null);
@@ -567,6 +674,8 @@ export class SARGPULayer extends Layer {
       if (this.state.textureG) gl.deleteTexture(this.state.textureG);
       if (this.state.textureB) gl.deleteTexture(this.state.textureB);
       if (this.state.textureMask) gl.deleteTexture(this.state.textureMask);
+      if (this.state.textureCoherence) gl.deleteTexture(this.state.textureCoherence);
+      if (this.state.textureIncidence) gl.deleteTexture(this.state.textureIncidence);
       // Clean up FBO-filtered textures
       if (this.state.filteredTexture) gl.deleteTexture(this.state.filteredTexture);
       if (this.state.filteredTextureG) gl.deleteTexture(this.state.filteredTextureG);
@@ -585,7 +694,21 @@ SARGPULayer.defaultProps = {
   dataB: { type: 'object', value: null, compare: false },
   // Mask data (Float32Array, uint8 values: 0=invalid, 1-5=valid, 255=fill)
   dataMask: { type: 'object', value: null, compare: false },
-  useMask: { type: 'boolean', value: false, compare: true },
+  maskInvalid: { type: 'boolean', value: false, compare: true },
+  maskLayoverShadow: { type: 'boolean', value: false, compare: true },
+  // Coherence mask (GUNW: Float32Array of coherence values 0–1)
+  dataCoherence: { type: 'object', value: null, compare: false },
+  coherenceWidth: { type: 'number', value: 0, min: 0 },
+  coherenceHeight: { type: 'number', value: 0, min: 0 },
+  useCoherenceMask: { type: 'boolean', value: false, compare: true },
+  coherenceThreshold: { type: 'number', value: 0.3, min: 0, max: 90.0, compare: true },
+  coherenceThresholdMax: { type: 'number', value: 1.0, min: 0, max: 90.0, compare: true },
+  coherenceMaskMode: { type: 'number', value: 0, min: 0, max: 1, compare: true },
+  // Incidence angle texture for vertical displacement correction
+  dataIncidence: { type: 'object', value: null, compare: false },
+  incidenceWidth: { type: 'number', value: 0, min: 0 },
+  incidenceHeight: { type: 'number', value: 0, min: 0 },
+  verticalDisplacement: { type: 'boolean', value: false, compare: true },
   mode: { type: 'string', value: 'single', compare: true },  // 'single' or 'rgb'
   width: { type: 'number', value: 256, min: 1 },
   height: { type: 'number', value: 256, min: 1 },

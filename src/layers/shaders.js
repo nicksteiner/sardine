@@ -108,6 +108,33 @@ vec3 grayscale(float t) {
   return vec3(t, t, t);
 }
 
+// Twilight colormap — cyclic perceptually uniform (Matplotlib)
+vec3 twilightMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  const vec3 s0 = vec3(0.886, 0.850, 0.888);
+  const vec3 s1 = vec3(0.695, 0.625, 0.831);
+  const vec3 s2 = vec3(0.418, 0.365, 0.733);
+  const vec3 s3 = vec3(0.196, 0.225, 0.558);
+  const vec3 s4 = vec3(0.188, 0.329, 0.367);
+  const vec3 s5 = vec3(0.394, 0.303, 0.262);
+  const vec3 s6 = vec3(0.610, 0.278, 0.225);
+  const vec3 s7 = vec3(0.769, 0.390, 0.382);
+  const vec3 s8 = vec3(0.886, 0.850, 0.888);
+  float seg = t * 8.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)      c = mix(s0, s1, s);
+  else if (i < 2.0) c = mix(s1, s2, s);
+  else if (i < 3.0) c = mix(s2, s3, s);
+  else if (i < 4.0) c = mix(s3, s4, s);
+  else if (i < 5.0) c = mix(s4, s5, s);
+  else if (i < 6.0) c = mix(s5, s6, s);
+  else if (i < 7.0) c = mix(s6, s7, s);
+  else              c = mix(s7, s8, s);
+  return c;
+}
+
 // SARdine brand colormap — navy → teal → cyan → near-white
 vec3 sardineMap(float t) {
   t = clamp(t, 0.0, 1.0);
@@ -172,6 +199,34 @@ vec3 polarimetricMap(float t) {
   return c;
 }
 
+// Label colormap — deterministic hash-based colors for integer labels
+// Used for connected components / classification maps
+vec3 labelMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  float idx = floor(t * 255.0 + 0.5);
+  if (idx < 0.5) return vec3(0.0); // nodata
+  // Golden-ratio hue cycling
+  float hue = fract(idx * 0.618033988749895);
+  float sat = 0.7 + 0.3 * mod(idx * 13.0, 7.0) / 6.0;
+  float val = 0.75 + 0.25 * mod(idx * 7.0, 5.0) / 4.0;
+  // HSV to RGB
+  float h = hue * 6.0;
+  float i = floor(h);
+  float f = h - i;
+  float p = val * (1.0 - sat);
+  float q = val * (1.0 - sat * f);
+  float tt = val * (1.0 - sat * (1.0 - f));
+  float mi = mod(i, 6.0);
+  vec3 c;
+  if (mi < 0.5)      c = vec3(val, tt, p);
+  else if (mi < 1.5) c = vec3(q, val, p);
+  else if (mi < 2.5) c = vec3(p, val, tt);
+  else if (mi < 3.5) c = vec3(p, q, val);
+  else if (mi < 4.5) c = vec3(tt, p, val);
+  else               c = vec3(val, p, q);
+  return c;
+}
+
 void main(void) {
   vec4 texel = texture(uTexture, vTexCoord);
   float amplitude = texel.r;
@@ -217,17 +272,25 @@ void main(void) {
   } else if (uColormap == 4) {
     color = phaseColormap(value);
   } else if (uColormap == 5) {
-    color = sardineMap(value);
+    color = twilightMap(value);
   } else if (uColormap == 6) {
-    color = floodMap(value);
+    color = sardineMap(value);
   } else if (uColormap == 7) {
-    color = divergingMap(value);
+    color = floodMap(value);
   } else if (uColormap == 8) {
+    color = divergingMap(value);
+  } else if (uColormap == 9) {
     color = polarimetricMap(value);
+  } else if (uColormap == 10) {
+    color = labelMap(value);
+  } else if (uColormap == 11) {
+    color = rdbuMap(value);
+  } else if (uColormap == 12) {
+    color = romaOMap(value);
   } else {
     color = grayscale(value);
   }
-  
+
   // Handle no-data (typically 0 or NaN)
   float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
   
@@ -246,10 +309,14 @@ export const COLORMAP_IDS = {
   inferno: 2,
   plasma: 3,
   phase: 4,
-  sardine: 5,
-  flood: 6,
-  diverging: 7,
-  polarimetric: 8,
+  twilight: 5,
+  sardine: 6,
+  flood: 7,
+  diverging: 8,
+  polarimetric: 9,
+  label: 10,
+  rdbu: 11,
+  romaO: 12,
 };
 
 /**
@@ -344,6 +411,33 @@ vec3 phaseColormap(float t) {
   );
 }
 
+// Twilight colormap — cyclic perceptually uniform (Matplotlib)
+vec3 twilightMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  const vec3 s0 = vec3(0.886, 0.850, 0.888);
+  const vec3 s1 = vec3(0.695, 0.625, 0.831);
+  const vec3 s2 = vec3(0.418, 0.365, 0.733);
+  const vec3 s3 = vec3(0.196, 0.225, 0.558);
+  const vec3 s4 = vec3(0.188, 0.329, 0.367);
+  const vec3 s5 = vec3(0.394, 0.303, 0.262);
+  const vec3 s6 = vec3(0.610, 0.278, 0.225);
+  const vec3 s7 = vec3(0.769, 0.390, 0.382);
+  const vec3 s8 = vec3(0.886, 0.850, 0.888);
+  float seg = t * 8.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)      c = mix(s0, s1, s);
+  else if (i < 2.0) c = mix(s1, s2, s);
+  else if (i < 3.0) c = mix(s2, s3, s);
+  else if (i < 4.0) c = mix(s3, s4, s);
+  else if (i < 5.0) c = mix(s4, s5, s);
+  else if (i < 6.0) c = mix(s5, s6, s);
+  else if (i < 7.0) c = mix(s6, s7, s);
+  else              c = mix(s7, s8, s);
+  return c;
+}
+
 // SARdine brand colormap — navy → teal → cyan → near-white
 vec3 sardineMap(float t) {
   t = clamp(t, 0.0, 1.0);
@@ -403,6 +497,90 @@ vec3 polarimetricMap(float t) {
     float s = (t - 0.5) / 0.5;
     c = mix(vec3(0.039, 0.086, 0.157), vec3(0.239, 0.863, 0.518), s);
   }
+  return c;
+}
+
+// Label colormap — deterministic hash-based colors for integer labels
+vec3 labelMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  float idx = floor(t * 255.0 + 0.5);
+  if (idx < 0.5) return vec3(0.0);
+  float hue = fract(idx * 0.618033988749895);
+  float sat = 0.7 + 0.3 * mod(idx * 13.0, 7.0) / 6.0;
+  float val = 0.75 + 0.25 * mod(idx * 7.0, 5.0) / 4.0;
+  float h = hue * 6.0;
+  float i = floor(h);
+  float f = h - i;
+  float p = val * (1.0 - sat);
+  float q = val * (1.0 - sat * f);
+  float tt = val * (1.0 - sat * (1.0 - f));
+  float mi = mod(i, 6.0);
+  vec3 c;
+  if (mi < 0.5)      c = vec3(val, tt, p);
+  else if (mi < 1.5) c = vec3(q, val, p);
+  else if (mi < 2.5) c = vec3(p, val, tt);
+  else if (mi < 3.5) c = vec3(p, q, val);
+  else if (mi < 4.5) c = vec3(tt, p, val);
+  else               c = vec3(val, p, q);
+  return c;
+}
+
+// RdBu diverging — blue-white-red (InSAR displacement standard)
+vec3 rdbuMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  // 11-stop RdBu_r: blue(0) → white(0.5) → red(1)
+  const vec3 s0  = vec3(0.020, 0.188, 0.380);
+  const vec3 s1  = vec3(0.129, 0.400, 0.674);
+  const vec3 s2  = vec3(0.263, 0.576, 0.765);
+  const vec3 s3  = vec3(0.573, 0.773, 0.871);
+  const vec3 s4  = vec3(0.820, 0.898, 0.941);
+  const vec3 s5  = vec3(0.969, 0.969, 0.969);
+  const vec3 s6  = vec3(0.992, 0.859, 0.780);
+  const vec3 s7  = vec3(0.957, 0.647, 0.510);
+  const vec3 s8  = vec3(0.839, 0.376, 0.302);
+  const vec3 s9  = vec3(0.698, 0.094, 0.169);
+  const vec3 s10 = vec3(0.404, 0.000, 0.122);
+  float seg = t * 10.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)       c = mix(s0, s1, s);
+  else if (i < 2.0)  c = mix(s1, s2, s);
+  else if (i < 3.0)  c = mix(s2, s3, s);
+  else if (i < 4.0)  c = mix(s3, s4, s);
+  else if (i < 5.0)  c = mix(s4, s5, s);
+  else if (i < 6.0)  c = mix(s5, s6, s);
+  else if (i < 7.0)  c = mix(s6, s7, s);
+  else if (i < 8.0)  c = mix(s7, s8, s);
+  else if (i < 9.0)  c = mix(s8, s9, s);
+  else               c = mix(s9, s10, s);
+  return c;
+}
+
+// romaO cyclic — Crameri scientific colour map for wrapped interferograms
+vec3 romaOMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  const vec3 r0 = vec3(0.110, 0.498, 0.420);
+  const vec3 r1 = vec3(0.337, 0.620, 0.310);
+  const vec3 r2 = vec3(0.671, 0.718, 0.251);
+  const vec3 r3 = vec3(0.922, 0.718, 0.353);
+  const vec3 r4 = vec3(0.906, 0.514, 0.443);
+  const vec3 r5 = vec3(0.718, 0.333, 0.518);
+  const vec3 r6 = vec3(0.443, 0.275, 0.584);
+  const vec3 r7 = vec3(0.200, 0.341, 0.561);
+  const vec3 r8 = vec3(0.110, 0.498, 0.420);
+  float seg = t * 8.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)       c = mix(r0, r1, s);
+  else if (i < 2.0)  c = mix(r1, r2, s);
+  else if (i < 3.0)  c = mix(r2, r3, s);
+  else if (i < 4.0)  c = mix(r3, r4, s);
+  else if (i < 5.0)  c = mix(r4, r5, s);
+  else if (i < 6.0)  c = mix(r5, r6, s);
+  else if (i < 7.0)  c = mix(r6, r7, s);
+  else               c = mix(r7, r8, s);
   return c;
 }
 `;

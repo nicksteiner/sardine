@@ -33,7 +33,14 @@ export const SARViewer = forwardRef(function SARViewer({
   stretchMode = 'linear',
   compositeId = null, // SAR RGB composite ID (null = single band)
   multiLook = false,  // Multi-look mode (area-averaged resampling)
-  useMask = false,    // Apply NISAR mask (0=invalid, 255=fill → transparent)
+  maskInvalid = false,        // Hide invalid (0) and fill (255) pixels
+  maskLayoverShadow = false,  // Hide layover/shadow pixels (mask < 100)
+  useCoherenceMask = false,   // GUNW: threshold low-coherence pixels
+  coherenceThreshold = 0.3,   // GUNW: coherence threshold (0–1)
+  coherenceThresholdMax = 1.0, // Upper threshold for range mode
+  coherenceMaskMode = 0,       // 0=below min, 1=outside [min,max]
+  incidenceAngleData = null,   // {data, width, height} for angle masking / vertical displacement
+  verticalDisplacement = false, // GUNW: divide LOS by cos(θ) for vertical component
   speckleFilterType = 'none', // Speckle filter type ('none' | 'boxcar' | 'lee' | etc.)
   speckleKernelSize = 7,      // Speckle filter kernel size (3–11, odd)
   showGrid = true,    // Show coordinate grid + corner coordinates
@@ -181,7 +188,8 @@ export const SARViewer = forwardRef(function SARViewer({
   // preventing redundant layer recreations during rapid slider drags.
   const visualRef = useRef({
     contrastLimits, useDecibels, colormap, gamma, stretchMode,
-    opacity, useMask, speckleFilterType, speckleKernelSize, toneMapping,
+    opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
+    incidenceAngleData, verticalDisplacement, speckleFilterType, speckleKernelSize, toneMapping,
   });
   const [visualTick, setVisualTick] = useState(0);
   const rafRef = useRef(null);
@@ -195,14 +203,22 @@ export const SARViewer = forwardRef(function SARViewer({
       gamma !== prev.gamma ||
       stretchMode !== prev.stretchMode ||
       opacity !== prev.opacity ||
-      useMask !== prev.useMask ||
+      maskInvalid !== prev.maskInvalid ||
+      maskLayoverShadow !== prev.maskLayoverShadow ||
+      useCoherenceMask !== prev.useCoherenceMask ||
+      coherenceThreshold !== prev.coherenceThreshold ||
+      coherenceThresholdMax !== prev.coherenceThresholdMax ||
+      coherenceMaskMode !== prev.coherenceMaskMode ||
+      incidenceAngleData !== prev.incidenceAngleData ||
+      verticalDisplacement !== prev.verticalDisplacement ||
       speckleFilterType !== prev.speckleFilterType ||
       speckleKernelSize !== prev.speckleKernelSize ||
       toneMapping !== prev.toneMapping
     );
     visualRef.current = {
       contrastLimits, useDecibels, colormap, gamma, stretchMode,
-      opacity, useMask, speckleFilterType, speckleKernelSize, toneMapping,
+      opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
+      incidenceAngleData, speckleFilterType, speckleKernelSize, toneMapping,
     };
     if (changed && !rafRef.current) {
       rafRef.current = requestAnimationFrame(() => {
@@ -210,7 +226,7 @@ export const SARViewer = forwardRef(function SARViewer({
         setVisualTick(t => t + 1);
       });
     }
-  }, [contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, useMask, speckleFilterType, speckleKernelSize, toneMapping]);
+  }, [contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, speckleFilterType, speckleKernelSize, toneMapping]);
 
   // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
@@ -229,7 +245,8 @@ export const SARViewer = forwardRef(function SARViewer({
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
-          useMask: v.useMask,
+          maskInvalid: v.maskInvalid,
+          maskLayoverShadow: v.maskLayoverShadow,
           toneMapping: v.toneMapping,
           onLoadingChange: handleLoadingChange,
         }),
@@ -252,7 +269,8 @@ export const SARViewer = forwardRef(function SARViewer({
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
-          useMask: v.useMask,
+          maskInvalid: v.maskInvalid,
+          maskLayoverShadow: v.maskLayoverShadow,
         }),
       ];
     }
@@ -271,7 +289,14 @@ export const SARViewer = forwardRef(function SARViewer({
           stretchMode: v.stretchMode,
           opacity: v.opacity,
           multiLook,
-          useMask: v.useMask,
+          maskInvalid: v.maskInvalid,
+          maskLayoverShadow: v.maskLayoverShadow,
+          useCoherenceMask: v.useCoherenceMask,
+          coherenceThreshold: v.coherenceThreshold,
+          coherenceThresholdMax: v.coherenceThresholdMax,
+          coherenceMaskMode: v.coherenceMaskMode,
+          incidenceAngleData: v.incidenceAngleData,
+          verticalDisplacement: v.verticalDisplacement,
           speckleFilterType: v.speckleFilterType,
           speckleKernelSize: v.speckleKernelSize,
         }),
@@ -318,6 +343,7 @@ export const SARViewer = forwardRef(function SARViewer({
         layers={allLayers}
         controller={true}
         glOptions={{ preserveDrawingBuffer: true }}
+        parameters={{ clearColor: [0.039, 0.086, 0.157, 1] }}
       />
       <ROIOverlay
         viewState={viewState}
@@ -370,6 +396,40 @@ export const SARViewer = forwardRef(function SARViewer({
         totalOverviews={loadingStatus.totalOverviews}
       />
       <ScaleBar viewState={viewState} bounds={bounds} />
+      {/* Zoom-to-extent / Home button */}
+      {bounds && (bounds[2] - bounds[0]) > 0 && (
+        <button
+          onClick={() => {
+            setViewState(defaultViewState);
+            onViewStateChange?.({ viewState: defaultViewState });
+          }}
+          title="Zoom to data extent"
+          style={{
+            position: 'absolute',
+            top: 40,
+            left: 10,
+            width: 28,
+            height: 28,
+            background: 'rgba(10, 22, 40, 0.85)',
+            border: '1px solid var(--sardine-border, #1e3a5f)',
+            borderRadius: 'var(--radius-sm, 4px)',
+            color: 'var(--sardine-cyan, #4ec9d4)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 0,
+            zIndex: 10,
+            fontSize: '14px',
+            lineHeight: 1,
+          }}
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="2" y="2" width="12" height="12" rx="1" />
+            <circle cx="8" cy="8" r="2" />
+          </svg>
+        </button>
+      )}
       <ColorbarOverlay
         colormap={colormap}
         contrastLimits={contrastLimits}
