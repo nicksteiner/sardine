@@ -91,7 +91,7 @@ Pick a mode from the **File Type** dropdown in the left panel.
 5. Optionally switch to **RGB Composite** and pick a preset
 6. **Load Dataset**
 
-Nothing gets uploaded. Chunks are read directly from disk via the browser File API. GCOV files are 2–20 GB but only viewport-intersecting chunks get read.
+Nothing gets uploaded. Chunks are read directly from disk via the browser File API. GCOV/GUNW files are ~2–8 GB but only viewport-intersecting chunks get read.
 
 ### Presigned URLs (S3 / HTTPS)
 
@@ -117,11 +117,10 @@ File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.ti
 | **Colormap** | Grayscale, viridis, inferno, plasma, phase, sardine, flood, diverging, polarimetric |
 | **Contrast** | Min/max dB range — drag sliders or use **Auto** for percentile-based stretch |
 | **Stretch** | Linear, sqrt, gamma, sigmoid transfer function |
-| **Multi-look** | Speckle reduction (box-filter averaging in linear power) |
+| **Multi-look** |  Data reduction (box-filter averaging in linear power) |
 | **Histogram** | Floating viewport histogram — auto-updates on pan/zoom, SVG export |
-| **Classifier** | 2D feature space scatter with class region drawing and incidence angle filter |
-| **Basemap** | Toggle MapLibre basemap under SAR data |
-| **Overture** | Overlay buildings, roads, or places from Overture Maps |
+| **Classifier** | 2D/1D feature space scatter with class region drawing and incidence angle filter |
+| **Overture** | Overlay boundaries , roads, or places from Overture Maps |
 
 ### Keyboard Shortcuts
 
@@ -144,7 +143,6 @@ File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.ti
 3. Click **+ Add Class** to define a land cover class
 4. Draw a rectangle on the scatter plot to assign pixels in that dB range
 5. Pixels within the class region are colored on the map in real time
-6. Adjust the **Incidence Angle Filter** sliders to mask near/far range (NISAR HDF5 only)
 7. Export: **SVG** for the scatter plot, **Map** for the classification raster
 
 ---
@@ -153,7 +151,7 @@ File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.ti
 
 ### GeoTIFF
 
-- **Raw Float32** — linear power values with CRS + tiepoints
+- **Raw Float32** — linear power values with CRS 
 - **Rendered RGBA** — what you see on screen (dB, colormap, contrast) as a 4-band GeoTIFF
 - **RGB Composite** — 3-band GeoTIFF when in composite mode
 
@@ -165,7 +163,7 @@ Canvas capture with overlays: scale bar, corner coordinates, colorbar (or RGB tr
 
 ### Publication SVG
 
-Journal-style vector graphics:
+Vector graphics:
 - **Scatter plot** — density heatmap with class regions, open L-axes, outward ticks, Helvetica
 - **Histogram** — filled distribution with contrast limit markers and legend
 - **Classification map** — embedded raster with vector legend and pixel counts
@@ -176,31 +174,10 @@ Journal-style vector graphics:
 
 | Issue | Status |
 |:---|:---|
-| ROI overlay drifts during pan/zoom — classification canvas does not track the viewport correctly | Open |
-| Incidence angle slider only appears for NISAR HDF5 with metadata cube (not COGs) | By design |
-| Large ROIs may be slow to classify (data is downsampled to ~256 px on longest axis) | Expected |
-| Histogram recompute on pan/zoom has 800 ms debounce — may lag during fast navigation | Expected |
 
----
+| Georeferencing errors on coarse overviews | low priority |
+| Slow loading RGB frequency A | low 
 
-## CORS Setup
-
-Remote files require the bucket to allow cross-origin Range requests. For S3:
-
-```json
-[
-  {
-    "AllowedHeaders": ["*"],
-    "AllowedMethods": ["GET", "HEAD"],
-    "AllowedOrigins": ["*"],
-    "ExposeHeaders": ["Content-Range", "Content-Length", "Accept-Ranges"],
-    "MaxAgeSeconds": 3600
-  }
-]
-```
-
-**GCS:** `gsutil cors set cors.json gs://your-bucket`
-**Azure Blob:** configure CORS rules in the storage account settings.
 
 ---
 
