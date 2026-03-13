@@ -240,28 +240,6 @@ npm run benchmark    # GPU vs CPU performance comparison
 
 ---
 
-## Roadmap
-
-| Feature | Status |
-|:---|:---|
-| NISAR GCOV HDF5 local + remote streaming | Done |
-| Cloud Optimized GeoTIFF loading | Done |
-| GPU dB scaling + colormaps + stretch modes | Done |
-| RGB polarimetric composites (Pauli, dual-pol, quad-pol) | Planned |
-| Freeman-Durden decomposition | Planned |
-| Viewport histogram with auto-update | Done |
-| Feature space scatter classifier | Done |
-| Incidence angle masking (NISAR) | Done |
-| Publication SVG export (scatter, histogram, class map) | Done |
-| GeoTIFF + figure export | Done |
-| Overture Maps vector overlay | Done |
-| STAC catalog search | Done |
-| ROI overlay alignment fix | In Progress |
-| B-tree v2 parsing | Next |
-| Worker thread decompression | Next |
-| Chat-driven visualization control | Planned |
-| Drawing / annotation tools | Planned |
-| GUNW / InSAR phase visualization | Planned |
 
 ---
 
