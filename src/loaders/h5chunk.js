@@ -1220,6 +1220,40 @@ class DecompressWorkerPool {
     });
   }
 
+  /**
+   * Resize the pool. Adds or removes workers to match the new size.
+   * In-flight tasks on removed workers will still complete.
+   */
+  resize(newSize) {
+    if (newSize === this.size) return;
+    if (newSize > this.size) {
+      // Add workers
+      for (let i = this.size; i < newSize; i++) {
+        const worker = new Worker(
+          new URL('./decompress-worker.js', import.meta.url),
+          { type: 'module' }
+        );
+        worker.onmessage = (e) => this._onMessage(i, e);
+        worker.onerror = (e) => this._onError(i, e);
+        this.workers.push(worker);
+        this.idle.push(i);
+      }
+    } else {
+      // Remove excess workers (only idle ones immediately; busy ones finish naturally)
+      for (let i = newSize; i < this.size; i++) {
+        const idleIdx = this.idle.indexOf(i);
+        if (idleIdx !== -1) {
+          this.idle.splice(idleIdx, 1);
+          this.workers[i].terminate();
+        }
+        // Busy workers will be cleaned up when their task completes
+      }
+    }
+    this.size = newSize;
+    console.log(`[h5chunk] Worker pool resized to ${newSize} threads`);
+    this._dispatch(); // dispatch queued tasks to any new idle workers
+  }
+
   terminate() {
     for (const w of this.workers) w.terminate();
     this.workers = [];
@@ -1231,10 +1265,35 @@ function getWorkerPool() {
   if (!_workerPool) {
     const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency
       ? navigator.hardwareConcurrency : 4;
-    // Cap at 4 workers to limit memory pressure (each decompresses ~1-4MB chunks)
-    _workerPool = new DecompressWorkerPool(Math.min(cores, 4));
+    // Use up to 8 workers — inflate+unshuffle is CPU-bound and benefits from
+    // true parallelism across cores. Each worker handles ~1-4MB per chunk.
+    _workerPool = new DecompressWorkerPool(Math.min(cores, 8));
   }
   return _workerPool;
+}
+
+/**
+ * Set the number of decompression workers at runtime.
+ * @param {number} count - Number of workers (1–32)
+ */
+export function setWorkerCount(count) {
+  const clamped = Math.max(1, Math.min(32, count));
+  const pool = getWorkerPool();
+  pool.resize(clamped);
+}
+
+/**
+ * Get current worker pool info.
+ * @returns {{size: number, idle: number, queued: number, cores: number}}
+ */
+export function getWorkerPoolInfo() {
+  const pool = getWorkerPool();
+  return {
+    size: pool.size,
+    idle: pool.idle.length,
+    queued: pool.queue.length,
+    cores: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4,
+  };
 }
 
 export class H5Chunk {
@@ -1247,7 +1306,7 @@ export class H5Chunk {
     this.url = null;
     this.fetchHeaders = {}; // Extra headers for all HTTP fetches (e.g. Authorization)
     this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
-    this.useWorkerPool = false; // Disabled: browser DecompressionStream is already native/parallel
+    this.useWorkerPool = true; // Parallel decompress+unshuffle across worker threads
 
     // Adaptive concurrency: start at 12, measure throughput, adjust to 6–50
     this._concurrency = 12;
@@ -2727,34 +2786,8 @@ export class H5Chunk {
       buffer = await response.arrayBuffer();
     }
 
-    // Decompress if needed
-    let data = buffer;
-    const chunkDimsProduct = (dataset.layout?.chunkDims || [])
-      .slice(0, -1) // exclude element size dim
-      .reduce((a, b) => a * b, 1);
-    const expectedBytes = chunkDimsProduct * dataset.bytesPerElement;
-
-    if (dataset.filters && chunkInfo.filterMask === 0) {
-      data = await this._decompressChunk(buffer, dataset.filters);
-    } else if (!dataset.filters && buffer.byteLength < expectedBytes) {
-      // No filter info but data is obviously compressed — try deflate as fallback
-      try {
-        data = await this._decompressChunk(buffer, [{ id: FILTER_DEFLATE }]);
-      } catch (e) {
-        // If deflate fails, try shuffle+deflate
-        try {
-          data = await this._decompressChunk(buffer, [
-            { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
-            { id: FILTER_DEFLATE },
-          ]);
-        } catch (e2) {
-          // Use raw data as-is
-        }
-      }
-    }
-
-    // Convert to Float32Array
-    return this._decodeData(data, dataset.dtype);
+    // Decompress + decode (uses worker pool when enabled)
+    return this._decompressAndDecode(buffer, dataset, chunkInfo.filterMask);
   }
 
   /**
@@ -2805,15 +2838,28 @@ export class H5Chunk {
 
     if (chunkEntries.length === 0) return results;
 
-    // For local files, just read each chunk directly (File.slice is fast)
+    // For local files: read + decompress with bounded concurrency.
+    // File.slice() is fast but decompression is CPU-bound. Limit in-flight
+    // work to avoid memory spikes and give the worker pool a steady feed.
     if (this.file) {
-      const promises = chunkEntries.map(async (entry) => {
-        const slice = this.file.slice(entry.offset, entry.offset + entry.size);
-        const buffer = await slice.arrayBuffer();
-        const decoded = await this._decompressAndDecode(buffer, dataset, entry.filterMask);
-        results.set(entry.key, decoded);
-      });
-      await Promise.all(promises);
+      // Sort by file offset for sequential I/O (better disk cache behavior)
+      chunkEntries.sort((a, b) => a.offset - b.offset);
+      const LOCAL_CONCURRENCY = 32;
+      const t0 = performance.now();
+      let totalBytes = 0;
+      for (let i = 0; i < chunkEntries.length; i += LOCAL_CONCURRENCY) {
+        const batch = chunkEntries.slice(i, i + LOCAL_CONCURRENCY);
+        await Promise.all(batch.map(async (entry) => {
+          const slice = this.file.slice(entry.offset, entry.offset + entry.size);
+          const buffer = await slice.arrayBuffer();
+          totalBytes += buffer.byteLength;
+          const decoded = await this._decompressAndDecode(buffer, dataset, entry.filterMask);
+          results.set(entry.key, decoded);
+        }));
+      }
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+      const mb = (totalBytes / (1024 * 1024)).toFixed(1);
+      console.log(`[h5chunk] Local batch: ${chunkEntries.length} chunks, ${mb} MB read+decompressed in ${elapsed}s (${this.useWorkerPool ? 'workers' : 'main-thread'})`);
       return results;
     }
 

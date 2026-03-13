@@ -5,6 +5,7 @@ import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
+import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds } from '../src/utils/roi-subset.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
@@ -238,6 +239,10 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
 function App() {
   // GPU capability detection (cached, runs once)
   const gpuInfo = useMemo(() => probeGPU(), []);
+
+  // Worker pool state
+  const workerInfo = useMemo(() => getWorkerPoolInfo(), []);
+  const [workerCount, setWorkerCount] = useState(workerInfo.size);
 
   // Unified load mode — single selector replaces old format × source matrix
   const [fileType, setFileType] = useState('nisar'); // 'nisar' | 'local-tif' | 'remote' | 'cog' | 'catalog' | 'cmr'
@@ -4822,11 +4827,27 @@ function App() {
       }}>
         <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>SARdine</a> v1.0 · MIT</span>
         <span>steinerlab - ccny</span>
-        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6 }}>
+        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6, display: 'flex', alignItems: 'center', gap: '8px' }}>
           deck.gl{multiLook ? ' · multi-look' : ''}
           {gpuInfo.webgpu
             ? ' · WebGPU'
             : <span style={{ color: '#f5a623' }}> · no WebGPU (histogram CPU-only)</span>}
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            · workers:
+            <input
+              type="range"
+              min={1}
+              max={workerInfo.cores * 2}
+              value={workerCount}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setWorkerCount(n);
+                setPoolWorkerCount(n);
+              }}
+              style={{ width: '60px', accentColor: 'var(--sardine-cyan, #4ec9d4)' }}
+            />
+            {workerCount}
+          </span>
         </span>
       </footer>
 
