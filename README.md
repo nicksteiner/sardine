@@ -86,7 +86,7 @@ Pick a mode from the **File Type** dropdown in the left panel.
 
 1. **File Type** → **NISAR GCOV HDF5 (Local File)**
 2. **Choose File** → pick your `.h5`
-3. Pick **Frequency** (`frequencyA` = L-band, `frequencyB` = S-band)
+3. Pick **Frequency** (`frequencyA` = high res, frequencyB` = low res)
 4. Pick **Polarization** (`HHHH`, `HVHV`, `VVVV`, etc.)
 5. Optionally switch to **RGB Composite** and pick a preset
 6. **Load Dataset**
