@@ -2521,12 +2521,44 @@ function App() {
             }
             setRgbContrastLimits(lims);
             setHistogramScope('viewport');
-            // Suppress all useEffect-triggered histogram recomputes on initial load —
-            // metadata contrast is good enough until the user navigates.
-            skipInitialHistogramRef.current = true;
             // Pre-sync the useDecibels ref so its change-detection effect doesn't fire
             useDecibelsRef.current = false;
-            addStatusLog('info', 'Initial contrast from metadata (viewport histogram will refine)',
+
+            // Build synthetic per-channel histograms from band stats so the histogram
+            // panel renders immediately without sampling any tiles.
+            const syntheticHists = {};
+            const numBins = 128;
+            const syntheticCount = 100000;
+            for (const ch of ['R', 'G', 'B']) {
+              const chDef = preset.channels[ch];
+              const s = chDef?.dataset && data.bandStats[chDef.dataset];
+              if (s && s.mean_value > 0 && s.sample_stddev > 0) {
+                const mean = s.mean_value;
+                const std = s.sample_stddev;
+                const lo = Math.max(0, mean - 4 * std);
+                const hi = mean + 4 * std;
+                const binWidth = (hi - lo) / numBins;
+                const bins = new Array(numBins).fill(0);
+                for (let b = 0; b < numBins; b++) {
+                  const binCenter = lo + (b + 0.5) * binWidth;
+                  const z = (binCenter - mean) / std;
+                  bins[b] = Math.round(syntheticCount * Math.exp(-0.5 * z * z) / (std * Math.sqrt(2 * Math.PI)) * binWidth);
+                }
+                syntheticHists[ch] = { bins, min: lo, max: hi, mean, binWidth, count: syntheticCount,
+                  p2: Math.max(0, mean - 2 * std), p98: mean + 2 * std };
+              } else {
+                // Ratio channel or missing stats — flat histogram over the contrast range
+                const [clo, chi] = lims[ch];
+                const binWidth = (chi - clo) / numBins;
+                const bins = new Array(numBins).fill(syntheticCount / numBins);
+                syntheticHists[ch] = { bins, min: clo, max: chi, mean: (clo + chi) / 2, binWidth,
+                  count: syntheticCount, p2: clo, p98: chi };
+              }
+            }
+            setHistogramData(syntheticHists);
+            // Skip tile-sampling histogram recompute — metadata is sufficient for initial display
+            skipInitialHistogramRef.current = true;
+            addStatusLog('info', 'Initial contrast from metadata',
               ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
           }
         }
