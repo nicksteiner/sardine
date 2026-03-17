@@ -4718,7 +4718,7 @@ function App() {
                 logScale={nisarProductType !== 'GCOV'}
                 onContrastChange={sidebarIsRoiTS
                   ? (([min, max]) => setRoiTSContrastLimits([Math.round(min), Math.round(max)]))
-                  : (([min, max]) => { setContrastMin(Math.round(min)); setContrastMax(Math.round(max)); })
+                  : (([min, max]) => { setContrastMin(min); setContrastMax(max); })
                 }
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}

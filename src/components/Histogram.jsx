@@ -149,7 +149,13 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
   if (!stats) return null;
 
   const [lo, hi] = effectiveLimits;
-  const step = (stats.max - stats.min) / 200 || 0.001;
+  // Extend slider bounds to always include the current contrast values.
+  // If contrast limits fall outside the histogram's data range (e.g. after a
+  // scope change or due to integer rounding), the browser clamps the slider
+  // value to [min, max] and the next drag appears to "snap" to the boundary.
+  const sliderMin = Math.min(stats.min, lo);
+  const sliderMax = Math.max(stats.max, hi);
+  const step = (sliderMax - sliderMin) / 200 || 0.001;
 
   const fmt = (v) => {
     if (useDecibels) return v.toFixed(1) + ' dB';
@@ -242,8 +248,8 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
         )}
         <input
           type="range"
-          min={stats.min}
-          max={stats.max}
+          min={sliderMin}
+          max={sliderMax}
           step={step}
           value={lo}
           onChange={(e) => debouncedOnChange([Math.min(Number(e.target.value), hi), hi])}
@@ -279,8 +285,8 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
         )}
         <input
           type="range"
-          min={stats.min}
-          max={stats.max}
+          min={sliderMin}
+          max={sliderMax}
           step={step}
           value={hi}
           onChange={(e) => debouncedOnChange([lo, Math.max(Number(e.target.value), lo)])}
