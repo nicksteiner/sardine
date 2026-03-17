@@ -404,6 +404,7 @@ export async function loadNISARGUNW(file, options = {}) {
     if (numRows <= 0 || numCols <= 0) return null;
 
     const region = await streamReader.readRegion(dsId, top, left, numRows, numCols);
+    if (!region) return null;
     let data = region.data || region;
 
     // Handle complex data: extract phase from CFloat32
@@ -417,7 +418,7 @@ export async function loadNISARGUNW(file, options = {}) {
     if (cohDsId !== null) {
       try {
         const cohRegion = await streamReader.readRegion(cohDsId, top, left, numRows, numCols);
-        result.coherenceData = cohRegion.data || cohRegion;
+        if (cohRegion) result.coherenceData = cohRegion.data || cohRegion;
       } catch (e) {
         // Non-fatal: proceed without coherence
       }
@@ -427,7 +428,7 @@ export async function loadNISARGUNW(file, options = {}) {
     if (ionoDsId !== null) {
       try {
         const ionoRegion = await streamReader.readRegion(ionoDsId, top, left, numRows, numCols);
-        result.ionosphereData = ionoRegion.data || ionoRegion;
+        if (ionoRegion) result.ionosphereData = ionoRegion.data || ionoRegion;
       } catch (e) {
         // Non-fatal: proceed without ionosphere
       }
@@ -439,6 +440,7 @@ export async function loadNISARGUNW(file, options = {}) {
   // Build getExportStripe for full-width row export
   async function getExportStripe({ startRow, numRows, ml = 1 }) {
     const region = await streamReader.readRegion(dsId, startRow, 0, numRows, width);
+    if (!region) return null;
     let data = region.data || region;
 
     // Handle complex data
@@ -468,6 +470,7 @@ export async function loadNISARGUNW(file, options = {}) {
     const [cohH, cohW] = cohMeta.shape;
     try {
       const region = await streamReader.readRegion(cohDsId, 0, 0, cohH, cohW);
+      if (!region) return null;
       return {
         data: region.data || region,
         width: cohW,
@@ -492,6 +495,7 @@ export async function loadNISARGUNW(file, options = {}) {
 
     try {
       const region = await streamReader.readRegion(dsId, r0, c0, nRows, nCols);
+      if (!region) return null;
       let data = region.data || region;
 
       // Handle complex data: extract phase

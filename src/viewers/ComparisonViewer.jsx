@@ -36,19 +36,23 @@ export function ComparisonViewer({
     const [minX, minY, maxX, maxY] = combinedBounds;
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
-    const spanX = maxX - minX;
-    const spanY = maxY - minY;
-    const zoom = Math.log2(360 / Math.max(spanX, spanY)) - 1;
+    const maxSpan = Math.max(maxX - minX, maxY - minY);
+    // Match SARViewer/autoFitIfNewScene: assume ~1000px viewport so the scene fills the view
+    const zoom = Math.log2(1000 / maxSpan);
 
     return {
       target: [centerX, centerY],
-      zoom: Math.max(-2, Math.min(zoom, 10)),
-      minZoom: -2,
-      maxZoom: 20,
+      zoom,
+      minZoom: -15,
+      maxZoom: 25,
     };
   }, [combinedBounds]);
 
   const [viewState, setViewState] = useState(defaultViewState);
+  // Re-fit when images change (e.g. new paired view opened while another was active)
+  useEffect(() => {
+    setViewState(defaultViewState);
+  }, [defaultViewState]);
   const activeViewRef = useRef(null);
 
   const handleViewStateChange = useCallback(
@@ -231,15 +235,14 @@ export function SwipeComparisonViewer({
     const [minX, minY, maxX, maxY] = combinedBounds;
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
-    const spanX = maxX - minX;
-    const spanY = maxY - minY;
-    const zoom = Math.log2(360 / Math.max(spanX, spanY)) - 1;
+    const maxSpan = Math.max(maxX - minX, maxY - minY);
+    const zoom = Math.log2(1000 / maxSpan);
 
     return {
       target: [centerX, centerY],
-      zoom: Math.max(-2, Math.min(zoom, 10)),
-      minZoom: -2,
-      maxZoom: 20,
+      zoom,
+      minZoom: -15,
+      maxZoom: 25,
     };
   }, [combinedBounds]);
 

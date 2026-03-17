@@ -167,7 +167,8 @@ void main() {
     float amplitude = texture(uTexture, vTexCoord).r;
 
     // Phase corrections: subtract each enabled correction directly from GPU textures
-    if (!isnan(amplitude) && amplitude != 0.0) {
+    // GUNW nodata is NaN (not zero) — zero phase is valid (no displacement)
+    if (!isnan(amplitude)) {
       // Ionosphere: per-tile texture, same grid as data — use vTexCoord directly
       if (uCorIono > 0.5) {
         float v = texture(uTexCorIono, vTexCoord).r;

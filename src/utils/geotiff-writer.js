@@ -115,6 +115,7 @@ export async function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode
       const ovWidth = Math.floor(currentLevel.width / scale);
       const ovHeight = Math.floor(currentLevel.height / scale);
       pyramid.push({ data: overview, width: ovWidth, height: ovHeight });
+      await new Promise(r => setTimeout(r, 0)); // yield so UI stays responsive between levels
 
       // Move to next level (only generate 2×, 4×, 8× for COG standard)
       scale *= 2;
@@ -138,6 +139,7 @@ export async function writeRGBAGeoTIFF(rgbaData, width, height, bounds, epsgCode
   }
 
   reportProgress(90);
+  await new Promise(r => setTimeout(r, 0)); // yield before synchronous buffer construction
 
   // Pass 2: Calculate file layout and write
   const buffer = buildCOGFile(levels, bounds, epsgCode);
@@ -483,8 +485,14 @@ function buildCOGFile(levels, bounds, epsgCode) {
     currentOffset += totalTileBytes;
   }
 
-  // Allocate buffer
+  // Allocate buffer — guard against the 4 GB TIFF limit (tile offsets are uint32)
   const totalSize = currentOffset;
+  if (totalSize > 4_000_000_000) {
+    throw new Error(
+      `GeoTIFF too large: ${(totalSize / 1e9).toFixed(1)} GB exceeds the 4 GB TIFF limit. ` +
+      'Increase the multilook factor or reduce the export area.'
+    );
+  }
   const buffer = new ArrayBuffer(totalSize);
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
@@ -1051,6 +1059,12 @@ export async function writeFloat32GeoTIFF(bands, bandNames, width, height, bound
   const tileDataOffset = overflowOffset + overflowSize;
   const totalTileBytes = compressedTiles.reduce((sum, t) => sum + t.byteCount, 0);
   const totalSize = tileDataOffset + totalTileBytes;
+  if (totalSize > 4_000_000_000) {
+    throw new Error(
+      `GeoTIFF too large: ${(totalSize / 1e9).toFixed(1)} GB exceeds the 4 GB TIFF limit. ` +
+      'Increase the multilook factor or reduce the export area.'
+    );
+  }
 
   // --- Step 4: Write the file ---
   const buffer = new ArrayBuffer(totalSize);
@@ -1107,11 +1121,12 @@ export async function writeFloat32GeoTIFF(bands, bandNames, width, height, bound
   // Next IFD pointer (0 = none)
   view.setUint32(pos, 0, true);
 
-  // Write tile data
+  // Write tile data (yield every 64 tiles to keep the browser responsive on large exports)
   let tileWritePos = tileDataOffset;
-  for (const tile of compressedTiles) {
-    bytes.set(tile.data, tileWritePos);
-    tileWritePos += tile.byteCount;
+  for (let i = 0; i < compressedTiles.length; i++) {
+    bytes.set(compressedTiles[i].data, tileWritePos);
+    tileWritePos += compressedTiles[i].byteCount;
+    if (i % 64 === 63) await new Promise(r => setTimeout(r, 0));
   }
 
   if (onProgress) onProgress(100);

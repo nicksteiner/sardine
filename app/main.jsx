@@ -35,7 +35,7 @@ import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
 import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
 import { loadMetadataCube } from '../src/utils/metadata-cube.js';
-import { loadAllCorrections, fitPlanarRamp, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
+import { loadAllCorrections, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -286,7 +286,7 @@ function App() {
   // GUNW phase corrections — individual layers uploaded to GPU as separate textures
   const [correctionLayers, setCorrectionLayers] = useState(null); // {ionosphere, troposphereWet, ...}
   const [enabledCorrections, setEnabledCorrections] = useState(new Set()); // Set of enabled correction keys
-  const [rampCoefficients, setRampCoefficients] = useState(null); // {a, b, c, nPixels}
+  // rampCoefficients state removed — planar ramp correction removed
 
   // Drag-and-drop state
   const [dragOver, setDragOver] = useState(false);
@@ -310,6 +310,8 @@ function App() {
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
+  // GUNW data is in radians/meters — dB conversion is never valid
+  const effectiveUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
   const [showGrid, setShowGrid] = useState(true);
   const [pixelExplorer, setPixelExplorer] = useState(false);
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
@@ -501,7 +503,7 @@ function App() {
         for (let i = 0; i < raw.length; i++) {
           const r = raw[i];
           if (!isNaN(r) && r > 0) {
-            const v = useDecibels ? 10 * Math.log10(r) : r;
+            const v = effectiveUseDecibels ? 10 * Math.log10(r) : r;
             vals[i] = v;
             if (v < vMin) vMin = v;
             if (v > vMax) vMax = v;
@@ -548,7 +550,7 @@ function App() {
 
         if (!cancelled) {
           console.log('[ROI Profile] Computed:', { exportW, exportH, vCount, mean: mean.toFixed(2), vMin: vMin.toFixed(2), vMax: vMax.toFixed(2) });
-          setRoiProfile({ rowMeans, colMeans, hist, histMin: vMin, histMax: vMax, mean, count: vCount, exportW, exportH, useDecibels });
+          setRoiProfile({ rowMeans, colMeans, hist, histMin: vMin, histMax: vMax, mean, count: vCount, exportW, exportH, useDecibels: effectiveUseDecibels });
         }
       } catch (e) {
         console.error('[ROI Profile] Error:', e);
@@ -1131,6 +1133,13 @@ function App() {
       return;
     }
 
+    // Skip histogram for GUNW datasets with fixed ranges (wrapped phase = always [-pi, pi])
+    if (nisarProductType === 'GUNW' && imageData.renderMode?.defaultRange && imageData.renderMode?.isComplex) {
+      const [lo, hi] = imageData.renderMode.defaultRange;
+      addStatusLog('info', `Fixed range for ${selectedGunwDataset}: ${lo.toFixed(3)} to ${hi.toFixed(3)} ${imageData.renderMode.unit || ''}`);
+      return;
+    }
+
     addStatusLog('info', `Recomputing histogram (${histogramScope})...`);
 
     try {
@@ -1222,7 +1231,7 @@ function App() {
         let hasAnyStats = false;
         for (const ch of ['R', 'G', 'B']) {
           const arr = rawValues[ch] instanceof Float32Array ? rawValues[ch] : new Float32Array(rawValues[ch]);
-          hists[ch] = await computeChannelStatsAuto(arr, useDecibels);
+          hists[ch] = await computeChannelStatsAuto(arr, effectiveUseDecibels);
           if (hists[ch]) hasAnyStats = true;
         }
         if (hasAnyStats) {
@@ -1233,7 +1242,7 @@ function App() {
             lims[ch] = hists[ch] ? [hists[ch].p2, hists[ch].p98] : [0, 1];
           }
           setRgbContrastLimits(lims);
-          addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${useDecibels ? 'dB' : 'linear'})`,
+          addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${effectiveUseDecibels ? 'dB' : 'linear'})`,
             ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
         } else {
           addStatusLog('info', `${scopeLabel} histogram: no valid pixels in region`);
@@ -1266,9 +1275,9 @@ function App() {
           addStatusLog('success', `Global histogram from HDF5 statistics: ${p2.toFixed(1)} to ${p98.toFixed(1)} dB`);
         } else {
           // Viewport/ROI scope or no HDF5 stats — sample tiles
-          console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', useDecibels);
+          console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', effectiveUseDecibels);
           const stats = await sampleViewportStats(
-            imageData.getTile, regionW, regionH, useDecibels, 128,
+            imageData.getTile, regionW, regionH, effectiveUseDecibels, 128,
             regionX, regionY, imageData.height,
             (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
           );
@@ -1286,7 +1295,7 @@ function App() {
       console.error('[histogram] recompute error:', e);
       addStatusLog('warning', 'Histogram recompute failed', e.message);
     }
-  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, useDecibels, roi, addStatusLog]);
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, effectiveUseDecibels, nisarProductType, selectedGunwDataset, roi, addStatusLog]);
 
   // Recompute histogram when scope changes — but skip on initial load if
   // metadata-based contrast was already applied (avoids redundant tile reads).
@@ -1604,11 +1613,11 @@ function App() {
         const sampleData = await loadCOGFullImage(cogUrl, 512);
 
         if (sampleData && sampleData.data) {
-          const limits = autoContrastLimits(sampleData.data, useDecibels);
+          const limits = autoContrastLimits(sampleData.data, effectiveUseDecibels);
           setContrastMin(Math.round(limits[0]));
           setContrastMax(Math.round(limits[1]));
           addStatusLog('success', 'Auto-contrast calculated',
-            `Range: ${limits[0].toFixed(2)} to ${limits[1].toFixed(2)}${useDecibels ? ' dB' : ''}`);
+            `Range: ${limits[0].toFixed(2)} to ${limits[1].toFixed(2)}${effectiveUseDecibels ? ' dB' : ''}`);
         } else {
           addStatusLog('warning', 'No data available for contrast calculation');
         }
@@ -2247,15 +2256,15 @@ function App() {
             // Sample using world-coordinate bounds so getTile receives world-space bboxes
             const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
             const stats = await sampleViewportStats(
-              data.getTile, gMaxX - gMinX, gMaxY - gMinY, useDecibels, 128,
+              data.getTile, gMaxX - gMinX, gMaxY - gMinY, effectiveUseDecibels, 128,
               gMinX, gMinY,
             );
             if (stats) {
               setHistogramData({ single: stats });
-              setContrastMin(Number(stats.p2.toFixed(useDecibels ? 1 : 3)));
-              setContrastMax(Number(stats.p98.toFixed(useDecibels ? 1 : 3)));
-              const unit = useDecibels ? 'dB' : '';
-              addStatusLog('success', `Auto-contrast: ${stats.p2.toFixed(useDecibels ? 1 : 3)} to ${stats.p98.toFixed(useDecibels ? 1 : 3)} ${unit}`);
+              setContrastMin(Number(stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)));
+              setContrastMax(Number(stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)));
+              const unit = effectiveUseDecibels ? 'dB' : '';
+              addStatusLog('success', `Auto-contrast: ${stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)} to ${stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)} ${unit}`);
             }
           } catch (e) {
             addStatusLog('warning', 'Background histogram failed', e.message);
@@ -2375,7 +2384,7 @@ function App() {
               );
               setCorrectionLayers(corrections);
               setEnabledCorrections(new Set());
-              setRampCoefficients(null);
+
               const available = Object.keys(corrections);
               if (available.length > 0) {
                 addStatusLog('success', `Phase corrections available: ${available.map(k => CORRECTION_TYPES[k]?.label || k).join(', ')}`);
@@ -2390,7 +2399,6 @@ function App() {
         } else {
           setCorrectionLayers(null);
           setEnabledCorrections(new Set());
-          setRampCoefficients(null);
         }
       } else if (displayMode === 'rgb' && compositeId) {
         // ── GCOV RGB composite mode ──
@@ -2548,83 +2556,6 @@ function App() {
     }
   }, [nisarFile, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene]);
 
-  // Handle planar ramp toggle — needs phase + coherence data to fit
-  const handleToggleRamp = useCallback(async () => {
-    const newEnabled = new Set(enabledCorrections);
-    if (newEnabled.has('planarRamp')) {
-      // Disable ramp
-      newEnabled.delete('planarRamp');
-      if (correctionLayers) {
-        const updated = { ...correctionLayers };
-        delete updated.planarRamp;
-        setCorrectionLayers(updated);
-      }
-      setRampCoefficients(null);
-      setEnabledCorrections(newEnabled);
-      return;
-    }
-
-    // Compute ramp from current phase data
-    if (!imageData?.getTile) {
-      addStatusLog('error', 'No phase data loaded for ramp fitting');
-      return;
-    }
-
-    addStatusLog('info', 'Computing planar ramp from high-coherence pixels...');
-    try {
-      if (!imageData?.getExportStripe) {
-        addStatusLog('error', 'No export stripe reader available for ramp fitting');
-        return;
-      }
-
-      // Read full image with multilook to get ~500x500 for fitting
-      const ml = Math.max(1, Math.floor(Math.max(imageData.width, imageData.height) / 500));
-      addStatusLog('info', `Reading phase data (ml=${ml}) for ramp fit...`);
-      const stripe = await imageData.getExportStripe({ startRow: 0, numRows: imageData.height, ml });
-
-      if (!stripe?.data) {
-        addStatusLog('error', 'Could not read phase data for ramp fitting');
-        return;
-      }
-
-      // Load coherence and downsample to match phase
-      let cohData = null;
-      if (imageData.loadCoherenceData) {
-        const coh = await imageData.loadCoherenceData();
-        if (coh?.data && ml > 1) {
-          // Downsample coherence to match multilooked phase
-          const { multilookFloat32 } = await import('../src/loaders/nisar-product.js');
-          const mlCoh = multilookFloat32(coh.data, coh.height, coh.width, ml);
-          cohData = mlCoh.data;
-        } else if (coh?.data) {
-          cohData = coh.data;
-        }
-      }
-
-      const result = fitPlanarRamp(stripe.data, cohData, stripe.width, stripe.height, {
-        coherenceThreshold: coherenceThreshold || 0.7,
-      });
-
-      if (result.nPixels < 10) {
-        addStatusLog('error', `Ramp fit failed: only ${result.nPixels} valid pixels`);
-        return;
-      }
-
-      setRampCoefficients({ ...result.coefficients, nPixels: result.nPixels });
-
-      // Store ramp as a correction layer at the multilooked resolution
-      const updated = { ...correctionLayers, planarRamp: { data: result.ramp, width: stripe.width, height: stripe.height } };
-      setCorrectionLayers(updated);
-      newEnabled.add('planarRamp');
-      setEnabledCorrections(newEnabled);
-
-      addStatusLog('success',
-        `Ramp fit: a=${result.coefficients.a.toFixed(3)}, b=${result.coefficients.b.toFixed(3)}, c=${result.coefficients.c.toFixed(3)} (${result.nPixels} pixels)`);
-    } catch (e) {
-      addStatusLog('error', `Ramp fitting failed: ${e.message}`);
-    }
-  }, [enabledCorrections, correctionLayers, imageData, coherenceThreshold, addStatusLog]);
-
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
@@ -2670,16 +2601,17 @@ function App() {
 
       const roiStartCol = roiActive ? Math.floor(roiClamped.left / effectiveMl) : 0;
       const roiStartRow = roiActive ? Math.floor(roiClamped.top / effectiveMl) : 0;
-      // Count complete multilook windows from the grid-aligned start to the ROI right/bottom edge.
-      // Using floor(right/ml) - floor(left/ml) avoids under-counting when ROI edges
-      // don't align to the multilook grid (the previous floor(width/ml) formula missed
-      // valid windows straddling the alignment boundary).
+      // Round the far edge UP to the next multilook boundary so the export covers the
+      // full user selection (floor would silently drop up to ml-1 pixels at the edge).
+      // Cap at the image's own integer-ml limit to avoid reading past source data.
+      const maxExportCol = Math.floor(sourceWidth / effectiveMl);
+      const maxExportRow = Math.floor(sourceHeight / effectiveMl);
       const roiEndCol = roiActive
-        ? Math.floor(Math.min(roiClamped.left + roiClamped.width, sourceWidth) / effectiveMl)
-        : Math.floor(sourceWidth / effectiveMl);
+        ? Math.min(Math.ceil(Math.min(roiClamped.left + roiClamped.width, sourceWidth) / effectiveMl), maxExportCol)
+        : maxExportCol;
       const roiEndRow = roiActive
-        ? Math.floor(Math.min(roiClamped.top + roiClamped.height, sourceHeight) / effectiveMl)
-        : Math.floor(sourceHeight / effectiveMl);
+        ? Math.min(Math.ceil(Math.min(roiClamped.top + roiClamped.height, sourceHeight) / effectiveMl), maxExportRow)
+        : maxExportRow;
       const exportWidth = roiEndCol - roiStartCol;
       const exportHeight = roiEndRow - roiStartRow;
 
@@ -2689,6 +2621,22 @@ function App() {
           `Need at least ${effectiveMl}x${effectiveMl} pixels, got ${roiClamped?.width || 0}x${roiClamped?.height || 0}.`);
         setExporting(false);
         return;
+      }
+
+      // Log when the ROI was snapped to the multilook grid
+      if (roiActive) {
+        const snappedLeft   = roiStartCol * effectiveMl;
+        const snappedTop    = roiStartRow * effectiveMl;
+        const snappedRight  = roiEndCol   * effectiveMl;
+        const snappedBottom = roiEndRow   * effectiveMl;
+        const reqRight  = Math.min(roiClamped.left + roiClamped.width,  sourceWidth);
+        const reqBottom = Math.min(roiClamped.top  + roiClamped.height, sourceHeight);
+        if (snappedLeft !== roiClamped.left || snappedTop !== roiClamped.top ||
+            snappedRight !== reqRight || snappedBottom !== reqBottom) {
+          addStatusLog('info',
+            `ROI snapped to ${effectiveMl}px multilook grid: ` +
+            `source cols ${snappedLeft}–${snappedRight}, rows ${snappedTop}–${snappedBottom}`);
+        }
       }
 
       // Warn if per-band allocation is very large (modern 64-bit browsers
@@ -2735,9 +2683,9 @@ function App() {
             const lim = effectiveContrastLimits[ch];
             return lim ? `${ch}:[${lim[0].toExponential(1)},${lim[1].toExponential(1)}]` : '';
           }).filter(Boolean).join(' ');
-          addStatusLog('info', `Render: composite="${compositeId}", ${useDecibels ? 'dB' : 'linear'}, per-channel ${limStr}, ${stretchMode}, gamma=${gamma}`);
+          addStatusLog('info', `Render: composite="${compositeId}", ${effectiveUseDecibels ? 'dB' : 'linear'}, per-channel ${limStr}, ${stretchMode}, gamma=${gamma}`);
         } else {
-          addStatusLog('info', `Render: ${useDecibels ? 'dB' : 'linear'}, contrast [${contrastMin}, ${contrastMax}], ${colormap}, ${stretchMode}, gamma=${gamma}`);
+          addStatusLog('info', `Render: ${effectiveUseDecibels ? 'dB' : 'linear'}, contrast [${contrastMin}, ${contrastMax}], ${colormap}, ${stretchMode}, gamma=${gamma}`);
         }
         addStatusLog('info', `Format: GeoTIFF (RGBA uint8, 512x512 tiles, DEFLATE)`);
       } else {
@@ -2747,6 +2695,22 @@ function App() {
       // Allocate output arrays for each band (power + complex)
       const bands = {};
       const allBandNames = [...bandNames, ...complexBandNames];
+
+      // Check total memory across all bands (not just per-band)
+      const totalBandBytes = allBandNames.length * exportWidth * exportHeight * 4;
+      if (totalBandBytes > 6e9) {
+        addStatusLog('error',
+          `Total band allocation too large (${(totalBandBytes / 1e9).toFixed(1)} GB across ` +
+          `${allBandNames.length} bands). Increase multilook to reduce size.`);
+        setExporting(false);
+        return;
+      }
+      if (totalBandBytes > 2e9) {
+        addStatusLog('warning',
+          `Large allocation: ${(totalBandBytes / 1e9).toFixed(1)} GB total across ` +
+          `${allBandNames.length} bands — ensure sufficient RAM`);
+      }
+
       for (const name of allBandNames) {
         bands[name] = new Float32Array(exportWidth * exportHeight);
       }
@@ -2832,6 +2796,32 @@ function App() {
         addStatusLog('warning', 'No world coordinates found in HDF5 — exported GeoTIFF will lack proper georeferencing');
       }
       const geoBounds = imageData.worldBounds || imageData.bounds;
+
+      // Check for non-uniform coordinate spacing.  NISAR GCOV grids are nominally
+      // uniform, but if they're not, the average-spacing georeferencing used below
+      // will drift at the edges.  Warn so the user knows to check registration.
+      if (imageData.xCoords && imageData.yCoords && imageData.worldBounds) {
+        const maxSpacingDeviation = (coords) => {
+          if (!coords || coords.length < 3) return 0;
+          const nominal = coords[1] - coords[0];
+          if (Math.abs(nominal) < 1e-12) return 0;
+          let max = 0;
+          for (let i = 2; i < coords.length; i++) {
+            const dev = Math.abs((coords[i] - coords[i - 1]) - nominal) / Math.abs(nominal);
+            if (dev > max) max = dev;
+          }
+          return max;
+        };
+        const xDev = maxSpacingDeviation(imageData.xCoords);
+        const yDev = maxSpacingDeviation(imageData.yCoords);
+        if (xDev > 0.001 || yDev > 0.001) {
+          addStatusLog('warning',
+            `Non-uniform coordinate spacing detected ` +
+            `(x: ${(xDev * 100).toFixed(2)}%, y: ${(yDev * 100).toFixed(2)}% max deviation). ` +
+            `Georeferencing uses average spacing — sub-pixel misregistration possible at edges.`);
+        }
+      }
+
       // worldBounds are pixel-CENTER: span = (N-1) * spacing, so divide by (N-1)
       // Always compute from worldBounds and data dimensions — pixelSpacing reflects
       // coordinate posting which may differ from data pixel footprint.
@@ -2925,7 +2915,7 @@ function App() {
             const tileImage = createRGBTexture(
               rgbBands, tileW, tileH,
               effectiveContrastLimits,
-              useDecibels, gamma, stretchMode,
+              effectiveUseDecibels, gamma, stretchMode,
               null, false
             );
             return tileImage.data;
@@ -2947,7 +2937,7 @@ function App() {
           filename = `sardine_${bandNames.join('-')}_${compositeId}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
         } else {
           // Single-band: apply colormap
-          addStatusLog('info', `Applying ${useDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
+          addStatusLog('info', `Applying ${effectiveUseDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
           const colormapFunc = getColormap(colormap);
           const cMin = contrastMin;
           const cMax = contrastMax;
@@ -2958,7 +2948,7 @@ function App() {
           for (let i = 0; i < numPixels; i++) {
             const amplitude = bandData[i];
             let value;
-            if (useDecibels) {
+            if (effectiveUseDecibels) {
               const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
               value = (db - cMin) / (cMax - cMin);
             } else {
@@ -3048,7 +3038,7 @@ function App() {
       const blob = await exportFigure(glCanvas, {
         colormap,
         contrastLimits: effectiveContrastLimits,
-        useDecibels,
+        useDecibels: effectiveUseDecibels,
         compositeId: displayMode === 'rgb' ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
@@ -3092,7 +3082,7 @@ function App() {
       const blob = await exportFigureWithOverlays(glCanvas, {
         colormap,
         contrastLimits: effectiveContrastLimits,
-        useDecibels,
+        useDecibels: effectiveUseDecibels,
         compositeId: displayMode === 'rgb' ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
@@ -3169,7 +3159,7 @@ function App() {
       const blob = await exportRGBColorbar({
         compositeId,
         contrastLimits: effectiveContrastLimits,
-        useDecibels,
+        useDecibels: effectiveUseDecibels,
         stretchMode,
         gamma,
       });
@@ -3512,7 +3502,7 @@ function App() {
               </div>
 
               {nisarFile && (
-                <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
               )}
@@ -3640,7 +3630,7 @@ function App() {
           {nisarDatasets.length > 0 && (
             <CollapsibleSection title="Dataset" defaultOpen={true}>
               {/* Source indicator */}
-              <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
                 {nisarFile ? nisarFile.name : remoteName || 'Remote'}
                 {nisarFile && ` (${(nisarFile.size / 1e9).toFixed(2)} GB)`}
                 {nisarProductType !== 'GCOV' && (
@@ -4103,10 +4093,11 @@ function App() {
                 <input
                   type="checkbox"
                   id="useDb"
-                  checked={useDecibels}
+                  checked={effectiveUseDecibels}
+                  disabled={nisarProductType === 'GUNW'}
                   onChange={(e) => setUseDecibels(e.target.checked)}
                 />
-                <label htmlFor="useDb">dB Scaling</label>
+                <label htmlFor="useDb">dB Scaling{nisarProductType === 'GUNW' ? ' (N/A)' : ''}</label>
               </div>
             </div>
 
@@ -4198,7 +4189,7 @@ function App() {
                 <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                   {exportMode === 'raw'
                     ? 'Float32 linear power values — suitable for analysis'
-                    : `RGBA with ${useDecibels ? 'dB' : 'linear'} stretch, ${colormap} colormap`}
+                    : `RGBA with ${effectiveUseDecibels ? 'dB' : 'linear'} stretch, ${colormap} colormap`}
                 </div>
               </div>
             )}
@@ -4517,7 +4508,7 @@ function App() {
                 contrastLimits={sidebarIsRoiRGB
                   ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
                   : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })}
-                useDecibels={sidebarIsRoiRGB ? false : useDecibels}
+                useDecibels={sidebarIsRoiRGB ? false : effectiveUseDecibels}
                 onContrastChange={sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
@@ -4530,7 +4521,7 @@ function App() {
                 histograms={sidebarHistogramData}
                 mode="single"
                 contrastLimits={sidebarIsRoiTS ? roiTSContrastLimits : contrastLimits}
-                useDecibels={useDecibels}
+                useDecibels={effectiveUseDecibels}
                 onContrastChange={sidebarIsRoiTS
                   ? (([min, max]) => setRoiTSContrastLimits([Math.round(min), Math.round(max)]))
                   : (([min, max]) => { setContrastMin(Math.round(min)); setContrastMax(Math.round(max)); })
@@ -4637,49 +4628,70 @@ function App() {
                 </div>
 
                 {/* Phase corrections panel */}
-                {selectedGunwDataset === 'unwrappedPhase' && correctionLayers && Object.keys(correctionLayers).length > 0 && (
-                  <div style={{ marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                      Phase Corrections
-                    </span>
-                    {Object.entries(CORRECTION_TYPES).map(([key, { label }]) => {
-                      const isRamp = key === 'planarRamp';
-                      const available = isRamp || !!correctionLayers[key];
-                      if (!available && !isRamp) return null;
-                      return (
-                        <div key={key} className="control-row" style={{ marginBottom: '3px' }}>
-                          <input
-                            type="checkbox"
-                            id={`cor-${key}`}
-                            checked={enabledCorrections.has(key)}
-                            disabled={!available && !isRamp}
-                            onChange={(e) => {
-                              if (isRamp) {
-                                handleToggleRamp();
-                                return;
-                              }
-                              const next = new Set(enabledCorrections);
-                              if (e.target.checked) next.add(key);
-                              else next.delete(key);
-                              setEnabledCorrections(next);
-                            }}
-                          />
-                          <label htmlFor={`cor-${key}`} style={{ fontSize: '0.7rem' }}>
-                            {label}
-                            {!correctionLayers[key] && !isRamp && (
-                              <span style={{ color: 'var(--text-disabled)', marginLeft: '4px' }}>(N/A)</span>
-                            )}
-                          </label>
-                        </div>
-                      );
-                    })}
-                    {rampCoefficients && (
-                      <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '2px', fontFamily: 'monospace' }}>
-                        a={rampCoefficients.a.toFixed(2)} b={rampCoefficients.b.toFixed(2)} c={rampCoefficients.c.toFixed(2)} ({rampCoefficients.nPixels} px)
+                {selectedGunwDataset === 'unwrappedPhase' && correctionLayers && Object.keys(correctionLayers).length > 0 && (() => {
+                  const btnStyle = (active) => ({
+                    fontSize: '0.6rem',
+                    padding: '3px 6px',
+                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--border)'}`,
+                    borderRadius: '3px',
+                    background: active ? 'var(--sardine-cyan)' : 'transparent',
+                    color: active ? '#000' : 'var(--text)',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                  });
+                  const resetContrast = () => {
+                    // Corrections shift the effective data range — reset to wide default
+                    const rm = imageData?.renderMode;
+                    const [lo, hi] = rm?.defaultRange || [-50, 50];
+                    setContrastMin(lo);
+                    setContrastMax(hi);
+                  };
+                  const toggle = (key) => {
+                    const next = new Set(enabledCorrections);
+                    if (next.has(key)) next.delete(key); else next.add(key);
+                    setEnabledCorrections(next);
+                    resetContrast();
+                  };
+                  const availableKeys = Object.keys(CORRECTION_TYPES).filter(k => !!correctionLayers[k]);
+                  const allEnabled = availableKeys.length > 0 && availableKeys.every(k => enabledCorrections.has(k));
+                  return (
+                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Phase Corrections</span>
+                        <button
+                          style={{ ...btnStyle(allEnabled), fontSize: '0.55rem', padding: '2px 5px' }}
+                          onClick={() => { setEnabledCorrections(allEnabled ? new Set() : new Set(availableKeys)); resetContrast(); }}
+                        >{allEnabled ? 'Clear All' : 'Apply All'}</button>
                       </div>
-                    )}
-                  </div>
-                )}
+                      {/* Ionosphere — same-grid correction */}
+                      {correctionLayers.ionosphere && (
+                        <div style={{ marginBottom: '3px' }}>
+                          <button style={btnStyle(enabledCorrections.has('ionosphere'))} onClick={() => toggle('ionosphere')}>
+                            Ionosphere
+                          </button>
+                        </div>
+                      )}
+                      {/* Metadata cube corrections */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+                        {correctionLayers.troposphereWet && (
+                          <button style={btnStyle(enabledCorrections.has('troposphereWet'))} onClick={() => toggle('troposphereWet')}>
+                            Tropo (Wet)
+                          </button>
+                        )}
+                        {correctionLayers.troposphereHydrostatic && (
+                          <button style={btnStyle(enabledCorrections.has('troposphereHydrostatic'))} onClick={() => toggle('troposphereHydrostatic')}>
+                            Tropo (Hydro)
+                          </button>
+                        )}
+                        {correctionLayers.solidEarthTides && (
+                          <button style={btnStyle(enabledCorrections.has('solidEarthTides'))} onClick={() => toggle('solidEarthTides')}>
+                            Solid Earth Tides
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -4689,13 +4701,13 @@ function App() {
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                   <label>Brightness</label>
                   <span className="value-display">
-                    {Math.round((contrastMin + contrastMax) / 2)}{useDecibels ? ' dB' : ''}
+                    {Math.round((contrastMin + contrastMax) / 2)}{effectiveUseDecibels ? ' dB' : ''}
                   </span>
                 </div>
                 <input
                   type="range"
-                  min={useDecibels ? -50 : 0}
-                  max={useDecibels ? 10 : 200}
+                  min={effectiveUseDecibels ? -50 : 0}
+                  max={effectiveUseDecibels ? 10 : 200}
                   step={1}
                   value={Math.round((contrastMin + contrastMax) / 2)}
                   onChange={(e) => {
@@ -4868,7 +4880,7 @@ function App() {
           )}
 
           {/* GUNW Paired View: Phase + Coherence side-by-side */}
-          {gunwPairedView && !imageData && (
+          {gunwPairedView && (
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <button
                 onClick={() => setGunwPairedView(null)}
@@ -4892,7 +4904,7 @@ function App() {
             </div>
           )}
 
-          {imageData && (
+          {imageData && !gunwPairedView && (
             <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
               {/* Loading overlay — shown on top of existing data while new data streams */}
               {loading && (
@@ -4926,7 +4938,7 @@ function App() {
                   imageData={imageData?.data ? imageData : null}
                   bounds={imageData?.bounds || [-180, -90, 180, 90]}
                   contrastLimits={effectiveContrastLimits}
-                  useDecibels={useDecibels}
+                  useDecibels={effectiveUseDecibels}
                   colormap={colormap}
                   gamma={gamma}
                   stretchMode={stretchMode}
@@ -5143,7 +5155,7 @@ function App() {
               histograms={histogramData}
               mode={displayMode}
               contrastLimits={displayMode === 'rgb' ? rgbContrastLimits : [contrastMin, contrastMax]}
-              useDecibels={useDecibels}
+              useDecibels={effectiveUseDecibels}
               polarization={selectedPolarization}
               compositeId={compositeId}
               onClose={() => setShowHistogramOverlay(false)}

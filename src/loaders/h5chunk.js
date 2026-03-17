@@ -879,6 +879,7 @@ function parseDataLayoutMessage(reader, offset, superblock) {
           btreeAddress,
           chunkDims,
           indexType,
+          flags,
           version: 4,
         };
       }
@@ -2662,6 +2663,155 @@ export class H5Chunk {
   }
 
   /**
+   * Build a single-entry chunk map for layout v4 Single Chunk (indexType 0/1).
+   * The btreeAddress IS the data address (for unfiltered datasets).
+   * For filtered single chunks, btreeAddress points to a compact structure
+   * with chunk_size and filter_mask encoded before the actual data address — we
+   * attempt to use it directly and rely on _decompressAndDecode to handle it.
+   */
+  _parseSingleChunkIndex(layout, dataset) {
+    const chunks = new Map();
+    const chunkDims = layout.chunkDims || dataset.shape || [1, 1];
+    const uncompressedSize = chunkDims.reduce((a, b) => a * b, 1) * (dataset.bytesPerElement || 4);
+    // btreeAddress is the data address for unfiltered; for filtered it points to
+    // a header structure (chunk_size + filter_mask) immediately followed by data.
+    // Store with size=null so readChunk uses the stored chunkSize from B-tree instead
+    // (not applicable here, but we include it for compatibility).
+    chunks.set('0,0', {
+      offset: layout.btreeAddress,
+      size: uncompressedSize,
+      filterMask: 0,
+    });
+    return chunks;
+  }
+
+  /**
+   * Parse HDF5 Fixed Array chunk index (layout v4, indexType 2).
+   * Used by HDF5 1.10+ for fixed-size datasets with chunk storage.
+   *
+   * Fixed Array header ("FAHD") contains max entries and a data block address.
+   * The data block ("FADB") contains a flat array of chunk entries indexed by
+   * chunk position: chunk at (cr, cc) → entry[cr * numChunkCols + cc].
+   *
+   * Each entry for filtered chunks (clientId 10): address + chunk_size + filter_mask
+   * Each entry for non-filtered chunks (clientId 11): address only
+   */
+  async _parseFixedArrayIndex(datasetId) {
+    const dataset = this.datasets.get(datasetId);
+    const layout = dataset.layout;
+    const superblock = this.superblock;
+    const offsetSize = superblock.offsetSize;
+    const lengthSize = superblock.lengthSize;
+
+    // Fixed Array Header: sig(4) + ver(1) + clientId(1) + entrySize(1) + pageBits(1) + maxEntries(lengthSize) + dataBlockAddr(offsetSize) + checksum(4)
+    const FAHD_SIZE = 4 + 1 + 1 + 1 + 1 + lengthSize + offsetSize + 4;
+    let headerBuf;
+    try {
+      headerBuf = await this._fetchBytes(layout.btreeAddress, FAHD_SIZE + 16);
+    } catch (e) {
+      console.warn(`[h5chunk] Fixed array header fetch failed for ${dataset.path}:`, e.message);
+      return new Map();
+    }
+    const hr = new BufferReader(headerBuf, true, layout.btreeAddress);
+    hr.seek(layout.btreeAddress);
+
+    const sig = String.fromCharCode(...hr.readBytes(4));
+    if (sig !== 'FAHD') {
+      console.warn(`[h5chunk] Fixed array: expected FAHD at 0x${layout.btreeAddress.toString(16)}, got "${sig}"`);
+      return new Map();
+    }
+    hr.readUint8(); // version
+    const clientId = hr.readUint8();   // 10=filtered, 11=non-filtered
+    const entrySize = hr.readUint8();  // bytes per entry in data block
+    const pageBits = hr.readUint8();   // 0 = no paging
+    const maxEntries = hr.readLength(lengthSize);
+    const dataBlockAddr = hr.readOffset(offsetSize);
+    // skip 4-byte checksum
+
+    const UNDEF_ADDR = 0xFFFFFFFFFFFFFFFF;
+    if (!dataBlockAddr || dataBlockAddr === UNDEF_ADDR) {
+      console.warn(`[h5chunk] Fixed array: data block not allocated for ${dataset.path}`);
+      return new Map();
+    }
+
+    // Page bitmap size (if paged): ceil(numPages / 8) bytes, rounded to 8-byte boundary
+    // where numPages = ceil(maxEntries / (1 << pageBits))
+    let pageBitmapSize = 0;
+    if (pageBits > 0) {
+      const pagePower = 1 << pageBits;
+      const numPages = Math.ceil(maxEntries / pagePower);
+      pageBitmapSize = Math.ceil(Math.ceil(numPages / 8) / 8) * 8;
+    }
+
+    // Data block: sig(4) + ver(1) + clientId(1) + headerAddr(offsetSize) + [bitmap] + entries + checksum(4)
+    const dbHeaderSize = 4 + 1 + 1 + offsetSize;
+    const dbTotalSize = dbHeaderSize + pageBitmapSize + maxEntries * entrySize + 4;
+
+    let dbBuf;
+    try {
+      dbBuf = await this._fetchBytes(dataBlockAddr, dbTotalSize + 32);
+    } catch (e) {
+      console.warn(`[h5chunk] Fixed array data block fetch failed for ${dataset.path}:`, e.message);
+      return new Map();
+    }
+    const dr = new BufferReader(dbBuf, true, dataBlockAddr);
+    dr.seek(dataBlockAddr);
+
+    const dbSig = String.fromCharCode(...dr.readBytes(4));
+    if (dbSig !== 'FADB') {
+      console.warn(`[h5chunk] Fixed array: expected FADB at 0x${dataBlockAddr.toString(16)}, got "${dbSig}"`);
+      return new Map();
+    }
+    dr.readUint8(); // version
+    dr.readUint8(); // clientId
+    dr.readOffset(offsetSize); // back-reference to header (skip)
+
+    if (pageBits > 0) {
+      dr.skip(pageBitmapSize);
+    }
+
+    const chunkDims = layout.chunkDims || [512, 512];
+    const shape = dataset.shape || [1, 1];
+    const numChunkCols = Math.ceil(shape[1] / chunkDims[1]);
+    const uncompressedSize = chunkDims.reduce((a, b) => a * b, 1) * (dataset.bytesPerElement || 4);
+    const filterFieldSize = entrySize - offsetSize; // bytes after the address per entry
+
+    const chunks = new Map();
+    for (let i = 0; i < maxEntries; i++) {
+      const addr = dr.readOffset(offsetSize);
+      let chunkSize = uncompressedSize;
+      let filterMask = 0;
+
+      if (clientId === 10 && filterFieldSize > 0) {
+        // Filtered entry: chunk_size (filterFieldSize - 4 bytes) + filter_mask (4 bytes)
+        if (filterFieldSize === 8) {
+          chunkSize = dr.readUint32();
+          filterMask = dr.readUint32();
+        } else if (filterFieldSize === 12) {
+          // 64-bit chunk size encoding
+          const lo = dr.readUint32();
+          const hi = dr.readUint32();
+          chunkSize = lo + hi * 0x100000000;
+          filterMask = dr.readUint32();
+        } else {
+          dr.skip(filterFieldSize);
+        }
+      }
+      // clientId 11 (non-filtered): only address, nothing more
+
+      if (!addr || addr === UNDEF_ADDR) continue; // unallocated chunk
+
+      const cr = Math.floor(i / numChunkCols);
+      const cc = i % numChunkCols;
+      const rowOffset = cr * chunkDims[0];
+      const colOffset = cc * chunkDims[1];
+      chunks.set(`${rowOffset},${colOffset}`, { offset: addr, size: chunkSize, filterMask });
+    }
+
+    return chunks;
+  }
+
+  /**
    * Ensure chunk index is loaded for a dataset (lazy B-tree fetching)
    * @param {string} datasetId - Dataset identifier
    * @returns {Promise<void>}
@@ -2725,10 +2875,26 @@ export class H5Chunk {
         );
         console.log(`[h5chunk] Loaded ${dataset.chunks.size} chunks for ${dataset.path || datasetId}`);
       } else {
-        console.warn(`[h5chunk] B-tree v2 (version 4) not yet supported for lazy loading`);
+        // Layout version 4 — index type determines chunk lookup structure
+        const indexType = layout.indexType ?? 4;
+        console.log(`[h5chunk] Layout v4 for ${dataset.path || datasetId}: indexType=${indexType}, addr=0x${layout.btreeAddress.toString(16)}`);
+        if (indexType === 0 || indexType === 1) {
+          // Single chunk or implicit: entire dataset is one chunk at btreeAddress
+          dataset.chunks = this._parseSingleChunkIndex(layout, dataset);
+        } else if (indexType === 2) {
+          // Fixed Array index — most common for fixed-size filtered datasets (HDF5 1.10+)
+          dataset.chunks = await this._parseFixedArrayIndex(datasetId);
+        } else {
+          console.warn(`[h5chunk] Index type ${indexType} not yet implemented for ${dataset.path || datasetId} (indexType 3=ExtArray, 4=BTree v2)`);
+          // Set empty map to prevent repeated re-runs on every tile request
+          dataset.chunks = new Map();
+        }
+        if (dataset.chunks) {
+          console.log(`[h5chunk] Loaded ${dataset.chunks.size} chunks for ${dataset.path || datasetId}`);
+        }
       }
     } catch (e) {
-      console.warn(`[h5chunk] Failed to parse B-tree for ${datasetId}:`, e.message);
+      console.warn(`[h5chunk] Failed to parse chunk index for ${datasetId}:`, e.message);
       throw e;
     }
   }
@@ -3003,6 +3169,56 @@ export class H5Chunk {
   }
 
   /**
+   * Read a sub-region from a contiguous (non-chunked) dataset.
+   * Fetches the full row span (all columns for the requested rows) in one request,
+   * then extracts the requested column range. One fetch regardless of numCols.
+   * @private
+   */
+  async _readContiguousRegion(dataset, startRow, startCol, numRows, numCols) {
+    const layout = dataset.layout;
+    if (layout?.address == null) return null;
+
+    const shape = dataset.shape;
+    if (!shape || shape.length < 2) return null;
+
+    const [totalRows, totalCols] = shape;
+    const isComplex = dataset.dtype === 'cfloat32' || dataset.dtype === 'cfloat64';
+    const valuesPerPixel = isComplex ? 2 : 1;
+    const bytesPerElement = dataset.bytesPerElement || 4; // bytes per HDF5 element (8 for cfloat32)
+    const rowStride = totalCols * bytesPerElement; // bytes per full row in file
+
+    const fileStart = layout.address + startRow * rowStride;
+    const spanSize = numRows * rowStride;
+
+    let spanBuffer;
+    try {
+      spanBuffer = await this._fetchBytes(fileStart, spanSize);
+    } catch (e) {
+      console.warn(`[h5chunk] _readContiguousRegion: fetch failed for ${dataset.path}:`, e.message);
+      return null;
+    }
+    if (!spanBuffer) return null;
+
+    // Decode all fetched bytes to float32 (handles float32, float64, cfloat32, etc.)
+    const spanData = this._decodeData(spanBuffer, dataset.dtype);
+
+    // Extract only the requested columns
+    const result = new Float32Array(numRows * numCols * valuesPerPixel);
+    for (let r = 0; r < numRows; r++) {
+      for (let c = 0; c < numCols; c++) {
+        const srcIdx = (r * totalCols + startCol + c) * valuesPerPixel;
+        const dstIdx = (r * numCols + c) * valuesPerPixel;
+        result[dstIdx] = spanData[srcIdx];
+        if (isComplex && srcIdx + 1 < spanData.length) {
+          result[dstIdx + 1] = spanData[srcIdx + 1];
+        }
+      }
+    }
+
+    return { data: result, width: numCols, height: numRows };
+  }
+
+  /**
    * Read a region of data (spanning multiple chunks)
    * @param {string} datasetId - Dataset identifier
    * @param {number} startRow - Start row
@@ -3017,6 +3233,11 @@ export class H5Chunk {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) {
       throw new Error(`Dataset not found: ${datasetId}`);
+    }
+
+    // Contiguous datasets: read full-row span and extract requested columns
+    if (dataset.layout?.type === 'contiguous') {
+      return this._readContiguousRegion(dataset, startRow, startCol, numRows, numCols);
     }
 
     const [chunkRows, chunkCols] = dataset.layout?.chunkDims || [numRows, numCols];
@@ -3060,8 +3281,10 @@ export class H5Chunk {
     const chunks = coords.map(([cr, cc]) => ({
       cr, cc, data: chunkMap.get(`${cr},${cc}`) || null,
     }));
+    let anyChunkFound = false;
     for (const { cr, cc, data: chunkData } of chunks) {
       if (!chunkData) continue;
+      anyChunkFound = true;
 
       const chunkStartRow = cr * chunkRows;
       const chunkStartCol = cc * chunkCols;
@@ -3084,6 +3307,11 @@ export class H5Chunk {
         }
       }
     }
+
+    // Return null when no chunks were found — callers can distinguish "failed read"
+    // from "data is genuinely all zero". Without this, an all-zero Float32Array would
+    // be silently used (e.g. as coherence texture), causing incorrect masking behavior.
+    if (!anyChunkFound) return null;
 
     return {
       data: result,

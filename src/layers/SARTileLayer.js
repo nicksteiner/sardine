@@ -184,6 +184,25 @@ export class SARTileLayer extends TileLayer {
               corProps.corIonoWidth = tileData.width;
               corProps.corIonoHeight = tileData.height;
               corProps.corIono = true;
+              // Debug: log first tile's iono stats
+              if (subProps.tile.index.x === 0 && subProps.tile.index.y === 0) {
+                const d = tileData.ionosphereData;
+                let min = Infinity, max = -Infinity, nanCount = 0;
+                for (let i = 0; i < d.length; i++) {
+                  if (isNaN(d[i])) { nanCount++; continue; }
+                  if (d[i] < min) min = d[i];
+                  if (d[i] > max) max = d[i];
+                }
+                console.log(`[SARTileLayer] iono tile(0,0): min=${min.toFixed(3)} max=${max.toFixed(3)} nan=${nanCount}/${d.length}`);
+                const pd = tileData.data;
+                let pmin = Infinity, pmax = -Infinity, pnan = 0;
+                for (let i = 0; i < pd.length; i++) {
+                  if (isNaN(pd[i])) { pnan++; continue; }
+                  if (pd[i] < pmin) pmin = pd[i];
+                  if (pd[i] > pmax) pmax = pd[i];
+                }
+                console.log(`[SARTileLayer] phase tile(0,0): min=${pmin.toFixed(3)} max=${pmax.toFixed(3)} nan=${pnan}/${pd.length}`);
+              }
             }
             // Full-extent cube corrections: tropo, SET, ramp — need imageBounds for UV remap
             if (correctionLayers) {
@@ -206,6 +225,22 @@ export class SARTileLayer extends TileLayer {
             }
             // Pass full image bounds for UV remapping of full-extent corrections
             if (bounds) corProps.imageBounds = bounds;
+            // Debug: log which corrections are active and their stats
+            if (subProps.tile.index.x === 0 && subProps.tile.index.y === 0) {
+              const active = Object.entries(corProps).filter(([k, v]) => k.startsWith('cor') && v === true).map(([k]) => k);
+              console.log(`[SARTileLayer] corrections active:`, active, 'imageBounds:', bounds);
+              for (const [k, v] of Object.entries(corProps)) {
+                if (v instanceof Float32Array) {
+                  let mn = Infinity, mx = -Infinity, nn = 0;
+                  for (let i = 0; i < Math.min(v.length, 10000); i++) {
+                    if (isNaN(v[i])) { nn++; continue; }
+                    if (v[i] < mn) mn = v[i];
+                    if (v[i] > mx) mx = v[i];
+                  }
+                  console.log(`[SARTileLayer] ${k}: min=${mn.toFixed(3)} max=${mx.toFixed(3)} nan=${nn}`);
+                }
+              }
+            }
           }
 
           return new SARGPULayer({

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 /**
- * sardine-launch — Lightweight server for the NISAR On-Demand JupyterLab system.
+ * sardine-launch — Lightweight server for NISAR On-Demand and Seqera Data Studios.
  *
  * Compatible with Node.js >= 10 (CommonJS, no ESM, no fs/promises).
  * Zero dependencies — uses only Node built-ins.
+ *
+ * Data Studios: set CONNECT_TOOL_PORT (default 8888) and mount data at /workspace/data.
  *
  * Serves:
  *   1. The built SARdine frontend (dist/)
@@ -34,9 +36,17 @@ var DIST_DIR = path.resolve(__dirname, '..', 'dist');
 // ─── CLI args ────────────────────────────────────────────────────────────
 function parseArgs() {
   var args = process.argv.slice(2);
+  // Data Studios sets CONNECT_TOOL_PORT; standalone uses PORT or default 8050
+  var defaultPort = parseInt(process.env.CONNECT_TOOL_PORT || process.env.PORT || '8050', 10);
+
+  // Data directory: explicit env > Studios mount > default
+  var defaultDataDir = process.env.SARDINE_DATA_DIR
+    || process.env.STUDIO_DATA_DIR
+    || (fs.existsSync('/workspace/data') ? '/workspace/data' : '/data/nisar');
+
   var opts = {
-    dataDir: '/data/nisar',
-    port: 8050,
+    dataDir: defaultDataDir,
+    port: defaultPort,
     host: '0.0.0.0',
     stacDb: process.env.STAC_DB_PATH || null,
     titilerUrl: process.env.TITILER_URL || null,
@@ -68,6 +78,11 @@ function parseArgs() {
         '  --stac-db <path>        DuckDB STAC catalog database (enables /api/stac)',
         '  --titiler-url <url>     Titiler tile server URL (e.g. http://localhost:8100)',
         '  --help                  Show this help',
+        '',
+        'Environment variables:',
+        '  CONNECT_TOOL_PORT       Port override (Seqera Data Studios)',
+        '  SARDINE_DATA_DIR        Data directory override',
+        '  STUDIO_DATA_DIR         Data directory (Data Studios mount)',
         '',
       ].join('\n'));
       process.exit(0);
@@ -722,6 +737,13 @@ function main() {
       console.log('');
     }
 
+    // Health check endpoint (used by Data Studios and container orchestrators)
+    if (reqUrl === '/health' || reqUrl === '/api/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+
     // CORS preflight
     if (req.method === 'OPTIONS') {
       res.writeHead(204, {
@@ -811,6 +833,7 @@ function main() {
     console.log('');
     console.log('  Routes:');
     console.log('    /              SARdine UI');
+    console.log('    /api/health    health check');
     console.log('    /api/config    server capabilities');
     console.log('    /api/files     directory listing API');
     console.log('    /api/s3/list   S3 bucket listing with presigned URLs');

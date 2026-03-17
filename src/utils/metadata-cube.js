@@ -162,10 +162,19 @@ export class MetadataCube {
   evaluateOnGrid(fieldName, pixelXCoords, pixelYCoords, width, height, elevationM = null, subsample = 1) {
     const out = new Float32Array(width * height);
 
+    // Normalize y-direction: output row 0 must be the northernmost row so that
+    // the result matches image memory order (top = north) regardless of whether
+    // pixelYCoords is descending (NISAR default, north→south) or ascending.
+    // interpolate() handles both dy signs correctly; we just ensure the output
+    // layout convention is consistent.
+    const yAscending = height > 1 && pixelYCoords[0] < pixelYCoords[height - 1];
+    // coordRow(outRow) maps an output row index to its pixelYCoords index.
+    const coordRow = yAscending ? (r) => height - 1 - r : (r) => r;
+
     if (subsample <= 1) {
       // Full resolution evaluation
       for (let row = 0; row < height; row++) {
-        const northing = pixelYCoords[row];
+        const northing = pixelYCoords[coordRow(row)];
         for (let col = 0; col < width; col++) {
           const easting = pixelXCoords[col];
           const val = this.interpolate(fieldName, easting, northing, elevationM);
@@ -181,7 +190,7 @@ export class MetadataCube {
 
       for (let cj = 0; cj < ch; cj++) {
         const row = Math.min(cj * subsample, height - 1);
-        const northing = pixelYCoords[row];
+        const northing = pixelYCoords[coordRow(row)];
         for (let ci = 0; ci < cw; ci++) {
           const col = Math.min(ci * subsample, width - 1);
           const easting = pixelXCoords[col];
@@ -408,6 +417,35 @@ async function readDataset(reader, path) {
     }
 
     // h5chunk StreamingHDF5Reader API
+    if (reader.findDatasetByPath) {
+      const dsId = reader.findDatasetByPath(path);
+      if (dsId === null || dsId === undefined) return null;
+
+      // Try readSmallDataset first (fast path for compact/small contiguous)
+      if (reader.readSmallDataset) {
+        const result = await reader.readSmallDataset(dsId);
+        if (result) return result.data || result;
+      }
+
+      // Fall back to readRegion for larger datasets (cube fields, etc.)
+      // Treat N-D data as flat 2D: (product of leading dims, last dim)
+      if (reader.readRegion && reader.getDatasets) {
+        const datasets = reader.getDatasets();
+        const dsMeta = datasets.find(d => d.id === dsId);
+        if (dsMeta?.shape?.length >= 1) {
+          const shape = dsMeta.shape;
+          // Flatten to 2D: rows = product of all dims except last, cols = last dim
+          const cols = shape[shape.length - 1];
+          const rows = shape.reduce((a, b) => a * b, 1) / cols;
+          const region = await reader.readRegion(dsId, 0, 0, rows, cols);
+          if (region) return region.data || region;
+        }
+      }
+
+      return null;
+    }
+
+    // h5chunk getDataset (alternative API)
     if (reader.getDataset) {
       const ds = await reader.getDataset(path);
       if (!ds) return null;

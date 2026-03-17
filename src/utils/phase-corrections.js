@@ -48,6 +48,7 @@ export async function loadIonosphereCorrection(streamReader, band, frequency, po
   const [height, width] = meta.shape;
   try {
     const region = await streamReader.readRegion(dsId, 0, 0, height, width);
+    if (!region) return null;
     const data = region.data || region;
     console.log(`[phase-corrections] Loaded ionosphere: ${width}x${height}`);
     return { data: new Float32Array(data), width, height };
@@ -146,7 +147,7 @@ export function fitPlanarRamp(phaseData, coherenceData, width, height, options =
     for (let col = 0; col < width; col++) {
       const idx = row * width + col;
       const phase = phaseData[idx];
-      if (isNaN(phase) || phase === 0) continue;
+      if (isNaN(phase)) continue;
 
       // Apply coherence mask if available
       if (coherenceData) {
@@ -264,7 +265,6 @@ export const CORRECTION_TYPES = {
   troposphereWet: { label: 'Troposphere (Wet)', source: 'cube' },
   troposphereHydrostatic: { label: 'Troposphere (Hydrostatic)', source: 'cube' },
   solidEarthTides: { label: 'Solid Earth Tides', source: 'cube' },
-  planarRamp: { label: 'Planar Ramp', source: 'computed' },
 };
 
 /**
