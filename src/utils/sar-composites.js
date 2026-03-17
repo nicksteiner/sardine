@@ -217,6 +217,19 @@ export const SAR_COMPOSITES = {
     formula: computeFreemanDurdenRGB,
     channelLabels: { R: 'Pd (dbl-bounce)', G: 'Pv (volume)', B: 'Ps (surface)' },
   },
+  // Multi-temporal: R/G/B come directly from 3 separate file loads.
+  // Required uses sentinel values so getAvailableComposites never surfaces this preset
+  // when scanning a single file's polarizations.
+  'multi-temporal': {
+    name: 'Multi-temporal RGB',
+    description: 'Same dataset from 3 acquisitions mapped to R / G / B',
+    required: ['__file_R__', '__file_G__', '__file_B__'],
+    channels: {
+      R: { dataset: 'R' },
+      G: { dataset: 'G' },
+      B: { dataset: 'B' },
+    },
+  },
 };
 
 /**

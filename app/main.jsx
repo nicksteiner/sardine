@@ -292,20 +292,27 @@ function App() {
   const [dragOver, setDragOver] = useState(false);
 
   // RGB composite state
-  const [displayMode, setDisplayMode] = useState('single'); // 'single' | 'rgb'
+  const [displayMode, setDisplayMode] = useState('single'); // 'single' | 'rgb' | 'multi-temporal'
   const [compositeId, setCompositeId] = useState(null);
   const [availableComposites, setAvailableComposites] = useState([]);
+
+  // True for any RGB-flavoured display mode (standard composite or multi-temporal)
+  const isRGBDisplayMode = displayMode === 'rgb' || displayMode === 'multi-temporal';
 
   // Per-channel contrast for RGB mode (linear values)
   const [rgbContrastLimits, setRgbContrastLimits] = useState(null);
   // Histogram data: {single: stats} or {R: stats, G: stats, B: stats}
   const [histogramData, setHistogramData] = useState(null);
 
-  // Multi-file state
+  // Multi-file state (COG multi-band / temporal)
   const [multiFileMode, setMultiFileMode] = useState(false);
   const [multiFileModeType, setMultiFileModeType] = useState('multi-band'); // 'multi-band' or 'temporal'
   const [fileList, setFileList] = useState(['']); // Array of URLs
   const [bandNames, setBandNames] = useState([]); // Auto-detected or manual
+
+  // Multi-temporal RGB: same dataset from 3 separate NISAR files → R / G / B
+  const [nisarFile2, setNisarFile2] = useState(null);
+  const [nisarFile3, setNisarFile3] = useState(null);
 
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
@@ -908,7 +915,7 @@ function App() {
             date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || file.name;
             label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
           }
-          const isRGBMode = displayMode === 'rgb' && !!data.getRGBTile;
+          const isRGBMode = isRGBDisplayMode && !!data.getRGBTile;
           frames.push({
             getTile: isRGBMode ? data.getRGBTile : data.getTile,
             bounds: data.bounds,
@@ -1103,11 +1110,11 @@ function App() {
 
   // For RGB mode, use per-channel limits; for single-band, use uniform limits
   const effectiveContrastLimits = useMemo(() => {
-    if (displayMode === 'rgb' && rgbContrastLimits) {
+    if (isRGBDisplayMode && rgbContrastLimits) {
       return rgbContrastLimits;
     }
     return contrastLimits;
-  }, [displayMode, rgbContrastLimits, contrastLimits]);
+  }, [isRGBDisplayMode, rgbContrastLimits, contrastLimits]);
 
   // Sidebar context: which viewer are the controls targeting?
   const sidebarIsRoiRGB = activeViewer === 'roi-rgb' && !!roiRGBData;
@@ -1146,7 +1153,7 @@ function App() {
       return;
     }
 
-    if (displayMode === 'rgb') {
+    if (isRGBDisplayMode) {
       const newLimits = {};
       for (const ch of ['R', 'G', 'B']) {
         if (histogramData[ch]) {
@@ -1241,7 +1248,7 @@ function App() {
         scopeLabel = 'Global';
       }
 
-      if (displayMode === 'rgb' && imageData.getRGBTile && compositeId) {
+      if (isRGBDisplayMode && imageData.getRGBTile && compositeId) {
         // RGB histogram — sample 3×3 tiles from the region (concurrent)
         const tileSize = 256;
         const rawValues = { R: [], G: [], B: [] };
@@ -2353,7 +2360,61 @@ function App() {
     try {
       let data;
 
-      if (nisarProductType === 'GUNW') {
+      if (displayMode === 'multi-temporal') {
+        // ── Multi-temporal RGB: same dataset from 3 separate files (GCOV or GUNW) ──
+        const mtFiles = [nisarFile, nisarFile2, nisarFile3].filter(Boolean);
+        if (mtFiles.length < 2) {
+          throw new Error('Select at least 2 files for multi-temporal RGB');
+        }
+        const channelNames = ['R', 'G', 'B'];
+        const isGUNW = nisarProductType === 'GUNW';
+        const dsLabel = isGUNW
+          ? `${selectedLayer}/${selectedGunwDataset} (${selectedPolarization})`
+          : `${selectedFrequency}/${selectedPolarization}`;
+        addStatusLog('info',
+          `Loading multi-temporal RGB: ${dsLabel} from ${mtFiles.length} files`);
+
+        const mtLoaders = await Promise.all(
+          mtFiles.map((f, i) => {
+            addStatusLog('info', `  File ${i + 1} (${channelNames[i]}): ${f.name}`);
+            if (isGUNW) {
+              return loadNISARGUNW(f, {
+                frequency: selectedFrequency,
+                layer: selectedLayer,
+                polarization: selectedPolarization,
+                dataset: selectedGunwDataset,
+              });
+            }
+            return loadNISARGCOV(f, {
+              frequency: selectedFrequency,
+              polarization: selectedPolarization,
+            });
+          })
+        );
+
+        const { bounds, width, height, crs } = mtLoaders[0];
+
+        async function getRGBTile(tileArgs) {
+          const results = await Promise.all(mtLoaders.map(l => l.getTile(tileArgs)));
+          const validResult = results.find(r => r?.data);
+          if (!validResult) return null;
+          const bands = {};
+          for (let i = 0; i < 3; i++) {
+            const r = i < mtLoaders.length ? results[i] : null;
+            bands[channelNames[i]] = r?.data || new Float32Array(validResult.data.length);
+          }
+          return { bands, width: validResult.width, height: validResult.height, compositeId: 'multi-temporal' };
+        }
+
+        data = { bounds, width, height, crs, getRGBTile, getTile: getRGBTile };
+        setCompositeId('multi-temporal');
+        // Multi-temporal uses linear scale by default (coherence is 0–1; GCOV power users
+        // can still enable dB via the scale toggle after loading)
+        if (isGUNW) setUseDecibels(false);
+        addStatusLog('success', 'Multi-temporal RGB loaded',
+          `${width}x${height}, Files: ${mtFiles.map(f => f.name).join(' / ')}`);
+
+      } else if (nisarProductType === 'GUNW') {
         // ── GUNW loading path ──
         const dsLabel = `${selectedLayer}/${selectedGunwDataset} (${selectedPolarization})`;
         addStatusLog('info', `Loading GUNW dataset: ${dsLabel}`);
@@ -2548,7 +2609,7 @@ function App() {
 
       // Set scale mode for RGB — React 18 batches this with setImageData above,
       // so the useEffect-triggered histogram recompute sees useDecibels=false.
-      if (displayMode === 'rgb') {
+      if (isRGBDisplayMode) {
         setUseDecibels(false);
 
         // Instant initial contrast from per-band center-chunk statistics.
@@ -2648,7 +2709,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [nisarFile, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene]);
+  }, [nisarFile, nisarFile2, nisarFile3, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene]);
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
@@ -2772,7 +2833,7 @@ function App() {
       addStatusLog('info', `Bands: ${bandNames.join(', ')} (${isRendered ? 'RGBA rendered' : 'Float32, raw linear power'})`);
       addStatusLog('info', `EPSG: ${epsgCode}`);
       if (isRendered) {
-        if (displayMode === 'rgb' && compositeId && effectiveContrastLimits && !Array.isArray(effectiveContrastLimits)) {
+        if (isRGBDisplayMode && compositeId && effectiveContrastLimits && !Array.isArray(effectiveContrastLimits)) {
           const limStr = ['R', 'G', 'B'].map(ch => {
             const lim = effectiveContrastLimits[ch];
             return lim ? `${ch}:[${lim[0].toExponential(1)},${lim[1].toExponential(1)}]` : '';
@@ -3946,21 +4007,22 @@ function App() {
                 </select>
               </div>
 
-              {/* Display mode — only for GCOV (GUNW has no RGB composites) */}
-              {nisarProductType === 'GCOV' && (
-                <div className="control-group">
-                  <label>Display Mode</label>
-                  <select
-                    value={displayMode}
-                    onChange={(e) => setDisplayMode(e.target.value)}
-                  >
-                    <option value="single">Single Band</option>
+              {/* Display mode — single band, RGB composite (GCOV only), or multi-temporal */}
+              <div className="control-group">
+                <label>Display Mode</label>
+                <select
+                  value={displayMode}
+                  onChange={(e) => setDisplayMode(e.target.value)}
+                >
+                  <option value="single">Single Band</option>
+                  {nisarProductType === 'GCOV' && (
                     <option value="rgb" disabled={availableComposites.length === 0}>
                       RGB Composite
                     </option>
-                  </select>
-                </div>
-              )}
+                  )}
+                  <option value="multi-temporal">Multi-temporal RGB (3 dates)</option>
+                </select>
+              </div>
 
               {displayMode === 'rgb' && availableComposites.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
@@ -3977,6 +4039,62 @@ function App() {
                   </select>
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                     {availableComposites.find(c => c.id === compositeId)?.description || ''}
+                  </div>
+                </div>
+              )}
+
+              {/* Multi-temporal RGB: file pickers for Green and Blue acquisitions */}
+              {displayMode === 'multi-temporal' && (
+                <div className="control-group">
+                  <label style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                    File 1 (R) — already selected above
+                  </label>
+                  {/* File 2 → Green */}
+                  <div style={{ marginTop: '6px' }}>
+                    <label style={{ fontSize: '0.7rem' }}>File 2 (G)</label>
+                    <input
+                      type="file"
+                      accept=".h5,.hdf5,.he5"
+                      id="nisar-file2-input"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) setNisarFile2(f);
+                      }}
+                    />
+                    <button
+                      className="btn-secondary"
+                      onClick={() => document.getElementById('nisar-file2-input').click()}
+                      style={{ width: '100%', marginTop: '2px' }}
+                    >
+                      {nisarFile2 ? nisarFile2.name.slice(0, 30) + (nisarFile2.name.length > 30 ? '…' : '') : 'Choose File 2...'}
+                    </button>
+                  </div>
+                  {/* File 3 → Blue */}
+                  <div style={{ marginTop: '6px' }}>
+                    <label style={{ fontSize: '0.7rem' }}>File 3 (B)</label>
+                    <input
+                      type="file"
+                      accept=".h5,.hdf5,.he5"
+                      id="nisar-file3-input"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) setNisarFile3(f);
+                      }}
+                    />
+                    <button
+                      className="btn-secondary"
+                      onClick={() => document.getElementById('nisar-file3-input').click()}
+                      style={{ width: '100%', marginTop: '2px' }}
+                    >
+                      {nisarFile3 ? nisarFile3.name.slice(0, 30) + (nisarFile3.name.length > 30 ? '…' : '') : 'Choose File 3...'}
+                    </button>
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {nisarProductType === 'GUNW'
+                      ? `Same ${selectedLayer}/${selectedGunwDataset} (${selectedPolarization}) loaded from each file.`
+                      : `Same ${selectedFrequency}/${selectedPolarization} dataset loaded from each file.`}
                   </div>
                 </div>
               )}
@@ -4018,7 +4136,7 @@ function App() {
                   disabled={loading}
                   style={{ flex: 1 }}
                 >
-                  {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : 'Load Dataset'}
+                  {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : displayMode === 'multi-temporal' ? 'Load Multi-temporal RGB' : 'Load Dataset'}
                 </button>
 
                 {/* GUNW paired view: phase + coherence side-by-side */}
