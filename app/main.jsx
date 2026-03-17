@@ -763,7 +763,7 @@ function App() {
       addStatusLog('info', `Loading ROI RGB composite: ${roiCompositeId} (${requiredPols.join(', ')})`);
 
       const data = await loadNISARRGBComposite(nisarSource, {
-        frequency: selectedFrequency,
+        frequency: 'frequencyA',
         compositeId: roiCompositeId,
         requiredPols,
         requiredComplexPols,
