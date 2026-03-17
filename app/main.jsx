@@ -325,6 +325,7 @@ function App() {
   const [contrastMin, setContrastMin] = useState(-25);
   const [contrastMax, setContrastMax] = useState(0);
   const [gamma, setGamma] = useState(1.0);
+  const [rgbSaturation, setRgbSaturation] = useState(1.0);
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
   const [maskInvalid, setMaskInvalid] = useState(false);
@@ -895,6 +896,15 @@ function App() {
               layer: selectedLayer,
               dataset: selectedGunwDataset,
               polarization: selectedPolarization,
+            });
+          } else if (isRGBDisplayMode) {
+            const requiredPols = getRequiredDatasets(compositeId);
+            const requiredComplexPols = getRequiredComplexDatasets(compositeId);
+            data = await loadNISARRGBComposite(file, {
+              frequency: selectedFrequency,
+              compositeId,
+              requiredPols,
+              requiredComplexPols,
             });
           } else {
             data = await loadNISARGCOV(file, {
@@ -2394,7 +2404,7 @@ function App() {
 
         const { bounds, width, height, crs } = mtLoaders[0];
 
-        async function getRGBTile(tileArgs) {
+        const getRGBTile = async (tileArgs) => {
           const results = await Promise.all(mtLoaders.map(l => l.getTile(tileArgs)));
           const validResult = results.find(r => r?.data);
           if (!validResult) return null;
@@ -2404,13 +2414,28 @@ function App() {
             bands[channelNames[i]] = r?.data || new Float32Array(validResult.data.length);
           }
           return { bands, width: validResult.width, height: validResult.height, compositeId: 'multi-temporal' };
-        }
+        };
 
         data = { bounds, width, height, crs, getRGBTile, getTile: getRGBTile };
         setCompositeId('multi-temporal');
         // Multi-temporal uses linear scale by default (coherence is 0–1; GCOV power users
         // can still enable dB via the scale toggle after loading)
-        if (isGUNW) setUseDecibels(false);
+        setUseDecibels(false);
+        useDecibelsRef.current = false; // pre-sync so the useDecibels effect doesn't fire
+        if (isGUNW) {
+          // Set per-channel contrast limits from the first loader's render mode default,
+          // otherwise fall back to [0, 1] (correct for coherence/magnitude datasets).
+          const rm0 = mtLoaders[0]?.renderMode;
+          const dr = rm0?.defaultRange || [0, 1];
+          setRgbContrastLimits({ R: [dr[0], dr[1]], G: [dr[0], dr[1]], B: [dr[0], dr[1]] });
+        } else {
+          // GCOV multi-temporal: default linear contrast, refined when user selects viewport scope.
+          setRgbContrastLimits({ R: [0, 0.5], G: [0, 0.5], B: [0, 0.5] });
+        }
+        // Skip the auto-triggered histogram recompute on load for all multi-temporal types.
+        // The user can trigger it via the scope selector (Viewport button).
+        skipInitialHistogramRef.current = true;
+        skipViewportRefreshRef.current = true;
         addStatusLog('success', 'Multi-temporal RGB loaded',
           `${width}x${height}, Files: ${mtFiles.map(f => f.name).join(' / ')}`);
 
@@ -2677,8 +2702,9 @@ function App() {
                   count: syntheticCount, p2: clo, p98: chi };
               }
             }
-            setHistogramData(syntheticHists);
-            // Skip tile-sampling histogram recompute — metadata is sufficient for initial display
+            // Do not auto-set histogramData — overlay should be disabled on load.
+            // Contrast limits are applied above; user triggers histogram via scope selector.
+            // Skip tile-sampling histogram recompute — metadata contrast is already applied
             skipInitialHistogramRef.current = true;
             skipViewportRefreshRef.current = true;
             addStatusLog('info', 'Initial contrast from metadata',
@@ -4729,8 +4755,9 @@ function App() {
 
           {/* Histogram & Contrast */}
           <CollapsibleSection title="Contrast">
-            {/* Histogram scope toggle */}
-            {histogramData && (
+            {/* Histogram scope toggle — shown when histogram exists, or always in RGB mode so
+                user can trigger the first computation via the Viewport/ROI buttons */}
+            {(histogramData || (imageData && isRGBDisplayMode)) && (
               <div className="control-group" style={{ marginBottom: '6px' }}>
                 <div style={{ display: 'flex', gap: '4px' }}>
                   {['global', 'viewport', 'roi'].map(scope => {
@@ -4810,8 +4837,8 @@ function App() {
               </div>
             )}
 
-            {/* RGB per-channel histograms (main RGB mode or ROI RGB viewer) */}
-            {sidebarDisplayMode === 'rgb' && sidebarHistogramData && (
+            {/* RGB per-channel histograms (main RGB mode, multi-temporal, or ROI RGB viewer) */}
+            {(sidebarDisplayMode === 'rgb' || sidebarDisplayMode === 'multi-temporal') && sidebarHistogramData && (
               <HistogramPanel
                 histograms={sidebarHistogramData}
                 mode="rgb"
@@ -4827,7 +4854,7 @@ function App() {
             )}
 
             {/* Single-band histogram */}
-            {sidebarDisplayMode !== 'rgb' && sidebarHistogramData?.single && (
+            {sidebarDisplayMode !== 'rgb' && sidebarDisplayMode !== 'multi-temporal' && sidebarHistogramData?.single && (
               <HistogramPanel
                 histograms={sidebarHistogramData}
                 mode="single"
@@ -5059,6 +5086,24 @@ function App() {
               </div>
             )}
 
+            {/* Saturation — only shown in RGB display modes */}
+            {isRGBDisplayMode && imageData?.getRGBTile && (
+              <div className="control-group">
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <label>Saturation</label>
+                  <span className="value-display">{rgbSaturation.toFixed(2)}</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={3}
+                  step={0.05}
+                  value={rgbSaturation}
+                  onChange={(e) => setRgbSaturation(Number(e.target.value))}
+                />
+              </div>
+            )}
+
             {/* Multi-look toggle — hidden on main branch, needs more work */}
             {/* Speckle filter — hidden on main branch, needs more work */}
 
@@ -5254,7 +5299,7 @@ function App() {
                   colormap={colormap}
                   gamma={gamma}
                   stretchMode={stretchMode}
-                  compositeId={displayMode === 'rgb' ? compositeId : null}
+                  compositeId={isRGBDisplayMode ? compositeId : null}
                   multiLook={multiLook}
                   maskInvalid={maskInvalid}
                   maskLayoverShadow={maskLayoverShadow}
@@ -5268,6 +5313,7 @@ function App() {
                   enabledCorrections={enabledCorrections}
                   speckleFilterType={speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
+                  rgbSaturation={rgbSaturation}
                   showGrid={showGrid}
                   opacity={1}
                   width="100%"
@@ -5468,8 +5514,8 @@ function App() {
           {showHistogramOverlay && histogramData && (
             <HistogramOverlay
               histograms={histogramData}
-              mode={displayMode}
-              contrastLimits={displayMode === 'rgb' ? rgbContrastLimits : [contrastMin, contrastMax]}
+              mode={isRGBDisplayMode ? 'rgb' : displayMode}
+              contrastLimits={isRGBDisplayMode ? rgbContrastLimits : [contrastMin, contrastMax]}
               useDecibels={effectiveUseDecibels}
               logScale={nisarProductType !== 'GCOV'}
               polarization={selectedPolarization}

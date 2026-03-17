@@ -83,6 +83,7 @@ uniform float uMinG;
 uniform float uMaxG;
 uniform float uMinB;
 uniform float uMaxB;
+uniform float uSaturation;  // RGB saturation multiplier (1.0 = no change)
 
 in vec2 vTexCoord;
 out vec4 fragColor;
@@ -133,6 +134,12 @@ void main() {
       processChannel(ampG, uMinG, uMaxG),
       processChannel(ampB, uMinB, uMaxB)
     );
+
+    // Saturation stretch: scale away from per-pixel luminance
+    if (uSaturation != 1.0) {
+      float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
+      rgb = clamp(vec3(luma) + (rgb - vec3(luma)) * uSaturation, 0.0, 1.0);
+    }
 
     // Any channel valid → visible
     bool anyValid = (ampR != 0.0 && !isnan(ampR)) ||
@@ -632,6 +639,7 @@ export class SARGPULayer extends Layer {
       colormap = 'grayscale',
       gamma = 1.0,
       stretchMode = 'linear',
+      rgbSaturation = 1.0,
       mode = 'single',
       maskInvalid = false,
       maskLayoverShadow = false,
@@ -687,6 +695,7 @@ export class SARGPULayer extends Layer {
         uMinR, uMaxR,
         uMinG, uMaxG,
         uMinB, uMaxB,
+        uSaturation: rgbSaturation,
         uUseDecibels: useDecibels ? 1.0 : 0.0,
         uColormap: getColormapId(colormap),
         uGamma: gamma,
@@ -872,6 +881,7 @@ SARGPULayer.defaultProps = {
   colormap: { type: 'string', value: 'grayscale', compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true },
+  rgbSaturation: { type: 'number', value: 1.0, min: 0.0, max: 5.0, compare: true },
   // Speckle filter (WebGL2 FBO pass — WebGPU compute retained for export pipeline)
   speckleFilterType: { type: 'string', value: 'none', compare: true },
   speckleKernelSize: { type: 'number', value: 7, min: 3, max: 15, compare: true },

@@ -10,44 +10,45 @@
 
 **SAR Data INspection and Exploration**
 
-*Browser-native SAR analysis — cloud-optimized HDF5 and COG streaming to GPU*
+*Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
-`v0.5.0` · `MIT` · `Feb 2026`
+`v0.5.0` · `AGPL-3.0` · `2026`
 
 ![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)
 
 </div>
 
-> **This project is under active development.** Some features are experimental or incomplete. Known issues include ROI overlay alignment drift during pan/zoom, and incidence angle masking requires NISAR HDF5 files with a metadata cube. Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
+> **This project is under active development.** Some features are experimental or incomplete. Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
 
 ---
 
-## Overview
+## What It Is
 
-SARdine runs SAR analysis entirely in the browser.
+SARdine is a browser-native exploration and visualization GUI for NISAR HDF5 data. Drop in a file, explore the data, and export a figure or georeferenced dataset — no install beyond a web browser, no Python, no server.
 
-It reads NISAR L2 GCOV HDF5 (`.h5`) and Cloud Optimized GeoTIFFs from any vendor. Rendering goes through WebGL2 shaders on deck.gl: dB scaling, colormaps, contrast, polarimetric composites — all on the GPU at 60 fps.
+It reads NISAR L2 GCOV HDF5 (`.h5`) directly using a custom JavaScript HDF5 reader (`h5chunk`). Rendering happens entirely on the GPU via WebGL2 shaders: dB scaling, colormaps, contrast stretching, and polarimetric composites all run at 60 fps. GCOV/GUNW files are 2–8 GB but only viewport-intersecting chunks are ever read.
 
-### Core Capabilities
+---
 
-- **NISAR GCOV HDF5 streaming** — local files and HTTP Range, cloud-optimized chunk reading via h5chunk.js
-- **Cloud Optimized GeoTIFF loading** — ICEYE, Capella, Umbra, Sentinel-1, anything with geotiff.js
-- **GPU-accelerated rendering** — dB scaling, colormaps, and contrast stretching in GLSL shaders
-- **RGB composites** — Pauli, dual-pol, quad-pol, Freeman-Durden with per-channel contrast
-- **Stretch modes** — linear, sqrt, gamma, sigmoid transfer functions
+## What You Can Do
 
-### Analysis Tools
+**Explore full-resolution SAR data**
+Drop in a large NISAR file and pan/zoom through it at full resolution. Switch polarizations (HH, HV, VV), adjust contrast with the live histogram, and apply stretch modes (linear, sqrt, gamma, sigmoid).
 
-- **Viewport histogram** — floating histogram panel that auto-updates as you pan/zoom, with per-channel stats for RGB composites
-- **Feature space classifier** — draw an ROI, open the 2D scatter plot (e.g. HH dB vs HV dB), define class regions by drawing rectangles, and see the classification overlay on the map in real time
-- **Incidence angle masking** — filter classified pixels by incidence angle range using the NISAR metadata cube (NISAR HDF5 only)
-- **Pixel explorer** — hover to inspect raw values at any pixel location
+**Make publication-ready figures**
+Enable the Pauli or dual-pol RGB composite for multi-channel decomposition. Export a georeferenced figure PNG with scale bar, corner coordinates, and colorbar. Export scatter plots and histograms as publication SVGs.
 
-### Export
+**Classify and map land cover**
+Draw an ROI, open the 2D feature space scatter (e.g. HH dB vs HV dB), define class regions by drawing rectangles, and see the classification overlay on the map in real time. Filter by incidence angle range (NISAR HDF5 only).
 
-- **GeoTIFF** — raw Float32 with CRS + tiepoints, rendered RGBA, or RGB composite
-- **Figure PNG** — canvas capture with scale bar, coordinates, colorbar, and classification overlay
-- **Publication SVG** — Journal-style vector export of scatter plots, histograms, and classification maps
+**Subset and export data**
+Draw an ROI and export a subregion as a raw Float32 GeoTIFF (linear power, with CRS and tiepoints) or a rendered RGBA GeoTIFF. Works for both single-pol and RGB composites.
+
+**Time series and change detection**
+Load multiple dates for ROI time series plotting, or compose a multi-date RGB composite for change detection visualization.
+
+**Stream from S3**
+Paste a presigned URL and stream directly from a bucket — same workflow, no download required.
 
 ---
 
@@ -86,12 +87,12 @@ Pick a mode from the **File Type** dropdown in the left panel.
 
 1. **File Type** → **NISAR GCOV HDF5 (Local File)**
 2. **Choose File** → pick your `.h5`
-3. Pick **Frequency** (`frequencyA` = high res, frequencyB` = low res)
+3. Pick **Frequency** (`frequencyA` = high res, `frequencyB` = low res)
 4. Pick **Polarization** (`HHHH`, `HVHV`, `VVVV`, etc.)
 5. Optionally switch to **RGB Composite** and pick a preset
 6. **Load Dataset**
 
-Nothing gets uploaded. Chunks are read directly from disk via the browser File API. GCOV/GUNW files are ~2–8 GB but only viewport-intersecting chunks get read.
+Nothing is uploaded. Chunks are read directly from disk via the browser File API.
 
 ### Presigned URLs (S3 / HTTPS)
 
@@ -117,10 +118,10 @@ File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.ti
 | **Colormap** | Grayscale, viridis, inferno, plasma, phase, sardine, flood, diverging, polarimetric |
 | **Contrast** | Min/max dB range — drag sliders or use **Auto** for percentile-based stretch |
 | **Stretch** | Linear, sqrt, gamma, sigmoid transfer function |
-| **Multi-look** |  Data reduction (box-filter averaging in linear power) |
+| **Multi-look** | Data reduction (box-filter averaging in linear power) |
 | **Histogram** | Floating viewport histogram — auto-updates on pan/zoom, SVG export |
 | **Classifier** | 2D/1D feature space scatter with class region drawing and incidence angle filter |
-| **Overture** | Overlay boundaries , roads, or places from Overture Maps |
+| **Overture** | Overlay boundaries, roads, or places from Overture Maps |
 
 ### Keyboard Shortcuts
 
@@ -143,7 +144,7 @@ File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.ti
 3. Click **+ Add Class** to define a land cover class
 4. Draw a rectangle on the scatter plot to assign pixels in that dB range
 5. Pixels within the class region are colored on the map in real time
-7. Export: **SVG** for the scatter plot, **Map** for the classification raster
+6. Export: **SVG** for the scatter plot, **Map** for the classification raster
 
 ---
 
@@ -151,7 +152,7 @@ File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.ti
 
 ### GeoTIFF
 
-- **Raw Float32** — linear power values with CRS 
+- **Raw Float32** — linear power values with CRS and tiepoints
 - **Rendered RGBA** — what you see on screen (dB, colormap, contrast) as a 4-band GeoTIFF
 - **RGB Composite** — 3-band GeoTIFF when in composite mode
 
@@ -170,16 +171,29 @@ Vector graphics:
 
 ---
 
-## Known Issues
+## How It Works
 
-| Issue | Status |
+```
+File/URL → h5chunk → Chunks → GPU Texture → GLSL Shader → Screen
+                                                ↓
+                                   dB scale → stretch → colormap → contrast
+```
+
+`h5chunk` is a pure JavaScript HDF5 chunk reader — no GDAL, no WASM, no server. It parses the HDF5 superblock, object headers, and B-tree to build a chunk index, then fetches only the chunks intersecting the current viewport via `File.slice()` (local) or HTTP Range (remote). Chunks are decompressed (deflate + shuffle) into Float32Arrays and uploaded directly as WebGL2 textures. The fragment shader handles the rest.
+
+GCOV and GUNW products are supported. GUNW (interferometric phase and coherence) is developmental.
+
+### Tech Stack
+
+| Dependency | Role |
 |:---|:---|
-
-| Georeferencing errors on coarse overviews | low priority |
-| Small area geotiffs are not valid | low priority ||
-| Slow loading RGB frequency A | low 
-
-
+| **React 18** | UI framework |
+| **deck.gl 8.9** | WebGL tile/bitmap rendering |
+| **geotiff.js** | COG loading via HTTP Range |
+| **h5chunk** (built-in) | Cloud-optimized HDF5 streaming (pure JS) |
+| **h5wasm** | HDF5 attribute/metadata parsing (WASM) |
+| **MapLibre GL** | Basemap rendering |
+| **Vite** | Dev server and build tool |
 
 ---
 
@@ -192,40 +206,6 @@ node server/launch.cjs --data-dir /home/jovyan
 ```
 
 Access via JupyterLab proxy: `https://<hub-host>/user/<username>/proxy/8050/`
-
----
-
-## Architecture
-
-```
-File/URL → Loader → Chunks → GPU Texture → GLSL Shader → Screen
-                                              ↓
-                                    dB scale → stretch → colormap → contrast
-```
-
-### HDF5 Streaming
-
-`h5chunk` is a JS-native Kerchunk. Reads cloud-optimized HDF5 without loading the full file:
-
-1. Fetch metadata page (~8 MB, one request)
-2. Parse HDF5 superblock, object headers, B-tree → build chunk index
-3. For current viewport, calculate intersecting chunks
-4. Fetch chunks via `File.slice()` (local) or HTTP Range (remote)
-5. Decompress (deflate + shuffle) → Float32Array
-6. Upload as WebGL2 R32F texture
-7. Fragment shader: power → dB → normalize → stretch → colormap → RGBA
-
-### Tech Stack
-
-| Dependency | Role |
-|:---|:---|
-| **React 18** | UI framework |
-| **deck.gl 8.9** | WebGL tile/bitmap rendering |
-| **geotiff.js** | COG loading via HTTP Range |
-| **h5chunk** (built-in) | Cloud-optimized HDF5 streaming |
-| **h5wasm** | HDF5 attribute/metadata parsing (WASM) |
-| **MapLibre GL** | Basemap rendering |
-| **Vite** | Dev server and build tool |
 
 ---
 
@@ -242,12 +222,19 @@ npm run benchmark    # GPU vs CPU performance comparison
 
 ---
 
+## Known Issues
+
+| Issue | Status |
+|:---|:---|
+| Georeferencing errors on coarse overviews | Low priority |
+| Small area GeoTIFFs may be invalid | Low priority |
+| Slow loading RGB frequency A | Low priority |
 
 ---
 
 ## License
 
-AGPL-3.0. Previously MIT (through 3/5/26). Commercial licensing available - contact [nick.steiner@gmail.com](mailto:nick.steiner@gmail.com).
+AGPL-3.0. Previously MIT (through 3/5/26). Commercial licensing available — contact [nick.steiner@gmail.com](mailto:nick.steiner@gmail.com).
 
 ---
 
