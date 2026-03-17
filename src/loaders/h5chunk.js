@@ -2876,10 +2876,12 @@ export class H5Chunk {
     if (layout.btreeAddress + estimatedBTreeSize <= this.metadataBuffer.byteLength) {
       btreeReader = new BufferReader(this.metadataBuffer, true, 0);
     } else if (layout.btreeAddress < this.metadataBuffer.byteLength) {
-      // Root is in metadata buffer but children may spill past it — fetch the full extent
-      const btreeSize = estimatedBTreeSize;
-      const btreeBuffer = await this._fetchBytes(layout.btreeAddress, btreeSize);
-      btreeReader = new BufferReader(btreeBuffer, true, layout.btreeAddress);
+      // Root is within the metadata buffer. Reuse it with base=0 so that child
+      // nodes located *before* the root (common in some GUNW products) are
+      // reachable without producing negative DataView offsets.
+      // Children that fall beyond metadataBuffer are still caught individually
+      // in parseBTreeV1's per-child try/catch.
+      btreeReader = new BufferReader(this.metadataBuffer, true, 0);
     } else {
       // B-tree entirely beyond metadata buffer — fetch from file
       const btreeBuffer = await this._fetchBytes(layout.btreeAddress, estimatedBTreeSize);
