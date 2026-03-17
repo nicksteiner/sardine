@@ -98,7 +98,7 @@ function niceTicks(min, max, targetCount = 6) {
 export function drawHistogramCanvas(ctx, W, H, opts) {
   const {
     histograms, mode, contrastLimits, useDecibels,
-    polarization, compositeId, compact = false,
+    polarization, compositeId, compact = false, logScale = true,
   } = opts;
 
   if (!histograms) return;
@@ -135,21 +135,23 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   ctx.fillStyle = 'rgba(10, 22, 40, 0.94)';
   ctx.fillRect(0, 0, W, H);
 
-  // ── Compute Y-axis max (log-scaled bin counts) ──
+  // ── Compute Y-axis max ──
   let yMax = 1;
   for (const ch of channels) {
     const s = histograms[ch];
     if (!s?.bins) continue;
     for (const b of s.bins) {
-      const lv = Math.log10(b + 1);
-      if (lv > yMax) yMax = lv;
+      const v = logScale ? Math.log10(b + 1) : b;
+      if (v > yMax) yMax = v;
     }
   }
   yMax *= 1.08;
 
+  const toY = logScale ? (count) => Math.log10(count + 1) : (count) => count;
+
   // ── Axis scales ──
   const xScale = (v) => margin.left + ((v - globalMin) / (globalMax - globalMin)) * plotW;
-  const yScale = (logV) => margin.top + plotH - (logV / yMax) * plotH;
+  const yScale = (v) => margin.top + plotH - (v / yMax) * plotH;
 
   // ── Gridlines ──
   const xTicks = niceTicks(globalMin, globalMax, Math.min(compact ? 5 : 10, Math.floor(plotW / (compact ? 50 : 80))));
@@ -187,9 +189,9 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
     for (let i = 0; i < binCount; i++) {
       const binLeft = s.min + (i / binCount) * dataRange;
       const binRight = s.min + ((i + 1) / binCount) * dataRange;
-      const logH = Math.log10(s.bins[i] + 1);
-      ctx.lineTo(xScale(binLeft), yScale(logH));
-      ctx.lineTo(xScale(binRight), yScale(logH));
+      const yVal = toY(s.bins[i]);
+      ctx.lineTo(xScale(binLeft), yScale(yVal));
+      ctx.lineTo(xScale(binRight), yScale(yVal));
     }
     ctx.lineTo(xScale(s.max), yScale(0));
     ctx.closePath();
@@ -201,10 +203,10 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
     for (let i = 0; i < binCount; i++) {
       const binLeft = s.min + (i / binCount) * dataRange;
       const binRight = s.min + ((i + 1) / binCount) * dataRange;
-      const logH = Math.log10(s.bins[i] + 1);
+      const yVal = toY(s.bins[i]);
       const x1 = xScale(binLeft);
       const x2 = xScale(binRight);
-      const y = yScale(logH);
+      const y = yScale(yVal);
       if (i === 0) ctx.moveTo(x1, y);
       else ctx.lineTo(x1, y);
       ctx.lineTo(x2, y);
@@ -288,11 +290,17 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   for (const t of yTicks) {
     if (t === 0) continue;
     const y = yScale(t);
-    const actual = Math.round(Math.pow(10, t));
     let label;
-    if (actual >= 1e6) label = (actual / 1e6).toFixed(0) + 'M';
-    else if (actual >= 1e3) label = (actual / 1e3).toFixed(0) + 'k';
-    else label = String(actual);
+    if (logScale) {
+      const actual = Math.round(Math.pow(10, t));
+      if (actual >= 1e6) label = (actual / 1e6).toFixed(0) + 'M';
+      else if (actual >= 1e3) label = (actual / 1e3).toFixed(0) + 'k';
+      else label = String(actual);
+    } else {
+      if (t >= 1e6) label = (t / 1e6).toFixed(0) + 'M';
+      else if (t >= 1e3) label = (t / 1e3).toFixed(0) + 'k';
+      else label = String(Math.round(t));
+    }
     ctx.fillText(label, margin.left - (compact ? 4 : 8), y);
   }
 
@@ -304,7 +312,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   ctx.font = `400 ${axisTitleSize}px 'Inter', 'Helvetica Neue', sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(compact ? 'Count' : 'Count (log₁₀)', 0, 0);
+  ctx.fillText(logScale ? (compact ? 'Count' : 'Count (log₁₀)') : 'Count', 0, 0);
   ctx.restore();
 
   // ── Legend ──
@@ -366,6 +374,7 @@ export function HistogramOverlay({
   mode,             // 'single' | 'rgb'
   contrastLimits,   // [min,max] | {R:[],G:[],B:[]}
   useDecibels,
+  logScale = true,
   polarization,     // Current polarization label (e.g. 'HHHH') for single-band title
   compositeId,      // Composite name for RGB title
   onClose,          // () => void
@@ -401,9 +410,9 @@ export function HistogramOverlay({
 
     drawHistogramCanvas(ctx, W, H, {
       histograms, mode, contrastLimits, useDecibels,
-      polarization, compositeId, compact: true,
+      polarization, compositeId, compact: true, logScale,
     });
-  }, [dataFingerprint, mode, contrastLimits, useDecibels, polarization, compositeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dataFingerprint, mode, contrastLimits, useDecibels, logScale, polarization, compositeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Redraw when draw function changes or manual refresh ──
   useEffect(() => {

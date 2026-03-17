@@ -11,6 +11,7 @@ export function HistogramPanel({
   mode,            // 'single' | 'rgb'
   contrastLimits,  // [min, max] for single, {R:[min,max], G:[min,max], B:[min,max]} for rgb
   useDecibels,
+  logScale = true,
   onContrastChange,
   onAutoStretch,
   showHeader = true, // When false, skip wrapping control-section (for embedding)
@@ -54,6 +55,7 @@ export function HistogramPanel({
             label={mode === 'rgb' ? ch : null}
             limits={limits}
             useDecibels={useDecibels}
+            logScale={logScale}
             onChange={handleChange}
           />
         );
@@ -74,7 +76,7 @@ export function HistogramPanel({
 /**
  * Single-channel histogram canvas with min/max range sliders.
  */
-function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }) {
+function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale = true, onChange }) {
   const canvasRef = useRef(null);
   const [editingMin, setEditingMin] = useState(false);
   const [editingMax, setEditingMax] = useState(false);
@@ -109,18 +111,19 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, onChange }
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, WIDTH, HEIGHT);
 
-    // Draw bars with log-scale heights for better tail visibility
     const maxCount = Math.max(...stats.bins);
     if (maxCount === 0) return;
 
-    const logMax = Math.log10(maxCount + 1);
     const barW = WIDTH / stats.bins.length;
     const dataRange = stats.max - stats.min || 1;
+    const heightOf = logScale
+      ? (() => { const logMax = Math.log10(maxCount + 1); return (count) => (Math.log10(count + 1) / logMax) * HEIGHT; })()
+      : (count) => (count / maxCount) * HEIGHT;
 
     ctx.fillStyle = color;
     for (let i = 0; i < stats.bins.length; i++) {
       if (stats.bins[i] === 0) continue;
-      const h = (Math.log10(stats.bins[i] + 1) / logMax) * HEIGHT;
+      const h = heightOf(stats.bins[i]);
       ctx.fillRect(i * barW, HEIGHT - h, Math.max(barW, 1), h);
     }
 

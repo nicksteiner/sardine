@@ -420,7 +420,7 @@ export async function loadNISARGUNW(file, options = {}) {
         const cohRegion = await streamReader.readRegion(cohDsId, top, left, numRows, numCols);
         if (cohRegion) result.coherenceData = cohRegion.data || cohRegion;
       } catch (e) {
-        // Non-fatal: proceed without coherence
+        console.warn('[nisar-gunw] Per-tile coherence read failed:', e.message);
       }
     }
 

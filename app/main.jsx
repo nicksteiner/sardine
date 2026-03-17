@@ -752,7 +752,8 @@ function App() {
 
   // Load RGB composite into ROI overlay
   const handleLoadRoiRGB = useCallback(async () => {
-    if (!nisarFile || !roi || !roiCompositeId || !imageData) return;
+    const nisarSource = nisarFile || remoteUrl;
+    if (!nisarSource || !roi || !roiCompositeId || !imageData) return;
 
     setRoiRGBLoading(true);
     try {
@@ -761,7 +762,7 @@ function App() {
 
       addStatusLog('info', `Loading ROI RGB composite: ${roiCompositeId} (${requiredPols.join(', ')})`);
 
-      const data = await loadNISARRGBComposite(nisarFile, {
+      const data = await loadNISARRGBComposite(nisarSource, {
         frequency: selectedFrequency,
         compositeId: roiCompositeId,
         requiredPols,
@@ -847,7 +848,7 @@ function App() {
     } finally {
       setRoiRGBLoading(false);
     }
-  }, [nisarFile, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog]);
+  }, [nisarFile, remoteUrl, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog]);
 
   // Load time-series into ROI side panel
   const handleLoadRoiTimeSeries = useCallback(async () => {
@@ -905,14 +906,17 @@ function App() {
             date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || file.name;
             label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
           }
+          const isRGBMode = displayMode === 'rgb' && !!data.getRGBTile;
           frames.push({
-            getTile: data.getTile,
+            getTile: isRGBMode ? data.getRGBTile : data.getTile,
             bounds: data.bounds,
             label,
             date,
             width: data.width,
             height: data.height,
             renderMode: data.renderMode || null,
+            isRGB: isRGBMode,
+            compositeId: isRGBMode ? compositeId : null,
           });
         } catch (fileErr) {
           addStatusLog('warning', `Skipping ${file.name}: ${fileErr.message}`);
@@ -934,13 +938,37 @@ function App() {
       const regionH = maxY - minY;
       const applyDeci = isGUNW ? false : useDecibels;
 
+      const isRGBTS = frames.length > 0 && frames[0].isRGB;
       for (let fi = 0; fi < frames.length; fi++) {
         try {
-          const stats = await sampleViewportStats(
-            frames[fi].getTile, regionW, regionH, applyDeci, 128,
-            minX, minY, frames[fi].height,
-          );
-          frames[fi].stats = stats || null;
+          if (isRGBTS) {
+            // Sample center tile for per-channel stats
+            const tileData = await frames[fi].getTile({
+              x: 0, y: 0, z: 0,
+              bbox: { left: minX, top: minY, right: maxX, bottom: maxY },
+            });
+            if (tileData && tileData.bands) {
+              const rgbBands = computeRGBBands(tileData.bands, frames[fi].compositeId, tileData.width);
+              const chStats = {};
+              for (const ch of ['R', 'G', 'B']) {
+                const arr = rgbBands[ch];
+                const valid = [];
+                for (let i = 0; i < arr.length; i++) {
+                  if (arr[i] > 0 && !isNaN(arr[i])) valid.push(arr[i]);
+                }
+                chStats[ch] = computeChannelStats(valid, false) || null;
+              }
+              frames[fi].stats = chStats;
+            } else {
+              frames[fi].stats = null;
+            }
+          } else {
+            const stats = await sampleViewportStats(
+              frames[fi].getTile, regionW, regionH, applyDeci, 128,
+              minX, minY, frames[fi].height,
+            );
+            frames[fi].stats = stats || null;
+          }
         } catch {
           frames[fi].stats = null;
         }
@@ -950,7 +978,18 @@ function App() {
       const firstStats = frames[0].stats;
       let tsContrast;
       let tsHist = null;
-      if (firstStats) {
+      if (isRGBTS) {
+        if (firstStats && firstStats.R) {
+          tsContrast = {
+            R: [firstStats.R.p2, firstStats.R.p98],
+            G: firstStats.G ? [firstStats.G.p2, firstStats.G.p98] : [0, 0.1],
+            B: firstStats.B ? [firstStats.B.p2, firstStats.B.p98] : [0, 0.1],
+          };
+          tsHist = firstStats;
+        } else {
+          tsContrast = { R: [0, 0.1], G: [0, 0.1], B: [0, 0.1] };
+        }
+      } else if (firstStats) {
         tsContrast = [Number(firstStats.p2.toFixed(1)), Number(firstStats.p98.toFixed(1))];
         tsHist = { single: firstStats };
       } else {
@@ -974,13 +1013,23 @@ function App() {
     } finally {
       setRoiTSLoading(false);
     }
-  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, addStatusLog]);
+  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, displayMode, compositeId, addStatusLog]);
 
   // Update histogram and contrast when time-series frame changes
   useEffect(() => {
     if (!roiTSFrames || !roiTSFrames[roiTSIndex]) return;
     const frame = roiTSFrames[roiTSIndex];
-    if (frame.stats) {
+    if (!frame.stats) return;
+    if (frame.isRGB) {
+      const lims = {};
+      for (const ch of ['R', 'G', 'B']) {
+        if (frame.stats[ch]) lims[ch] = [frame.stats[ch].p2, frame.stats[ch].p98];
+      }
+      if (Object.keys(lims).length > 0) {
+        setRoiTSContrastLimits(lims);
+        setRoiTSHistogramData(frame.stats);
+      }
+    } else {
       setRoiTSHistogramData({ single: frame.stats });
       setRoiTSContrastLimits([Number(frame.stats.p2.toFixed(1)), Number(frame.stats.p98.toFixed(1))]);
     }
@@ -2456,6 +2505,10 @@ function App() {
       }
 
       setImageData(data);
+      // Bump tileVersion so deck.gl invalidates its TileLayer cache and fetches new tiles.
+      // Without this, switching datasets (e.g. unwrappedPhase → coherenceMagnitude) keeps
+      // stale tile data from the previous load.
+      setTileVersion(v => v + 1);
 
       // Compute incidence angle grid from metadata cube (GCOV only)
       if (data.metadataCube && data.xCoords && data.yCoords) {
@@ -4278,7 +4331,7 @@ function App() {
                 )}
 
                 {/* Load RGB Composite into ROI */}
-                {roi && nisarFile && availableComposites.length > 0 && displayMode === 'single' && (
+                {roi && (nisarFile || remoteUrl) && availableComposites.length > 0 && displayMode === 'single' && (
                   <div style={{
                     marginTop: '4px', padding: '4px 8px',
                     background: 'rgba(78, 201, 212, 0.06)',
@@ -4326,7 +4379,7 @@ function App() {
                 )}
 
                 {/* Time-Series file input for ROI */}
-                {roi && nisarFile && displayMode === 'single' && (
+                {roi && nisarFile && (
                   <div style={{
                     marginTop: '4px', padding: '4px 8px',
                     background: 'rgba(46, 204, 113, 0.06)',
@@ -4548,6 +4601,7 @@ function App() {
                   ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
                   : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })}
                 useDecibels={sidebarIsRoiRGB ? false : effectiveUseDecibels}
+                logScale={nisarProductType !== 'GCOV'}
                 onContrastChange={sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
@@ -4561,6 +4615,7 @@ function App() {
                 mode="single"
                 contrastLimits={sidebarIsRoiTS ? roiTSContrastLimits : contrastLimits}
                 useDecibels={effectiveUseDecibels}
+                logScale={nisarProductType !== 'GCOV'}
                 onContrastChange={sidebarIsRoiTS
                   ? (([min, max]) => setRoiTSContrastLimits([Math.round(min), Math.round(max)]))
                   : (([min, max]) => { setContrastMin(Math.round(min)); setContrastMax(Math.round(max)); })
@@ -5141,7 +5196,8 @@ function App() {
                       tileVersion={roiTSIndex}
                       bounds={roiTSBounds}
                       contrastLimits={roiTSContrastLimits}
-                      useDecibels={nisarProductType === 'GUNW' ? false : useDecibels}
+                      useDecibels={roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels)}
+                      compositeId={roiTSFrames[roiTSIndex]?.compositeId || null}
                       colormap={colormap}
                       gamma={gamma}
                       stretchMode={stretchMode}
@@ -5195,6 +5251,7 @@ function App() {
               mode={displayMode}
               contrastLimits={displayMode === 'rgb' ? rgbContrastLimits : [contrastMin, contrastMax]}
               useDecibels={effectiveUseDecibels}
+              logScale={nisarProductType !== 'GCOV'}
               polarization={selectedPolarization}
               compositeId={compositeId}
               onClose={() => setShowHistogramOverlay(false)}
