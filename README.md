@@ -12,7 +12,7 @@
 
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
-`v0.5.0` · `AGPL-3.0` · `2026`
+`v1.0.0-beta.3' · `Mar 2026`
 
 ![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)
 
