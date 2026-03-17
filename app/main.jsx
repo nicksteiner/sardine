@@ -22,7 +22,7 @@ import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
-import { exportFigure, exportFigureWithOverlays, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
+import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
 import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84, wgs84ToProjectedPoint } from '../src/loaders/overture-loader.js';
@@ -414,6 +414,8 @@ function App() {
   );
   const markdownUpdateRef = useRef(false);
   const viewerRef = useRef(null);
+  const roiRGBViewerRef = useRef(null);
+  const roiTSViewerRef = useRef(null);
 
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
@@ -3127,7 +3129,7 @@ function App() {
 
     try {
       const vs = viewerRef.current.getViewState();
-      const blob = await exportFigure(glCanvas, {
+      const mainOpts = {
         colormap,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
@@ -3139,7 +3141,44 @@ function App() {
         histogramData: showHistogramOverlay ? histogramData : null,
         polarization: selectedPolarization,
         identification: imageData?.identification || null,
-      });
+      };
+
+      const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
+      const secondaryCanvas = secondaryRef?.current?.getCanvas();
+
+      let blob;
+      if (secondaryCanvas) {
+        const secondaryVS = secondaryRef.current.getViewState();
+        const isTS = secondaryRef === roiTSViewerRef;
+        const secondaryOpts = isTS ? {
+          colormap,
+          contrastLimits: roiTSContrastLimits,
+          useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
+          compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
+          viewState: secondaryVS,
+          bounds: roiTSBounds,
+          filename: roiTSFrames[roiTSIndex]?.label || '',
+          crs: imageData?.crs || '',
+          identification: imageData?.identification || null,
+        } : {
+          colormap,
+          contrastLimits: roiRGBContrastLimits,
+          useDecibels: false,
+          compositeId: roiCompositeId,
+          viewState: secondaryVS,
+          bounds: roiRGBBounds,
+          filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
+          crs: imageData?.crs || '',
+          histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
+          identification: imageData?.identification || null,
+        };
+        blob = await exportFigureSideBySide(
+          { canvas: glCanvas, options: mainOpts },
+          { canvas: secondaryCanvas, options: secondaryOpts },
+        );
+      } else {
+        blob = await exportFigure(glCanvas, mainOpts);
+      }
 
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const figName = `sardine_figure_${ts}.png`;
@@ -3148,11 +3187,12 @@ function App() {
 
       // Force deck.gl to re-render so the canvas doesn't stay blank
       viewerRef.current.redraw();
+      secondaryRef?.current?.redraw();
     } catch (e) {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async () => {
@@ -3171,7 +3211,7 @@ function App() {
 
     try {
       const vs = viewerRef.current.getViewState();
-      const blob = await exportFigureWithOverlays(glCanvas, {
+      const mainOpts = {
         colormap,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
@@ -3191,7 +3231,66 @@ function App() {
         classificationMap: classifierOpen ? classificationMap : null,
         classRegions,
         classifierRoiDims,
-      });
+      };
+
+      const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
+      const secondaryCanvas = secondaryRef?.current?.getCanvas();
+
+      let blob;
+      if (secondaryCanvas) {
+        const secondaryVS = secondaryRef.current.getViewState();
+        const isTS = secondaryRef === roiTSViewerRef;
+        const secondaryOpts = isTS ? {
+          colormap,
+          contrastLimits: roiTSContrastLimits,
+          useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
+          compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
+          viewState: secondaryVS,
+          bounds: roiTSBounds,
+          filename: roiTSFrames[roiTSIndex]?.label || '',
+          crs: imageData?.crs || '',
+          identification: imageData?.identification || null,
+        } : {
+          colormap,
+          contrastLimits: roiRGBContrastLimits,
+          useDecibels: false,
+          compositeId: roiCompositeId,
+          viewState: secondaryVS,
+          bounds: roiRGBBounds,
+          filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
+          crs: imageData?.crs || '',
+          histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
+          identification: imageData?.identification || null,
+        };
+        // For the main panel, use exportFigureWithOverlays to capture ROI/profile overlays;
+        // for the secondary panel use plain exportFigure (no ROI drawn there).
+        const [mainBlob, secondBlob] = await Promise.all([
+          exportFigureWithOverlays(glCanvas, mainOpts),
+          exportFigure(secondaryCanvas, secondaryOpts),
+        ]);
+        // Convert both blobs to ImageBitmaps and stitch side-by-side
+        const [lBmp, rBmp] = await Promise.all([
+          createImageBitmap(mainBlob),
+          createImageBitmap(secondBlob),
+        ]);
+        const dpr = window.devicePixelRatio || 1;
+        const divider = Math.round(3 * dpr);
+        const H = Math.max(lBmp.height, rBmp.height);
+        const W = lBmp.width + divider + rBmp.width;
+        const stitchCanvas = document.createElement('canvas');
+        stitchCanvas.width = W;
+        stitchCanvas.height = H;
+        const sCtx = stitchCanvas.getContext('2d');
+        sCtx.fillStyle = '#0a1628';
+        sCtx.fillRect(0, 0, W, H);
+        sCtx.drawImage(lBmp, 0, 0);
+        sCtx.fillStyle = 'rgba(30, 58, 95, 0.80)';
+        sCtx.fillRect(lBmp.width, 0, divider, H);
+        sCtx.drawImage(rBmp, lBmp.width + divider, 0);
+        blob = await new Promise((resolve) => stitchCanvas.toBlob(resolve, 'image/png'));
+      } else {
+        blob = await exportFigureWithOverlays(glCanvas, mainOpts);
+      }
 
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const figName = `sardine_figure_${ts}.png`;
@@ -3199,11 +3298,12 @@ function App() {
       addStatusLog('success', `Figure with overlays saved: ${figName}`);
 
       viewerRef.current.redraw();
+      secondaryRef?.current?.redraw();
     } catch (e) {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -5108,6 +5208,7 @@ function App() {
                       Close
                     </button>
                     <SARViewer
+                      ref={roiRGBViewerRef}
                       getTile={roiRGBData.getTile}
                       bounds={roiRGBBounds}
                       contrastLimits={roiRGBContrastLimits}
@@ -5192,6 +5293,7 @@ function App() {
                       </span>
                     </div>
                     <SARViewer
+                      ref={roiTSViewerRef}
                       getTile={roiTSFrames[roiTSIndex]?.getTile}
                       tileVersion={roiTSIndex}
                       bounds={roiTSBounds}

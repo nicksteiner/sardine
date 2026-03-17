@@ -1187,6 +1187,107 @@ export function exportRGBColorbar(options = {}) {
 }
 
 /**
+ * Capture two viewers side-by-side and export as a single PNG figure.
+ *
+ * Each panel gets the full set of SARdine figure overlays (grid, scalebar,
+ * colorbar, metadata, branding). A thin divider is drawn between panels.
+ *
+ * @param {Object} left  - { canvas: HTMLCanvasElement, options: Object }
+ * @param {Object} right - { canvas: HTMLCanvasElement, options: Object }
+ * @returns {Promise<Blob>} PNG blob
+ */
+export async function exportFigureSideBySide(left, right) {
+  const dpr = window.devicePixelRatio || 1;
+  const divider = Math.round(3 * dpr);
+
+  const lW = left.canvas.width;
+  const lH = left.canvas.height;
+  const rW = right.canvas.width;
+  const rH = right.canvas.height;
+
+  // Use the taller of the two heights; scale the shorter panel up
+  const H = Math.max(lH, rH);
+  const W = lW + divider + rW;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Background fill (in case panels are shorter than H)
+  ctx.fillStyle = '#0a1628';
+  ctx.fillRect(0, 0, W, H);
+
+  // Draw left panel
+  ctx.drawImage(left.canvas, 0, 0);
+
+  // Draw right panel
+  ctx.drawImage(right.canvas, lW + divider, 0);
+
+  // Divider
+  ctx.fillStyle = 'rgba(30, 58, 95, 0.80)';
+  ctx.fillRect(lW, 0, divider, H);
+
+  // Draw overlays for each panel into their respective clip regions
+  const s = (v) => Math.round(v * dpr);
+
+  async function drawPanel(opts, offsetX, panelW, panelH) {
+    const {
+      colormap = 'grayscale',
+      contrastLimits,
+      useDecibels = true,
+      compositeId = null,
+      viewState,
+      bounds,
+      filename = '',
+      crs = '',
+      histogramData = null,
+      polarization = '',
+      identification = null,
+    } = opts;
+
+    const projected = isProjectedBounds(bounds);
+
+    ctx.save();
+    ctx.translate(offsetX, 0);
+    ctx.beginPath();
+    ctx.rect(0, 0, panelW, panelH);
+    ctx.clip();
+
+    drawBorder(ctx, panelW, panelH, s);
+    drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s);
+    drawCornerCoordinates(ctx, panelW, panelH, viewState, projected, s);
+    drawScaleBar(ctx, panelW, panelH, viewState, bounds, projected, s);
+
+    if (compositeId) {
+      drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s);
+    } else {
+      drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s);
+    }
+
+    drawMetadata(ctx, panelW, panelH, {
+      filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
+    }, s);
+    drawBranding(ctx, panelW, panelH, s);
+
+    if (histogramData) {
+      drawHistogramInset(ctx, panelW, panelH, {
+        histogramData, compositeId, contrastLimits, useDecibels, polarization,
+      }, dpr);
+    }
+
+    ctx.restore();
+  }
+
+  await drawPanel(left.options,  0,          lW, lH);
+  await drawPanel(right.options, lW + divider, rW, rH);
+
+  return new Promise((resolve) => {
+    canvas.toBlob(resolve, 'image/png');
+  });
+}
+
+/**
  * Download a Blob as a file.
  */
 export function downloadBlob(blob, filename) {
