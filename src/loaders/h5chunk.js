@@ -1138,6 +1138,30 @@ function parseGroup(reader, superblock, groupAddress, path = '/') {
 /**
  * H5Chunk - Cloud-Optimized HDF5 Reader
  */
+// ── Global concurrency semaphore for chunk read+decompress ──────────
+// Limits total in-flight chunk operations across ALL concurrent tile requests.
+// Prevents OOM when deck.gl requests many tiles simultaneously on large NISAR
+// files where each tile covers 100+ chunks × multiple bands.
+let _chunkSemCount = 0;
+const _CHUNK_SEM_LIMIT = 16;
+const _chunkSemWaiters = [];
+
+function _acquireChunkSlot() {
+  if (_chunkSemCount < _CHUNK_SEM_LIMIT) {
+    _chunkSemCount++;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => _chunkSemWaiters.push(resolve));
+}
+
+function _releaseChunkSlot() {
+  if (_chunkSemWaiters.length > 0) {
+    _chunkSemWaiters.shift()();
+  } else {
+    _chunkSemCount--;
+  }
+}
+
 // ── Worker pool for parallel decompression ──────────────────────────
 // Shared across all H5Chunk instances. Lazily initialized on first use.
 let _workerPool = null;
@@ -3005,24 +3029,26 @@ export class H5Chunk {
     if (chunkEntries.length === 0) return results;
 
     // For local files: read + decompress with bounded concurrency.
-    // File.slice() is fast but decompression is CPU-bound. Limit in-flight
-    // work to avoid memory spikes and give the worker pool a steady feed.
+    // All tile requests share a global semaphore (_CHUNK_SEM_LIMIT) so that
+    // concurrent deck.gl tile loads don't accumulate hundreds of compressed
+    // buffers in memory at once (OOM on large NISAR files with many chunks/tile).
     if (this.file) {
       // Sort by file offset for sequential I/O (better disk cache behavior)
       chunkEntries.sort((a, b) => a.offset - b.offset);
-      const LOCAL_CONCURRENCY = 32;
       const t0 = performance.now();
       let totalBytes = 0;
-      for (let i = 0; i < chunkEntries.length; i += LOCAL_CONCURRENCY) {
-        const batch = chunkEntries.slice(i, i + LOCAL_CONCURRENCY);
-        await Promise.all(batch.map(async (entry) => {
+      await Promise.all(chunkEntries.map(async (entry) => {
+        await _acquireChunkSlot();
+        try {
           const slice = this.file.slice(entry.offset, entry.offset + entry.size);
           const buffer = await slice.arrayBuffer();
           totalBytes += buffer.byteLength;
           const decoded = await this._decompressAndDecode(buffer, dataset, entry.filterMask);
           results.set(entry.key, decoded);
-        }));
-      }
+        } finally {
+          _releaseChunkSlot();
+        }
+      }));
       const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
       const mb = (totalBytes / (1024 * 1024)).toFixed(1);
       console.log(`[h5chunk] Local batch: ${chunkEntries.length} chunks, ${mb} MB read+decompressed in ${elapsed}s (${this.useWorkerPool ? 'workers' : 'main-thread'})`);
