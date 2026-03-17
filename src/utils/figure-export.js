@@ -297,17 +297,6 @@ function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeig
   ctx.setLineDash([6 * dpr, 4 * dpr]);
   ctx.strokeRect(rx, ry, rw, rh);
   ctx.setLineDash([]);
-
-  // Label
-  const label = `${roi.width} × ${roi.height} px`;
-  ctx.font = `${11 * dpr}px 'JetBrains Mono', monospace`;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'bottom';
-  const tw = ctx.measureText(label).width + 8 * dpr;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  ctx.fillRect(rx + 4 * dpr - 2 * dpr, ry - 4 * dpr - 13 * dpr, tw, 15 * dpr);
-  ctx.fillStyle = '#ffc832';
-  ctx.fillText(label, rx + 4 * dpr, ry - 4 * dpr);
   ctx.restore();
 }
 
