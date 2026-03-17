@@ -176,7 +176,9 @@ Vector graphics:
 |:---|:---|
 
 | Georeferencing errors on coarse overviews | low priority |
+| Small area geotiffs are not valid | low priority ||
 | Slow loading RGB frequency A | low 
+
 
 
 ---

@@ -1300,6 +1300,8 @@ function App() {
   // Recompute histogram when scope changes — but skip on initial load if
   // metadata-based contrast was already applied (avoids redundant tile reads).
   const skipInitialHistogramRef = useRef(false);
+  // Separate flag for the viewport auto-refresh timer — persists across the 800ms delay.
+  const skipViewportRefreshRef = useRef(false);
   useEffect(() => {
     if (!imageData) return;
     if (skipInitialHistogramRef.current) {
@@ -1329,6 +1331,10 @@ function App() {
     if (!gpuInfo.webgpu) return; // Skip auto-refresh without WebGPU compute
     if (!imageData || !showHistogramOverlay || histogramScope !== 'viewport') return;
     const timer = setTimeout(() => {
+      if (skipViewportRefreshRef.current) {
+        skipViewportRefreshRef.current = false;
+        return;
+      }
       recomputeRef.current();
     }, 800);
     return () => clearTimeout(timer);
@@ -2558,6 +2564,7 @@ function App() {
             setHistogramData(syntheticHists);
             // Skip tile-sampling histogram recompute — metadata is sufficient for initial display
             skipInitialHistogramRef.current = true;
+            skipViewportRefreshRef.current = true;
             addStatusLog('info', 'Initial contrast from metadata',
               ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
           }
