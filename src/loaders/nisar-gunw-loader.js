@@ -437,21 +437,55 @@ export async function loadNISARGUNW(file, options = {}) {
     return result;
   }
 
-  // Build getExportStripe for full-width row export
-  async function getExportStripe({ startRow, numRows, ml = 1 }) {
-    const region = await streamReader.readRegion(dsId, startRow, 0, numRows, width);
+  // Build getExportStripe — matches the GCOV single-band interface.
+  // startRow / numRows / startCol / numCols are in OUTPUT (post-multilook) space;
+  // ml converts them to source-pixel coordinates before calling readRegion.
+  async function getExportStripe({ startRow, numRows, ml = 1, startCol = 0, numCols }) {
+    const outCols = numCols || Math.floor(width / (ml || 1));
+
+    // Convert output-space to source-space and clamp to dataset bounds
+    const srcTop  = startRow * ml;
+    const srcLeft = startCol * ml;
+    const srcNumRows = Math.min(numRows * ml, height - srcTop);
+    const srcNumCols = Math.min(outCols  * ml, width  - srcLeft);
+
+    if (srcNumRows <= 0 || srcNumCols <= 0) return null;
+
+    const region = await streamReader.readRegion(dsId, srcTop, srcLeft, srcNumRows, srcNumCols);
     if (!region) return null;
     let data = region.data || region;
 
     // Handle complex data
     if (renderMode.isComplex && renderMode.transform === 'complexPhase') {
-      data = extractPhaseFromComplex(data, numRows, width);
+      data = extractPhaseFromComplex(data, srcNumRows, srcNumCols);
     }
 
+    let outputData;
     if (ml > 1) {
-      return multilookFloat32(data, numRows, width, ml);
+      const mlResult = multilookFloat32(data, srcNumRows, srcNumCols, ml);
+      outputData = mlResult.data;
+    } else {
+      outputData = data;
     }
-    return { data, width, height: numRows };
+
+    // Pad to the requested output dimensions if source was clamped at the image edge
+    const actualOutRows = ml > 1 ? Math.floor(srcNumRows / ml) : srcNumRows;
+    const actualOutCols = ml > 1 ? Math.floor(srcNumCols / ml) : srcNumCols;
+
+    if (actualOutRows === numRows && actualOutCols === outCols) {
+      return { bands: { [polarization]: outputData }, width: outCols, height: numRows };
+    }
+
+    // NaN-pad so the stripe is always exactly numRows × outCols
+    const padded = new Float32Array(numRows * outCols);
+    padded.fill(NaN);
+    for (let r = 0; r < actualOutRows; r++) {
+      padded.set(
+        outputData.subarray(r * actualOutCols, r * actualOutCols + actualOutCols),
+        r * outCols
+      );
+    }
+    return { bands: { [polarization]: padded }, width: outCols, height: numRows };
   }
 
   // Coherence loader: reads coherenceMagnitude from the same layer+pol path.
