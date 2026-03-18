@@ -53,3 +53,9 @@ test_sar_*.tif
 
 # Python virtual env
 .venv/
+
+# Claude Code local settings and worktrees
+.claude/
+
+# Benchmark results (generated output)
+test/benchmarks/results/
