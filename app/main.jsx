@@ -36,6 +36,7 @@ import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
 import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
 import { loadMetadataCube } from '../src/utils/metadata-cube.js';
 import { loadAllCorrections, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
+import { embedStateInPNG, extractStateFromPNG } from '../src/utils/png-state.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -2029,8 +2030,36 @@ function App() {
         }
       };
       reader.readAsText(file);
+    } else if (name.endsWith('.png')) {
+      // Check for embedded SARdine state
+      extractStateFromPNG(file).then((state) => {
+        if (!state) {
+          addStatusLog('warning', `No SARdine state found in: ${file.name}`, 'Only SARdine-exported PNGs carry embedded state');
+          return;
+        }
+        if (state.colormap) setColormap(state.colormap);
+        if (state.useDecibels !== undefined) setUseDecibels(state.useDecibels);
+        if (state.contrastMin !== undefined) setContrastMin(state.contrastMin);
+        if (state.contrastMax !== undefined) setContrastMax(state.contrastMax);
+        if (state.gamma !== undefined) setGamma(state.gamma);
+        if (state.stretchMode) setStretchMode(state.stretchMode);
+        if (state.displayMode) setDisplayMode(state.displayMode);
+        if (state.compositeId !== undefined) setCompositeId(state.compositeId);
+        if (state.rgbContrastLimits) setRgbContrastLimits(state.rgbContrastLimits);
+        if (state.selectedFrequency) setSelectedFrequency(state.selectedFrequency);
+        if (state.selectedPolarization) setSelectedPolarization(state.selectedPolarization);
+        if (state.multiLook !== undefined) setMultiLook(state.multiLook);
+        if (state.speckleFilterType) setSpeckleFilterType(state.speckleFilterType);
+        if (state.maskInvalid !== undefined) setMaskInvalid(state.maskInvalid);
+        if (state.viewCenter) setViewCenter(state.viewCenter);
+        if (state.viewZoom !== undefined) setViewZoom(state.viewZoom);
+        const restoredFile = state.filename || '(unknown)';
+        addStatusLog('success', `State restored from: ${file.name}`, `Original file: ${restoredFile}`);
+      }).catch((err) => {
+        addStatusLog('error', `Failed to read PNG state: ${file.name}`, err.message);
+      });
     } else {
-      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, or .geojson files');
+      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .geojson, or a SARdine-exported .png');
     }
   }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog]);
 
@@ -3200,6 +3229,28 @@ function App() {
     }
   }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, addStatusLog]);
 
+  // Serialize current visualization state for embedding in exported PNGs
+  const serializeViewerState = useCallback(() => ({
+    colormap,
+    useDecibels,
+    contrastMin,
+    contrastMax,
+    gamma,
+    stretchMode,
+    displayMode,
+    compositeId,
+    rgbContrastLimits,
+    selectedFrequency,
+    selectedPolarization,
+    multiLook,
+    speckleFilterType,
+    maskInvalid,
+    fileType,
+    viewCenter,
+    viewZoom,
+    filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
+  }), [colormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
+
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
     if (!viewerRef.current) {
@@ -3268,6 +3319,8 @@ function App() {
         blob = await exportFigure(glCanvas, mainOpts);
       }
 
+      blob = await embedStateInPNG(blob, serializeViewerState());
+
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const figName = `sardine_figure_${ts}.png`;
       downloadBlob(blob, figName);
@@ -3280,7 +3333,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async () => {
@@ -3380,6 +3433,8 @@ function App() {
         blob = await exportFigureWithOverlays(glCanvas, mainOpts);
       }
 
+      blob = await embedStateInPNG(blob, serializeViewerState());
+
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const figName = `sardine_figure_${ts}.png`;
       downloadBlob(blob, figName);
@@ -3391,7 +3446,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState]);
 
   // Keyboard shortcuts
   useEffect(() => {
