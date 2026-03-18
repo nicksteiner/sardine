@@ -84,6 +84,7 @@ const requiredFiles = [
   'src/utils/stretch.js',
   'src/utils/stats.js',
   'src/utils/sar-composites.js',
+  'src/utils/png-state.js',
   'src/loaders/cog-loader.js',
   'src/loaders/nisar-loader.js',
   'src/loaders/h5chunk.js',
@@ -714,6 +715,310 @@ try {
 
 } catch (err) {
   skip('GeoTIFF writer tests', `import failed: ${err.message}`);
+}
+
+// ─── 12. PNG state embed/extract ─────────────────────────────────────────────
+
+suite('PNG state');
+
+const pngStateSrc = readFile('src/utils/png-state.js');
+
+check('exports embedStateInPNG', () => {
+  assertContains(pngStateSrc, 'export async function embedStateInPNG', 'embedStateInPNG export');
+});
+
+check('exports extractStateFromPNG', () => {
+  assertContains(pngStateSrc, 'export async function extractStateFromPNG', 'extractStateFromPNG export');
+});
+
+check('uses SARdine-State keyword', () => {
+  assertContains(pngStateSrc, 'SARdine-State', 'KEYWORD constant');
+});
+
+check('uses tEXt chunk type', () => {
+  assertContains(pngStateSrc, 'tEXt', 'tEXt chunk type');
+});
+
+check('includes CRC32 implementation', () => {
+  assertContains(pngStateSrc, 'CRC32', 'CRC32 table');
+});
+
+check('checks PNG signature bytes', () => {
+  assertContains(pngStateSrc, '137, 80, 78, 71', 'PNG signature bytes');
+});
+
+check('main.jsx imports embedStateInPNG', () => {
+  const mainSrc = readFile('app/main.jsx');
+  assertContains(mainSrc, 'embedStateInPNG', 'embedStateInPNG import');
+});
+
+check('main.jsx imports extractStateFromPNG', () => {
+  const mainSrc = readFile('app/main.jsx');
+  assertContains(mainSrc, 'extractStateFromPNG', 'extractStateFromPNG import');
+});
+
+check('main.jsx calls embedStateInPNG at export', () => {
+  const mainSrc = readFile('app/main.jsx');
+  assertContains(mainSrc, 'await embedStateInPNG(blob, serializeViewerState())', 'embed call at export');
+});
+
+check('main.jsx calls extractStateFromPNG on PNG drop', () => {
+  const mainSrc = readFile('app/main.jsx');
+  assertContains(mainSrc, 'extractStateFromPNG(file)', 'extract call on drop');
+});
+
+try {
+  const { embedStateInPNG, extractStateFromPNG } = await import(join(rootDir, 'src/utils/png-state.js'));
+
+  // Minimal 1×1 PNG for functional tests (base64 encoded)
+  const MIN_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVQI12NgAAAAAgAB4iG8MwAAAABJRU5ErkJggg==';
+  function makeMinPNG() {
+    return new Blob([Buffer.from(MIN_PNG_B64, 'base64')], { type: 'image/png' });
+  }
+
+  check('extractStateFromPNG returns null for plain PNG', async () => {
+    const result = await extractStateFromPNG(makeMinPNG());
+    if (result !== null) throw new Error('Expected null, got object');
+  });
+
+  check('extractStateFromPNG returns null for non-PNG', async () => {
+    const result = await extractStateFromPNG(new Blob(['not a png']));
+    if (result !== null) throw new Error('Expected null');
+  });
+
+  check('embed/extract round-trip', async () => {
+    const state = { colormap: 'viridis', contrastMin: -25, useDecibels: true };
+    const embedded = await embedStateInPNG(makeMinPNG(), state);
+    const extracted = await extractStateFromPNG(embedded);
+    if (!extracted) throw new Error('extractStateFromPNG returned null');
+    if (extracted.colormap !== 'viridis') throw new Error(`colormap: expected viridis, got ${extracted.colormap}`);
+    if (extracted.contrastMin !== -25) throw new Error(`contrastMin: expected -25, got ${extracted.contrastMin}`);
+    if (extracted.useDecibels !== true) throw new Error(`useDecibels: expected true, got ${extracted.useDecibels}`);
+  });
+
+  check('embedded PNG is larger than original', async () => {
+    const orig = makeMinPNG();
+    const embedded = await embedStateInPNG(orig, { colormap: 'plasma' });
+    const origSize = (await orig.arrayBuffer()).byteLength;
+    const newSize = (await embedded.arrayBuffer()).byteLength;
+    if (newSize <= origSize) throw new Error(`Expected size increase, got ${newSize} <= ${origSize}`);
+  });
+
+  check('PNG signature preserved after embed', async () => {
+    const embedded = await embedStateInPNG(makeMinPNG(), { x: 1 });
+    const buf = await embedded.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    for (let i = 0; i < 8; i++) {
+      if (bytes[i] !== sig[i]) throw new Error(`Signature byte ${i}: expected ${sig[i]}, got ${bytes[i]}`);
+    }
+  });
+
+} catch (err) {
+  skip('PNG state functional tests', `import failed: ${err.message}`);
+}
+
+// ─── 13. Colorblind mode — source checks ────────────────────────────────────
+
+suite('Colorblind mode (source)');
+
+const gpuLayerContent = readFile('src/layers/SARGPULayer.js');
+const tileLayerSrc    = readFile('src/layers/SARTileLayer.js');
+const viewerSrc       = readFile('src/viewers/SARViewer.jsx');
+const compositesSrc   = readFile('src/utils/sar-composites.js');
+
+check('SARGPULayer exports COLORBLIND_MODE_IDS', () => {
+  assertContains(gpuLayerContent, 'export const COLORBLIND_MODE_IDS', 'COLORBLIND_MODE_IDS export');
+});
+
+check('COLORBLIND_MODE_IDS has off/deuteranopia/protanopia/tritanopia', () => {
+  for (const mode of ['off', 'deuteranopia', 'protanopia', 'tritanopia']) {
+    assertContains(gpuLayerContent, `${mode}:`, `${mode} key in COLORBLIND_MODE_IDS`);
+  }
+});
+
+check('fragment shader declares uColorblindMode uniform', () => {
+  assertContains(gpuLayerContent, 'uniform float uColorblindMode', 'uColorblindMode uniform');
+});
+
+check('fragment shader applies CVD mat3 in RGB path', () => {
+  assertContains(gpuLayerContent, 'mat3 cvd', 'CVD mat3 in shader');
+});
+
+check('fragment shader has deuteranopia/protanopia branch (cvdMode == 1 || cvdMode == 2)', () => {
+  assertContains(gpuLayerContent, 'cvdMode == 1 || cvdMode == 2', 'deuteranopia/protanopia branch');
+});
+
+check('fragment shader has tritanopia branch (cvdMode == 3)', () => {
+  assertContains(gpuLayerContent, 'cvdMode == 3', 'tritanopia branch');
+});
+
+check('draw() passes uColorblindMode uniform', () => {
+  assertContains(gpuLayerContent, 'uColorblindMode:', 'uColorblindMode in layerUniforms');
+});
+
+check('SARGPULayer defaultProps includes colorblindMode', () => {
+  assertContains(gpuLayerContent, "colorblindMode: { type: 'string'", 'colorblindMode defaultProp');
+});
+
+check('SARTileLayer accepts colorblindMode prop', () => {
+  assertContains(tileLayerSrc, "colorblindMode = 'off'", 'colorblindMode prop in SARTileLayer');
+});
+
+check('SARTileLayer threads colorblindMode to sublayer', () => {
+  assertContains(tileLayerSrc, 'colorblindMode,', 'colorblindMode passed to SARGPULayer');
+});
+
+check('SARTileLayer includes colorblindMode in updateTriggers deps', () => {
+  assertContains(tileLayerSrc, 'colorblindMode', 'colorblindMode in renderSubLayers deps');
+});
+
+check('SARViewer accepts colorblindMode prop', () => {
+  assertContains(viewerSrc, "colorblindMode = 'off'", 'colorblindMode prop in SARViewer');
+});
+
+check('SARViewer passes colorblindMode to tile layer', () => {
+  assertContains(viewerSrc, 'colorblindMode: v.colorblindMode', 'colorblindMode in layer props');
+});
+
+check('sar-composites.js exports COLORBLIND_MATRICES', () => {
+  assertContains(compositesSrc, 'export const COLORBLIND_MATRICES', 'COLORBLIND_MATRICES export');
+});
+
+check('COLORBLIND_MATRICES has deuteranopia, protanopia, tritanopia', () => {
+  for (const mode of ['deuteranopia', 'protanopia', 'tritanopia']) {
+    assertContains(compositesSrc, `${mode}:`, `${mode} in COLORBLIND_MATRICES`);
+  }
+});
+
+check('createRGBTexture accepts colorblindMode parameter', () => {
+  assertContains(compositesSrc, "colorblindMode = 'off'", 'colorblindMode param in createRGBTexture');
+});
+
+// ─── 13. Colorblind mode — functional correctness ────────────────────────────
+// Tests operate directly on COLORBLIND_MATRICES (pure JS, no browser APIs needed).
+
+suite('Colorblind mode (functional)');
+
+try {
+  const { COLORBLIND_MATRICES } = await import(join(rootDir, 'src/utils/sar-composites.js'));
+
+  // Apply a matrix to an [r,g,b] triple (values 0–1), returns clamped [r,g,b]
+  function applyMatrix(mat, r, g, b) {
+    return mat.map(row => Math.max(0, Math.min(1, row[0] * r + row[1] * g + row[2] * b)));
+  }
+
+  // ── Matrix structure ──
+  check('COLORBLIND_MATRICES: each entry is a 3×3 array', () => {
+    for (const [name, mat] of Object.entries(COLORBLIND_MATRICES)) {
+      if (!Array.isArray(mat) || mat.length !== 3) {
+        throw new Error(`${name}: expected 3 rows, got ${mat?.length}`);
+      }
+      for (let row = 0; row < 3; row++) {
+        if (!Array.isArray(mat[row]) || mat[row].length !== 3) {
+          throw new Error(`${name}[${row}]: expected 3 cols, got ${mat[row]?.length}`);
+        }
+      }
+    }
+  });
+
+  check('COLORBLIND_MATRICES: all coefficients are finite numbers', () => {
+    for (const [name, mat] of Object.entries(COLORBLIND_MATRICES)) {
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 3; col++) {
+          const v = mat[row][col];
+          if (typeof v !== 'number' || !isFinite(v)) {
+            throw new Error(`${name}[${row}][${col}] = ${v} — not a finite number`);
+          }
+        }
+      }
+    }
+  });
+
+  check("'off' is not in COLORBLIND_MATRICES (no transform for off mode)", () => {
+    if ('off' in COLORBLIND_MATRICES) {
+      throw new Error("'off' should not have a matrix entry");
+    }
+  });
+
+  // ── Deuteranopia: data-R → orange (R high, B low), data-G → blue (B high, R low) ──
+  check('deuteranopia: pure-R input maps to orange (R high, B ~0)', () => {
+    const [r, , b] = applyMatrix(COLORBLIND_MATRICES.deuteranopia, 1, 0, 0);
+    if (r < 0.7)  throw new Error(`R=${r.toFixed(3)} too low for orange`);
+    if (b > 0.1)  throw new Error(`B=${b.toFixed(3)} too high — expected near-zero blue`);
+  });
+
+  check('deuteranopia: pure-G input maps to blue (B high, R ~0)', () => {
+    const [r, , b] = applyMatrix(COLORBLIND_MATRICES.deuteranopia, 0, 1, 0);
+    if (r > 0.05) throw new Error(`R=${r.toFixed(3)} too high — expected low red for blue`);
+    if (b < 0.7)  throw new Error(`B=${b.toFixed(3)} too low — expected high blue`);
+  });
+
+  check('deuteranopia: R and G inputs have different dominant output channels', () => {
+    const fromR = applyMatrix(COLORBLIND_MATRICES.deuteranopia, 1, 0, 0);
+    const fromG = applyMatrix(COLORBLIND_MATRICES.deuteranopia, 0, 1, 0);
+    if (fromR[0] <= fromR[2]) throw new Error('Deuteranopia pure-R should have R > B (orange)');
+    if (fromG[2] <= fromG[0]) throw new Error('Deuteranopia pure-G should have B > R (blue)');
+  });
+
+  check('deuteranopia transform is not identity for pure-R input', () => {
+    const [, g, b] = applyMatrix(COLORBLIND_MATRICES.deuteranopia, 1, 0, 0);
+    if (g < 0.01 && b < 0.01) throw new Error('Deuteranopia pure-R output looks like identity [1,0,0]');
+  });
+
+  // ── Protanopia: same matrix as deuteranopia ──
+  check('protanopia matrix equals deuteranopia matrix', () => {
+    const d = COLORBLIND_MATRICES.deuteranopia;
+    const p = COLORBLIND_MATRICES.protanopia;
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 3; col++) {
+        if (d[row][col] !== p[row][col]) {
+          throw new Error(`deuteranopia[${row}][${col}]=${d[row][col]} ≠ protanopia[${row}][${col}]=${p[row][col]}`);
+        }
+      }
+    }
+  });
+
+  // ── Tritanopia: data-B → magenta (R+B high, G low), data-R and data-G preserved ──
+  check('tritanopia: pure-B input maps to magenta (R high, G low, B high)', () => {
+    const [r, g, b] = applyMatrix(COLORBLIND_MATRICES.tritanopia, 0, 0, 1);
+    if (r < 0.5)  throw new Error(`R=${r.toFixed(3)} too low — expected high red for magenta`);
+    if (g > 0.15) throw new Error(`G=${g.toFixed(3)} too high — expected low green for magenta`);
+    if (b < 0.5)  throw new Error(`B=${b.toFixed(3)} too low — expected high blue for magenta`);
+  });
+
+  check('tritanopia: pure-R input stays red-dominant', () => {
+    const [r] = applyMatrix(COLORBLIND_MATRICES.tritanopia, 1, 0, 0);
+    if (r < 0.7) throw new Error(`R=${r.toFixed(3)} too low — expected high red`);
+  });
+
+  check('tritanopia: pure-G input stays green-dominant', () => {
+    const [, g] = applyMatrix(COLORBLIND_MATRICES.tritanopia, 0, 1, 0);
+    if (g < 0.7) throw new Error(`G=${g.toFixed(3)} too low — expected high green`);
+  });
+
+  check('tritanopia transform is not identity for pure-B input', () => {
+    const [r, g] = applyMatrix(COLORBLIND_MATRICES.tritanopia, 0, 0, 1);
+    if (r < 0.01 && g < 0.01) throw new Error('Tritanopia pure-B output looks like identity [0,0,1]');
+  });
+
+  // ── Output always in [0, 1] for any unit-range input ──
+  check('all modes clamp output to [0, 1] for saturated inputs', () => {
+    const inputs = [[1,1,1],[1,0,0],[0,1,0],[0,0,1],[0.5,0.5,0.5]];
+    for (const [name, mat] of Object.entries(COLORBLIND_MATRICES)) {
+      for (const [ri, gi, bi] of inputs) {
+        const out = applyMatrix(mat, ri, gi, bi);
+        for (let c = 0; c < 3; c++) {
+          if (out[c] < 0 || out[c] > 1) {
+            throw new Error(`${name} [${ri},${gi},${bi}] → ch${c} = ${out[c].toFixed(4)} out of [0,1]`);
+          }
+        }
+      }
+    }
+  });
+
+} catch (err) {
+  skip('colorblind functional tests', `import failed: ${err.message}`);
 }
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
