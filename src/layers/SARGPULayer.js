@@ -4,6 +4,17 @@ import GL from '@luma.gl/constants';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 import { applyWebGLFilter, FILTER_TYPE_IDS } from '../gpu/webgl-spatial-filter.js';
 
+/**
+ * Colorblind mode IDs for shader uniform.
+ * 0 = off, 1 = deuteranopia, 2 = protanopia, 3 = tritanopia
+ */
+export const COLORBLIND_MODE_IDS = {
+  off: 0,
+  deuteranopia: 1,
+  protanopia: 2,
+  tritanopia: 3,
+};
+
 
 /**
  * Simple vertex shader using deck.gl's project module
@@ -84,6 +95,7 @@ uniform float uMaxG;
 uniform float uMinB;
 uniform float uMaxB;
 uniform float uSaturation;  // RGB saturation multiplier (1.0 = no change)
+uniform float uColorblindMode;  // 0=off, 1=deuteranopia, 2=protanopia, 3=tritanopia
 
 in vec2 vTexCoord;
 out vec4 fragColor;
@@ -139,6 +151,27 @@ void main() {
     if (uSaturation != 1.0) {
       float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
       rgb = clamp(vec3(luma) + (rgb - vec3(luma)) * uSaturation, 0.0, 1.0);
+    }
+
+    // Colorblind-safe remap: replace RGB color cube with CVD-distinguishable colors.
+    // Each column is the display color for that data channel (R, G, B).
+    int cvdMode = int(uColorblindMode + 0.5);
+    if (cvdMode == 1 || cvdMode == 2) {
+      // Deuteranopia / Protanopia (red-green): Orange / Blue / Light
+      mat3 cvd = mat3(
+        1.0, 0.5, 0.0,    // col0: data-R → Orange
+        0.0, 0.35, 1.0,   // col1: data-G → Blue
+        0.85, 0.85, 0.75  // col2: data-B → Warm light gray
+      );
+      rgb = clamp(cvd * rgb, 0.0, 1.0);
+    } else if (cvdMode == 3) {
+      // Tritanopia (blue-yellow): Red / Green / Magenta
+      mat3 cvd = mat3(
+        1.0, 0.1, 0.1,   // col0: data-R → Red
+        0.1, 1.0, 0.1,   // col1: data-G → Green
+        0.7, 0.0, 0.7    // col2: data-B → Magenta (not blue)
+      );
+      rgb = clamp(cvd * rgb, 0.0, 1.0);
     }
 
     // Any channel valid → visible
@@ -640,6 +673,7 @@ export class SARGPULayer extends Layer {
       gamma = 1.0,
       stretchMode = 'linear',
       rgbSaturation = 1.0,
+      colorblindMode = 'off',
       mode = 'single',
       maskInvalid = false,
       maskLayoverShadow = false,
@@ -696,6 +730,7 @@ export class SARGPULayer extends Layer {
         uMinG, uMaxG,
         uMinB, uMaxB,
         uSaturation: rgbSaturation,
+        uColorblindMode: COLORBLIND_MODE_IDS[colorblindMode] || 0,
         uUseDecibels: useDecibels ? 1.0 : 0.0,
         uColormap: getColormapId(colormap),
         uGamma: gamma,
@@ -882,6 +917,7 @@ SARGPULayer.defaultProps = {
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true },
   rgbSaturation: { type: 'number', value: 1.0, min: 0.0, max: 5.0, compare: true },
+  colorblindMode: { type: 'string', value: 'off', compare: true },
   // Speckle filter (WebGL2 FBO pass — WebGPU compute retained for export pipeline)
   speckleFilterType: { type: 'string', value: 'none', compare: true },
   speckleKernelSize: { type: 'number', value: 7, min: 3, max: 15, compare: true },

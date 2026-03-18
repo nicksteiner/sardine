@@ -326,6 +326,7 @@ function App() {
   const [contrastMax, setContrastMax] = useState(0);
   const [gamma, setGamma] = useState(1.0);
   const [rgbSaturation, setRgbSaturation] = useState(1.0);
+  const [colorblindMode, setColorblindMode] = useState('off');
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
   const [maskInvalid, setMaskInvalid] = useState(false);
@@ -5104,6 +5105,27 @@ function App() {
               </div>
             )}
 
+            {/* Colorblind mode — only shown in RGB display modes */}
+            {isRGBDisplayMode && imageData?.getRGBTile && (
+              <div className="control-group">
+                <label>Colorblind mode</label>
+                <select
+                  value={colorblindMode}
+                  onChange={(e) => {
+                    setColorblindMode(e.target.value);
+                    addStatusLog('info', e.target.value === 'off'
+                      ? 'Colorblind mode off'
+                      : `Colorblind mode: ${e.target.value}`);
+                  }}
+                  style={{ width: '100%', marginTop: '4px' }}
+                >
+                  <option value="off">Off</option>
+                  <option value="deuteranopia">Deuteranopia / Protanopia</option>
+                  <option value="tritanopia">Tritanopia</option>
+                </select>
+              </div>
+            )}
+
             {/* Multi-look toggle — hidden on main branch, needs more work */}
             {/* Speckle filter — hidden on main branch, needs more work */}
 
@@ -5314,6 +5336,7 @@ function App() {
                   speckleFilterType={speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
                   rgbSaturation={rgbSaturation}
+                  colorblindMode={colorblindMode}
                   showGrid={showGrid}
                   opacity={1}
                   width="100%"

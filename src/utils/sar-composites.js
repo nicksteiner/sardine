@@ -13,6 +13,31 @@
 import { applyStretch } from './stretch.js';
 
 /**
+ * Colorblind-safe color matrices for RGB composites.
+ * Each matrix maps [dataR, dataG, dataB] → [displayR, displayG, displayB].
+ * Rows = output channels, columns = input channels.
+ */
+export const COLORBLIND_MATRICES = {
+  // Deuteranopia / Protanopia (red-green): Orange / Blue / Light
+  deuteranopia: [
+    [1.0, 0.0, 0.85],   // displayR = 1.0*R + 0.0*G + 0.85*B
+    [0.5, 0.35, 0.85],  // displayG = 0.5*R + 0.35*G + 0.85*B
+    [0.0, 1.0, 0.75],   // displayB = 0.0*R + 1.0*G + 0.75*B
+  ],
+  protanopia: [
+    [1.0, 0.0, 0.85],
+    [0.5, 0.35, 0.85],
+    [0.0, 1.0, 0.75],
+  ],
+  // Tritanopia (blue-yellow): Red / Green / Magenta
+  tritanopia: [
+    [1.0, 0.1, 0.7],    // displayR
+    [0.1, 1.0, 0.0],    // displayG
+    [0.1, 0.1, 0.7],    // displayB
+  ],
+};
+
+/**
  * Freeman-Durden 3-component decomposition (per-pixel).
  *
  * Decomposes the 3×3 covariance matrix into:
@@ -361,7 +386,7 @@ export function computeRGBBands(bandData, compositeId, tileSize, numPixels) {
  * @param {boolean} maskLayoverShadow - Hide layover/shadow pixels (mask < 100)
  * @returns {ImageData}
  */
-export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear', dataMask = null, maskInvalid = false, maskLayoverShadow = false) {
+export function createRGBTexture(bands, width, height, contrastLimits, useDecibels, gamma = 1.0, stretchMode = 'linear', dataMask = null, maskInvalid = false, maskLayoverShadow = false, colorblindMode = 'off') {
   // Support per-channel contrast: {R: [min,max], G: [min,max], B: [min,max]}
   // or uniform: [min, max]
   const channelKeys = ['R', 'G', 'B'];
@@ -379,19 +404,18 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
 
   const rgba = new Uint8ClampedArray(width * height * 4);
   const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+  const cvdMatrix = COLORBLIND_MATRICES[colorblindMode] || null;
 
   for (let i = 0; i < width * height; i++) {
     const idx = i * 4;
     let anyValid = false;
+    const vals = [0, 0, 0];
 
     for (let c = 0; c < 3; c++) {
       const channelKey = channelKeys[c];
       const raw = bands[channelKey][i];
 
-      if (isNaN(raw) || raw === 0) {
-        rgba[idx + c] = 0;
-        continue;
-      }
+      if (isNaN(raw) || raw === 0) continue;
 
       anyValid = true;
 
@@ -407,8 +431,21 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
 
       value = Math.max(0, Math.min(1, value));
       if (needsStretch) value = applyStretch(value, stretchMode, gamma);
-      rgba[idx + c] = Math.round(value * 255);
+      vals[c] = value;
     }
+
+    // Apply colorblind-safe color matrix
+    if (cvdMatrix) {
+      const [r, g, b] = vals;
+      for (let c = 0; c < 3; c++) {
+        const row = cvdMatrix[c];
+        vals[c] = Math.max(0, Math.min(1, row[0] * r + row[1] * g + row[2] * b));
+      }
+    }
+
+    rgba[idx]     = Math.round(vals[0] * 255);
+    rgba[idx + 1] = Math.round(vals[1] * 255);
+    rgba[idx + 2] = Math.round(vals[2] * 255);
 
     let alpha = anyValid ? 255 : 0;
     if (dataMask && dataMask[i] !== undefined) {
