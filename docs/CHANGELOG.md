@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.4] - 2026-03-18
+
+### Added
+- Color deficiency support for RGB composites (deuteranopia/protanopia, tritanopia remapping via CVD color matrices in GLSL shader and CPU path)
+- PNG save state — export and restore full viewer state as an embedded PNG
+
+### Changed
+- Renamed "Colorblind mode" UI label to "Color deficiency" (terminology update)
+
+### Fixed
+- Histogram clamping and rendering fixes
+
+### Housekeeping
+- Removed stale `src/SARTileLayer.js` duplicate
+- Moved AWS config templates to `config/aws/`
+- Added `.claude/` and `test/benchmarks/results/` to `.gitignore`
+- Bumped version to `1.0.0-beta.4`; corrected license field from `MIT` to `GPL-3.0`
+
+## [1.0.0-beta.3] - 2026-03-01
+
+### Added
+- Expanded test suite (100+ checks across loaders, composites, export, GPU layer)
+- Time-series composite support
+- Side-by-side figure export
+
+### Fixed
+- B-tree parsing for GUNW coherence datasets
+- Histogram overlay coherence with main histogram panel
+- Histogram skip logic
+- Concurrency errors in tile loading
+- `frequencyA` RGB composite mode
+
 ## [1.0.0-beta.2] - 2026-02-18
 
 ### Changed

@@ -1,6 +1,6 @@
 {
   "name": "sardine",
-  "version": "0.5.0",
+  "version": "1.0.0-beta.4",
   "type": "module",
   "description": "SARdine - SAR Data INspection and Exploration",
   "main": "src/index.js",
@@ -36,7 +36,7 @@
     "remote-sensing"
   ],
   "author": "Nick Steiner",
-  "license": "MIT",
+  "license": "GPL-3.0",
   "dependencies": {
     "@deck.gl/aggregation-layers": "^8.9.35",
     "@deck.gl/core": "^8.9.35",
@@ -47,6 +47,7 @@
     "@deck.gl/react": "^8.9.35",
     "@loaders.gl/core": "^3.4.14",
     "@loaders.gl/parquet": "^3.4.14",
+    "@xyflow/react": "^12.10.1",
     "geotiff": "^2.1.0",
     "h5wasm": "^0.8.11",
     "maplibre-gl": "^4.0.0",

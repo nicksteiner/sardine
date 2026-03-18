@@ -127,11 +127,16 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
       ctx.fillRect(i * barW, HEIGHT - h, Math.max(barW, 1), h);
     }
 
-    // Shade clipped regions and draw limit lines
+    // Shade clipped regions and draw limit lines.
+    // For log-spaced bins (logX:true) position lines in log space so they
+    // align with the bell curve; otherwise use linear interpolation.
     if (effectiveLimits) {
       const [lo, hi] = effectiveLimits;
-      const loX = ((lo - stats.min) / dataRange) * WIDTH;
-      const hiX = ((hi - stats.min) / dataRange) * WIDTH;
+      const toX = stats.logX
+        ? (v) => v > 0 ? ((Math.log(v) - stats.logMin) / (stats.logMax - stats.logMin)) * WIDTH : 0
+        : (v) => ((v - stats.min) / dataRange) * WIDTH;
+      const loX = toX(lo);
+      const hiX = toX(hi);
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
       if (loX > 0) ctx.fillRect(0, 0, loX, HEIGHT);

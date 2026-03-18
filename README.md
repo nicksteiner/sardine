@@ -12,7 +12,11 @@
 
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
-`v1.0.0-beta.3' · `Mar 2026`
+[![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.4-orange)](https://github.com/nicksteiner/sardine/releases)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
+[![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
 
 ![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)
 

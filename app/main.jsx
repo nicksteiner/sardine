@@ -236,6 +236,44 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
 }
 
 /**
+ * Compute a synthetic per-channel histogram using a log-normal model with
+ * log-spaced bins.  SAR power is log-normal: uniform bins in log space turn
+ * the distribution into a symmetric Gaussian bell.  Linear bins over
+ * [min, max] compress almost all data into the leftmost few pixels.
+ *
+ * Returns logX:true so ChannelHistogram positions limit lines in log space.
+ */
+function computeLogNormalHist(mean, std, numBins = 128, syntheticCount = 100000) {
+  const cv2 = (std * std) / (mean * mean);
+  const sigmaLog = Math.sqrt(Math.log(1 + cv2));
+  const muLog = Math.log(mean) - 0.5 * sigmaLog * sigmaLog;
+
+  // ±3.5 σ in log space — covers >99.9 % of the distribution and keeps the
+  // bell well-centred in the panel without extreme tails dominating.
+  const loLog = muLog - 3.5 * sigmaLog;
+  const hiLog = muLog + 3.5 * sigmaLog;
+  const logBinWidth = (hiLog - loLog) / numBins;
+  const sq2pi = Math.sqrt(2 * Math.PI);
+  const bins = new Array(numBins).fill(0);
+  for (let b = 0; b < numBins; b++) {
+    // In log space the log-normal PDF is just a Gaussian
+    const logX = loLog + (b + 0.5) * logBinWidth;
+    const z = (logX - muLog) / sigmaLog;
+    bins[b] = Math.round(syntheticCount * Math.exp(-0.5 * z * z) / (sigmaLog * sq2pi) * logBinWidth);
+  }
+  // Log-normal quantiles: Φ⁻¹(0.02) ≈ −2.054, Φ⁻¹(0.98) ≈ +2.054
+  const p2  = Math.exp(muLog - 2.054 * sigmaLog);
+  const p98 = Math.exp(muLog + 2.054 * sigmaLog);
+  return {
+    bins,
+    min: Math.exp(loLog), max: Math.exp(hiLog),  // linear, used only for slider bounds
+    logMin: loLog, logMax: hiLog,                 // log range, used for bar/limit rendering
+    logX: true,                                   // tells renderer to position in log space
+    mean, count: syntheticCount, p2, p98,
+  };
+}
+
+/**
  * SARdine - SAR Data INspection and Exploration
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
@@ -1260,7 +1298,30 @@ function App() {
         scopeLabel = 'Global';
       }
 
-      if (isRGBDisplayMode && imageData.getRGBTile && compositeId) {
+      if (isRGBDisplayMode && histogramScope === 'global' && imageData.bandStats && Object.keys(imageData.bandStats).length > 0 && compositeId) {
+        // Metadata histogram — log-normal model from HDF5 band stats
+        // (avoids sampling 9 full-image tiles on a large GCOV file)
+        const preset = SAR_COMPOSITES[compositeId];
+        if (preset?.channels) {
+          const hists = {};
+          for (const ch of ['R', 'G', 'B']) {
+            const chDef = preset.channels[ch];
+            const s = chDef?.dataset && imageData.bandStats[chDef.dataset];
+            if (s && s.mean_value > 0 && s.sample_stddev > 0) {
+              hists[ch] = computeLogNormalHist(s.mean_value, s.sample_stddev);
+            } else {
+              const cl = rgbContrastLimits?.[ch] || [0, 1];
+              const numBins = 128;
+              const binWidth = (cl[1] - cl[0]) / numBins;
+              const bins = new Array(numBins).fill(1000 / numBins);
+              hists[ch] = { bins, min: cl[0], max: cl[1], mean: (cl[0] + cl[1]) / 2,
+                binWidth, count: 1000, p2: cl[0], p98: cl[1] };
+            }
+          }
+          setHistogramData(hists);
+          addStatusLog('info', 'Metadata histogram from HDF5 band statistics (log-normal model)');
+        }
+      } else if (isRGBDisplayMode && imageData.getRGBTile && compositeId) {
         // RGB histogram — sample 3×3 tiles from the region (concurrent)
         const tileSize = 256;
         const rawValues = { R: [], G: [], B: [] };
@@ -1424,6 +1485,7 @@ function App() {
   // Recompute histogram when switching between dB and linear mode, then auto-stretch
   const useDecibelsRef = useRef(useDecibels);
   const pendingAutoStretchRef = useRef(false);
+  const pendingPNGStateRef = useRef(null);
   useEffect(() => {
     if (useDecibels !== useDecibelsRef.current) {
       useDecibelsRef.current = useDecibels;
@@ -1802,6 +1864,29 @@ function App() {
     addStatusLog('info', 'View reset to image bounds');
   }, [imageData, addStatusLog]);
 
+  // Apply any visualization state saved from a previously-dropped PNG
+  const applyPendingPNGState = useCallback(() => {
+    const s = pendingPNGStateRef.current;
+    if (!s) return;
+    pendingPNGStateRef.current = null;
+    if (s.colormap) setColormap(s.colormap);
+    if (s.useDecibels !== undefined) setUseDecibels(s.useDecibels);
+    if (s.contrastMin !== undefined) setContrastMin(s.contrastMin);
+    if (s.contrastMax !== undefined) setContrastMax(s.contrastMax);
+    if (s.gamma !== undefined) setGamma(s.gamma);
+    if (s.stretchMode) setStretchMode(s.stretchMode);
+    if (s.displayMode) setDisplayMode(s.displayMode);
+    if (s.compositeId !== undefined) setCompositeId(s.compositeId);
+    if (s.rgbContrastLimits) setRgbContrastLimits(s.rgbContrastLimits);
+    if (s.selectedFrequency) setSelectedFrequency(s.selectedFrequency);
+    if (s.selectedPolarization) setSelectedPolarization(s.selectedPolarization);
+    if (s.multiLook !== undefined) setMultiLook(s.multiLook);
+    if (s.speckleFilterType) setSpeckleFilterType(s.speckleFilterType);
+    if (s.maskInvalid !== undefined) setMaskInvalid(s.maskInvalid);
+    if (s.viewCenter) setViewCenter(s.viewCenter);
+    if (s.viewZoom !== undefined) setViewZoom(s.viewZoom);
+  }, []);
+
   // Handle NISAR file selection - read metadata to get available datasets
   const handleNISARFileSelect = useCallback(async (file) => {
     if (!file) return;
@@ -1846,6 +1931,7 @@ function App() {
         const layers = [...new Set(datasets.map(d => d.layer))];
         addStatusLog('success', `Found ${datasets.length} GUNW datasets across ${layers.length} layer groups`,
           layers.map(l => GUNW_LAYER_LABELS[l] || l).join(', '));
+        applyPendingPNGState();
 
         // Log GUNW metadata
         const meta = gunwResult.metadata;
@@ -1901,6 +1987,7 @@ function App() {
 
         addStatusLog('success', `Found ${datasets.length} datasets`,
           datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
+        applyPendingPNGState();
       }
     } catch (e) {
       setError(`Failed to read NISAR file: ${e.message}`);
@@ -1908,7 +1995,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [addStatusLog]);
+  }, [addStatusLog, applyPendingPNGState]);
 
   // Handle local TIF file selection (single or multi-select mosaic)
   const handleLocalTIFMultiSelect = useCallback(async (files) => {
@@ -2037,31 +2124,25 @@ function App() {
           addStatusLog('warning', `No SARdine state found in: ${file.name}`, 'Only SARdine-exported PNGs carry embedded state');
           return;
         }
-        if (state.colormap) setColormap(state.colormap);
-        if (state.useDecibels !== undefined) setUseDecibels(state.useDecibels);
-        if (state.contrastMin !== undefined) setContrastMin(state.contrastMin);
-        if (state.contrastMax !== undefined) setContrastMax(state.contrastMax);
-        if (state.gamma !== undefined) setGamma(state.gamma);
-        if (state.stretchMode) setStretchMode(state.stretchMode);
-        if (state.displayMode) setDisplayMode(state.displayMode);
-        if (state.compositeId !== undefined) setCompositeId(state.compositeId);
-        if (state.rgbContrastLimits) setRgbContrastLimits(state.rgbContrastLimits);
-        if (state.selectedFrequency) setSelectedFrequency(state.selectedFrequency);
-        if (state.selectedPolarization) setSelectedPolarization(state.selectedPolarization);
-        if (state.multiLook !== undefined) setMultiLook(state.multiLook);
-        if (state.speckleFilterType) setSpeckleFilterType(state.speckleFilterType);
-        if (state.maskInvalid !== undefined) setMaskInvalid(state.maskInvalid);
-        if (state.viewCenter) setViewCenter(state.viewCenter);
-        if (state.viewZoom !== undefined) setViewZoom(state.viewZoom);
         const restoredFile = state.filename || '(unknown)';
-        addStatusLog('success', `State restored from: ${file.name}`, `Original file: ${restoredFile}`);
+        if (nisarFile || cogUrl) {
+          // Data already loaded — apply settings immediately
+          pendingPNGStateRef.current = state;
+          applyPendingPNGState();
+          addStatusLog('success', `Settings restored from: ${file.name}`, `Applied to current data`);
+        } else {
+          // No data loaded yet — stash state to apply after data file is dropped
+          pendingPNGStateRef.current = state;
+          addStatusLog('success', `Settings staged from: ${file.name}`,
+            `Now drop the original data file to render: ${restoredFile}`);
+        }
       }).catch((err) => {
         addStatusLog('error', `Failed to read PNG state: ${file.name}`, err.message);
       });
     } else {
       addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
@@ -2677,11 +2758,10 @@ function App() {
             for (const ch of ['R', 'G', 'B']) {
               const chDef = preset.channels[ch];
               if (chDef?.dataset && data.bandStats[chDef.dataset]) {
-                // Direct band → channel: use band stats
+                // Direct band → channel: use log-normal p2/p98 from band stats
                 const s = data.bandStats[chDef.dataset];
-                const lo = Math.max(0, s.mean_value - 2 * s.sample_stddev);
-                const hi = s.mean_value + 2 * s.sample_stddev;
-                lims[ch] = [lo, hi];
+                const { p2, p98 } = computeLogNormalHist(s.mean_value, s.sample_stddev);
+                lims[ch] = [p2, p98];
               } else if (chDef?.datasets && chDef.datasets.length === 2) {
                 // Ratio channel (e.g. HH/HV): estimate from constituent bands
                 const s0 = data.bandStats[chDef.datasets[0]];
@@ -2697,46 +2777,34 @@ function App() {
               }
             }
             setRgbContrastLimits(lims);
-            setHistogramScope('viewport');
             // Pre-sync the useDecibels ref so its change-detection effect doesn't fire
             useDecibelsRef.current = false;
 
             // Build synthetic per-channel histograms from band stats so the histogram
             // panel renders immediately without sampling any tiles.
+            // Uses log-normal model — SAR power is right-skewed, Gaussian assumption
+            // clamps to 0 and squishes all bins to the left edge.
             const syntheticHists = {};
-            const numBins = 128;
-            const syntheticCount = 100000;
             for (const ch of ['R', 'G', 'B']) {
               const chDef = preset.channels[ch];
               const s = chDef?.dataset && data.bandStats[chDef.dataset];
               if (s && s.mean_value > 0 && s.sample_stddev > 0) {
-                const mean = s.mean_value;
-                const std = s.sample_stddev;
-                const lo = Math.max(0, mean - 4 * std);
-                const hi = mean + 4 * std;
-                const binWidth = (hi - lo) / numBins;
-                const bins = new Array(numBins).fill(0);
-                for (let b = 0; b < numBins; b++) {
-                  const binCenter = lo + (b + 0.5) * binWidth;
-                  const z = (binCenter - mean) / std;
-                  bins[b] = Math.round(syntheticCount * Math.exp(-0.5 * z * z) / (std * Math.sqrt(2 * Math.PI)) * binWidth);
-                }
-                syntheticHists[ch] = { bins, min: lo, max: hi, mean, binWidth, count: syntheticCount,
-                  p2: Math.max(0, mean - 2 * std), p98: mean + 2 * std };
+                syntheticHists[ch] = computeLogNormalHist(s.mean_value, s.sample_stddev);
               } else {
                 // Ratio channel or missing stats — flat histogram over the contrast range
                 const [clo, chi] = lims[ch];
+                const numBins = 128;
                 const binWidth = (chi - clo) / numBins;
-                const bins = new Array(numBins).fill(syntheticCount / numBins);
-                syntheticHists[ch] = { bins, min: clo, max: chi, mean: (clo + chi) / 2, binWidth,
-                  count: syntheticCount, p2: clo, p98: chi };
+                const bins = new Array(numBins).fill(1000 / numBins);
+                syntheticHists[ch] = { bins, min: clo, max: chi, mean: (clo + chi) / 2,
+                  binWidth, count: 1000, p2: clo, p98: chi };
               }
             }
-            // Do not auto-set histogramData — overlay should be disabled on load.
-            // Contrast limits are applied above; user triggers histogram via scope selector.
-            // Skip tile-sampling histogram recompute — metadata contrast is already applied
+            // Store synthetic histograms from band stats as 'Metadata' histogram.
+            // Switching to Viewport triggers live GPU-accelerated computation.
+            // Skip tile-sampling recompute on load — metadata contrast already applied.
+            setHistogramData(syntheticHists);
             skipInitialHistogramRef.current = true;
-            skipViewportRefreshRef.current = true;
             addStatusLog('info', 'Initial contrast from metadata',
               ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
           }
@@ -4817,7 +4885,8 @@ function App() {
               <div className="control-group" style={{ marginBottom: '6px' }}>
                 <div style={{ display: 'flex', gap: '4px' }}>
                   {['global', 'viewport', 'roi'].map(scope => {
-                    const hasH5Stats = imageData?.stats?.mean_value > 0 && imageData?.stats?.sample_stddev > 0;
+                    const hasH5Stats = (imageData?.stats?.mean_value > 0 && imageData?.stats?.sample_stddev > 0)
+                      || (isRGBDisplayMode && imageData?.bandStats && Object.keys(imageData.bandStats).length > 0);
                     const label = scope === 'global' ? (hasH5Stats ? 'Metadata' : 'Global') : scope === 'viewport' ? 'Viewport' : 'ROI';
                     const disabled = scope === 'roi' && !roi;
                     return (
