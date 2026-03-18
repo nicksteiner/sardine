@@ -5160,17 +5160,17 @@ function App() {
               </div>
             )}
 
-            {/* Colorblind mode — only shown in RGB display modes */}
+            {/* Color deficiency mode — only shown in RGB display modes */}
             {isRGBDisplayMode && imageData?.getRGBTile && (
               <div className="control-group">
-                <label>Colorblind mode</label>
+                <label>Color deficiency</label>
                 <select
                   value={colorblindMode}
                   onChange={(e) => {
                     setColorblindMode(e.target.value);
                     addStatusLog('info', e.target.value === 'off'
-                      ? 'Colorblind mode off'
-                      : `Colorblind mode: ${e.target.value}`);
+                      ? 'Color deficiency mode off'
+                      : `Color deficiency: ${e.target.value}`);
                   }}
                   style={{ width: '100%', marginTop: '4px' }}
                 >

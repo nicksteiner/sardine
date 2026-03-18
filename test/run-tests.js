@@ -41,6 +41,18 @@ function check(name, fn) {
   }
 }
 
+async function asyncCheck(name, fn) {
+  try {
+    await fn();
+    console.log(`  PASS  ${name}`);
+    totalPassed++;
+  } catch (err) {
+    console.log(`  FAIL  ${name}`);
+    console.log(`        ${err.message}`);
+    totalFailed++;
+  }
+}
+
 function skip(name, reason) {
   console.log(`  SKIP  ${name} (${reason})`);
   totalSkipped++;
@@ -139,6 +151,7 @@ for (const name of requiredExports) {
 suite('SARGPULayer');
 
 const gpuContent = readFile('src/layers/SARGPULayer.js');
+const _shadersContent = readFile('src/layers/shaders.js');
 
 check('imports Layer from deck.gl', () => {
   assertContains(gpuContent, 'import { Layer', 'Layer import');
@@ -202,8 +215,10 @@ check('fragment shader has dB scaling', () => {
 });
 
 check('fragment shader has all 5 colormaps', () => {
+  // Colormaps may be defined inline OR imported via glslColormaps from shaders.js
+  const combined = gpuContent + _shadersContent;
   for (const cm of ['grayscale', 'viridis', 'inferno', 'plasma', 'phaseColormap']) {
-    assertContains(gpuContent, `vec3 ${cm}(float t)`, `${cm} colormap function`);
+    assertContains(combined, `vec3 ${cm}(float t)`, `${cm} colormap function`);
   }
 });
 
@@ -232,8 +247,10 @@ check('uses shader injection', () => {
 });
 
 check('has all 5 colormaps in injected shader', () => {
+  // Colormaps may be defined inline OR imported via glslColormaps from shaders.js
+  const combined = gpuBitmapContent + _shadersContent;
   for (const cm of ['grayscale', 'viridis', 'inferno', 'plasma', 'phaseColormap']) {
-    assertContains(gpuBitmapContent, `vec3 ${cm}(float t)`, `${cm} colormap`);
+    assertContains(combined, `vec3 ${cm}(float t)`, `${cm} colormap`);
   }
 });
 
@@ -503,12 +520,12 @@ try {
   }
 
   // ── Single-band Float32 GeoTIFF ──
-  check('writeFloat32GeoTIFF: single-band produces valid TIFF', () => {
+  await asyncCheck('writeFloat32GeoTIFF: single-band produces valid TIFF', async () => {
     const w = 100, h = 80;
     const data = new Float32Array(w * h);
     for (let i = 0; i < data.length; i++) data[i] = Math.random() * 0.01;
 
-    const buf = writeFloat32GeoTIFF(
+    const buf = await writeFloat32GeoTIFF(
       { HHHH: data }, ['HHHH'], w, h,
       [500000, 3700000, 510000, 3708000], 32610
     );
@@ -517,10 +534,10 @@ try {
     if (tiff.magic !== 42) throw new Error(`Bad magic: ${tiff.magic}`);
   });
 
-  check('writeFloat32GeoTIFF: single-band BitsPerSample = 32', () => {
+  await asyncCheck('writeFloat32GeoTIFF: single-band BitsPerSample = 32', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const bps = tiff.tags[258]; // BitsPerSample
     if (!bps || bps.values[0] !== 32) {
@@ -528,10 +545,10 @@ try {
     }
   });
 
-  check('writeFloat32GeoTIFF: single-band SampleFormat = 3 (float)', () => {
+  await asyncCheck('writeFloat32GeoTIFF: single-band SampleFormat = 3 (float)', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const sf = tiff.tags[339]; // SampleFormat
     if (!sf || sf.values[0] !== 3) {
@@ -539,10 +556,10 @@ try {
     }
   });
 
-  check('writeFloat32GeoTIFF: single-band SamplesPerPixel = 1', () => {
+  await asyncCheck('writeFloat32GeoTIFF: single-band SamplesPerPixel = 1', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const spp = tiff.tags[277]; // SamplesPerPixel
     if (!spp || spp.values[0] !== 1) {
@@ -550,10 +567,10 @@ try {
     }
   });
 
-  check('writeFloat32GeoTIFF: single-band Compression = 8 (DEFLATE)', () => {
+  await asyncCheck('writeFloat32GeoTIFF: single-band Compression = 8 (DEFLATE)', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const comp = tiff.tags[259]; // Compression
     if (!comp || comp.values[0] !== 8) {
@@ -561,18 +578,18 @@ try {
     }
   });
 
-  check('writeFloat32GeoTIFF: has GeoKeys (tag 34735)', () => {
+  await asyncCheck('writeFloat32GeoTIFF: has GeoKeys (tag 34735)', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     if (!tiff.tags[34735]) throw new Error('Missing GeoKeyDirectory tag');
   });
 
-  check('writeFloat32GeoTIFF: ModelPixelScale matches bounds', () => {
+  await asyncCheck('writeFloat32GeoTIFF: ModelPixelScale matches bounds', async () => {
     const w = 100, h = 100;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [500000, 3700000, 510000, 3710000], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [500000, 3700000, 510000, 3710000], 32610);
     const tiff = parseTIFF(buf);
     const scale = tiff.tags[33550]; // ModelPixelScale
     if (!scale) throw new Error('Missing ModelPixelScale');
@@ -583,10 +600,10 @@ try {
   });
 
   // ── Multi-band Float32 GeoTIFF ──
-  check('writeFloat32GeoTIFF: 3-band BitsPerSample = [32,32,32]', () => {
+  await asyncCheck('writeFloat32GeoTIFF: 3-band BitsPerSample = [32,32,32]', async () => {
     const w = 64, h = 64, n = w * h;
     const bands = { HHHH: new Float32Array(n), HVHV: new Float32Array(n), VVVV: new Float32Array(n) };
-    const buf = writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV', 'VVVV'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV', 'VVVV'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const bps = tiff.tags[258];
     if (!bps || bps.count !== 3 || bps.values[0] !== 32 || bps.values[1] !== 32 || bps.values[2] !== 32) {
@@ -594,10 +611,10 @@ try {
     }
   });
 
-  check('writeFloat32GeoTIFF: 3-band SampleFormat = [3,3,3]', () => {
+  await asyncCheck('writeFloat32GeoTIFF: 3-band SampleFormat = [3,3,3]', async () => {
     const w = 64, h = 64, n = w * h;
     const bands = { HHHH: new Float32Array(n), HVHV: new Float32Array(n), VVVV: new Float32Array(n) };
-    const buf = writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV', 'VVVV'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV', 'VVVV'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const sf = tiff.tags[339];
     if (!sf || sf.count !== 3 || sf.values[0] !== 3 || sf.values[1] !== 3 || sf.values[2] !== 3) {
@@ -605,10 +622,10 @@ try {
     }
   });
 
-  check('writeFloat32GeoTIFF: tile offsets are non-zero', () => {
+  await asyncCheck('writeFloat32GeoTIFF: tile offsets are non-zero', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const offsets = tiff.tags[324]; // TileOffsets
     if (!offsets || offsets.values[0] === 0) {
@@ -616,10 +633,10 @@ try {
     }
   });
 
-  check('writeFloat32GeoTIFF: tile byte counts are non-zero', () => {
+  await asyncCheck('writeFloat32GeoTIFF: tile byte counts are non-zero', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const counts = tiff.tags[325]; // TileByteCounts
     if (!counts || counts.values[0] === 0) {
@@ -628,10 +645,10 @@ try {
   });
 
   // ── ExtraSamples tag for multi-band ──
-  check('writeFloat32GeoTIFF: 2-band has ExtraSamples tag', () => {
+  await asyncCheck('writeFloat32GeoTIFF: 2-band has ExtraSamples tag', async () => {
     const w = 64, h = 64, n = w * h;
     const bands = { HHHH: new Float32Array(n), HVHV: new Float32Array(n) };
-    const buf = writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const es = tiff.tags[338]; // ExtraSamples
     if (!es) throw new Error('Missing ExtraSamples tag for 2-band GeoTIFF');
@@ -639,29 +656,29 @@ try {
     if (es.values[0] !== 0) throw new Error(`ExtraSamples[0] = ${es.values[0]}, expected 0 (unspecified)`);
   });
 
-  check('writeFloat32GeoTIFF: 3-band has ExtraSamples = [0,0]', () => {
+  await asyncCheck('writeFloat32GeoTIFF: 3-band has ExtraSamples = [0,0]', async () => {
     const w = 64, h = 64, n = w * h;
     const bands = { HHHH: new Float32Array(n), HVHV: new Float32Array(n), VVVV: new Float32Array(n) };
-    const buf = writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV', 'VVVV'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF(bands, ['HHHH', 'HVHV', 'VVVV'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const es = tiff.tags[338];
     if (!es) throw new Error('Missing ExtraSamples tag for 3-band GeoTIFF');
     if (es.count !== 2) throw new Error(`ExtraSamples count = ${es.count}, expected 2`);
   });
 
-  check('writeFloat32GeoTIFF: single-band has no ExtraSamples', () => {
+  await asyncCheck('writeFloat32GeoTIFF: single-band has no ExtraSamples', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     if (tiff.tags[338]) throw new Error('Single-band should not have ExtraSamples tag');
   });
 
   // ── GeoKeys CRS verification ──
-  check('writeFloat32GeoTIFF: projected CRS GeoKeys correct (UTM)', () => {
+  await asyncCheck('writeFloat32GeoTIFF: projected CRS GeoKeys correct (UTM)', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h,
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h,
       [200000, 8500000, 225600, 8520000], 32718);
     const tiff = parseTIFF(buf);
     const gk = tiff.tags[34735]; // GeoKeyDirectory
@@ -674,10 +691,10 @@ try {
     if (epsgVal !== 32718) throw new Error(`ProjectedCSTypeGeoKey = ${epsgVal}, expected 32718`);
   });
 
-  check('writeFloat32GeoTIFF: geographic CRS GeoKeys correct (4326)', () => {
+  await asyncCheck('writeFloat32GeoTIFF: geographic CRS GeoKeys correct (4326)', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h,
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h,
       [-122.5, 37.5, -122.0, 38.0], 4326);
     const tiff = parseTIFF(buf);
     const gk = tiff.tags[34735];
@@ -690,10 +707,10 @@ try {
   });
 
   // ── GDAL_NODATA tag ──
-  check('writeFloat32GeoTIFF: has GDAL_NODATA = nan', () => {
+  await asyncCheck('writeFloat32GeoTIFF: has GDAL_NODATA = nan', async () => {
     const w = 64, h = 64;
     const data = new Float32Array(w * h);
-    const buf = writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
+    const buf = await writeFloat32GeoTIFF({ HHHH: data }, ['HHHH'], w, h, [0, 0, 64, 64], 32610);
     const tiff = parseTIFF(buf);
     const nodata = tiff.tags[42113]; // GDAL_NODATA
     if (!nodata) throw new Error('Missing GDAL_NODATA tag (42113)');
@@ -701,12 +718,12 @@ try {
   });
 
   // ── RGBA COG ──
-  check('writeRGBAGeoTIFF: produces valid TIFF', () => {
+  await asyncCheck('writeRGBAGeoTIFF: produces valid TIFF', async () => {
     const w = 64, h = 64;
     const rgba = new Uint8ClampedArray(w * h * 4);
     for (let i = 0; i < rgba.length; i++) rgba[i] = i % 256;
 
-    const buf = writeRGBAGeoTIFF(rgba, w, h, [0, 0, 64, 64], 32610, { generateOverviews: false });
+    const buf = await writeRGBAGeoTIFF(rgba, w, h, [0, 0, 64, 64], 32610, { generateOverviews: false });
     const tiff = parseTIFF(buf);
     if (tiff.magic !== 42) throw new Error(`Bad magic: ${tiff.magic}`);
     const spp = tiff.tags[277];
