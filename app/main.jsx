@@ -20,6 +20,7 @@ import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
+import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
@@ -471,6 +472,7 @@ function App() {
 
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
+  const [satelliteMapVisible, setSatelliteMapVisible] = useState(false);
 
   // Clear ROI and classifier when image data changes (new file/dataset loaded)
   useEffect(() => {
@@ -968,6 +970,10 @@ function App() {
           const isRGBMode = isRGBDisplayMode && !!data.getRGBTile;
           frames.push({
             getTile: isRGBMode ? data.getRGBTile : data.getTile,
+            getExportStripe: data.getExportStripe || null,
+            crs: data.crs || null,
+            requiredPols: isRGBMode ? (data.requiredPols || []) : (data.polarization ? [data.polarization] : []),
+            requiredComplexPols: isRGBMode ? (data.requiredComplexPols || []) : [],
             bounds: data.bounds,
             label,
             date,
@@ -1170,17 +1176,30 @@ function App() {
   const sidebarIsRoiRGB = activeViewer === 'roi-rgb' && !!roiRGBData;
   const sidebarIsRoiTS = activeViewer === 'roi-ts' && !!roiTSFrames;
   const sidebarHistogramData = sidebarIsRoiTS ? roiTSHistogramData : (sidebarIsRoiRGB ? roiRGBHistogramData : histogramData);
-  const sidebarDisplayMode = sidebarIsRoiRGB ? 'rgb' : (sidebarIsRoiTS ? 'single' : displayMode);
+  const currentTSIsRGB = sidebarIsRoiTS && !!roiTSFrames?.[roiTSIndex]?.isRGB;
+  const sidebarDisplayMode = sidebarIsRoiRGB ? 'rgb' : (currentTSIsRGB ? 'rgb' : (sidebarIsRoiTS ? 'single' : displayMode));
 
   // Auto-stretch: reset to 2-98% percentiles from cached histogram
   const handleAutoStretch = useCallback(() => {
     // If ROI RGB viewer is active, auto-stretch its contrast
     // If ROI time-series viewer is active
-    if (activeViewer === 'roi-ts' && roiTSHistogramData?.single) {
-      const p2 = Number(roiTSHistogramData.single.p2.toFixed(1));
-      const p98 = Number(roiTSHistogramData.single.p98.toFixed(1));
-      setRoiTSContrastLimits([p2, p98]);
-      addStatusLog('success', `Time-series contrast reset to ${p2} – ${p98}`);
+    if (activeViewer === 'roi-ts') {
+      if (roiTSHistogramData?.R) {
+        // RGB frame — per-channel auto-stretch
+        const newLimits = {};
+        for (const ch of ['R', 'G', 'B']) {
+          if (roiTSHistogramData[ch]) newLimits[ch] = [roiTSHistogramData[ch].p2, roiTSHistogramData[ch].p98];
+        }
+        if (Object.keys(newLimits).length > 0) {
+          setRoiTSContrastLimits(newLimits);
+          addStatusLog('success', 'Time-series RGB contrast reset to 2–98% percentiles');
+        }
+      } else if (roiTSHistogramData?.single) {
+        const p2 = Number(roiTSHistogramData.single.p2.toFixed(1));
+        const p98 = Number(roiTSHistogramData.single.p98.toFixed(1));
+        setRoiTSContrastLimits([p2, p98]);
+        addStatusLog('success', `Time-series contrast reset to ${p2} – ${p98}`);
+      }
       return;
     }
 
@@ -1452,24 +1471,9 @@ function App() {
     if (!roi && histogramScope === 'roi') setHistogramScope('global');
   }, [roi, histogramScope]);
 
-  // Auto-recompute histogram when viewport changes (viewport scope, debounced)
-  // Disabled without WebGPU — CPU histogram is too slow for live viewport updates.
   const recomputeRef = useRef(handleRecomputeHistogram);
   recomputeRef.current = handleRecomputeHistogram;
-  const vcx = viewCenter[0];
-  const vcy = viewCenter[1];
-  useEffect(() => {
-    if (!gpuInfo.webgpu) return; // Skip auto-refresh without WebGPU compute
-    if (!imageData || !showHistogramOverlay || histogramScope !== 'viewport') return;
-    const timer = setTimeout(() => {
-      if (skipViewportRefreshRef.current) {
-        skipViewportRefreshRef.current = false;
-        return;
-      }
-      recomputeRef.current();
-    }, 800);
-    return () => clearTimeout(timer);
-  }, [vcx, vcy, viewZoom, imageData, showHistogramOverlay, histogramScope, gpuInfo.webgpu]);
+  // Viewport histogram does NOT auto-recompute on pan/zoom — user must click "Viewport" button.
 
   // Auto-recompute histogram when ROI changes (ROI scope only)
   // Disabled without WebGPU — CPU histogram is too slow for live ROI updates.
@@ -3297,6 +3301,190 @@ function App() {
     }
   }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, addStatusLog]);
 
+  // Export the current time-series frame as a georeferenced GeoTIFF with multilooking
+  const handleExportTSFrame = useCallback(async () => {
+    const frame = roiTSFrames?.[roiTSIndex];
+    if (!frame?.getExportStripe) {
+      addStatusLog('error', 'Export not available for this frame (requires NISAR streaming loader)');
+      return;
+    }
+
+    setExporting(true);
+    setExportProgress(0);
+    const exportStart = performance.now();
+    addStatusLog('info', `--- TS Frame Export: ${frame.label} ---`);
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    try {
+      const effectiveMl = Math.max(1, Math.min(128, exportMultilookWindow || 1));
+
+      // Map roiTSBounds (world coords) → pixel bounds within this frame
+      const [fMinX, fMinY, fMaxX, fMaxY] = frame.bounds;
+      const [rMinX, rMinY, rMaxX, rMaxY] = roiTSBounds;
+      const fw = frame.width, fh = frame.height;
+
+      // frame.bounds are pixel-CENTER coords; spacing = span / (N-1)
+      const nativePixW = (fMaxX - fMinX) / (fw - 1 || 1);
+      const nativePixH = (fMaxY - fMinY) / (fh - 1 || 1);
+
+      const srcStartCol = Math.max(0, Math.floor((rMinX - fMinX) / nativePixW));
+      const srcEndCol   = Math.min(fw, Math.ceil((rMaxX - fMinX) / nativePixW));
+      const srcStartRow = Math.max(0, Math.floor((fMaxY - rMaxY) / nativePixH));
+      const srcEndRow   = Math.min(fh, Math.ceil((fMaxY - rMinY) / nativePixH));
+
+      const roiStartCol = Math.floor(srcStartCol / effectiveMl);
+      const roiStartRow = Math.floor(srcStartRow / effectiveMl);
+      const roiEndCol   = Math.min(Math.floor(fw / effectiveMl), Math.ceil(srcEndCol / effectiveMl));
+      const roiEndRow   = Math.min(Math.floor(fh / effectiveMl), Math.ceil(srcEndRow / effectiveMl));
+      const exportWidth  = roiEndCol - roiStartCol;
+      const exportHeight = roiEndRow - roiStartRow;
+
+      if (exportWidth < 1 || exportHeight < 1) {
+        addStatusLog('error', `ROI too small for multilook ${effectiveMl}x${effectiveMl}`);
+        setExporting(false);
+        return;
+      }
+
+      const epsgMatch = frame.crs?.match(/EPSG:(\d+)/);
+      const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 4326;
+
+      const bandNames = frame.requiredPols?.length ? frame.requiredPols : ['band'];
+      const complexBandNames = (frame.requiredComplexPols || []).flatMap(p => [`${p}_re`, `${p}_im`]);
+      const allBandNames = [...bandNames, ...complexBandNames];
+
+      // Pixel-edge export bounds: frame.bounds are pixel centers, so shift by ±½ pixel
+      const exportPixW = nativePixW * effectiveMl;
+      const exportPixH = nativePixH * effectiveMl;
+      const exportBounds = [
+        fMinX - nativePixW / 2 + roiStartCol * exportPixW,
+        fMaxY + nativePixH / 2 - roiEndRow   * exportPixH,
+        fMinX - nativePixW / 2 + roiEndCol   * exportPixW,
+        fMaxY + nativePixH / 2 - roiStartRow * exportPixH,
+      ];
+
+      addStatusLog('info', `Export: ${exportWidth}x${exportHeight} @ ml=${effectiveMl}, EPSG:${epsgCode}`);
+      addStatusLog('info', `Bands: ${bandNames.join(', ')} (${exportMode === 'rendered' ? 'RGBA rendered' : 'Float32 raw'})`);
+
+      // Allocate output arrays
+      const bands = {};
+      for (const name of allBandNames) {
+        bands[name] = new Float32Array(exportWidth * exportHeight);
+      }
+
+      // Stripe-based reading
+      const stripeRows = 256;
+      const numStripes = Math.ceil(exportHeight / stripeRows);
+      for (let s = 0; s < numStripes; s++) {
+        const startRow = s * stripeRows;
+        const numRows = Math.min(stripeRows, exportHeight - startRow);
+        setExportProgress(Math.round((s / numStripes) * 50));
+        addStatusLog('info', `Reading stripe ${s + 1}/${numStripes}...`);
+
+        const stripe = await frame.getExportStripe({
+          startRow: roiStartRow + startRow,
+          numRows,
+          ml: effectiveMl,
+          exportWidth,
+          startCol: roiStartCol,
+          numCols: exportWidth,
+        });
+
+        for (const name of allBandNames) {
+          if (stripe.bands[name]) bands[name].set(stripe.bands[name], startRow * exportWidth);
+        }
+        await new Promise(r => setTimeout(r, 0));
+      }
+
+      let geotiff, filename;
+      const isRendered = exportMode === 'rendered';
+
+      if (isRendered) {
+        // 3×3 smooth to match on-screen display quality
+        for (const name of bandNames) {
+          bands[name] = smoothBand(bands[name], exportWidth, exportHeight, 3);
+        }
+
+        if (frame.isRGB && frame.compositeId) {
+          addStatusLog('info', `Applying RGB composite "${frame.compositeId}"...`);
+          const renderTile = (x0, y0, tileW, tileH) => {
+            const tilePixels = tileW * tileH;
+            const tileBands = {};
+            for (const name of Object.keys(bands)) {
+              const arr = new Float32Array(tilePixels);
+              for (let py = 0; py < tileH; py++) {
+                const srcOff = (y0 + py) * exportWidth + x0;
+                arr.set(bands[name].subarray(srcOff, srcOff + tileW), py * tileW);
+              }
+              tileBands[name] = arr;
+            }
+            const rgbBands = computeRGBBands(tileBands, frame.compositeId, tileW, tilePixels);
+            const tileImage = createRGBTexture(
+              rgbBands, tileW, tileH,
+              roiTSContrastLimits,
+              false, gamma, stretchMode,
+              null, false
+            );
+            return tileImage.data;
+          };
+
+          geotiff = await writeRGBAGeoTIFF(null, exportWidth, exportHeight, exportBounds, epsgCode, {
+            generateOverviews: false,
+            renderTile,
+            onProgress: (pct) => setExportProgress(50 + Math.round(pct / 2)),
+          });
+          filename = `sardine_ts_${frame.label}_${frame.compositeId}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+        } else {
+          // Single-band rendered
+          const tsUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
+          const [cMin, cMax] = Array.isArray(roiTSContrastLimits) ? roiTSContrastLimits : [-25, 0];
+          const colormapFunc = getColormap(colormap);
+          const numPixels = exportWidth * exportHeight;
+          const rgbaData = new Uint8ClampedArray(numPixels * 4);
+          const bandData = bands[bandNames[0]];
+
+          for (let i = 0; i < numPixels; i++) {
+            const amp = bandData[i];
+            let v = tsUseDecibels
+              ? (10 * Math.log10(Math.max(amp, 1e-10)) - cMin) / (cMax - cMin)
+              : (amp - cMin) / (cMax - cMin);
+            v = Math.max(0, Math.min(1, v));
+            if (stretchMode !== 'linear' || gamma !== 1.0) v = applyStretch(v, stretchMode, gamma);
+            const [r, g, b] = colormapFunc(v);
+            rgbaData[i * 4] = r; rgbaData[i * 4 + 1] = g; rgbaData[i * 4 + 2] = b;
+            rgbaData[i * 4 + 3] = (amp === 0 || isNaN(amp)) ? 0 : 255;
+          }
+          for (const name of bandNames) bands[name] = null;
+
+          geotiff = await writeRGBAGeoTIFF(rgbaData, exportWidth, exportHeight, exportBounds, epsgCode, {
+            generateOverviews: false,
+            onProgress: (pct) => setExportProgress(50 + Math.round(pct / 2)),
+          });
+          filename = `sardine_ts_${frame.label}_${colormap}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+        }
+      } else {
+        // Raw Float32
+        const rawBandNames = complexBandNames.length > 0 ? allBandNames : bandNames;
+        addStatusLog('info', 'Writing Float32 GeoTIFF...');
+        geotiff = await writeFloat32GeoTIFF(bands, rawBandNames, exportWidth, exportHeight, exportBounds, epsgCode, {
+          onProgress: (pct) => setExportProgress(50 + Math.round(pct / 2)),
+        });
+        filename = `sardine_ts_${frame.label}_${bandNames.join('-')}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
+      }
+
+      downloadBuffer(geotiff, filename);
+      const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
+      addStatusLog('success', `Exported: ${filename} (${(geotiff.byteLength / 1e6).toFixed(1)} MB, ${elapsed}s)`);
+    } catch (e) {
+      addStatusLog('error', 'TS frame export failed', e.message);
+      console.error('[Export TS]', e);
+    } finally {
+      setExporting(false);
+      setExportProgress(0);
+    }
+  }, [roiTSFrames, roiTSIndex, roiTSBounds, roiTSContrastLimits, exportMultilookWindow, exportMode,
+      gamma, stretchMode, colormap, useDecibels, nisarProductType, addStatusLog]);
+
   // Serialize current visualization state for embedding in exported PNGs
   const serializeViewerState = useCallback(() => ({
     colormap,
@@ -3319,6 +3507,68 @@ function App() {
     filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
   }), [colormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
 
+  // Save current view (or TS viewer) as a georeferenced GeoTIFF — screenshots the rendered canvas
+  const handleSaveFigureGeoTIFF = useCallback(async () => {
+    // Choose which viewer to capture: TS viewer when it's active, otherwise main viewer
+    const isTS = activeViewer === 'roi-ts' && !!roiTSFrames && roiTSViewerRef.current;
+    const targetRef = isTS ? roiTSViewerRef : viewerRef;
+    const targetBounds = isTS ? roiTSBounds : imageData?.bounds;
+
+    if (!targetRef.current || !targetBounds) {
+      addStatusLog('error', 'Viewer not ready');
+      return;
+    }
+    const glCanvas = targetRef.current.getCanvas();
+    if (!glCanvas) {
+      addStatusLog('error', 'Could not capture canvas');
+      return;
+    }
+
+    try {
+      addStatusLog('info', 'Capturing figure GeoTIFF...');
+
+      // Get view state to compute exact viewport world bounds
+      const vs = targetRef.current.getViewState();
+      const vcx = vs?.target?.[0] ?? viewCenter[0];
+      const vcy = vs?.target?.[1] ?? viewCenter[1];
+      const vzoom = vs?.zoom ?? viewZoom;
+
+      const ppu = Math.pow(2, vzoom);
+      const pw = glCanvas.width;    // physical pixels (DPR-scaled)
+      const ph = glCanvas.height;
+      const vpHalfW = (pw / 2) / ppu;
+      const vpHalfH = (ph / 2) / ppu;
+
+      // Full viewport bounds — not clamped, so georeference covers the entire canvas
+      const vpBounds = [vcx - vpHalfW, vcy - vpHalfH, vcx + vpHalfW, vcy + vpHalfH];
+
+      // Read rendered RGBA pixels from the WebGL canvas
+      const tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width = pw;
+      tmpCanvas.height = ph;
+      const ctx = tmpCanvas.getContext('2d');
+      ctx.drawImage(glCanvas, 0, 0);
+      const imgData = ctx.getImageData(0, 0, pw, ph);
+      const rgba = new Uint8ClampedArray(imgData.data);
+
+      const epsgMatch = imageData?.crs?.match(/EPSG:(\d+)/);
+      const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 4326;
+
+      const geotiff = await writeRGBAGeoTIFF(rgba, pw, ph, vpBounds, epsgCode, {
+        generateOverviews: false,
+      });
+
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const label = isTS ? `_ts_${roiTSFrames[roiTSIndex]?.label || roiTSIndex}` : '';
+      const filename = `sardine_figure${label}_${ts}.tif`;
+      downloadBuffer(geotiff, filename);
+      addStatusLog('success', `Figure GeoTIFF saved: ${filename} (${pw}×${ph} px, ${(geotiff.byteLength / 1e6).toFixed(1)} MB)`);
+    } catch (e) {
+      addStatusLog('error', 'Figure GeoTIFF export failed', e.message);
+      console.error('[Figure GeoTIFF]', e);
+    }
+  }, [imageData, viewCenter, viewZoom, activeViewer, roiTSBounds, roiTSFrames, roiTSIndex, addStatusLog]);
+
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
     if (!viewerRef.current) {
@@ -3340,7 +3590,7 @@ function App() {
         colormap,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
-        compositeId: displayMode === 'rgb' ? compositeId : null,
+        compositeId: isRGBDisplayMode ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
         filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
@@ -3348,6 +3598,7 @@ function App() {
         histogramData: showHistogramOverlay ? histogramData : null,
         polarization: selectedPolarization,
         identification: imageData?.identification || null,
+        colorblindMode,
       };
 
       const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
@@ -3367,6 +3618,7 @@ function App() {
           filename: roiTSFrames[roiTSIndex]?.label || '',
           crs: imageData?.crs || '',
           identification: imageData?.identification || null,
+          colorblindMode,
         } : {
           colormap,
           contrastLimits: roiRGBContrastLimits,
@@ -3378,6 +3630,7 @@ function App() {
           crs: imageData?.crs || '',
           histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
           identification: imageData?.identification || null,
+          colorblindMode,
         };
         blob = await exportFigureSideBySide(
           { canvas: glCanvas, options: mainOpts },
@@ -3424,7 +3677,7 @@ function App() {
         colormap,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
-        compositeId: displayMode === 'rgb' ? compositeId : null,
+        compositeId: isRGBDisplayMode ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
         filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
@@ -3440,6 +3693,7 @@ function App() {
         classificationMap: classifierOpen ? classificationMap : null,
         classRegions,
         classifierRoiDims,
+        colorblindMode,
       };
 
       const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
@@ -3459,6 +3713,7 @@ function App() {
           filename: roiTSFrames[roiTSIndex]?.label || '',
           crs: imageData?.crs || '',
           identification: imageData?.identification || null,
+          colorblindMode,
         } : {
           colormap,
           contrastLimits: roiRGBContrastLimits,
@@ -3470,6 +3725,7 @@ function App() {
           crs: imageData?.crs || '',
           histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
           identification: imageData?.identification || null,
+          colorblindMode,
         };
         // For the main panel, use exportFigureWithOverlays to capture ROI/profile overlays;
         // for the secondary panel use plain exportFigure (no ROI drawn there).
@@ -3553,7 +3809,7 @@ function App() {
   }, [handleSaveFigure, handleSaveFigureWithOverlays, roi]);
 
   const handleExportColorbar = useCallback(async () => {
-    if (displayMode !== 'rgb' || !compositeId) {
+    if (!isRGBDisplayMode || !compositeId) {
       addStatusLog('error', 'Colorbar export requires RGB composite mode');
       return;
     }
@@ -3565,6 +3821,7 @@ function App() {
         useDecibels: effectiveUseDecibels,
         stretchMode,
         gamma,
+        colorblindMode,
       });
 
       if (!blob) {
@@ -3579,7 +3836,7 @@ function App() {
       addStatusLog('error', 'Colorbar export failed', e.message);
       console.error('Colorbar export error:', e);
     }
-  }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, displayMode, addStatusLog]);
+  }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, isRGBDisplayMode, colorblindMode, addStatusLog]);
 
   // Reload/restart current rendering — full data + state refresh
   const handleReload = useCallback(async () => {
@@ -4856,6 +5113,13 @@ function App() {
                 >
                   Save Figure (PNG)
                 </button>
+                <button
+                  onClick={handleSaveFigureGeoTIFF}
+                  title="Save current viewport as georeferenced GeoTIFF"
+                  style={{ flex: 1 }}
+                >
+                  Save Figure (GeoTIFF)
+                </button>
                 </div>
                 {exporting && (
                   <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
@@ -4864,7 +5128,7 @@ function App() {
                 )}
               </div>
             )}
-            {displayMode === 'rgb' && compositeId && (
+            {isRGBDisplayMode && compositeId && (
               <div style={{ marginTop: '6px' }}>
                 <button
                   onClick={handleExportColorbar}
@@ -4967,12 +5231,14 @@ function App() {
               <HistogramPanel
                 histograms={sidebarHistogramData}
                 mode="rgb"
-                contrastLimits={sidebarIsRoiRGB
-                  ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
-                  : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })}
-                useDecibels={sidebarIsRoiRGB ? false : effectiveUseDecibels}
+                contrastLimits={sidebarIsRoiTS
+                  ? (roiTSContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
+                  : (sidebarIsRoiRGB
+                    ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
+                    : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }))}
+                useDecibels={sidebarIsRoiTS ? false : (sidebarIsRoiRGB ? false : effectiveUseDecibels)}
                 logScale={nisarProductType !== 'GCOV'}
-                onContrastChange={sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits}
+                onContrastChange={sidebarIsRoiTS ? setRoiTSContrastLimits : (sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits)}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
               />
@@ -5560,17 +5826,31 @@ function App() {
                       {roiTSFrames[roiTSIndex]?.label || 'Frame ' + roiTSIndex}
                       {' '}({roiTSIndex + 1}/{roiTSFrames.length})
                     </div>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setRoiTSFrames(null); setRoiTSBounds(null); setRoiTSContrastLimits(null); setRoiTSHistogramData(null); setRoiTSPlaying(false); setActiveViewer('main'); }}
-                      style={{
-                        position: 'absolute', top: '8px', right: '8px', zIndex: 10,
-                        background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                        padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
-                      }}
-                    >
-                      Close
-                    </button>
+                    <div style={{ position: 'absolute', top: '8px', right: '8px', zIndex: 10, display: 'flex', gap: '4px' }}>
+                      {roiTSFrames[roiTSIndex]?.getExportStripe && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleExportTSFrame(); }}
+                          disabled={exporting}
+                          style={{
+                            background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
+                            border: '1px solid #2ecc71', borderRadius: 'var(--radius-sm)',
+                            padding: '2px 8px', fontSize: '0.65rem', cursor: exporting ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {exporting ? `${exportProgress}%` : `Export GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setRoiTSFrames(null); setRoiTSBounds(null); setRoiTSContrastLimits(null); setRoiTSHistogramData(null); setRoiTSPlaying(false); setActiveViewer('main'); }}
+                        style={{
+                          background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                          padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                        }}
+                      >
+                        Close
+                      </button>
+                    </div>
                     {/* Playback controls */}
                     <div style={{
                       position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)',
@@ -5624,6 +5904,13 @@ function App() {
               )}
             </div>
           )}
+
+          {/* Satellite Map — Bing VirtualEarth aerial, toggleable, next to globe */}
+          <SatelliteMap
+            wgs84Bounds={wgs84Bounds}
+            visible={satelliteMapVisible}
+            onToggle={() => setSatelliteMapVisible(v => !v)}
+          />
 
           {/* Overview Map — toggleable overlay, bottom-left */}
           <OverviewMap

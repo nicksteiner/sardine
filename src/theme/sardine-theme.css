@@ -741,6 +741,57 @@ button.btn-danger:hover {
   color: var(--sardine-cyan);
 }
 
+/* ── Satellite map toggle button (Bing VirtualEarth) ── */
+.satellite-map-toggle {
+  position: absolute;
+  bottom: calc(var(--bottom-dock, 40px) + 50px);
+  left: calc(var(--space-md, 12px) + 44px);
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 22, 40, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  z-index: 1010;
+  transition: bottom 0.3s ease, background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+.satellite-map-toggle:hover {
+  background: rgba(18, 34, 64, 0.95);
+  border-color: var(--sardine-cyan-dim);
+}
+
+.satellite-map-toggle:hover .overview-map-toggle-icon {
+  color: var(--sardine-cyan);
+}
+
+/* ── Expanded satellite map panel ── */
+.satellite-map {
+  position: absolute;
+  bottom: calc(var(--bottom-dock, 40px) + 50px);
+  left: calc(var(--space-md, 12px) + 44px);
+  width: 420px;
+  background: rgba(10, 22, 40, 0.95);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-md, 8px);
+  z-index: 1010;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
+  transition: bottom 0.3s ease;
+  animation: overview-map-appear 0.2s ease-out;
+}
+
 /* ── Expanded overview map panel ── */
 .overview-map {
   position: absolute;

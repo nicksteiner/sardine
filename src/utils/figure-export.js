@@ -15,7 +15,7 @@
 
 import { getColormap } from './colormap.js';
 import { applyStretch } from './stretch.js';
-import { SAR_COMPOSITES } from './sar-composites.js';
+import { SAR_COMPOSITES, COLORBLIND_MATRICES } from './sar-composites.js';
 import { drawHistogramCanvas } from '../components/HistogramOverlay.jsx';
 import {
   THEME,
@@ -69,6 +69,8 @@ export async function exportFigure(glCanvas, options = {}) {
     histogramData = null,
     polarization = '',
     identification = null,
+    colorblindMode = 'off',
+    wgs84Bounds = null,
   } = options;
 
   const W = glCanvas.width;
@@ -102,7 +104,7 @@ export async function exportFigure(glCanvas, options = {}) {
 
   // 5. Legend (top-right)
   if (compositeId) {
-    drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s);
+    drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
     drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
   }
@@ -121,6 +123,9 @@ export async function exportFigure(glCanvas, options = {}) {
       histogramData, compositeId, contrastLimits, useDecibels, polarization,
     }, dpr);
   }
+
+  // 9. Location inset — Bing VirtualEarth satellite thumbnail (bottom-left)
+  await drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr);
 
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');
@@ -162,6 +167,8 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     classificationMap = null,
     classRegions = [],
     classifierRoiDims = null,
+    colorblindMode = 'off',
+    wgs84Bounds = null,
   } = options;
 
   const W = glCanvas.width;
@@ -199,7 +206,7 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   drawScaleBar(ctx, W, H, viewState, bounds, projected, s);
 
   if (compositeId) {
-    drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s);
+    drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
     drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
   }
@@ -215,6 +222,9 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
       histogramData, compositeId, contrastLimits, useDecibels, polarization,
     }, dpr);
   }
+
+  // Location inset — Bing VirtualEarth satellite thumbnail (bottom-left)
+  await drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr);
 
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');
@@ -658,14 +668,33 @@ function drawScaleBar(ctx, W, H, viewState, bounds, projected, s) {
 
 // ── 5a. RGB legend ──────────────────────────────────────────────────────────
 
-function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s) {
+/**
+ * Compute the actual display color for each RGB channel under the active
+ * colorblind mode. A pure R/G/B signal (1,0,0), (0,1,0), (0,0,1) is run
+ * through the colorblind matrix so the swatches match what the viewer shows.
+ */
+function colorblindChannelColors(colorblindMode) {
+  const matrix = COLORBLIND_MATRICES[colorblindMode];
+  if (!matrix) return CHANNEL_COLORS;
+  const clamp = v => Math.max(0, Math.min(255, Math.round(v * 255)));
+  const toRgb = (r, g, b) => `rgb(${clamp(r)},${clamp(g)},${clamp(b)})`;
+  // matrix rows = output channels, columns = input channels
+  return {
+    R: toRgb(matrix[0][0], matrix[1][0], matrix[2][0]),
+    G: toRgb(matrix[0][1], matrix[1][1], matrix[2][1]),
+    B: toRgb(matrix[0][2], matrix[1][2], matrix[2][2]),
+  };
+}
+
+function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode = 'off') {
   const preset = SAR_COMPOSITES[compositeId];
   const title = preset?.name || 'RGB';
 
+  const channelColors = colorblindChannelColors(colorblindMode);
   const channels = [
-    { key: 'R', color: CHANNEL_COLORS.R },
-    { key: 'G', color: CHANNEL_COLORS.G },
-    { key: 'B', color: CHANNEL_COLORS.B },
+    { key: 'R', color: channelColors.R },
+    { key: 'G', color: channelColors.G },
+    { key: 'B', color: channelColors.B },
   ];
 
   const fontSize = s(11);
@@ -959,6 +988,203 @@ function drawHistogramInset(ctx, W, H, opts, dpr) {
   ctx.restore();
 }
 
+// ── 9. Location inset (Bing VirtualEarth satellite) ─────────────────────────
+
+/**
+ * Convert lat/lon (degrees) to Web Mercator tile x/y at zoom z.
+ */
+function _latLonToTile(lat, lon, z) {
+  const sinLat = Math.sin(lat * Math.PI / 180);
+  const n = Math.pow(2, z);
+  const tx = Math.floor((lon + 180) / 360 * n);
+  const ty = Math.floor((0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * n);
+  return {
+    x: Math.max(0, Math.min(n - 1, tx)),
+    y: Math.max(0, Math.min(n - 1, ty)),
+  };
+}
+
+/**
+ * Convert tile x/y/z to Bing Maps quadkey string.
+ */
+function _tileToQuadkey(x, y, z) {
+  let qk = '';
+  for (let i = z; i > 0; i--) {
+    let digit = 0;
+    const mask = 1 << (i - 1);
+    if ((x & mask) !== 0) digit++;
+    if ((y & mask) !== 0) digit += 2;
+    qk += digit;
+  }
+  return qk;
+}
+
+/**
+ * Fetch and stitch Bing VirtualEarth aerial tiles covering wgs84Bounds.
+ * Returns { canvas, z, xMin, yMin, tileSize } or null on failure.
+ */
+async function _fetchBingTiles(wgs84Bounds, targetW, targetH) {
+  const { minLon, minLat, maxLon, maxLat } = wgs84Bounds;
+  const cMinLat = Math.max(-85.05, minLat);
+  const cMaxLat = Math.min(85.05, maxLat);
+  const dLon = Math.max(maxLon - minLon, 0.001);
+
+  // Pick zoom so the scene spans ~65% of targetW in tile pixels
+  const zLon = Math.log2((targetW * 0.65 * 360) / (dLon * 256));
+  const z = Math.max(1, Math.min(13, Math.round(zLon)));
+
+  const tl = _latLonToTile(cMaxLat, minLon, z);
+  const br = _latLonToTile(cMinLat, maxLon, z);
+  const xMin = Math.min(tl.x, br.x);
+  const xMax = Math.max(tl.x, br.x);
+  const yMin = Math.min(tl.y, br.y);
+  const yMax = Math.max(tl.y, br.y);
+
+  if ((xMax - xMin + 1) * (yMax - yMin + 1) > 25) return null;
+
+  const TILE = 256;
+  const cols = xMax - xMin + 1;
+  const rows = yMax - yMin + 1;
+  const stitchCanvas = document.createElement('canvas');
+  stitchCanvas.width = cols * TILE;
+  stitchCanvas.height = rows * TILE;
+  const sCtx = stitchCanvas.getContext('2d');
+
+  const fetches = [];
+  for (let ty = yMin; ty <= yMax; ty++) {
+    for (let tx = xMin; tx <= xMax; tx++) {
+      const qk = _tileToQuadkey(tx, ty, z);
+      const srv = (tx + ty) % 4;
+      const url = `https://ecn.t${srv}.tiles.virtualearth.net/tiles/a${qk}.jpeg?g=1`;
+      fetches.push(
+        fetch(url, { mode: 'cors' })
+          .then(r => r.ok ? r.blob() : null)
+          .then(b => b ? createImageBitmap(b) : null)
+          .then(bmp => ({ bmp, tx, ty }))
+          .catch(() => ({ bmp: null, tx, ty }))
+      );
+    }
+  }
+
+  const results = await Promise.all(fetches);
+  let anyLoaded = false;
+  for (const { bmp, tx, ty } of results) {
+    if (!bmp) continue;
+    anyLoaded = true;
+    sCtx.drawImage(bmp, (tx - xMin) * TILE, (ty - yMin) * TILE);
+    bmp.close();
+  }
+  if (!anyLoaded) return null;
+
+  return { canvas: stitchCanvas, z, xMin, yMin, tileSize: TILE };
+}
+
+/**
+ * Draw a Bing VirtualEarth satellite location inset in the bottom-left corner.
+ * Shows the scene footprint as a cyan rectangle over the satellite imagery.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} W - canvas width
+ * @param {number} H - canvas height
+ * @param {{ minLon, minLat, maxLon, maxLat }} wgs84Bounds
+ * @param {boolean} projected - whether scale bar is present (affects y offset)
+ * @param {number} dpr - device pixel ratio
+ */
+async function drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr) {
+  if (!wgs84Bounds) return;
+  const s = (v) => Math.round(v * dpr);
+  const insetW = Math.min(s(195), Math.round(W * 0.22));
+  const insetH = Math.round(insetW * 0.70);
+  const margin = s(14);
+  // Leave room above the scale bar when projected bounds are present
+  const scaleReserve = projected ? s(62) : 0;
+  const ix = margin;
+  const iy = H - margin - scaleReserve - insetH;
+  if (iy < s(30)) return; // not enough vertical room
+
+  const result = await _fetchBingTiles(wgs84Bounds, insetW, insetH);
+  if (!result) return;
+
+  const { canvas: tileCanvas, z, xMin, yMin, tileSize: TILE } = result;
+  const n = Math.pow(2, z);
+  const worldPx = n * TILE;
+
+  // World pixel coords of scene bounds
+  const sinMax = Math.sin(Math.min(85.05, wgs84Bounds.maxLat) * Math.PI / 180);
+  const sinMin = Math.sin(Math.max(-85.05, wgs84Bounds.minLat) * Math.PI / 180);
+  const wpxLeft   = (wgs84Bounds.minLon + 180) / 360 * worldPx;
+  const wpxRight  = (wgs84Bounds.maxLon + 180) / 360 * worldPx;
+  const wpxTop    = (0.5 - Math.log((1 + sinMax) / (1 - sinMax)) / (4 * Math.PI)) * worldPx;
+  const wpxBottom = (0.5 - Math.log((1 + sinMin) / (1 - sinMin)) / (4 * Math.PI)) * worldPx;
+
+  // Coords in tile canvas space
+  const cx0 = wpxLeft  - xMin * TILE;
+  const cx1 = wpxRight - xMin * TILE;
+  const cy0 = wpxTop    - yMin * TILE;
+  const cy1 = wpxBottom - yMin * TILE;
+  const sceneW = Math.max(1, cx1 - cx0);
+  const sceneH = Math.max(1, cy1 - cy0);
+
+  // Source rect: scene + 20% padding
+  const padX = sceneW * 0.20;
+  const padY = sceneH * 0.20;
+  let srcX = cx0 - padX;
+  let srcY = cy0 - padY;
+  let srcW = sceneW + 2 * padX;
+  let srcH = sceneH + 2 * padY;
+  if (srcX < 0) { srcW += srcX; srcX = 0; }
+  if (srcY < 0) { srcH += srcY; srcY = 0; }
+  srcW = Math.min(srcW, tileCanvas.width  - srcX);
+  srcH = Math.min(srcH, tileCanvas.height - srcY);
+  if (srcW <= 0 || srcH <= 0) return;
+
+  // Letterbox-fit src into inset
+  const scale = Math.min(insetW / srcW, insetH / srcH);
+  const dstW  = Math.round(srcW * scale);
+  const dstH  = Math.round(srcH * scale);
+  const dstX  = ix + Math.round((insetW - dstW) / 2);
+  const dstY  = iy + Math.round((insetH - dstH) / 2);
+
+  ctx.save();
+
+  // Background + border
+  ctx.fillStyle = 'rgba(10, 22, 40, 0.92)';
+  ctx.strokeStyle = 'rgba(78, 201, 212, 0.55)';
+  ctx.lineWidth = dpr;
+  roundRect(ctx, ix, iy, insetW, insetH, s(4));
+  ctx.fill();
+  ctx.stroke();
+
+  // Clip to inset
+  ctx.beginPath();
+  ctx.rect(ix, iy, insetW, insetH);
+  ctx.clip();
+
+  // Satellite imagery
+  ctx.drawImage(tileCanvas, srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH);
+
+  // Scene footprint outline
+  const rX = dstX + (cx0 - srcX) * scale;
+  const rY = dstY + (cy0 - srcY) * scale;
+  const rW = sceneW * scale;
+  const rH = sceneH * scale;
+  ctx.strokeStyle = THEME.cyan;
+  ctx.lineWidth = s(1.5);
+  ctx.strokeRect(rX, rY, rW, rH);
+
+  // Attribution strip
+  const attrH = s(12);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  ctx.fillRect(ix, iy + insetH - attrH, insetW, attrH);
+  ctx.fillStyle = 'rgba(220, 230, 240, 0.75)';
+  ctx.font = `${s(8)}px ${FONT_MONO}`;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('© Bing Maps', ix + insetW - s(4), iy + insetH - s(2));
+
+  ctx.restore();
+}
+
 // ── Standalone RGB colorbar (triangle) ───────────────────────────────────────
 
 /**
@@ -997,6 +1223,7 @@ export function exportRGBColorbar(options = {}) {
     useDecibels = true,
     stretchMode = 'linear',
     gamma = 1.0,
+    colorblindMode = 'off',
   } = options;
 
   const preset = SAR_COMPOSITES[compositeId];
@@ -1089,13 +1316,21 @@ export function exportRGBColorbar(options = {}) {
       const wR = 1 - wG - wB;
 
       if (wR >= 0 && wG >= 0 && wB >= 0) {
-        const r = Math.round(applyStretch(wR, stretchMode, gamma) * 255);
-        const g = Math.round(applyStretch(wG, stretchMode, gamma) * 255);
-        const b = Math.round(applyStretch(wB, stretchMode, gamma) * 255);
+        let sr = applyStretch(wR, stretchMode, gamma);
+        let sg = applyStretch(wG, stretchMode, gamma);
+        let sb = applyStretch(wB, stretchMode, gamma);
+        // Apply colorblind remap so triangle matches what the viewer shows
+        const cbMatrix = COLORBLIND_MATRICES[colorblindMode];
+        if (cbMatrix) {
+          const dr = cbMatrix[0][0]*sr + cbMatrix[0][1]*sg + cbMatrix[0][2]*sb;
+          const dg = cbMatrix[1][0]*sr + cbMatrix[1][1]*sg + cbMatrix[1][2]*sb;
+          const db = cbMatrix[2][0]*sr + cbMatrix[2][1]*sg + cbMatrix[2][2]*sb;
+          sr = dr; sg = dg; sb = db;
+        }
         const idx = (iy * imgW + ix) * 4;
-        px[idx] = r;
-        px[idx + 1] = g;
-        px[idx + 2] = b;
+        px[idx]     = Math.round(Math.min(1, sr) * 255);
+        px[idx + 1] = Math.round(Math.min(1, sg) * 255);
+        px[idx + 2] = Math.round(Math.min(1, sb) * 255);
         px[idx + 3] = 255;
       }
     }
@@ -1126,24 +1361,25 @@ export function exportRGBColorbar(options = {}) {
 
   const labelFont = `bold ${s(11)}px ${FONT_MONO}`;
   const subFont = `${s(10)}px ${FONT_MONO}`;
+  const cbColors = colorblindChannelColors(colorblindMode);
 
   // R — above apex
   ctx.font = labelFont;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
-  ctx.fillStyle = CHANNEL_COLORS.R;
+  ctx.fillStyle = cbColors.R;
   ctx.fillText(`R: ${labelR}`, vR[0], vR[1] - s(4));
 
   // G — below-left of base
   ctx.textAlign = 'right';
   ctx.textBaseline = 'top';
-  ctx.fillStyle = CHANNEL_COLORS.G;
+  ctx.fillStyle = cbColors.G;
   ctx.fillText(`G: ${labelG}`, vG[0] + s(4), vG[1] + s(4));
 
   // B — below-right of base
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillStyle = CHANNEL_COLORS.B;
+  ctx.fillStyle = cbColors.B;
   ctx.fillText(`B: ${labelB}`, vB[0] - s(4), vB[1] + s(4));
 
   // ── Contrast range table ──
@@ -1152,7 +1388,7 @@ export function exportRGBColorbar(options = {}) {
   const unit = useDecibels ? ' dB' : '';
 
   for (const ch of ['R', 'G', 'B']) {
-    const color = CHANNEL_COLORS[ch];
+    const color = cbColors[ch];
     const lim = contrastLimits?.[ch] || [-25, 0];
     const minStr = useDecibels ? lim[0].toFixed(1) : lim[0].toExponential(1);
     const maxStr = useDecibels ? lim[1].toFixed(1) : lim[1].toExponential(1);
@@ -1233,6 +1469,8 @@ export async function exportFigureSideBySide(left, right) {
       histogramData = null,
       polarization = '',
       identification = null,
+      colorblindMode = 'off',
+      wgs84Bounds = null,
     } = opts;
 
     const projected = isProjectedBounds(bounds);
@@ -1249,7 +1487,7 @@ export async function exportFigureSideBySide(left, right) {
     drawScaleBar(ctx, panelW, panelH, viewState, bounds, projected, s);
 
     if (compositeId) {
-      drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s);
+      drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s, colorblindMode);
     } else {
       drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s);
     }
@@ -1264,6 +1502,8 @@ export async function exportFigureSideBySide(left, right) {
         histogramData, compositeId, contrastLimits, useDecibels, polarization,
       }, dpr);
     }
+
+    await drawLocationInset(ctx, panelW, panelH, wgs84Bounds, projected, dpr);
 
     ctx.restore();
   }
