@@ -114,6 +114,37 @@ export class SARTileLayer extends TileLayer {
           speckleKernelSize,
         };
 
+        // H/Alpha/Entropy: pass raw covariance bands directly — eigendecomp runs in GLSL
+        if (tileData.bands && tileData.compositeId === 'h-alpha-entropy') {
+          const b = tileData.bands;
+          return new SARGPULayer({
+            id: `${subProps.id}-gpu-halpha`,
+            mode: 'h-alpha',
+            data: {length: 0},
+            dataR: b['HHHH'],          // C11 → unit 0
+            dataG: b['HVHV'],          // C22 → unit 1
+            dataB: b['VVVV'],          // C33 → unit 2
+            dataCov12Re: b['HHHV_re'], // Re(C12) → unit 3
+            dataCov12Im: b['HHHV_im'], // Im(C12) → unit 4
+            dataCov13Re: b['HHVV_re'], // Re(C13) → unit 5
+            dataCov13Im: b['HHVV_im'], // Im(C13) → unit 6
+            dataCov23Re: b['HVVV_re'], // Re(C23) → unit 7
+            dataCov23Im: b['HVVV_im'], // Im(C23) → unit 8
+            width: tileData.width,
+            height: tileData.height,
+            bounds: tileBounds,
+            contrastLimits,
+            useDecibels: false,
+            colormap,
+            gamma,
+            stretchMode,
+            rgbSaturation,
+            colorblindMode,
+            opacity: subProps.opacity,
+            ...filterProps,
+          });
+        }
+
         // RGB composite mode - GPU accelerated (3x R32F textures)
         if (tileData.bands && tileData.compositeId) {
           // Cache computeRGBBands on the tile data — only recompute when

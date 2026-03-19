@@ -464,6 +464,7 @@ export const SAR_COMPOSITES = {
     required: ['HHHH', 'HVHV', 'VVVV'],
     requiredComplex: ['HHHV', 'HHVV', 'HVVV'],
     computeAll: true,
+    gpuNative: true,  // Eigendecomp runs in GLSL fragment shader — no CPU math needed
     formula: computeHAlphaEntropyRGB,
     channelLabels: { R: 'H (entropy)', G: 'α (alpha °)', B: 'A (anisotropy)' },
     // H/α/A are normalized parameters, not power — disable dB scaling
