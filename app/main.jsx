@@ -33,11 +33,29 @@ import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
+import HAlphaPlane from '../src/components/HAlphaPlane.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
 import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
 import { loadMetadataCube } from '../src/utils/metadata-cube.js';
 import { loadAllCorrections, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
 import { embedStateInPNG, extractStateFromPNG } from '../src/utils/png-state.js';
+
+/**
+ * H-Alpha zone regions for ClassificationOverlay (matches ZONES in HAlphaPlane.jsx).
+ * Index 0 = Z1 (high-ent dbl-bounce) through index 8 = Z9 (surface/Bragg).
+ * ClassificationOverlay expects 1-based class indices, so zone map values 1-9 map to indices 0-8.
+ */
+const H_ALPHA_ZONE_REGIONS = [
+  { name: 'Z1 High-ent dbl',   color: '#f1948a' },
+  { name: 'Z2 High-ent veg',   color: '#82e0aa' },
+  { name: 'Z3 High-ent surf',  color: '#85c1e9' },
+  { name: 'Z4 Forest/dbl',     color: '#ec7063' },
+  { name: 'Z5 Vegetation',     color: '#58d68d' },
+  { name: 'Z6 Random surface', color: '#5dade2' },
+  { name: 'Z7 Double-bounce',  color: '#e74c3c' },
+  { name: 'Z8 Dipole',         color: '#2ecc71' },
+  { name: 'Z9 Surface/Bragg',  color: '#3498db' },
+];
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -413,6 +431,11 @@ function App() {
   const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
   const [incidenceRange, setIncidenceRange] = useState([0, 90]); // min/max incidence angle filter (degrees)
 
+  // H-Alpha classification plane state
+  const [hAlphaPlaneOpen, setHAlphaPlaneOpen] = useState(false);
+  const [hAlphaPlaneData, setHAlphaPlaneData] = useState(null); // {h, alpha, anisotropy, valid, w, h}
+  const [hAlphaZoneMap, setHAlphaZoneMap] = useState(null);     // Uint8Array zone classification
+
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport' | 'roi'
   const [showHistogramOverlay, setShowHistogramOverlay] = useState(false);
   const [viewCenter, setViewCenter] = useState([0, 0]);
@@ -486,6 +509,9 @@ function App() {
     setClassifierData(null);
     setClassificationMap(null);
     setClassifierRoiDims(null);
+    setHAlphaPlaneOpen(false);
+    setHAlphaPlaneData(null);
+    setHAlphaZoneMap(null);
     setRoiRGBData(null);
     setRoiRGBBounds(null);
     setRoiCompositeId(null);
@@ -726,6 +752,76 @@ function App() {
     fetchClassifierData();
     return () => { cancelled = true; };
   }, [classifierOpen, roi, imageData, classifierBands]);
+
+  // Fetch H/Alpha decomposition data for H-Alpha classification plane
+  const isHAlphaComposite = compositeId === 'h-alpha-entropy' || compositeId === 'dual-pol-h-alpha-gamma';
+  useEffect(() => {
+    if (!hAlphaPlaneOpen || !roi || !imageData?.getExportStripe || !isHAlphaComposite) {
+      setHAlphaPlaneData(null);
+      setHAlphaZoneMap(null);
+      return;
+    }
+    let cancelled = false;
+
+    const fetchHAlphaData = async () => {
+      try {
+        const sourceW = imageData.width;
+        const sourceH = imageData.height;
+        // Target ~300 pixels on longest axis for scatter resolution
+        const ml = Math.max(1, Math.ceil(Math.max(roi.width, roi.height) / 300));
+        const startCol = Math.floor(Math.max(0, roi.left) / ml);
+        const startRow = Math.floor(Math.max(0, roi.top) / ml);
+        const endCol = Math.floor(Math.min(roi.left + roi.width, sourceW) / ml);
+        const endRow = Math.floor(Math.min(roi.top + roi.height, sourceH) / ml);
+        const exportW = Math.max(1, endCol - startCol);
+        const exportH = Math.max(1, endRow - startRow);
+
+        const result = await imageData.getExportStripe({
+          startRow,
+          numRows: exportH,
+          ml,
+          exportWidth: exportW,
+          startCol,
+          numCols: exportW,
+        });
+        if (cancelled) return;
+
+        // Compute H/Alpha from bands via the composite formula
+        const rgbBands = computeRGBBands(result.bands, compositeId, exportW, exportW * exportH);
+        // R = H (entropy), G = α (alpha angle), B = A (anisotropy) or γ (coherence)
+        const hArr = rgbBands.R;
+        const alphaArr = rgbBands.G;
+        const aArr = rgbBands.B;  // anisotropy (quad-pol) or coherence (dual-pol)
+        const n = hArr.length;
+
+        const valid = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+          // Valid if H and alpha are both meaningful (non-zero, non-NaN)
+          if (!isNaN(hArr[i]) && !isNaN(alphaArr[i]) && (hArr[i] > 0 || alphaArr[i] > 0)) {
+            valid[i] = 1;
+          }
+        }
+
+        if (!cancelled) {
+          const validCount = valid.reduce((a, b) => a + b, 0);
+          console.log('[H-Alpha Plane] Data ready:', { exportW, exportH, validCount });
+          setHAlphaPlaneData({
+            entropy: hArr,
+            alpha: alphaArr,
+            anisotropy: compositeId === 'h-alpha-entropy' ? aArr : null,
+            valid,
+            roiW: exportW,
+            roiH: exportH,
+          });
+        }
+      } catch (e) {
+        console.error('[H-Alpha Plane] Error fetching data:', e);
+      }
+    };
+
+    fetchHAlphaData();
+    return () => { cancelled = true; };
+  }, [hAlphaPlaneOpen, roi, imageData, compositeId, isHAlphaComposite]);
 
   // Helper to add status log (must be before any callback that uses it)
   const addStatusLog = useCallback((type, message, details = null) => {
@@ -3734,9 +3830,9 @@ function App() {
         histogramData: showHistogramOverlay ? histogramData : null,
         polarization: selectedPolarization,
         identification: imageData?.identification || null,
-        classificationMap: classifierOpen ? classificationMap : null,
-        classRegions,
-        classifierRoiDims,
+        classificationMap: hAlphaPlaneOpen && hAlphaZoneMap ? hAlphaZoneMap : classifierOpen ? classificationMap : null,
+        classRegions: hAlphaPlaneOpen && hAlphaZoneMap ? H_ALPHA_ZONE_REGIONS : classRegions,
+        classifierRoiDims: hAlphaPlaneOpen && hAlphaPlaneData ? { w: hAlphaPlaneData.roiW, h: hAlphaPlaneData.roiH } : classifierRoiDims,
         colorblindMode,
       };
 
@@ -5039,6 +5135,20 @@ function App() {
                       >
                         Classify
                       </button>
+                      {isHAlphaComposite && (
+                        <button
+                          onClick={() => setHAlphaPlaneOpen(prev => !prev)}
+                          title="H/α classification plane"
+                          style={{
+                            background: hAlphaPlaneOpen ? 'rgba(232,131,58,0.15)' : 'none',
+                            border: hAlphaPlaneOpen ? '1px solid rgba(232,131,58,0.4)' : '1px solid transparent',
+                            color: hAlphaPlaneOpen ? '#e8833a' : 'var(--text-muted)',
+                            cursor: 'pointer', padding: '0 4px', fontSize: '0.65rem', borderRadius: 3,
+                          }}
+                        >
+                          H/α
+                        </button>
+                      )}
                       <button
                         onClick={() => setROI(null)}
                         style={{
@@ -5847,9 +5957,19 @@ function App() {
                   yCoords={imageData?.yCoords}
                   roiProfile={null}
                   profileShow={{ v: false, h: false, i: false }}
-                  classificationMap={classifierOpen ? classificationMap : null}
-                  classRegions={classRegions}
-                  classifierRoiDims={classifierRoiDims}
+                  classificationMap={
+                    hAlphaPlaneOpen && hAlphaZoneMap ? hAlphaZoneMap
+                    : classifierOpen ? classificationMap
+                    : null
+                  }
+                  classRegions={
+                    hAlphaPlaneOpen && hAlphaZoneMap ? H_ALPHA_ZONE_REGIONS
+                    : classRegions
+                  }
+                  classifierRoiDims={
+                    hAlphaPlaneOpen && hAlphaPlaneData ? { w: hAlphaPlaneData.roiW, h: hAlphaPlaneData.roiH }
+                    : classifierRoiDims
+                  }
                 />
               </div>
 
@@ -6073,6 +6193,20 @@ function App() {
               incidenceRange={incidenceRange}
               onIncidenceRangeChange={setIncidenceRange}
               onClose={() => setClassifierOpen(false)}
+            />
+          )}
+
+          {/* H-Alpha Classification Plane */}
+          {hAlphaPlaneOpen && roi && hAlphaPlaneData && (
+            <HAlphaPlane
+              hData={hAlphaPlaneData.entropy}
+              alphaData={hAlphaPlaneData.alpha}
+              anisotropyData={hAlphaPlaneData.anisotropy}
+              valid={hAlphaPlaneData.valid}
+              width={hAlphaPlaneData.roiW}
+              height={hAlphaPlaneData.roiH}
+              onZoneClassification={setHAlphaZoneMap}
+              onClose={() => setHAlphaPlaneOpen(false)}
             />
           )}
         </div>
