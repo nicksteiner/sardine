@@ -45,9 +45,6 @@ var<workgroup> sSum: array<f32, ${WORKGROUP_SIZE}>;
 var<workgroup> sCount: array<u32, ${WORKGROUP_SIZE}>;
 
 fn toValue(raw: f32) -> f32 {
-  if (raw <= 0.0 || raw != raw) {  // NaN check: x != x
-    return bitcast<f32>(0x7FC00000u);  // NaN sentinel
-  }
   if (params.useDecibels == 1u) {
     return 10.0 * log2(max(raw, 1e-10)) * 0.30103;
   }
@@ -70,9 +67,9 @@ fn reduceMain(
   sCount[local] = 0u;
 
   if (idx < params.count) {
-    let val = toValue(inputData[idx]);
-    // Check for NaN (val != val)
-    if (val == val) {
+    let raw = inputData[idx];
+    if (raw > 0.0) {  // skip nodata (zero, negative, NaN)
+      let val = toValue(raw);
       sMin[local] = val;
       sMax[local] = val;
       sSum[local] = val;
@@ -128,9 +125,6 @@ struct Params {
 var<workgroup> localBins: array<atomic<u32>, ${NUM_BINS}>;
 
 fn toValue(raw: f32) -> f32 {
-  if (raw <= 0.0 || raw != raw) {
-    return bitcast<f32>(0x7FC00000u);
-  }
   if (params.useDecibels == 1u) {
     return 10.0 * log2(max(raw, 1e-10)) * 0.30103;
   }
@@ -152,8 +146,9 @@ fn histMain(
   // Bin into workgroup-local shared memory
   let idx = gid.x;
   if (idx < params.count) {
-    let val = toValue(inputData[idx]);
-    if (val == val) {  // NaN check
+    let raw = inputData[idx];
+    if (raw > 0.0) {  // skip nodata (zero, negative, NaN)
+      let val = toValue(raw);
       let range = params.rangeMax - params.rangeMin;
       if (range > 0.0) {
         var bin = i32(floor((val - params.rangeMin) / range * f32(${NUM_BINS})));

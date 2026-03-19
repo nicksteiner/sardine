@@ -859,6 +859,7 @@ function App() {
             const tileData = await data.getRGBTile({
               x: tx, y: ty, z: 0,
               bbox: { left, top, right, bottom },
+              noCache: true,
             });
 
             if (tileData && tileData.bands) {
@@ -1378,6 +1379,7 @@ function App() {
             tilePromises.push(imageData.getRGBTile({
               x: tx, y: ty, z: 0,
               bbox: { left, top, right, bottom },
+              noCache: true,
             }));
           }
         }
@@ -1406,14 +1408,8 @@ function App() {
         }
         if (hasAnyStats) {
           setHistogramData(hists);
-          // Set per-channel contrast limits from p2/p98 percentiles
-          const lims = {};
-          for (const ch of ['R', 'G', 'B']) {
-            lims[ch] = hists[ch] ? [hists[ch].p2, hists[ch].p98] : [0, 1];
-          }
-          setRgbContrastLimits(lims);
           addStatusLog('success', `${scopeLabel} histogram updated (RGB, ${effectiveUseDecibels ? 'dB' : 'linear'})`,
-            ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}` : '').join(', '));
+            ['R', 'G', 'B'].map(ch => hists[ch] ? `${ch}: ${hists[ch].p2.toExponential(2)}–${hists[ch].p98.toExponential(2)}` : '').join(', '));
         } else {
           addStatusLog('info', `${scopeLabel} histogram: no valid pixels in region`);
         }
@@ -1493,7 +1489,21 @@ function App() {
 
   const recomputeRef = useRef(handleRecomputeHistogram);
   recomputeRef.current = handleRecomputeHistogram;
-  // Viewport histogram does NOT auto-recompute on pan/zoom — user must click "Viewport" button.
+  // Auto-recompute histogram when viewport changes (viewport scope, debounced).
+  // Uses GPU when available, falls back to CPU — debounce absorbs the latency.
+  const vcx = viewCenter[0];
+  const vcy = viewCenter[1];
+  useEffect(() => {
+    if (!imageData || histogramScope !== 'viewport') return;
+    const timer = setTimeout(() => {
+      if (skipViewportRefreshRef.current) {
+        skipViewportRefreshRef.current = false;
+        return;
+      }
+      recomputeRef.current();
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [vcx, vcy, viewZoom, imageData, histogramScope]);
 
   // Auto-recompute histogram when ROI changes (ROI scope only)
   // Disabled without WebGPU — CPU histogram is too slow for live ROI updates.
@@ -2431,6 +2441,7 @@ function App() {
             const tileData = await data.getRGBTile({
               x: 0, y: 0, z: 0,
               bbox: { left: rcCx - rcHalf, top: rcCy - rcHalf, right: rcCx + rcHalf, bottom: rcCy + rcHalf },
+              noCache: true,
             });
             if (tileData && tileData.bands) {
               const rgbBands = computeRGBBands(tileData.bands, _histCompositeId, tileSize);
@@ -2829,6 +2840,7 @@ function App() {
             // Skip tile-sampling recompute on load — metadata contrast already applied.
             setHistogramData(syntheticHists);
             skipInitialHistogramRef.current = true;
+            skipViewportRefreshRef.current = true;
             addStatusLog('info', 'Initial contrast from metadata',
               ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
           }

@@ -3706,14 +3706,14 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
    * Performance: pre-fetches all needed chunks for all bands concurrently,
    * then samples pixels synchronously from the pre-fetched data.
    */
-  async function getRGBTile({ x, y, z, bbox, multiLook = false }) {
+  async function getRGBTile({ x, y, z, bbox, multiLook = false, noCache = false }) {
     const ml = multiLook ? 'ml' : 'nn';
     const tileKey = `rgb_${x},${y},${z},${ml}`;
 
-    console.log(`[NISAR Tile] Request: tile(${x},${y},${z}), multiLook=${multiLook}, bbox=`, bbox ? `[${bbox.left?.toFixed(0)}, ${bbox.top?.toFixed(0)}, ${bbox.right?.toFixed(0)}, ${bbox.bottom?.toFixed(0)}]` : 'none');
+    console.log(`[NISAR Tile] Request: tile(${x},${y},${z}), multiLook=${multiLook}, noCache=${noCache}, bbox=`, bbox ? `[${bbox.left?.toFixed(0)}, ${bbox.top?.toFixed(0)}, ${bbox.right?.toFixed(0)}, ${bbox.bottom?.toFixed(0)}]` : 'none');
 
     // LRU: If tile exists, move it to end (most recently used)
-    if (tileCache.has(tileKey)) {
+    if (!noCache && tileCache.has(tileKey)) {
       // console.log(`[NISAR Tile] Cache hit: ${tileKey}`);
       const tile = tileCache.get(tileKey);
       tileCache.delete(tileKey);
@@ -3994,11 +3994,13 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
       if (maskData) tile.mask = maskData;
 
       // LRU cache eviction: remove oldest entries (from beginning of Map)
-      if (tileCache.size >= MAX_TILE_CACHE) {
-        const oldestKeys = Array.from(tileCache.keys()).slice(0, 25);
-        oldestKeys.forEach(k => tileCache.delete(k));
+      if (!noCache) {
+        if (tileCache.size >= MAX_TILE_CACHE) {
+          const oldestKeys = Array.from(tileCache.keys()).slice(0, 25);
+          oldestKeys.forEach(k => tileCache.delete(k));
+        }
+        tileCache.set(tileKey, tile);
       }
-      tileCache.set(tileKey, tile);
 
       // console.log(`[NISAR Tile] Success: ${tileKey}, compositeId=${compositeId}`);
 

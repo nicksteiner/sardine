@@ -30,7 +30,9 @@ export async function computeChannelStatsAuto(values, useDecibels = true, numBin
   if (hasWebGPU() && f32.length > 1024) {
     try {
       const result = await computeHistogramGPU(f32, { useDecibels, numBins });
-      return result;
+      if (result !== null) return result;
+      // GPU returned null (e.g. pipeline validation failure) — fall through to CPU
+      console.warn('[gpu-stats] GPU histogram returned null, falling back to CPU');
     } catch (err) {
       console.warn('[gpu-stats] GPU histogram failed, falling back to CPU:', err.message);
     }
