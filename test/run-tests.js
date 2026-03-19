@@ -1038,6 +1038,177 @@ try {
   skip('colorblind functional tests', `import failed: ${err.message}`);
 }
 
+// ─── H/Alpha/Entropy decomposition ───────────────────────────────────────────
+
+suite('H/Alpha/Entropy (Cloude-Pottier)');
+
+// Source-level checks on the GLSL and JS code
+check('GLSL shader has uMode h-alpha branch (uMode > 1.5)', () => {
+  assertContains(gpuContent, 'uMode > 1.5', 'h-alpha uMode branch');
+});
+
+check('GLSL shader has Cardano eigenvalue computation', () => {
+  assertContains(gpuContent, 'HA_2PI3', 'Cardano 2π/3 constant');
+  assertContains(gpuContent, 'cos(phi)', 'Cardano cosine root');
+});
+
+check('GLSL shader has haAlpha() eigenvector function', () => {
+  assertContains(gpuContent, 'float haAlpha(', 'haAlpha function signature');
+});
+
+check('GLSL shader builds coherency matrix T3 from C3', () => {
+  assertContains(gpuContent, 'Pauli basis', 'Pauli basis comment');
+  assertContains(gpuContent, 't11 + t22v + t33v', 'trace computation');
+});
+
+check('GLSL shader computes entropy with log base 3', () => {
+  assertContains(gpuContent, 'HA_LOG3', 'log(3) constant');
+  assertContains(gpuContent, 'log(p1) / HA_LOG3', 'log₃ entropy term');
+});
+
+check('GLSL shader reads 9 covariance textures', () => {
+  // All 9 covariance matrix elements must be read from texture units
+  for (const name of ['uTexture', 'uTextureG', 'uTextureB',
+                       'uTextureMask', 'uTextureCoherence', 'uTextureIncidence',
+                       'uTexCorIono', 'uTexCorTropo', 'uTexCorSET']) {
+    assertContains(gpuContent, `texture(${name}, vTexCoord)`, `${name} texture read`);
+  }
+});
+
+check('SARGPULayer uploads h-alpha covariance textures in updateState', () => {
+  assertContains(gpuContent, 'isHAlpha', 'h-alpha mode detection');
+  assertContains(gpuContent, 'texCov12Re', 'C12 real texture state');
+  assertContains(gpuContent, 'texCov23Im', 'C23 imaginary texture state');
+});
+
+check('SARGPULayer binds covariance textures in draw()', () => {
+  assertContains(gpuContent, 'texCov12Re', 'draw binds C12re');
+  assertContains(gpuContent, 'texCov23Im', 'draw binds C23im');
+});
+
+check('SARGPULayer sets uMode 2.0 for h-alpha', () => {
+  assertContains(gpuContent, 'isHAlpha ? 2.0', 'uMode 2.0 for h-alpha');
+});
+
+check('SARGPULayer cleans up covariance textures in finalizeState', () => {
+  assertContains(gpuContent, "this.state.texCov12Re", 'finalizeState cleans texCov12Re');
+  assertContains(gpuContent, "this.state.texCov23Im", 'finalizeState cleans texCov23Im');
+});
+
+check('SARTileLayer detects h-alpha-entropy composite', () => {
+  assertContains(tileLayerContent, "h-alpha-entropy", 'h-alpha-entropy composite detection');
+  assertContains(tileLayerContent, "mode: 'h-alpha'", 'h-alpha mode passed to SARGPULayer');
+});
+
+check('SARTileLayer passes 9 covariance bands for h-alpha', () => {
+  assertContains(tileLayerContent, "dataCov12Re: b['HHHV_re']", 'C12 real passthrough');
+  assertContains(tileLayerContent, "dataCov13Im: b['HHVV_im']", 'C13 imag passthrough');
+  assertContains(tileLayerContent, "dataCov23Re: b['HVVV_re']", 'C23 real passthrough');
+});
+
+check('h-alpha-entropy preset has gpuNative flag', () => {
+  const compSrc = readFile('src/utils/sar-composites.js');
+  assertContains(compSrc, 'gpuNative: true', 'gpuNative flag');
+});
+
+check('h-alpha-entropy preset disables dB by default', () => {
+  const compSrc = readFile('src/utils/sar-composites.js');
+  assertContains(compSrc, 'defaultUseDecibels: false', 'defaultUseDecibels false');
+});
+
+// Functional test: run the CPU decomposition and validate output ranges
+try {
+  const { computeRGBBands, SAR_COMPOSITES } = await import(join(rootDir, 'src/utils/sar-composites.js'));
+
+  check('h-alpha-entropy preset exists in SAR_COMPOSITES', () => {
+    if (!SAR_COMPOSITES['h-alpha-entropy']) throw new Error('preset missing');
+    const p = SAR_COMPOSITES['h-alpha-entropy'];
+    if (!p.required.includes('HHHH')) throw new Error('missing HHHH in required');
+    if (!p.requiredComplex.includes('HHHV')) throw new Error('missing HHHV in requiredComplex');
+  });
+
+  // Create synthetic covariance data for a 4×4 tile (16 pixels)
+  // Test case: isotropic scatterer (equal eigenvalues → H=1, α≈45°, A=0)
+  // and surface scatterer (dominant λ1 → H≈0, α≈0°)
+  const N = 16;
+  const makeBand = (val) => { const a = new Float32Array(N); a.fill(val); return a; };
+
+  // Test 1: Identity-like covariance (c11=c22=c33=1, off-diag=0)
+  // → equal eigenvalues → maximum entropy
+  const isoBands = {
+    HHHH: makeBand(1), HVHV: makeBand(1), VVVV: makeBand(1),
+    HHHV_re: makeBand(0), HHHV_im: makeBand(0),
+    HHVV_re: makeBand(0), HHVV_im: makeBand(0),
+    HVVV_re: makeBand(0), HVVV_im: makeBand(0),
+  };
+
+  await asyncCheck('isotropic scatterer: H≈1, α≈45°, A≈0', async () => {
+    const rgb = computeRGBBands(isoBands, 'h-alpha-entropy', 4);
+    const H = rgb.R[0], alpha = rgb.G[0], A = rgb.B[0];
+    if (H < 0.95 || H > 1.05) throw new Error(`H=${H.toFixed(3)}, expected ≈1`);
+    if (alpha < 40 || alpha > 50) throw new Error(`α=${alpha.toFixed(1)}°, expected ≈45°`);
+    if (A > 0.05) throw new Error(`A=${A.toFixed(3)}, expected ≈0`);
+  });
+
+  // Test 2: Strong surface scatterer (c11=10, c33=10, c13re=10, rest small)
+  // HH+VV dominant → low entropy, low alpha
+  const surfBands = {
+    HHHH: makeBand(10), HVHV: makeBand(0.01), VVVV: makeBand(10),
+    HHHV_re: makeBand(0), HHHV_im: makeBand(0),
+    HHVV_re: makeBand(9.5), HHVV_im: makeBand(0),
+    HVVV_re: makeBand(0), HVVV_im: makeBand(0),
+  };
+
+  await asyncCheck('surface scatterer: low H, low α', async () => {
+    const rgb = computeRGBBands(surfBands, 'h-alpha-entropy', 4);
+    const H = rgb.R[0], alpha = rgb.G[0];
+    if (H > 0.5) throw new Error(`H=${H.toFixed(3)}, expected low`);
+    if (alpha > 30) throw new Error(`α=${alpha.toFixed(1)}°, expected low`);
+  });
+
+  // Test 3: Zero data → NaN output (nodata)
+  const zeroBands = {
+    HHHH: makeBand(0), HVHV: makeBand(0), VVVV: makeBand(0),
+    HHHV_re: makeBand(0), HHHV_im: makeBand(0),
+    HHVV_re: makeBand(0), HHVV_im: makeBand(0),
+    HVVV_re: makeBand(0), HVVV_im: makeBand(0),
+  };
+
+  await asyncCheck('zero covariance → zero output (nodata)', async () => {
+    const rgb = computeRGBBands(zeroBands, 'h-alpha-entropy', 4);
+    if (rgb.R[0] !== 0) throw new Error(`H=${rgb.R[0]}, expected 0`);
+    if (rgb.G[0] !== 0) throw new Error(`α=${rgb.G[0]}, expected 0`);
+    if (rgb.B[0] !== 0) throw new Error(`A=${rgb.B[0]}, expected 0`);
+  });
+
+  // Test 4: Output ranges — H ∈ [0,1], α ∈ [0°,90°], A ∈ [0,1]
+  await asyncCheck('output ranges valid: H∈[0,1], α∈[0°,90°], A∈[0,1]', async () => {
+    // Mix of different scatterers
+    const mixBands = {
+      HHHH: new Float32Array([5, 10, 1, 0.5, 2, 8, 3, 7, 4, 6, 9, 0.1, 0.3, 1.5, 2.5, 4.5]),
+      HVHV: new Float32Array([1, 0.5, 3, 0.1, 1.5, 2, 0.8, 1.2, 0.3, 0.7, 1.1, 0.05, 0.2, 0.6, 1.8, 0.9]),
+      VVVV: new Float32Array([4, 8, 2, 0.4, 1.8, 7, 2.5, 6, 3.5, 5, 8.5, 0.08, 0.25, 1.2, 2.2, 3.8]),
+      HHHV_re: new Float32Array([0.1, -0.2, 0.3, 0, 0.05, -0.1, 0.15, -0.05, 0.08, -0.12, 0.2, 0, 0.01, 0.04, -0.06, 0.09]),
+      HHHV_im: new Float32Array([0.05, 0.1, -0.15, 0, 0.02, 0.08, -0.07, 0.03, 0.04, -0.06, 0.1, 0, 0.005, 0.02, 0.03, -0.04]),
+      HHVV_re: new Float32Array([2, 4, 0.5, 0.1, 0.8, 3, 1, 2.5, 1.5, 2, 3.5, 0.02, 0.1, 0.5, 1, 1.8]),
+      HHVV_im: new Float32Array([0.3, -0.5, 0.2, 0, 0.1, -0.3, 0.15, -0.2, 0.12, -0.18, 0.25, 0, 0.02, 0.08, -0.1, 0.14]),
+      HVVV_re: new Float32Array([0.08, -0.15, 0.2, 0, 0.03, -0.08, 0.1, -0.04, 0.06, -0.09, 0.15, 0, 0.008, 0.03, -0.05, 0.07]),
+      HVVV_im: new Float32Array([0.04, 0.08, -0.1, 0, 0.015, 0.06, -0.05, 0.02, 0.03, -0.04, 0.07, 0, 0.004, 0.015, 0.02, -0.03]),
+    };
+    const rgb = computeRGBBands(mixBands, 'h-alpha-entropy', 4);
+    for (let i = 0; i < N; i++) {
+      const H = rgb.R[i], a = rgb.G[i], A = rgb.B[i];
+      if (isNaN(H) || isNaN(a) || isNaN(A)) continue; // skip nodata
+      if (H < -0.01 || H > 1.01) throw new Error(`pixel ${i}: H=${H.toFixed(3)} out of [0,1]`);
+      if (a < -0.1 || a > 90.1) throw new Error(`pixel ${i}: α=${a.toFixed(1)}° out of [0°,90°]`);
+      if (A < -0.01 || A > 1.01) throw new Error(`pixel ${i}: A=${A.toFixed(3)} out of [0,1]`);
+    }
+  });
+
+} catch (err) {
+  skip('H/Alpha/Entropy functional tests', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
