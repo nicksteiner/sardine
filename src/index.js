@@ -102,6 +102,7 @@ export {
   getRequiredDatasets,
   getRequiredComplexDatasets,
   computeRGBBands,
+  computeRGBBandsAsync,
   createRGBTexture,
   COLORBLIND_MATRICES,
 } from './utils/sar-composites.js';
