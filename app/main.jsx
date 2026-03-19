@@ -2709,6 +2709,17 @@ function App() {
 
         addStatusLog('success', 'RGB composite loaded',
           `${data.width}x${data.height}, Composite: ${compositeId}`);
+
+        // Apply composite-specific defaults (e.g. H/Alpha: no dB, custom contrast)
+        const preset = SAR_COMPOSITES[compositeId];
+        if (preset) {
+          if (preset.defaultUseDecibels !== undefined) {
+            setUseDecibels(preset.defaultUseDecibels);
+          }
+          if (preset.defaultContrastLimits) {
+            setRgbContrastLimits(preset.defaultContrastLimits);
+          }
+        }
       } else {
         // ── GCOV single band mode ──
         addStatusLog('info', `Loading NISAR dataset: ${selectedFrequency}/${selectedPolarization}`);
@@ -4468,7 +4479,20 @@ function App() {
                   <label>Composite</label>
                   <select
                     value={compositeId || ''}
-                    onChange={(e) => setCompositeId(e.target.value)}
+                    onChange={(e) => {
+                      const newId = e.target.value;
+                      setCompositeId(newId);
+                      // Apply composite-specific defaults (e.g. H/Alpha disables dB)
+                      const preset = SAR_COMPOSITES[newId];
+                      if (preset) {
+                        if (preset.defaultUseDecibels !== undefined) {
+                          setUseDecibels(preset.defaultUseDecibels);
+                        }
+                        if (preset.defaultContrastLimits) {
+                          setRgbContrastLimits(preset.defaultContrastLimits);
+                        }
+                      }
+                    }}
                   >
                     {availableComposites.map(c => (
                       <option key={c.id} value={c.id}>

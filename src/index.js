@@ -87,6 +87,7 @@ export {
   getRequiredDatasets,
   getRequiredComplexDatasets,
   computeRGBBands,
+  computeRGBBandsAsync,
   createRGBTexture,
 } from './utils/sar-composites.js';
 

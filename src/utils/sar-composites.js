@@ -8,9 +8,13 @@
  * Off-diagonal terms (complex):
  *   HHVV = <SHH·SVV*> — stored as CFloat32 in NISAR, de-interleaved
  *   to HHVV_re (real) and HHVV_im (imaginary) by the loader.
+ *
+ * Includes Cloude-Pottier H/Alpha/Entropy decomposition (eigenanalysis of
+ * the 3×3 coherency matrix T3 derived from the full covariance matrix C3).
  */
 
 import { applyStretch } from './stretch.js';
+import { computeHAlphaGPU, canUseGPUHAlpha } from '../gpu/polsar-compute.js';
 
 /**
  * Colorblind-safe color matrices for RGB composites.
@@ -141,6 +145,218 @@ function computeFreemanDurdenRGB(bands) {
 }
 
 /**
+ * Cloude-Pottier H/Alpha/Entropy decomposition.
+ *
+ * Eigenanalysis of the 3×3 coherency matrix T3, derived from the covariance
+ * matrix C3 via the Pauli basis transformation:
+ *   T = U · C · U†,  U = (1/√2) [[1,0,1],[1,0,-1],[0,√2,0]]
+ *
+ * Outputs per pixel:
+ *   H  — Entropy (0–1):     randomness of scattering mechanism
+ *   α  — Alpha angle (0–90°): dominant scattering type
+ *   A  — Anisotropy (0–1):   relative importance of 2nd vs 3rd mechanism
+ *
+ * Reference: Cloude & Pottier 1997, IEEE TGRS 35(1).
+ *
+ * @param {number} c11 - HHHH (|SHH|²)
+ * @param {number} c12re - Re(HHHV)
+ * @param {number} c12im - Im(HHHV)
+ * @param {number} c13re - Re(HHVV)
+ * @param {number} c13im - Im(HHVV)
+ * @param {number} c22 - HVHV (|SHV|²)
+ * @param {number} c23re - Re(HVVV)
+ * @param {number} c23im - Im(HVVV)
+ * @param {number} c33 - VVVV (|SVV|²)
+ * @returns {{H: number, alpha: number, A: number}}
+ */
+function hAlphaDecomposition(c11, c12re, c12im, c13re, c13im, c22, c23re, c23im, c33) {
+  // ── Build coherency matrix T3 from covariance C3 ──────────────────
+  // T = U · C · U† with Pauli basis transformation
+  const SQRT2 = Math.SQRT2;
+  const t11 = (c11 + c33 + 2 * c13re) / 2;
+  const t12re = (c11 - c33) / 2;
+  const t12im = -c13im;
+  const t13re = (c12re + c23re) / SQRT2;
+  const t13im = (c12im - c23im) / SQRT2;
+  const t22 = (c11 + c33 - 2 * c13re) / 2;
+  const t23re = (c12re - c23re) / SQRT2;
+  const t23im = (c12im + c23im) / SQRT2;
+  const t33 = c22;
+
+  const trace = t11 + t22 + t33;
+  if (trace <= 1e-20) return { H: 0, alpha: 0, A: 0 };
+
+  // ── Eigenvalues via Cardano's trigonometric method ─────────────────
+  // Characteristic eq: λ³ - trace·λ² + s2·λ - det = 0
+  // All 3 roots real (Hermitian matrix guaranteed)
+  const absT12sq = t12re * t12re + t12im * t12im;
+  const absT13sq = t13re * t13re + t13im * t13im;
+  const absT23sq = t23re * t23re + t23im * t23im;
+
+  const m = trace / 3;
+  const d11 = t11 - m;
+  const d22 = t22 - m;
+  const d33 = t33 - m;
+
+  // p = tr((T - m·I)²) / 6
+  const p = (d11 * d11 + d22 * d22 + d33 * d33 + 2 * (absT12sq + absT13sq + absT23sq)) / 6;
+
+  if (p <= 1e-30) {
+    // Degenerate: all eigenvalues equal → max entropy, undefined alpha
+    return { H: 1, alpha: 45, A: 0 };
+  }
+
+  // q = det(T - m·I) / 2
+  const reT12T23T13conj = (t12re * t23re - t12im * t23im) * t13re
+                        + (t12re * t23im + t12im * t23re) * t13im;
+  const detShifted = d11 * (d22 * d33 - absT23sq)
+                   - absT12sq * d33 - absT13sq * d22
+                   + 2 * reT12T23T13conj;
+  const q = detShifted / 2;
+
+  const p32 = p * Math.sqrt(p);
+  const r = Math.max(-1, Math.min(1, q / p32));  // clamp for numerics
+  const phi = Math.acos(r) / 3;
+  const sqrtP = Math.sqrt(p);
+
+  let l1 = m + 2 * sqrtP * Math.cos(phi);
+  let l2 = m + 2 * sqrtP * Math.cos(phi - 2.094395102393195);  // -2π/3
+  let l3 = m + 2 * sqrtP * Math.cos(phi + 2.094395102393195);  // +2π/3
+
+  // Sort descending: l1 ≥ l2 ≥ l3
+  if (l1 < l2) { const tmp = l1; l1 = l2; l2 = tmp; }
+  if (l1 < l3) { const tmp = l1; l1 = l3; l3 = tmp; }
+  if (l2 < l3) { const tmp = l2; l2 = l3; l3 = tmp; }
+
+  // Clamp negative eigenvalues (numerical noise)
+  l1 = Math.max(l1, 0);
+  l2 = Math.max(l2, 0);
+  l3 = Math.max(l3, 0);
+
+  const span = l1 + l2 + l3;
+  if (span <= 1e-20) return { H: 0, alpha: 0, A: 0 };
+
+  // ── Eigenvectors via cofactor method ──────────────────────────────
+  // For each λi, eigenvector from first column of adj(T - λi·I):
+  //   v0 = (t22-λ)(t33-λ) - |t23|²          [real]
+  //   v1 = t13*·t23 - t12*·(t33-λ)           [complex]
+  //   v2 = t12*·t23* - t13*·(t22-λ)          [complex]
+  // Alpha angle: αi = acos(|v0| / ||v||)
+
+  const lambdas = [l1, l2, l3];
+  const alphas = new Array(3);
+
+  for (let k = 0; k < 3; k++) {
+    const lam = lambdas[k];
+
+    // v0 (real)
+    const v0 = (t22 - lam) * (t33 - lam) - absT23sq;
+
+    // v1 = conj(t13)·t23 - conj(t12)·(t33-λ)
+    // conj(t13)·t23 = (t13re - i·t13im)(t23re + i·t23im)
+    //               = (t13re·t23re + t13im·t23im) + i·(t13re·t23im - t13im·t23re)
+    const v1re = (t13re * t23re + t13im * t23im) - t12re * (t33 - lam);
+    const v1im = (t13re * t23im - t13im * t23re) + t12im * (t33 - lam);
+
+    // v2 = conj(t12)·conj(t23) - conj(t13)·(t22-λ)
+    // conj(t12)·conj(t23) = (t12re - i·t12im)(t23re - i·t23im)
+    //                      = (t12re·t23re + t12im·t23im) - i·(t12re·t23im - t12im·t23re) ... wait
+
+    // Actually: conj(t12)·conj(t23) = (t12re - i·t12im)(t23re - i·t23im)
+    //   re: t12re·t23re + t12im·t23im (wait, minus times minus...)
+    //   re: t12re·t23re - t12im·(-t23im) = t12re·t23re + t12im·t23im  ... no
+    //   (a-bi)(c-di) = (ac - bd) - i(ad + bc) ... wait no:
+    //   (a-bi)(c-di) = ac - adi - bci + bdi² = (ac-bd) - i(ad+bc)
+
+    // Hmm, let me be careful:
+    // (t12re - i·t12im)(t23re - i·t23im)
+    // = t12re·t23re - i·t12re·t23im - i·t12im·t23re + i²·t12im·t23im
+    // = (t12re·t23re - t12im·t23im) - i·(t12re·t23im + t12im·t23re)
+    const v2re = (t12re * t23re - t12im * t23im) - t13re * (t22 - lam);
+    const v2im = -(t12re * t23im + t12im * t23re) + t13im * (t22 - lam);
+
+    const normSq = v0 * v0 + v1re * v1re + v1im * v1im + v2re * v2re + v2im * v2im;
+
+    if (normSq > 1e-30) {
+      const cosAlpha = Math.abs(v0) / Math.sqrt(normSq);
+      alphas[k] = Math.acos(Math.min(1, cosAlpha)) * (180 / Math.PI); // degrees
+    } else {
+      // Degenerate eigenvector — use fallback from other cofactor columns
+      alphas[k] = 45; // isotropic assumption
+    }
+  }
+
+  // ── Pseudo-probabilities & derived parameters ─────────────────────
+  const p1 = l1 / span;
+  const p2 = l2 / span;
+  const p3 = l3 / span;
+
+  // Entropy: H = -Σ pi·log₃(pi),  range [0, 1]
+  const LOG3 = Math.log(3);
+  let H = 0;
+  if (p1 > 1e-10) H -= p1 * Math.log(p1) / LOG3;
+  if (p2 > 1e-10) H -= p2 * Math.log(p2) / LOG3;
+  if (p3 > 1e-10) H -= p3 * Math.log(p3) / LOG3;
+
+  // Mean alpha angle: ᾱ = Σ pi·αi,  range [0°, 90°]
+  const alpha = p1 * alphas[0] + p2 * alphas[1] + p3 * alphas[2];
+
+  // Anisotropy: A = (λ2 - λ3) / (λ2 + λ3),  range [0, 1]
+  const A = (l2 + l3 > 1e-20) ? (l2 - l3) / (l2 + l3) : 0;
+
+  return { H, alpha, A };
+}
+
+/**
+ * Compute H/Alpha/Entropy RGB bands for an entire tile.
+ *
+ * Convention: R = Entropy (H), G = Alpha (α), B = Anisotropy (A)
+ * H ∈ [0, 1], α ∈ [0°, 90°], A ∈ [0, 1]
+ *
+ * @param {Object} bands - {HHHH, HVHV, VVVV, HHHV_re, HHHV_im, HHVV_re, HHVV_im, HVVV_re, HVVV_im}
+ * @returns {{R: Float32Array, G: Float32Array, B: Float32Array}}
+ */
+function computeHAlphaEntropyRGB(bands) {
+  const c11 = bands['HHHH'];
+  const c22 = bands['HVHV'];
+  const c33 = bands['VVVV'];
+  const c12re = bands['HHHV_re'];
+  const c12im = bands['HHHV_im'];
+  const c13re = bands['HHVV_re'];
+  const c13im = bands['HHVV_im'];
+  const c23re = bands['HVVV_re'];
+  const c23im = bands['HVVV_im'];
+  const n = c11.length;
+
+  const R = new Float32Array(n);  // H (entropy)
+  const G = new Float32Array(n);  // α (alpha angle)
+  const B = new Float32Array(n);  // A (anisotropy)
+
+  for (let i = 0; i < n; i++) {
+    const hh = c11[i];
+    const hv = c22[i];
+    const vv = c33[i];
+
+    if (hh <= 0 && hv <= 0 && vv <= 0) continue; // nodata
+
+    const { H, alpha, A } = hAlphaDecomposition(
+      hh,
+      c12re ? c12re[i] : 0, c12im ? c12im[i] : 0,
+      c13re ? c13re[i] : 0, c13im ? c13im[i] : 0,
+      hv,
+      c23re ? c23re[i] : 0, c23im ? c23im[i] : 0,
+      vv
+    );
+
+    R[i] = H;
+    G[i] = alpha;
+    B[i] = A;
+  }
+
+  return { R, G, B };
+}
+
+/**
  * SAR composite preset definitions
  * Each preset maps R/G/B channels to polarization datasets or formulas.
  */
@@ -241,6 +457,18 @@ export const SAR_COMPOSITES = {
     computeAll: true,
     formula: computeFreemanDurdenRGB,
     channelLabels: { R: 'Pd (dbl-bounce)', G: 'Pv (volume)', B: 'Ps (surface)' },
+  },
+  'h-alpha-entropy': {
+    name: 'H / α / A (Cloude-Pottier)',
+    description: 'Entropy / Alpha angle / Anisotropy eigendecomposition',
+    required: ['HHHH', 'HVHV', 'VVVV'],
+    requiredComplex: ['HHHV', 'HHVV', 'HVVV'],
+    computeAll: true,
+    formula: computeHAlphaEntropyRGB,
+    channelLabels: { R: 'H (entropy)', G: 'α (alpha °)', B: 'A (anisotropy)' },
+    // H/α/A are normalized parameters, not power — disable dB scaling
+    defaultUseDecibels: false,
+    defaultContrastLimits: { R: [0, 1], G: [0, 90], B: [0, 1] },
   },
   // Multi-temporal: R/G/B come directly from 3 separate file loads.
   // Required uses sentinel values so getAvailableComposites never surfaces this preset
@@ -368,6 +596,31 @@ export function computeRGBBands(bandData, compositeId, tileSize, numPixels) {
   }
 
   return result;
+}
+
+/**
+ * Async variant of computeRGBBands that uses WebGPU compute when available.
+ * Falls back to synchronous CPU computation when GPU is unavailable.
+ *
+ * Currently accelerates: h-alpha-entropy (eigendecomposition is compute-heavy).
+ *
+ * @param {Object} bandData - Map of polarization name → Float32Array
+ * @param {string} compositeId - Which composite preset to apply
+ * @param {number} tileSize - Tile width (assumes square tile if numPixels not given)
+ * @param {number} [numPixels] - Total pixel count (for non-square images)
+ * @returns {Promise<{R: Float32Array, G: Float32Array, B: Float32Array}>}
+ */
+export async function computeRGBBandsAsync(bandData, compositeId, tileSize, numPixels) {
+  if (numPixels === undefined) numPixels = tileSize * tileSize;
+
+  // Try GPU path for H/Alpha/Entropy
+  if (compositeId === 'h-alpha-entropy' && canUseGPUHAlpha()) {
+    const gpuResult = await computeHAlphaGPU(bandData, numPixels);
+    if (gpuResult) return gpuResult;
+  }
+
+  // Fallback to sync CPU path
+  return computeRGBBands(bandData, compositeId, tileSize, numPixels);
 }
 
 /**
