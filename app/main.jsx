@@ -1226,7 +1226,14 @@ function App() {
       const newLimits = {};
       for (const ch of ['R', 'G', 'B']) {
         if (histogramData[ch]) {
-          newLimits[ch] = [histogramData[ch].p2, histogramData[ch].p98];
+          let p2 = histogramData[ch].p2;
+          let p98 = histogramData[ch].p98;
+          // Metadata histograms (logX=true) store linear power p2/p98 — convert to dB for dB mode
+          if (effectiveUseDecibels && histogramData[ch].logX) {
+            p2 = 10 * Math.log10(Math.max(p2, 1e-10));
+            p98 = 10 * Math.log10(Math.max(p98, 1e-10));
+          }
+          newLimits[ch] = [p2, p98];
         }
       }
       if (Object.keys(newLimits).length === 0) {
@@ -1246,7 +1253,7 @@ function App() {
     } else {
       addStatusLog('warning', 'No histogram data for current mode');
     }
-  }, [histogramData, displayMode, addStatusLog, activeViewer, roiRGBData, roiRGBHistogramData, roiTSHistogramData]);
+  }, [histogramData, displayMode, effectiveUseDecibels, addStatusLog, activeViewer, roiRGBData, roiRGBHistogramData, roiTSHistogramData]);
 
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
@@ -1338,6 +1345,19 @@ function App() {
             }
           }
           setHistogramData(hists);
+          // In dB mode, convert the linear log-normal p2/p98 to dB and apply as contrast limits
+          if (effectiveUseDecibels) {
+            const lims = {};
+            for (const ch of ['R', 'G', 'B']) {
+              if (hists[ch]) {
+                lims[ch] = [
+                  10 * Math.log10(Math.max(hists[ch].p2, 1e-10)),
+                  10 * Math.log10(Math.max(hists[ch].p98, 1e-10)),
+                ];
+              }
+            }
+            if (Object.keys(lims).length > 0) setRgbContrastLimits(lims);
+          }
           addStatusLog('info', 'Metadata histogram from HDF5 band statistics (log-normal model)');
         }
       } else if (isRGBDisplayMode && imageData.getRGBTile && compositeId) {
