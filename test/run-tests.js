@@ -1209,6 +1209,148 @@ try {
   skip('H/Alpha/Entropy functional tests', `import failed: ${err.message}`);
 }
 
+// ─── Dual-pol H/Alpha/Gamma decomposition ────────────────────────────────────
+
+suite('Dual-pol H/α/γ (2×2 eigendecomposition)');
+
+// Source-level checks: GLSL shader
+check('GLSL shader has uMode==3 dual-pol branch (uMode > 2.5)', () => {
+  assertContains(gpuContent, 'uMode > 2.5', 'dual-pol uMode branch');
+});
+
+check('GLSL shader has quadratic eigenvalue formula', () => {
+  assertContains(gpuContent, 'HA_LN2', 'log(2) constant for 2×2 entropy');
+  assertContains(gpuContent, 'trace / 2.0 + disc', 'quadratic eigenvalue l1');
+  assertContains(gpuContent, 'trace / 2.0 - disc', 'quadratic eigenvalue l2');
+});
+
+check('GLSL shader reads coherence with UV remapping support', () => {
+  assertContains(gpuContent, 'needsRemap', 'UV remap detection');
+  assertContains(gpuContent, 'cohUV', 'coherence UV remap');
+});
+
+check('GLSL shader computes eigenvector alpha from 2×2 matrix', () => {
+  assertContains(gpuContent, 'v0_1 = l1 - c22', 'eigenvector v0 for l1');
+  assertContains(gpuContent, 'v0_2 = l2 - c22', 'eigenvector v0 for l2');
+});
+
+// Source-level: SARGPULayer JS
+check('SARGPULayer supports dual-pol-h-alpha mode', () => {
+  assertContains(gpuContent, "isDualPolHAlpha", 'dual-pol mode detection');
+  assertContains(gpuContent, "isDualPolHAlpha ? 3.0", 'uMode 3.0 for dual-pol');
+});
+
+check('SARGPULayer binds C12 textures for dual-pol mode', () => {
+  assertContains(gpuContent, 'isDualPolHAlpha && texCov12Re && texCov12Im', 'dual-pol C12 binding');
+});
+
+// Source-level: SARTileLayer
+check('SARTileLayer detects dual-pol-h-alpha-gamma composite', () => {
+  assertContains(tileLayerContent, "dual-pol-h-alpha-gamma", 'dual-pol composite detection');
+  assertContains(tileLayerContent, "mode: 'dual-pol-h-alpha'", 'dual-pol mode in SARGPULayer');
+});
+
+check('SARTileLayer passes auxiliary coherence data for dual-pol', () => {
+  assertContains(tileLayerContent, 'auxiliaryCoherenceData', 'auxiliary coherence prop');
+});
+
+check('SARTileLayer passes imageBounds for coherence UV remap', () => {
+  assertContains(tileLayerContent, "imageBounds: auxiliaryCoherenceData ? bounds", 'imageBounds for coherence remap');
+});
+
+// Source-level: sar-composites.js preset
+check('dual-pol-h-alpha-gamma preset exists', () => {
+  const compSrc = readFile('src/utils/sar-composites.js');
+  assertContains(compSrc, "'dual-pol-h-alpha-gamma'", 'preset key');
+  assertContains(compSrc, "gpuNative: true", 'gpuNative flag');
+  assertContains(compSrc, "needsAuxCoherence: true", 'needsAuxCoherence flag');
+});
+
+check('dual-pol preset requires only HHHH + HVHV + HHHV (not quad-pol)', () => {
+  const compSrc = readFile('src/utils/sar-composites.js');
+  // Must have HHHH and HVHV in required, but NOT VVVV
+  assertContains(compSrc, "required: ['HHHH', 'HVHV']", 'dual-pol required bands');
+  assertContains(compSrc, "requiredComplex: ['HHHV']", 'dual-pol complex band');
+});
+
+check('dual-pol preset uses log base 2 (not 3) in CPU decomposition', () => {
+  const compSrc = readFile('src/utils/sar-composites.js');
+  assertContains(compSrc, 'const LN2 = Math.log(2)', 'log base 2 in CPU decomposition');
+});
+
+// Functional tests via CPU decomposition
+try {
+  const { computeRGBBands, SAR_COMPOSITES } = await import(join(rootDir, 'src/utils/sar-composites.js'));
+
+  const N = 16;
+  const makeBand = (val) => { const a = new Float32Array(N); a.fill(val); return a; };
+
+  // Test: isotropic 2×2 (C11=C22=1, C12=0) → maximum entropy H=1
+  await asyncCheck('dual-pol isotropic: H≈1, α≈45°', async () => {
+    const bands = {
+      HHHH: makeBand(1), HVHV: makeBand(1),
+      HHHV_re: makeBand(0), HHHV_im: makeBand(0),
+    };
+    const rgb = computeRGBBands(bands, 'dual-pol-h-alpha-gamma', 4);
+    const H = rgb.R[0], alpha = rgb.G[0];
+    if (H < 0.95 || H > 1.05) throw new Error(`H=${H.toFixed(3)}, expected ≈1`);
+    if (alpha < 40 || alpha > 50) throw new Error(`α=${alpha.toFixed(1)}°, expected ≈45°`);
+  });
+
+  // Test: pure co-pol (C11=10, C22=0.01, C12=0) → low entropy, low alpha
+  await asyncCheck('dual-pol surface scatterer: low H, low α', async () => {
+    const bands = {
+      HHHH: makeBand(10), HVHV: makeBand(0.01),
+      HHHV_re: makeBand(0), HHHV_im: makeBand(0),
+    };
+    const rgb = computeRGBBands(bands, 'dual-pol-h-alpha-gamma', 4);
+    const H = rgb.R[0], alpha = rgb.G[0];
+    if (H > 0.3) throw new Error(`H=${H.toFixed(3)}, expected low`);
+    if (alpha > 20) throw new Error(`α=${alpha.toFixed(1)}°, expected low`);
+  });
+
+  // Test: zero data → zero output
+  await asyncCheck('dual-pol zero → zero output', async () => {
+    const bands = {
+      HHHH: makeBand(0), HVHV: makeBand(0),
+      HHHV_re: makeBand(0), HHHV_im: makeBand(0),
+    };
+    const rgb = computeRGBBands(bands, 'dual-pol-h-alpha-gamma', 4);
+    if (rgb.R[0] !== 0) throw new Error(`H=${rgb.R[0]}, expected 0`);
+  });
+
+  // Test: coherence passthrough
+  await asyncCheck('dual-pol coherence passthrough to B channel', async () => {
+    const bands = {
+      HHHH: makeBand(5), HVHV: makeBand(2),
+      HHHV_re: makeBand(0.1), HHHV_im: makeBand(0.05),
+      _coherence: makeBand(0.75),
+    };
+    const rgb = computeRGBBands(bands, 'dual-pol-h-alpha-gamma', 4);
+    if (Math.abs(rgb.B[0] - 0.75) > 0.001) throw new Error(`γ=${rgb.B[0]}, expected 0.75`);
+  });
+
+  // Test: output ranges valid
+  await asyncCheck('dual-pol output ranges: H∈[0,1], α∈[0°,90°]', async () => {
+    const bands = {
+      HHHH: new Float32Array([5, 10, 1, 0.5, 2, 8, 3, 7, 4, 6, 9, 0.1, 0.3, 1.5, 2.5, 4.5]),
+      HVHV: new Float32Array([1, 0.5, 3, 0.1, 1.5, 2, 0.8, 1.2, 0.3, 0.7, 1.1, 0.05, 0.2, 0.6, 1.8, 0.9]),
+      HHHV_re: new Float32Array([0.1, -0.2, 0.3, 0, 0.05, -0.1, 0.15, -0.05, 0.08, -0.12, 0.2, 0, 0.01, 0.04, -0.06, 0.09]),
+      HHHV_im: new Float32Array([0.05, 0.1, -0.15, 0, 0.02, 0.08, -0.07, 0.03, 0.04, -0.06, 0.1, 0, 0.005, 0.02, 0.03, -0.04]),
+    };
+    const rgb = computeRGBBands(bands, 'dual-pol-h-alpha-gamma', 4);
+    for (let i = 0; i < N; i++) {
+      const H = rgb.R[i], a = rgb.G[i];
+      if (isNaN(H) || isNaN(a)) continue;
+      if (H < -0.01 || H > 1.01) throw new Error(`pixel ${i}: H=${H.toFixed(3)} out of [0,1]`);
+      if (a < -0.1 || a > 90.1) throw new Error(`pixel ${i}: α=${a.toFixed(1)}° out of [0°,90°]`);
+    }
+  });
+
+} catch (err) {
+  skip('Dual-pol H/α/γ functional tests', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));

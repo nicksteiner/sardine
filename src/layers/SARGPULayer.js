@@ -175,7 +175,85 @@ float haAlpha(float t11, float t22, float t33,
 // ─── Main ────────────────────────────────────────────────────────────
 
 void main() {
-  if (uMode > 1.5) {
+  if (uMode > 2.5) {
+    // ── Dual-pol H/α/γ: 2×2 eigendecomposition + coherence passthrough ──
+    // Texture layout: unit 0=C11(HHHH), 1=C22(HVHV), 2=γ(coherence),
+    //                 3=C12_re(Re(HHHV)), 4=C12_im(Im(HHHV))
+    float c11   = texture(uTexture, vTexCoord).r;           // HHHH
+    float c22   = texture(uTextureG, vTexCoord).r;           // HVHV
+    float c12re = texture(uTextureMask, vTexCoord).r;        // Re(HHHV)
+    float c12im = texture(uTextureCoherence, vTexCoord).r;   // Im(HHHV)
+
+    // Coherence: may need UV remap if full-extent texture (like incidence angle)
+    // When imageBounds != tileBounds, remap UV from tile space to image space
+    float gamma;
+    vec4 ib = uImageBounds;
+    vec4 tb = uTileBounds;
+    bool needsRemap = (ib.x != tb.x || ib.y != tb.y || ib.z != tb.z || ib.w != tb.w);
+    if (needsRemap) {
+      vec2 geoPos = vec2(
+        mix(tb.x, tb.z, vTexCoord.x),
+        mix(tb.w, tb.y, vTexCoord.y)
+      );
+      vec2 cohUV = clamp(vec2(
+        (geoPos.x - ib.x) / (ib.z - ib.x),
+        (ib.w - geoPos.y) / (ib.w - ib.y)
+      ), 0.0, 1.0);
+      gamma = texture(uTextureB, cohUV).r;
+    } else {
+      gamma = texture(uTextureB, vTexCoord).r;
+    }
+
+    // Nodata: both diagonal terms zero
+    if (c11 <= 0.0 && c22 <= 0.0) {
+      fragColor = vec4(0.0);
+      return;
+    }
+
+    // 2×2 eigenvalues via quadratic formula
+    float trace = c11 + c22;
+    float diff = (c11 - c22) / 2.0;
+    float absC12sq = c12re * c12re + c12im * c12im;
+    float disc = sqrt(diff * diff + absC12sq);
+    float l1 = max(trace / 2.0 + disc, 0.0);
+    float l2 = max(trace / 2.0 - disc, 0.0);
+
+    float span = l1 + l2;
+    if (span <= 1e-20) { fragColor = vec4(0.0); return; }
+
+    // Pseudo-probabilities
+    float p1 = l1 / span;
+    float p2 = l2 / span;
+
+    // Entropy: H = -Σ pi·log₂(pi)  — log base 2 for 2×2
+    const float HA_LN2 = 0.693147180;
+    float H = 0.0;
+    if (p1 > 1e-10) H -= p1 * log(p1) / HA_LN2;
+    if (p2 > 1e-10) H -= p2 * log(p2) / HA_LN2;
+
+    // Eigenvector alpha: v = [l - C22, C12*], alpha = acos(|v0|/||v||)
+    float v0_1 = l1 - c22;
+    float normSq1 = v0_1 * v0_1 + absC12sq;
+    float alpha1 = (normSq1 > 1e-20)
+      ? acos(min(abs(v0_1) / sqrt(normSq1), 1.0)) * HA_R2D : 45.0;
+
+    float v0_2 = l2 - c22;
+    float normSq2 = v0_2 * v0_2 + absC12sq;
+    float alpha2 = (normSq2 > 1e-20)
+      ? acos(min(abs(v0_2) / sqrt(normSq2), 1.0)) * HA_R2D : 45.0;
+
+    float alpha = p1 * alpha1 + p2 * alpha2;
+
+    // Map H/α/γ through per-channel contrast + stretch
+    vec3 rgb = vec3(
+      processChannel(H, uMinR, uMaxR),
+      processChannel(alpha, uMinG, uMaxG),
+      processChannel(gamma, uMinB, uMaxB)
+    );
+
+    fragColor = vec4(rgb, 1.0);
+
+  } else if (uMode > 1.5) {
     // ── H/Alpha/Entropy: full eigendecomposition in fragment shader ──
     // Read 9 covariance matrix elements from texture units 0–8
     float c11   = texture(uTexture, vTexCoord).r;           // HHHH
@@ -601,8 +679,9 @@ export class SARGPULayer extends Layer {
     const { dataR, dataG, dataB, mode = 'single' } = props;
     const isRGB = mode === 'rgb';
     const isHAlpha = mode === 'h-alpha';
+    const isDualPolHAlpha = mode === 'dual-pol-h-alpha';
 
-    if (isRGB || isHAlpha) {
+    if (isRGB || isHAlpha || isDualPolHAlpha) {
       // RGB / H-Alpha mode: upload 3 separate R32F textures (diagonal covariance or RGB bands)
       const rChanged = dataR !== oldProps.dataR;
       const gChanged = dataG !== oldProps.dataG;
@@ -739,9 +818,9 @@ export class SARGPULayer extends Layer {
       }
     }
 
-    // Upload 6 off-diagonal covariance textures for H/Alpha/Entropy GPU mode
-    // These reuse texture units 3–8 (normally mask/coherence/incidence/corrections)
-    if (isHAlpha) {
+    // Upload off-diagonal covariance textures for GPU eigendecomposition modes
+    // H/Alpha uses 6 textures (units 3-8), dual-pol uses 2 (units 3-4)
+    if (isHAlpha || isDualPolHAlpha) {
       const covSlots = [
         { prop: 'dataCov12Re', state: 'texCov12Re' },
         { prop: 'dataCov12Im', state: 'texCov12Im' },
@@ -858,6 +937,7 @@ export class SARGPULayer extends Layer {
 
     const isRGB = mode === 'rgb';
     const isHAlpha = mode === 'h-alpha';
+    const isDualPolHAlpha = mode === 'dual-pol-h-alpha';
 
     try {
       const { gl } = this.context;
@@ -870,7 +950,7 @@ export class SARGPULayer extends Layer {
       // contrastLimits can be [min, max] (uniform) or {R: [min,max], G: [min,max], B: [min,max]}
       let uMin, uMax, uMinR, uMaxR, uMinG, uMaxG, uMinB, uMaxB;
 
-      if ((isRGB || isHAlpha) && contrastLimits && !Array.isArray(contrastLimits)) {
+      if ((isRGB || isHAlpha || isDualPolHAlpha) && contrastLimits && !Array.isArray(contrastLimits)) {
         // Per-channel object: {R: [min,max], G: [min,max], B: [min,max]}
         const rLim = contrastLimits.R || [-25, 0];
         const gLim = contrastLimits.G || [-25, 0];
@@ -898,11 +978,11 @@ export class SARGPULayer extends Layer {
         uMinB, uMaxB,
         uSaturation: rgbSaturation,
         uColorblindMode: COLORBLIND_MODE_IDS[colorblindMode] || 0,
-        uUseDecibels: (useDecibels && !isHAlpha) ? 1.0 : 0.0,
+        uUseDecibels: (useDecibels && !isHAlpha && !isDualPolHAlpha) ? 1.0 : 0.0,
         uColormap: getColormapId(colormap),
         uGamma: gamma,
         uStretchMode: getStretchModeId(stretchMode),
-        uMode: isHAlpha ? 2.0 : (isRGB ? 1.0 : 0.0),
+        uMode: isDualPolHAlpha ? 3.0 : (isHAlpha ? 2.0 : (isRGB ? 1.0 : 0.0)),
         uMaskInvalid: (maskInvalid && textureMask) ? 1.0 : 0.0,
         uMaskLayoverShadow: (maskLayoverShadow && textureMask) ? 1.0 : 0.0,
         uTextureMask: 3,
@@ -927,7 +1007,7 @@ export class SARGPULayer extends Layer {
         uImageBounds: imageBounds || bounds,
       };
 
-      if ((isRGB || isHAlpha) && displayTexG && displayTexB) {
+      if ((isRGB || isHAlpha || isDualPolHAlpha) && displayTexG && displayTexB) {
         // Bind G and B textures to units 1 and 2
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, displayTexG);
@@ -936,6 +1016,14 @@ export class SARGPULayer extends Layer {
 
         layerUniforms.uTextureG = 1;
         layerUniforms.uTextureB = 2;
+      }
+
+      // Dual-pol H/α/γ mode: bind C12_re and C12_im to units 3-4
+      if (isDualPolHAlpha && texCov12Re && texCov12Im) {
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, texCov12Re);
+        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, texCov12Im);
+        layerUniforms.uTextureMask = 3;
+        layerUniforms.uTextureCoherence = 4;
       }
 
       // H/Alpha mode: bind 6 off-diagonal covariance textures to units 3–8
@@ -998,6 +1086,11 @@ export class SARGPULayer extends Layer {
         gl.activeTexture(gl.TEXTURE3);
         gl.bindTexture(gl.TEXTURE_2D, null);
       }
+      if (isDualPolHAlpha) {
+        // Unbind covariance textures from units 3–4
+        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, null);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, null);
+      }
       if (isHAlpha) {
         // Unbind covariance textures from units 3–8
         for (let u = 8; u >= 3; u--) {
@@ -1005,7 +1098,7 @@ export class SARGPULayer extends Layer {
           gl.bindTexture(gl.TEXTURE_2D, null);
         }
       }
-      if (isRGB || isHAlpha) {
+      if (isRGB || isHAlpha || isDualPolHAlpha) {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, null);
         gl.activeTexture(gl.TEXTURE1);

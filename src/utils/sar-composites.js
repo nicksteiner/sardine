@@ -357,6 +357,105 @@ function computeHAlphaEntropyRGB(bands) {
 }
 
 /**
+ * Dual-pol H/Alpha decomposition from 2×2 covariance matrix C2.
+ *
+ * C2 = [[C11, C12], [C12*, C22]]  where C11=HHHH, C22=HVHV, C12=HHHV
+ *
+ * Eigenvalues via quadratic formula (closed-form, no Cardano needed).
+ * Entropy uses log base 2 (2 eigenvalues), not log base 3.
+ *
+ * @param {number} c11 - HHHH (|SHH|²)
+ * @param {number} c12re - Re(HHHV)
+ * @param {number} c12im - Im(HHHV)
+ * @param {number} c22 - HVHV (|SHV|²)
+ * @returns {{ H: number, alpha: number }}
+ */
+function dualPolHAlphaDecomposition(c11, c12re, c12im, c22) {
+  const trace = c11 + c22;
+  if (trace <= 1e-20) return { H: NaN, alpha: NaN };
+
+  const diff = (c11 - c22) / 2;
+  const absC12sq = c12re * c12re + c12im * c12im;
+  const disc = Math.sqrt(diff * diff + absC12sq);
+
+  let l1 = trace / 2 + disc;
+  let l2 = trace / 2 - disc;
+  l1 = Math.max(l1, 0);
+  l2 = Math.max(l2, 0);
+
+  const span = l1 + l2;
+  if (span <= 1e-20) return { H: NaN, alpha: NaN };
+
+  // Pseudo-probabilities
+  const p1 = l1 / span;
+  const p2 = l2 / span;
+
+  // Entropy: H = -Σ pi·log₂(pi),  log base 2 for 2×2
+  const LN2 = Math.log(2);
+  let H = 0;
+  if (p1 > 1e-10) H -= p1 * Math.log(p1) / LN2;
+  if (p2 > 1e-10) H -= p2 * Math.log(p2) / LN2;
+
+  // Eigenvectors: for eigenvalue λ, v = [l - C22, C12*]
+  // Alpha = acos(|v0| / ||v||) where v0 is the co-pol component
+  // Eigenvector for l1: v = [l1 - c22, c12re, -c12im]  (conjugate of C12)
+  const v0_1 = l1 - c22;
+  const normSq1 = v0_1 * v0_1 + absC12sq;
+  const alpha1 = normSq1 > 1e-30
+    ? Math.acos(Math.min(1, Math.abs(v0_1) / Math.sqrt(normSq1))) * (180 / Math.PI)
+    : 45;
+
+  const v0_2 = l2 - c22;
+  const normSq2 = v0_2 * v0_2 + absC12sq;
+  const alpha2 = normSq2 > 1e-30
+    ? Math.acos(Math.min(1, Math.abs(v0_2) / Math.sqrt(normSq2))) * (180 / Math.PI)
+    : 45;
+
+  const alpha = p1 * alpha1 + p2 * alpha2;
+
+  return { H, alpha };
+}
+
+/**
+ * Compute dual-pol H/Alpha/Gamma RGB for an entire tile.
+ *
+ * R = H (entropy, [0,1]),  G = α (alpha °, [0,90]),  B = γ (coherence, [0,1])
+ * Gamma (B channel) comes from auxiliary interferometric coherence data.
+ * If no coherence is available, B channel is zero.
+ *
+ * @param {Object} bands - {HHHH, HVHV, HHHV_re, HHHV_im, _coherence?}
+ * @returns {{ R: Float32Array, G: Float32Array, B: Float32Array }}
+ */
+function computeDualPolHAlphaGammaRGB(bands) {
+  const c11 = bands['HHHH'];
+  const c22 = bands['HVHV'];
+  const c12re = bands['HHHV_re'];
+  const c12im = bands['HHHV_im'];
+  const coherence = bands['_coherence'];
+  const n = c11.length;
+
+  const R = new Float32Array(n);  // H
+  const G = new Float32Array(n);  // α
+  const B = new Float32Array(n);  // γ
+
+  for (let i = 0; i < n; i++) {
+    if (c11[i] <= 0 && c22[i] <= 0) continue; // nodata
+
+    const { H, alpha } = dualPolHAlphaDecomposition(
+      c11[i], c12re[i], c12im[i], c22[i]
+    );
+
+    if (!isNaN(H)) {
+      R[i] = H;
+      G[i] = alpha;
+    }
+    if (coherence) B[i] = coherence[i];
+  }
+
+  return { R, G, B };
+}
+
+/**
  * SAR composite preset definitions
  * Each preset maps R/G/B channels to polarization datasets or formulas.
  */
@@ -468,6 +567,19 @@ export const SAR_COMPOSITES = {
     formula: computeHAlphaEntropyRGB,
     channelLabels: { R: 'H (entropy)', G: 'α (alpha °)', B: 'A (anisotropy)' },
     // H/α/A are normalized parameters, not power — disable dB scaling
+    defaultUseDecibels: false,
+    defaultContrastLimits: { R: [0, 1], G: [0, 90], B: [0, 1] },
+  },
+  'dual-pol-h-alpha-gamma': {
+    name: 'H / α / γ (dual-pol)',
+    description: 'Dual-pol entropy / alpha from 2×2 C2 + interferometric coherence',
+    required: ['HHHH', 'HVHV'],
+    requiredComplex: ['HHHV'],
+    computeAll: true,
+    gpuNative: true,
+    needsAuxCoherence: true,  // γ comes from external GUNW file
+    formula: computeDualPolHAlphaGammaRGB,
+    channelLabels: { R: 'H (entropy)', G: 'α (alpha °)', B: 'γ (coherence)' },
     defaultUseDecibels: false,
     defaultContrastLimits: { R: [0, 1], G: [0, 90], B: [0, 1] },
   },

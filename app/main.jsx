@@ -376,6 +376,7 @@ function App() {
   const [incAngleMax, setIncAngleMax] = useState(47);  // degrees
   const [incidenceAngleGrid, setIncidenceAngleGrid] = useState(null); // {data, width, height}
   const [incidenceScatterData, setIncidenceScatterData] = useState(null);
+  const [auxiliaryCoherenceGrid, setAuxiliaryCoherenceGrid] = useState(null); // {data, width, height} from GUNW for dual-pol H/α/γ
   const [speckleFilterType, setSpeckleFilterType] = useState('none'); // 'none' | 'boxcar' | 'lee' | 'enhanced-lee' | 'frost' | 'gamma-map'
   const [speckleKernelSize, setSpeckleKernelSize] = useState(7);      // 3, 5, 7, 9, 11
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
@@ -4506,6 +4507,50 @@ function App() {
                 </div>
               )}
 
+              {/* Dual-pol H/α/γ: coherence file loader */}
+              {compositeId === 'dual-pol-h-alpha-gamma' && (
+                <div className="control-group">
+                  <label>Coherence (GUNW)</label>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                    Load interferometric coherence from a GUNW product for the γ channel.
+                    {auxiliaryCoherenceGrid && (
+                      <span style={{ color: 'var(--accent)' }}>
+                        {' '}Loaded ({auxiliaryCoherenceGrid.width}×{auxiliaryCoherenceGrid.height})
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="file"
+                    accept=".h5,.hdf5,.he5"
+                    style={{ fontSize: '0.7rem' }}
+                    onChange={async (e) => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      try {
+                        addStatus(`Loading coherence from ${file.name}...`);
+                        const gunwData = await loadNISARGUNW(file, {
+                          dataset: 'coherenceMagnitude',
+                          withCoherence: false,
+                        });
+                        if (gunwData && gunwData.data) {
+                          setAuxiliaryCoherenceGrid({
+                            data: gunwData.data,
+                            width: gunwData.width,
+                            height: gunwData.height,
+                          });
+                          addStatus(`Coherence loaded: ${gunwData.width}×${gunwData.height}`);
+                        } else {
+                          addStatus('No coherence data found in GUNW file');
+                        }
+                      } catch (err) {
+                        addStatus(`Coherence load error: ${err.message}`);
+                        console.error('[main] Coherence load error:', err);
+                      }
+                    }}
+                  />
+                </div>
+              )}
+
               {/* Multi-temporal RGB: file pickers for Green and Blue acquisitions */}
               {displayMode === 'multi-temporal' && (
                 <div className="control-group">
@@ -5779,6 +5824,7 @@ function App() {
                   verticalDisplacement={verticalDisplacement}
                   correctionLayers={correctionLayers}
                   enabledCorrections={enabledCorrections}
+                  auxiliaryCoherenceData={auxiliaryCoherenceGrid}
                   speckleFilterType={speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
                   rgbSaturation={rgbSaturation}
