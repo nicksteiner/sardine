@@ -475,6 +475,124 @@ function App() {
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
   const [satelliteMapVisible, setSatelliteMapVisible] = useState(false);
 
+  // ─── Share Link: serialize/deserialize view state to URL hash ───────
+
+  // Build a shareable URL encoding current view state
+  const buildShareUrl = useCallback(() => {
+    const params = new URLSearchParams();
+
+    // Data source (only remote URLs are shareable)
+    const sourceUrl = cogUrl || remoteUrl || directUrl;
+    if (!sourceUrl) return null;
+    params.set('url', sourceUrl);
+
+    // File type
+    if (fileType === 'cog' || fileType === 'remote') {
+      params.set('type', 'cog');
+    } else {
+      params.set('type', 'nisar');
+      if (selectedFrequency) params.set('freq', selectedFrequency);
+      if (selectedPolarization) params.set('pol', selectedPolarization);
+    }
+
+    // View settings
+    params.set('cm', colormap);
+    params.set('cmin', String(contrastMin));
+    params.set('cmax', String(contrastMax));
+    if (stretchMode !== 'linear') params.set('stretch', stretchMode);
+    if (gamma !== 1.0) params.set('gamma', String(gamma));
+    if (!useDecibels) params.set('db', '0');
+
+    // Display mode
+    if (displayMode === 'rgb' && compositeId) {
+      params.set('composite', compositeId);
+    }
+
+    // Viewport
+    params.set('cx', viewCenter[0].toFixed(5));
+    params.set('cy', viewCenter[1].toFixed(5));
+    params.set('z', viewZoom.toFixed(2));
+
+    return `${window.location.origin}${window.location.pathname}#${params.toString()}`;
+  }, [cogUrl, remoteUrl, directUrl, fileType, selectedFrequency, selectedPolarization,
+      colormap, contrastMin, contrastMax, stretchMode, gamma, useDecibels,
+      displayMode, compositeId, viewCenter, viewZoom]);
+
+  // Copy share link to clipboard
+  const handleShareLink = useCallback(() => {
+    const url = buildShareUrl();
+    if (!url) {
+      addStatusLog('warn', 'Share links only work with remote URLs (S3/HTTP), not local files');
+      return;
+    }
+    navigator.clipboard.writeText(url).then(() => {
+      addStatusLog('success', 'Share link copied to clipboard');
+    }).catch(() => {
+      // Fallback: show the URL in a prompt
+      window.prompt('Copy this share link:', url);
+    });
+  }, [buildShareUrl, addStatusLog]);
+
+  // On mount: parse URL hash and restore state
+  const shareInitRef = useRef(false);
+  useEffect(() => {
+    if (shareInitRef.current) return;
+    shareInitRef.current = true;
+
+    const hash = window.location.hash.slice(1);
+    if (!hash) return;
+
+    try {
+      const params = new URLSearchParams(hash);
+      const url = params.get('url');
+      if (!url) return;
+
+      addStatusLog('info', `Loading shared view: ${url.slice(0, 80)}...`);
+
+      // Restore view settings before loading
+      if (params.has('cm')) setColormap(params.get('cm'));
+      if (params.has('cmin')) setContrastMin(Number(params.get('cmin')));
+      if (params.has('cmax')) setContrastMax(Number(params.get('cmax')));
+      if (params.has('stretch')) setStretchMode(params.get('stretch'));
+      if (params.has('gamma')) setGamma(Number(params.get('gamma')));
+      if (params.has('db') && params.get('db') === '0') setUseDecibels(false);
+      if (params.has('cx') && params.has('cy')) {
+        setViewCenter([Number(params.get('cx')), Number(params.get('cy'))]);
+      }
+      if (params.has('z')) setViewZoom(Number(params.get('z')));
+
+      const type = params.get('type') || 'cog';
+
+      if (type === 'nisar') {
+        if (params.has('freq')) setSelectedFrequency(params.get('freq'));
+        if (params.has('pol')) setSelectedPolarization(params.get('pol'));
+        setFileType('nisar');
+        // Trigger remote NISAR load
+        const pathOnly = url.split('?')[0];
+        const name = pathOnly.split('/').pop() || 'shared-file';
+        // Delay to let state settle, then trigger load
+        setTimeout(() => {
+          handleRemoteFileSelect({ url, name, size: 0, type: 'nisar' });
+        }, 100);
+      } else {
+        setFileType('cog');
+        setCogUrl(url);
+        setDirectUrl(url);
+      }
+
+      // Composite mode
+      if (params.has('composite')) {
+        setDisplayMode('rgb');
+        setCompositeId(params.get('composite'));
+      }
+
+      // Clear the hash so it doesn't interfere with subsequent interactions
+      history.replaceState(null, '', window.location.pathname);
+    } catch (e) {
+      console.warn('[SARdine] Failed to parse share URL:', e);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Clear ROI and classifier when image data changes (new file/dataset loaded)
   useEffect(() => {
     setROI(null);
@@ -4107,6 +4225,13 @@ function App() {
         </button>
         <h1><span className="sar">SAR</span>dine</h1>
         <span className="subtitle">SAR Data INspection and Exploration</span>
+        <button
+          className="share-btn"
+          onClick={handleShareLink}
+          title="Copy share link"
+        >
+          Share
+        </button>
       </div>
 
       {/* Mobile overlay backdrop */}

@@ -158,6 +158,26 @@ body::after {
   text-transform: uppercase;
 }
 
+.share-btn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--sardine-cyan-dim);
+  color: var(--sardine-cyan);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 4px 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.share-btn:hover {
+  background: var(--sardine-cyan-bg);
+  border-color: var(--sardine-cyan);
+}
+
 
 /* ─── MAIN LAYOUT ─── */
 .main-layout {
