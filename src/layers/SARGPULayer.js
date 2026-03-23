@@ -3,6 +3,40 @@ import { Model, Geometry } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 import { applyWebGLFilter, FILTER_TYPE_IDS } from '../gpu/webgl-spatial-filter.js';
+import { probeGPU } from '../utils/gpu-detect.js';
+
+/**
+ * Convert Float32Array to Uint16Array of IEEE 754 half-float values.
+ * Used as fallback for mobile GPUs that don't support R32F textures.
+ */
+function float32ToFloat16(float32Array) {
+  const len = float32Array.length;
+  const result = new Uint16Array(len);
+  const view = new DataView(new ArrayBuffer(4));
+  for (let i = 0; i < len; i++) {
+    const val = float32Array[i];
+    view.setFloat32(0, val);
+    const bits = view.getUint32(0);
+    const sign = (bits >>> 31) & 0x1;
+    const exp = (bits >>> 23) & 0xff;
+    const frac = bits & 0x7fffff;
+    let h;
+    if (exp === 0xff) {
+      // Inf or NaN
+      h = (sign << 15) | 0x7c00 | (frac ? 0x200 : 0);
+    } else if (exp > 142) {
+      // Overflow → Inf
+      h = (sign << 15) | 0x7c00;
+    } else if (exp < 113) {
+      // Underflow → zero (or subnormal, but simpler to clamp)
+      h = (sign << 15);
+    } else {
+      h = (sign << 15) | ((exp - 112) << 10) | (frac >>> 13);
+    }
+    result[i] = h;
+  }
+  return result;
+}
 
 /**
  * Colorblind mode IDs for shader uniform.
@@ -601,6 +635,7 @@ export class SARGPULayer extends Layer {
 
   _createR32FTexture(data, width, height, nearest = false) {
     const { gl } = this.context;
+    const gpu = probeGPU();
 
     try {
       const expected = width * height;
@@ -610,6 +645,20 @@ export class SARGPULayer extends Layer {
       if (data.length < expected) {
         texData = new Float32Array(expected);
         texData.set(data);
+      }
+
+      // Clamp texture dimensions to device max (mobile GPUs often 4096, desktop 16384)
+      if (gpu.maxTextureSize > 0 && (width > gpu.maxTextureSize || height > gpu.maxTextureSize)) {
+        console.warn(`[SARGPULayer] Texture ${width}x${height} exceeds device max ${gpu.maxTextureSize}, clamping`);
+        const newW = Math.min(width, gpu.maxTextureSize);
+        const newH = Math.min(height, gpu.maxTextureSize);
+        const clamped = new Float32Array(newW * newH);
+        for (let y = 0; y < newH; y++) {
+          clamped.set(texData.subarray(y * width, y * width + newW), y * newW);
+        }
+        texData = clamped;
+        width = newW;
+        height = newH;
       }
 
       // Create R32F texture using raw WebGL2 API
@@ -630,8 +679,34 @@ export class SARGPULayer extends Layer {
         texData         // Float32Array
       );
 
+      // Check for R32F upload error — fall back to R16F (half-float) on mobile
+      let glErr = gl.getError();
+      if (glErr !== gl.NO_ERROR && gpu.halfFloatTextures) {
+        console.warn(`[SARGPULayer] R32F failed (0x${glErr.toString(16)}), falling back to R16F`);
+        // Convert Float32 → Uint16 (IEEE 754 half-float)
+        const halfData = float32ToFloat16(texData);
+        gl.texImage2D(
+          gl.TEXTURE_2D, 0,
+          gl.R16F,           // internal format — half-float
+          width, height, 0,
+          gl.RED,
+          gl.HALF_FLOAT,     // type
+          halfData
+        );
+        glErr = gl.getError();
+      }
+
       // Set texture filtering parameters
-      const filter = nearest ? gl.NEAREST : gl.LINEAR;
+      // On mobile GPUs without OES_texture_float_linear, LINEAR filtering on
+      // R32F textures silently produces black output. Use NEAREST instead.
+      let filter;
+      if (nearest) {
+        filter = gl.NEAREST;
+      } else if (gpu.needsNearestSampling) {
+        filter = gl.NEAREST;
+      } else {
+        filter = gl.LINEAR;
+      }
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -639,7 +714,6 @@ export class SARGPULayer extends Layer {
       gl.bindTexture(gl.TEXTURE_2D, null);
 
       // Check for GL errors (VRAM exhaustion won't throw, it sets an error flag)
-      const glErr = gl.getError();
       if (glErr !== gl.NO_ERROR) {
         console.error(`[SARGPULayer] GL error 0x${glErr.toString(16)} after texImage2D (${width}x${height})`);
         gl.deleteTexture(texture);

@@ -1245,7 +1245,30 @@ button.btn-danger:hover {
 }
 
 
-/* ─── RESPONSIVE ─── */
+/* ─── MOBILE MENU BUTTON ─── */
+.mobile-menu-btn {
+  display: none;
+  background: none;
+  border: 1px solid var(--sardine-border);
+  color: var(--sardine-cyan);
+  font-size: 1.4rem;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.mobile-menu-btn:active {
+  background: var(--sardine-bg-hover);
+}
+
+.mobile-backdrop {
+  display: none;
+}
+
+/* ─── RESPONSIVE: TABLET ─── */
 @media (max-width: 768px) {
   .controls-panel {
     width: 220px;
@@ -1258,6 +1281,104 @@ button.btn-danger:hover {
   }
   .overview-map {
     width: 280px;
+  }
+}
+
+/* ─── RESPONSIVE: MOBILE ─── */
+@media (max-width: 640px) {
+  /* Show hamburger button */
+  .mobile-menu-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Hide subtitle on small screens */
+  .header .subtitle {
+    display: none;
+  }
+
+  .header {
+    padding: var(--space-sm) var(--space-sm);
+    gap: var(--space-sm);
+  }
+
+  /* Sidebar: hidden by default, slides in as overlay */
+  .controls-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 85vw;
+    max-width: 320px;
+    z-index: 2000;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: none;
+    padding-top: 56px; /* Clear header height */
+  }
+
+  .controls-panel.mobile-open {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
+  }
+
+  /* Backdrop overlay */
+  .mobile-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 1999;
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  /* Touch-friendly controls */
+  .control-section select,
+  .control-section input[type="text"],
+  .control-section input[type="number"],
+  .control-section input[type="url"] {
+    font-size: 16px !important; /* Prevents iOS zoom on input focus */
+    min-height: 36px;
+    padding: 6px 8px;
+  }
+
+  .control-section button,
+  .btn-primary,
+  .btn-secondary,
+  .btn-alert {
+    min-height: 40px;
+    font-size: 0.8rem;
+  }
+
+  input[type="range"] {
+    height: 24px;
+  }
+
+  .control-section h3.collapsible {
+    min-height: 36px;
+    padding: 6px 0;
+  }
+
+  /* Metadata panel: smaller on mobile */
+  .metadata-panel {
+    width: 150px;
+    font-size: 0.55rem;
+  }
+
+  /* Overview map: smaller */
+  .overview-map {
+    width: 180px;
+  }
+
+  /* Footer: taller for touch */
+  footer {
+    min-height: 32px !important;
+    font-size: 0.55rem !important;
+  }
+
+  /* Status window: shorter on mobile */
+  .status-window-expanded {
+    max-height: 180px !important;
   }
 }
 

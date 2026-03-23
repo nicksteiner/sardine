@@ -389,6 +389,7 @@ function App() {
   const [roiRGBContrastLimits, setRoiRGBContrastLimits] = useState(null); // per-channel {R,G,B} contrast for ROI overlay
   const [roiRGBHistogramData, setRoiRGBHistogramData] = useState(null); // histogram data for ROI RGB viewer
   const [activeViewer, setActiveViewer] = useState('main'); // 'main' | 'roi-rgb' | 'roi-ts' — which viewer the sidebar controls
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false); // Mobile sidebar toggle
 
   // ROI Time-Series state
   const [roiTSFiles, setRoiTSFiles] = useState([]);           // Array of File objects for time-series
@@ -4097,14 +4098,26 @@ function App() {
       )}
       {/* Header */}
       <div className="header">
+        <button
+          className="mobile-menu-btn"
+          onClick={() => setMobileMenuOpen(prev => !prev)}
+          aria-label="Toggle controls"
+        >
+          {mobileMenuOpen ? '✕' : '☰'}
+        </button>
         <h1><span className="sar">SAR</span>dine</h1>
         <span className="subtitle">SAR Data INspection and Exploration</span>
       </div>
 
+      {/* Mobile overlay backdrop */}
+      {mobileMenuOpen && (
+        <div className="mobile-backdrop" onClick={() => setMobileMenuOpen(false)} />
+      )}
+
       {/* Main Layout */}
       <div className="main-layout">
         {/* Controls Panel */}
-        <div className="controls-panel">
+        <div className={`controls-panel${mobileMenuOpen ? ' mobile-open' : ''}`}>
           {/* Data Source Selection */}
           <CollapsibleSection title="Data Source">
             <div className="control-group">
@@ -6038,6 +6051,8 @@ function App() {
         <span>steinerlab - ccny</span>
         <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6, display: 'flex', alignItems: 'center', gap: '8px' }}>
           deck.gl{multiLook ? ' · multi-look' : ''}
+          {gpuInfo.isMobile && ' · mobile'}
+          {gpuInfo.needsNearestSampling && <span style={{ color: '#f5a623' }}> · nearest-only</span>}
           {gpuInfo.webgpu
             ? ' · WebGPU'
             : <span style={{ color: '#f5a623' }}> · no WebGPU (histogram CPU-only)</span>}
