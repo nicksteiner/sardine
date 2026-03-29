@@ -92,6 +92,7 @@ export {
   getRequiredComplexDatasets,
   computeRGBBands,
   createRGBTexture,
+  COLORBLIND_MATRICES,
 } from './utils/sar-composites.js';
 
 export { writeRGBAGeoTIFF, writeRGBGeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
@@ -114,12 +115,17 @@ export {
 export {
   hasWebGPU,
   getDevice,
+  destroyDevice,
+  getDeviceLimits,
   computeHistogramGPU,
   computeChannelStatsAuto,
   canUseGPUStats,
   applySpeckleFilter,
   getFilterTypes,
   estimateENL,
+  applyWebGLFilter,
+  canUseWebGLFilter,
+  FILTER_TYPE_IDS,
 } from './gpu/index.js';
 
 // Overture Maps integration

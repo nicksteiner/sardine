@@ -20,7 +20,7 @@ export const STRETCH_MODES = {
  * Pipeline: raw → dB (optional) → normalize to [0,1] → applyStretch → colormap
  *
  * @param {number} value - Normalized input in [0, 1]
- * @param {string} mode - One of: 'linear', 'sqrt', 'gamma', 'sigmoid'
+ * @param {string} mode - One of: 'linear', 'sqrt', 'log', 'gamma', 'sigmoid'
  * @param {number} gamma - Gamma exponent (default 1.0).
  *   For gamma mode: output = value^gamma. gamma < 1 brightens, gamma > 1 darkens.
  *   For sigmoid mode: gamma controls steepness (higher = steeper S-curve).
