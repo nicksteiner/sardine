@@ -69,14 +69,18 @@ export {
   inferno,
   plasma,
   phase,
+  twilight,
   sardine,
   flood,
   diverging,
   polarimetric,
   label,
+  rdbu,
+  romaO,
   getColormap,
   generateColorbar,
   createColorbarCanvas,
+  buildColormapLUT,
   applyColormap,
 } from './utils/colormap.js';
 
