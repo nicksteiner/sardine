@@ -1,0 +1,56 @@
+{
+  "name": "sardine",
+  "version": "0.9.0",
+  "description": "GPU-accelerated SAR browser viewer with STAC catalog and file serving",
+  "transport": "http",
+  "url": "http://localhost:5173",
+  "skills": [
+    {
+      "name": "sardine_viewer_stac_search",
+      "description": "Search local DuckDB STAC catalog for SAR scenes",
+      "category": "discovery",
+      "tags": ["stac", "catalog", "search"],
+      "parameters": {
+        "bbox": {"type": "array", "description": "[west, south, east, north]"},
+        "datetime": {"type": "string", "description": "ISO 8601 datetime range"},
+        "collections": {"type": "array", "description": "STAC collection IDs"},
+        "limit": {"type": "integer", "default": 10}
+      },
+      "returns": "STAC FeatureCollection"
+    },
+    {
+      "name": "sardine_viewer_list_files",
+      "description": "List SAR data files from the viewer's data directory",
+      "category": "data_access",
+      "tags": ["files", "browse", "hdf5"],
+      "parameters": {
+        "path": {"type": "string", "default": "/"},
+        "pattern": {"type": "string", "description": "Glob filter pattern"}
+      },
+      "returns": "Array of file entries with name, size, type"
+    },
+    {
+      "name": "sardine_viewer_serve_file",
+      "description": "Serve a local HDF5/GeoTIFF file via HTTP Range requests for streaming",
+      "category": "data_access",
+      "tags": ["serve", "range", "streaming"],
+      "parameters": {
+        "path": {"type": "string", "required": true}
+      },
+      "returns": "HTTP URL for byte-range access to the file"
+    },
+    {
+      "name": "sardine_viewer_render_preview",
+      "description": "Render a SAR scene preview image via the browser viewer",
+      "category": "visualization",
+      "tags": ["render", "preview", "gpu"],
+      "parameters": {
+        "source": {"type": "string", "required": true},
+        "colormap": {"type": "string", "default": "viridis"},
+        "width": {"type": "integer", "default": 512},
+        "height": {"type": "integer", "default": 512}
+      },
+      "returns": "PNG image URL"
+    }
+  ]
+}

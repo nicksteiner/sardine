@@ -361,8 +361,8 @@ check('stretch.js exports applyStretch()', () => {
   assertContains(stretchContent, 'export function applyStretch', 'applyStretch export');
 });
 
-check('stretch.js handles all 4 modes', () => {
-  for (const mode of ['sqrt', 'gamma', 'sigmoid', 'linear']) {
+check('stretch.js handles all 5 modes', () => {
+  for (const mode of ['sqrt', 'log', 'gamma', 'sigmoid', 'linear']) {
     assertContains(stretchContent, `'${mode}'`, `${mode} case`);
   }
 });
@@ -460,8 +460,50 @@ try {
     if (Math.abs(at0) > 0.01) throw new Error(`sigmoid(0) = ${at0}, expected ~0`);
     if (Math.abs(at1 - 1) > 0.01) throw new Error(`sigmoid(1) = ${at1}, expected ~1`);
   });
+
+  check('log stretch: maps [0,1] to [0,1], enhances low values', () => {
+    const at0 = applyStretch(0, 'log', 1.0);
+    const at1 = applyStretch(1, 'log', 1.0);
+    const atMid = applyStretch(0.1, 'log', 1.0);
+    if (Math.abs(at0) > 1e-10) throw new Error(`log(0) = ${at0}, expected 0`);
+    if (Math.abs(at1 - 1) > 0.01) throw new Error(`log(1) = ${at1}, expected ~1`);
+    // Log stretch should pull 0.1 upward (enhance low values)
+    if (atMid <= 0.1) throw new Error(`log(0.1) = ${atMid}, expected > 0.1 (enhancement)`);
+    if (atMid >= 1.0) throw new Error(`log(0.1) = ${atMid}, expected < 1.0`);
+  });
 } catch (err) {
   skip('stretch correctness tests', `import failed: ${err.message}`);
+}
+
+// ─── 10b. Colormap LUT correctness ─────────────────────────────────────────
+
+suite('Colormap LUT correctness');
+
+try {
+  const { buildColormapLUT, getColormap, COLORMAP_NAMES } = await import(join(rootDir, 'src/utils/colormap.js'));
+
+  check('buildColormapLUT returns 1024-byte Uint8Array', () => {
+    const lut = buildColormapLUT('viridis');
+    if (!(lut instanceof Uint8Array)) throw new Error('Expected Uint8Array');
+    if (lut.length !== 1024) throw new Error(`Expected 1024 bytes, got ${lut.length}`);
+  });
+
+  check('LUT matches direct colormap evaluation', () => {
+    for (const name of ['grayscale', 'viridis', 'inferno']) {
+      const lut = buildColormapLUT(name);
+      const fn = getColormap(name);
+      // Check a few sample points
+      for (const idx of [0, 64, 128, 192, 255]) {
+        const [r, g, b] = fn(idx / 255);
+        const off = idx * 4;
+        if (Math.abs(lut[off] - r) > 1) throw new Error(`${name} LUT[${idx}].r = ${lut[off]}, expected ${r}`);
+        if (Math.abs(lut[off + 1] - g) > 1) throw new Error(`${name} LUT[${idx}].g = ${lut[off+1]}, expected ${g}`);
+        if (Math.abs(lut[off + 2] - b) > 1) throw new Error(`${name} LUT[${idx}].b = ${lut[off+2]}, expected ${b}`);
+      }
+    }
+  });
+} catch (err) {
+  skip('colormap LUT tests', `import failed: ${err.message}`);
 }
 
 // ─── 11. GeoTIFF writer correctness ───────────────────────────────────────────
