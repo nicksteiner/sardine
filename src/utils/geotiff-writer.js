@@ -919,6 +919,13 @@ function writeLegacyOverflow(view, bytes, offset, entry) {
  * @returns {ArrayBuffer} - Complete TIFF file
  */
 export async function writeFloat32GeoTIFF(bands, bandNames, width, height, bounds, epsgCode, options = {}) {
+  // Validate band inputs
+  for (const name of bandNames) {
+    if (!bands[name]) throw new Error(`Band "${name}" not found in bands object`);
+    if (bands[name].length !== width * height) {
+      throw new Error(`Band "${name}" size mismatch: expected ${width * height}, got ${bands[name].length}`);
+    }
+  }
   const { onProgress } = options;
   const numBands = bandNames.length;
   const [minX, minY, maxX, maxY] = bounds;
