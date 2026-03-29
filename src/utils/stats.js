@@ -308,21 +308,23 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
  * @returns {Object|null} {bins, min, max, mean, binWidth, count, p2, p98}
  */
 export function computeChannelStats(values, useDecibels = false, numBins = 128, stride = 1) {
-  // Pass 1: find min/max/sum/count in one scan
+  // Pass 1: convert + cache valid values, find min/max/sum/count
   let min = Infinity;
   let max = -Infinity;
   let sum = 0;
   let count = 0;
+  const cached = new Float32Array(Math.ceil(values.length / stride));
 
   for (let i = 0; i < values.length; i += stride) {
     let val = values[i];
     if (isNaN(val)) continue;
     if (useDecibels) {
-      if (val <= 0) continue; // dB needs positive input
-      val = 10 * Math.log10(Math.max(val, 1e-10));
+      if (val <= 0) continue;
+      val = 10 * Math.log10(val);
     } else {
-      if (val === 0) continue; // skip exact zero (nodata)
+      if (val === 0) continue;
     }
+    cached[count] = val;
     if (val < min) min = val;
     if (val > max) max = val;
     sum += val;
@@ -335,17 +337,9 @@ export function computeChannelStats(values, useDecibels = false, numBins = 128, 
   const binWidth = (max - min) / numBins || 1;
   const bins = new Array(numBins).fill(0);
 
-  // Pass 2: bin all values
-  for (let i = 0; i < values.length; i += stride) {
-    let val = values[i];
-    if (isNaN(val)) continue;
-    if (useDecibels) {
-      if (val <= 0) continue;
-      val = 10 * Math.log10(Math.max(val, 1e-10));
-    } else {
-      if (val === 0) continue;
-    }
-    const idx = Math.floor((val - min) / binWidth);
+  // Pass 2: bin cached values (no dB recomputation)
+  for (let i = 0; i < count; i++) {
+    const idx = Math.floor((cached[i] - min) / binWidth);
     bins[Math.max(0, Math.min(numBins - 1, idx))]++;
   }
 
