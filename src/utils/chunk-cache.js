@@ -8,7 +8,6 @@
  */
 
 const CACHE_NAME = 'sardine-chunks-v1';
-const MAX_CACHE_ENTRIES = 2000; // cap to prevent unbounded disk use
 
 let _cache = null;
 let _cacheAvailable = null; // null = untested, true/false after first attempt
