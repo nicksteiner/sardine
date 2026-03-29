@@ -10,13 +10,22 @@
  * @returns {Object} Statistics object with min, max, mean, std, median
  */
 export function computeStats(data, useDecibels = true) {
-  // O(n) two-pass: find min/max/mean/std, estimate median via histogram bin-walk
+  // Pass 1: convert + cache valid values, track min/max/sum/sqSum
   let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
+
+  // Cache converted values to avoid recomputing dB in pass 2
+  const cached = new Float32Array(data.length);
 
   for (let i = 0; i < data.length; i++) {
     let val = data[i];
-    if (val === 0 || isNaN(val)) continue;
-    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    if (isNaN(val)) continue;
+    if (useDecibels) {
+      if (val <= 0) continue;
+      val = 10 * Math.log10(val);
+    } else {
+      if (val === 0) continue;
+    }
+    cached[count] = val;
     if (val < min) min = val;
     if (val > max) max = val;
     sum += val;
@@ -29,18 +38,15 @@ export function computeStats(data, useDecibels = true) {
   }
 
   const mean = sum / count;
-  const std = Math.sqrt(sqSum / count - mean * mean);
+  const std = Math.sqrt(Math.max(0, sqSum / count - mean * mean));
 
-  // Estimate median via histogram bin-walk (O(n) instead of O(n log n) sort)
+  // Pass 2: bin cached values (no dB recomputation)
   const numBins = 256;
   const binWidth = (max - min) / numBins || 1;
   const bins = new Array(numBins).fill(0);
 
-  for (let i = 0; i < data.length; i++) {
-    let val = data[i];
-    if (val === 0 || isNaN(val)) continue;
-    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
-    const idx = Math.floor((val - min) / binWidth);
+  for (let i = 0; i < count; i++) {
+    const idx = Math.floor((cached[i] - min) / binWidth);
     bins[Math.max(0, Math.min(numBins - 1, idx))]++;
   }
 
@@ -73,13 +79,20 @@ export function autoContrastLimits(
   lowPercentile = 2,
   highPercentile = 98
 ) {
-  // O(n) histogram bin-walk for percentiles instead of O(n log n) sort
+  // Pass 1: convert + cache valid values, track min/max
   let min = Infinity, max = -Infinity, count = 0;
+  const cached = new Float32Array(data.length);
 
   for (let i = 0; i < data.length; i++) {
     let val = data[i];
-    if (val === 0 || isNaN(val)) continue;
-    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+    if (isNaN(val)) continue;
+    if (useDecibels) {
+      if (val <= 0) continue;
+      val = 10 * Math.log10(val);
+    } else {
+      if (val === 0) continue;
+    }
+    cached[count] = val;
     if (val < min) min = val;
     if (val > max) max = val;
     count++;
@@ -89,15 +102,13 @@ export function autoContrastLimits(
     return useDecibels ? [-30, 0] : [0, 1];
   }
 
+  // Pass 2: bin cached values (no dB recomputation)
   const numBins = 256;
   const binWidth = (max - min) / numBins || 1;
   const bins = new Array(numBins).fill(0);
 
-  for (let i = 0; i < data.length; i++) {
-    let val = data[i];
-    if (val === 0 || isNaN(val)) continue;
-    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
-    const idx = Math.floor((val - min) / binWidth);
+  for (let i = 0; i < count; i++) {
+    const idx = Math.floor((cached[i] - min) / binWidth);
     bins[Math.max(0, Math.min(numBins - 1, idx))]++;
   }
 
@@ -131,21 +142,30 @@ export function autoContrastLimits(
  * @returns {Object} Histogram object with bins, counts, edges
  */
 export function computeHistogram(data, useDecibels = true, numBins = 256, range = null) {
-  // Single-pass min/max + binning (no sort needed)
   let min, max;
+  let cached = null;
+  let count = 0;
 
   if (range) {
     [min, max] = range;
   } else {
-    // O(n) scan for min/max instead of O(n log n) sort
+    // Pass 1: convert + cache valid values, track min/max
+    cached = new Float32Array(data.length);
     min = Infinity;
     max = -Infinity;
     for (let i = 0; i < data.length; i++) {
       let val = data[i];
-      if (val === 0 || isNaN(val)) continue;
-      if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+      if (isNaN(val)) continue;
+      if (useDecibels) {
+        if (val <= 0) continue;
+        val = 10 * Math.log10(val);
+      } else {
+        if (val === 0) continue;
+      }
+      cached[count] = val;
       if (val < min) min = val;
       if (val > max) max = val;
+      count++;
     }
   }
 
@@ -167,13 +187,28 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
   }
 
   let totalCount = 0;
-  for (let i = 0; i < data.length; i++) {
-    let val = data[i];
-    if (val === 0 || isNaN(val)) continue;
-    if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
-    const binIdx = Math.floor((val - min) / binWidth);
-    bins[Math.max(0, Math.min(numBins - 1, binIdx))]++;
-    totalCount++;
+  if (cached) {
+    // Use cached values (no dB recomputation)
+    for (let i = 0; i < count; i++) {
+      const binIdx = Math.floor((cached[i] - min) / binWidth);
+      bins[Math.max(0, Math.min(numBins - 1, binIdx))]++;
+    }
+    totalCount = count;
+  } else {
+    // Range was provided — must convert on the fly
+    for (let i = 0; i < data.length; i++) {
+      let val = data[i];
+      if (isNaN(val)) continue;
+      if (useDecibels) {
+        if (val <= 0) continue;
+        val = 10 * Math.log10(val);
+      } else {
+        if (val === 0) continue;
+      }
+      const binIdx = Math.floor((val - min) / binWidth);
+      bins[Math.max(0, Math.min(numBins - 1, binIdx))]++;
+      totalCount++;
+    }
   }
 
   return { bins, edges, min, max, binWidth, totalCount };
@@ -202,8 +237,13 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
         if (tile && tile.data) {
           for (let i = 0; i < tile.data.length; i++) {
             let val = tile.data[i];
-            if (val === 0 || isNaN(val)) continue;
-            if (useDecibels) val = 10 * Math.log10(Math.max(val, 1e-10));
+            if (isNaN(val)) continue;
+            if (useDecibels) {
+              if (val <= 0) continue;
+              val = 10 * Math.log10(val);
+            } else {
+              if (val === 0) continue;
+            }
             if (val < min) min = val;
             if (val > max) max = val;
             sum += val;
@@ -226,7 +266,7 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
   }
 
   const mean = sum / count;
-  const std = Math.sqrt(sqSum / count - mean * mean);
+  const std = Math.sqrt(Math.max(0, sqSum / count - mean * mean));
 
   // Bin-walk CDF for percentiles and median
   const binWidth = (max - min) / numBins || 1;

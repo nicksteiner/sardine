@@ -43,7 +43,7 @@ uniform float uMin;
 uniform float uMax;
 uniform bool uUseDecibels;
 uniform int uColormap;
-uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=gamma, 3=sigmoid
+uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=log, 3=gamma, 4=sigmoid
 uniform float uGamma;
 
 in vec2 vTexCoord;
@@ -248,9 +248,13 @@ void main(void) {
     // sqrt stretch
     value = sqrt(value);
   } else if (uStretchMode == 2) {
+    // log stretch: log(1 + k*x) / log(1 + k), k = 10^(1+gamma)
+    float k = pow(10.0, 1.0 + uGamma);
+    value = log(1.0 + k * value) / log(1.0 + k);
+  } else if (uStretchMode == 3) {
     // gamma stretch
     value = pow(value, uGamma);
-  } else if (uStretchMode == 3) {
+  } else if (uStretchMode == 4) {
     // sigmoid stretch
     float gain = uGamma * 8.0;
     float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));

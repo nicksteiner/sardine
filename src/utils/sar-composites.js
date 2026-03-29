@@ -129,7 +129,9 @@ function computeFreemanDurdenRGB(bands) {
     const c13re = re ? re[i] : 0;
     const c13im = im ? im[i] : 0;
 
-    if (c11 <= 0 && c22 <= 0 && c33 <= 0) continue; // nodata
+    // Skip nodata: NaN or all-zero pixels
+    if (isNaN(c11) || isNaN(c22) || isNaN(c33)) continue;
+    if (c11 <= 0 && c22 <= 0 && c33 <= 0) continue;
 
     const { Ps, Pd, Pv } = freemanDurden(c11, c22, c33, c13re, c13im);
     R[i] = Pd;  // double-bounce → red (urban)

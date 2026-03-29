@@ -9,6 +9,7 @@
 export const STRETCH_MODES = {
   linear:  { name: 'Linear',      description: 'No transform' },
   sqrt:    { name: 'Square Root',  description: 'Enhance low values' },
+  log:     { name: 'Logarithmic', description: 'Strong low-value enhancement (SAR speckle)' },
   gamma:   { name: 'Gamma',       description: 'Adjustable power curve' },
   sigmoid: { name: 'Sigmoid',     description: 'S-curve, emphasize midtones' },
 };
@@ -29,6 +30,15 @@ export function applyStretch(value, mode = 'linear', gamma = 1.0) {
   switch (mode) {
     case 'sqrt':
       return Math.sqrt(value);
+
+    case 'log':
+      // Logarithmic stretch: strong enhancement of low values.
+      // Maps [0,1] → [0,1] via log(1 + k*x) / log(1 + k), k controlled by gamma.
+      // Default gamma=1.0 gives k=100 (strong compression). Higher gamma = stronger.
+      {
+        const k = Math.pow(10, 1 + gamma);
+        return Math.log(1 + k * value) / Math.log(1 + k);
+      }
 
     case 'gamma':
       return Math.pow(value, gamma);
