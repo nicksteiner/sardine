@@ -538,9 +538,7 @@ function buildIFD(width, height, tiles, bounds, pixelScale, epsgCode, isOverview
   const entries = [];
 
   // NewSubfileType (254) - 0 for full res, 1 for reduced-resolution
-  if (isOverview) {
-    entries.push(makeEntry(TAG_NEW_SUBFILE_TYPE, TYPE_LONG, 1, 1));
-  }
+  entries.push(makeEntry(TAG_NEW_SUBFILE_TYPE, TYPE_LONG, 1, isOverview ? 1 : 0));
 
   // Image dimensions
   entries.push(makeEntry(TAG_IMAGE_WIDTH, TYPE_LONG, 1, width));

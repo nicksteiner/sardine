@@ -404,57 +404,72 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
     }
   }
 
-  const rgba = new Uint8ClampedArray(width * height * 4);
+  const numPixels = width * height;
+  const rgba = new Uint8ClampedArray(numPixels * 4);
   const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
   const cvdMatrix = COLORBLIND_MATRICES[colorblindMode] || null;
 
-  for (let i = 0; i < width * height; i++) {
+  // Hoist per-channel invariants out of the hot loop
+  const bandR = bands.R, bandG = bands.G, bandB = bands.B;
+  const bandArr = [bandR, bandG, bandB];
+  const chMin = [limits.R[0], limits.G[0], limits.B[0]];
+  const invRange = [
+    1 / (limits.R[1] - limits.R[0] || 1),
+    1 / (limits.G[1] - limits.G[0] || 1),
+    1 / (limits.B[1] - limits.B[0] || 1),
+  ];
+  // log10(x) = log2(x) * log10(2) — log2 is faster in JS engines
+  const LOG10_2 = Math.log10(2);
+  const hasMask = dataMask !== null;
+
+  for (let i = 0; i < numPixels; i++) {
     const idx = i * 4;
     let anyValid = false;
-    const vals = [0, 0, 0];
+    let v0 = 0, v1 = 0, v2 = 0;
 
     for (let c = 0; c < 3; c++) {
-      const channelKey = channelKeys[c];
-      const raw = bands[channelKey][i];
+      const raw = bandArr[c][i];
 
-      if (isNaN(raw) || raw === 0) continue;
+      if (raw === 0 || raw !== raw) continue; // NaN: raw !== raw
 
       anyValid = true;
 
-      const [chMin, chMax] = limits[channelKey];
-      const range = chMax - chMin || 1;
       let value;
       if (useDecibels) {
-        const db = 10 * Math.log10(Math.max(raw, 1e-10));
-        value = (db - chMin) / range;
+        const db = 10 * Math.log2(raw > 1e-10 ? raw : 1e-10) * LOG10_2;
+        value = (db - chMin[c]) * invRange[c];
       } else {
-        value = (raw - chMin) / range;
+        value = (raw - chMin[c]) * invRange[c];
       }
 
-      value = Math.max(0, Math.min(1, value));
+      if (value < 0) value = 0;
+      else if (value > 1) value = 1;
       if (needsStretch) value = applyStretch(value, stretchMode, gamma);
-      vals[c] = value;
+      if (c === 0) v0 = value;
+      else if (c === 1) v1 = value;
+      else v2 = value;
     }
 
     // Apply colorblind-safe color matrix
     if (cvdMatrix) {
-      const [r, g, b] = vals;
-      for (let c = 0; c < 3; c++) {
-        const row = cvdMatrix[c];
-        vals[c] = Math.max(0, Math.min(1, row[0] * r + row[1] * g + row[2] * b));
-      }
+      const r = v0, g = v1, b = v2;
+      const m0 = cvdMatrix[0], m1 = cvdMatrix[1], m2 = cvdMatrix[2];
+      v0 = Math.max(0, Math.min(1, m0[0] * r + m0[1] * g + m0[2] * b));
+      v1 = Math.max(0, Math.min(1, m1[0] * r + m1[1] * g + m1[2] * b));
+      v2 = Math.max(0, Math.min(1, m2[0] * r + m2[1] * g + m2[2] * b));
     }
 
-    rgba[idx]     = Math.round(vals[0] * 255);
-    rgba[idx + 1] = Math.round(vals[1] * 255);
-    rgba[idx + 2] = Math.round(vals[2] * 255);
+    rgba[idx]     = (v0 * 255 + 0.5) | 0;
+    rgba[idx + 1] = (v1 * 255 + 0.5) | 0;
+    rgba[idx + 2] = (v2 * 255 + 0.5) | 0;
 
     let alpha = anyValid ? 255 : 0;
-    if (dataMask && dataMask[i] !== undefined) {
+    if (hasMask) {
       const maskVal = dataMask[i];
-      if (maskInvalid && (maskVal < 0.5 || maskVal > 254.5)) alpha = 0;
-      // Layover/shadow: mask > 1 (not pure-valid) and not fill
-      if (maskLayoverShadow && maskVal > 1.5 && maskVal < 254.5) alpha = 0;
+      if (maskVal !== undefined) {
+        if (maskInvalid && (maskVal < 0.5 || maskVal > 254.5)) alpha = 0;
+        if (maskLayoverShadow && maskVal > 1.5 && maskVal < 254.5) alpha = 0;
+      }
     }
     rgba[idx + 3] = alpha;
   }
