@@ -334,8 +334,8 @@ check('COLORMAP_IDS has all 5 colormaps', () => {
   }
 });
 
-check('STRETCH_MODE_IDS has all 4 modes', () => {
-  for (const sm of ['linear', 'sqrt', 'gamma', 'sigmoid']) {
+check('STRETCH_MODE_IDS has all 5 modes', () => {
+  for (const sm of ['linear', 'sqrt', 'log', 'gamma', 'sigmoid']) {
     assertContains(shadersContent, `${sm}:`, `${sm} in STRETCH_MODE_IDS`);
   }
 });

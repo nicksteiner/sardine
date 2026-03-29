@@ -54,8 +54,12 @@ export class SARGPUBitmapLayer extends BitmapLayer {
           if (stretchMode == 1) {
             value = sqrt(value);
           } else if (stretchMode == 2) {
-            value = pow(value, uGamma);
+            // log stretch: log(1 + k*x) / log(1 + k), k = 10^(1+gamma)
+            float k = pow(10.0, 1.0 + uGamma);
+            value = log(1.0 + k * value) / log(1.0 + k);
           } else if (stretchMode == 3) {
+            value = pow(value, uGamma);
+          } else if (stretchMode == 4) {
             float gain = uGamma * 8.0;
             float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
             float lo = 1.0 / (1.0 + exp(gain * 0.5));

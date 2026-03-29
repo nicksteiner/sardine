@@ -338,8 +338,9 @@ export function getColormapId(name) {
 export const STRETCH_MODE_IDS = {
   linear: 0,
   sqrt: 1,
-  gamma: 2,
-  sigmoid: 3,
+  log: 2,
+  gamma: 3,
+  sigmoid: 4,
 };
 
 /**
