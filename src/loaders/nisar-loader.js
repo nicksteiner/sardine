@@ -1772,8 +1772,11 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     // Only cache successful reads (including null for sparse/missing chunks)
     // LRU cache eviction: remove oldest entries (from beginning of Map)
     if (chunkCache.size >= MAX_CHUNK_CACHE) {
-      const oldestKeys = Array.from(chunkCache.keys()).slice(0, 100);
-      oldestKeys.forEach(k => chunkCache.delete(k));
+      let evicted = 0;
+      for (const k of chunkCache.keys()) {
+        chunkCache.delete(k);
+        if (++evicted >= 100) break;
+      }
     }
     chunkCache.set(key, chunk);
     return chunk;
@@ -1931,8 +1934,11 @@ async function loadNISARGCOVStreaming(file, options = {}) {
             for (const [key, data] of batchMap) {
               const result = data?.data || data;
               if (chunkCache.size >= MAX_CHUNK_CACHE) {
-                const oldest = Array.from(chunkCache.keys()).slice(0, 100);
-                oldest.forEach(k => chunkCache.delete(k));
+                let evicted = 0;
+                for (const k of chunkCache.keys()) {
+                  chunkCache.delete(k);
+                  if (++evicted >= 100) break;
+                }
               }
               chunkCache.set(key, result);
               if (result) coarseGrid.set(key, result);
@@ -5537,11 +5543,9 @@ export async function loadNISARTimeSeriesROI(urls, wkt, opts = {}) {
     onProgress,
   } = opts;
 
-  const results = [];
-
-  for (let i = 0; i < urls.length; i++) {
-    const url = urls[i];
-    if (onProgress) onProgress(i, urls.length, url);
+  // Process all URLs in parallel — metadata + ROI mapping + chunk fetch
+  const processUrl = async (url, index) => {
+    if (onProgress) onProgress(index, urls.length, url);
 
     try {
       // Open file metadata (lazy tree walking — only reads ~10KB + headers)
@@ -5550,16 +5554,15 @@ export async function loadNISARTimeSeriesROI(urls, wkt, opts = {}) {
       // Map WKT to pixel ROI for this specific file's grid
       const pixelROI = wktToROI(wkt, imageData);
       if (!pixelROI) {
-        results.push({ url, data: null, error: 'ROI does not intersect file' });
-        continue;
+        return { url, data: null, error: 'ROI does not intersect file' };
       }
 
       // Fetch only the chunks covering the ROI
       const ml = multilook;
       const startCol = Math.floor(pixelROI.left / ml);
       const startRow = Math.floor(pixelROI.top / ml);
-      const numCols = Math.floor((pixelROI.left + pixelROI.width) / ml) - startCol;
-      const numRows = Math.floor((pixelROI.top + pixelROI.height) / ml) - startRow;
+      const numCols = Math.ceil((pixelROI.left + pixelROI.width) / ml) - startCol;
+      const numRows = Math.ceil((pixelROI.top + pixelROI.height) / ml) - startRow;
 
       const stripe = await imageData.getExportStripe({
         startRow, numRows, ml,
@@ -5567,15 +5570,20 @@ export async function loadNISARTimeSeriesROI(urls, wkt, opts = {}) {
         startCol, numCols,
       });
 
+      // Compute bounds from the actual multilooked pixel range
+      const mlStartCol = startCol * ml;
+      const mlStartRow = startRow * ml;
+      const mlNumCols = numCols * ml;
+      const mlNumRows = numRows * ml;
       const subBounds = computeSubsetBounds(
-        { startRow: pixelROI.top, startCol: pixelROI.left,
-          numRows: pixelROI.height, numCols: pixelROI.width },
+        { startRow: mlStartRow, startCol: mlStartCol,
+          numRows: mlNumRows, numCols: mlNumCols },
         { worldBounds: imageData.worldBounds || imageData.bounds,
           width: imageData.width, height: imageData.height,
           xCoords: imageData.xCoords || null, yCoords: imageData.yCoords || null }
       );
 
-      results.push({
+      return {
         url,
         data: stripe.bands[polarization],
         width: numCols,
@@ -5583,11 +5591,14 @@ export async function loadNISARTimeSeriesROI(urls, wkt, opts = {}) {
         bounds: subBounds,
         pixelROI,
         identification: imageData.identification,
-      });
+      };
     } catch (e) {
-      results.push({ url, data: null, error: e.message });
+      return { url, data: null, error: e.message };
     }
-  }
+  };
+
+  // Launch all URL fetches concurrently
+  const results = await Promise.all(urls.map((url, i) => processUrl(url, i)));
 
   return results;
 }

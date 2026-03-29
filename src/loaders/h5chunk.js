@@ -3425,8 +3425,13 @@ export class H5Chunk {
    * Unshuffle filter
    */
   _unshuffle(data, elementSize) {
-    const count = data.length / elementSize;
-    const result = new Uint8Array(data.length);
+    if (elementSize <= 1) return data;
+    const len = data.length;
+    const count = (len / elementSize) | 0;
+    if (count * elementSize !== len) {
+      console.warn(`[h5chunk] Shuffle: data length ${len} not divisible by elementSize ${elementSize}, truncating`);
+    }
+    const result = new Uint8Array(len);
 
     for (let i = 0; i < count; i++) {
       for (let j = 0; j < elementSize; j++) {
@@ -3441,9 +3446,14 @@ export class H5Chunk {
    * Decode raw bytes to Float32Array
    */
   _decodeData(buffer, dtype) {
-    // Ensure we have an ArrayBuffer for byte reinterpretation
+    // Ensure we have an ArrayBuffer for typed array construction.
+    // Only copy when the view has a non-zero byteOffset (alignment issue).
     if (ArrayBuffer.isView(buffer)) {
-      buffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+      if (buffer.byteOffset === 0 && buffer.byteLength === buffer.buffer.byteLength) {
+        buffer = buffer.buffer; // Zero-copy: view spans entire ArrayBuffer
+      } else {
+        buffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+      }
     }
     switch (dtype) {
       case 'float32':
