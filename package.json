@@ -21,6 +21,8 @@
     "test:gpu:sw": "node test/test-gpu-compat.mjs --software",
     "test:h5": "node test/test-h5-pipeline.mjs",
     "test:png-state": "node test/test-png-state.mjs",
+    "report": "node src/lite/serve.js",
+    "report:open": "node src/lite/serve.js --open",
     "launch": "node server/launch.cjs",
     "launch:dev": "npm run build && node server/launch.cjs"
   },

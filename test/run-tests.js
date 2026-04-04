@@ -1080,6 +1080,157 @@ try {
   skip('colorblind functional tests', `import failed: ${err.message}`);
 }
 
+// ─── 14. Lite report charts ─────────────────────────────────────────────────
+
+suite('Lite report charts (source)');
+
+check('src/lite/index.js exists', () => { if (!fileExists('src/lite/index.js')) throw new Error('missing'); });
+check('src/lite/report-charts.js exists', () => { if (!fileExists('src/lite/report-charts.js')) throw new Error('missing'); });
+check('src/lite/report-viewer.html exists', () => { if (!fileExists('src/lite/report-viewer.html')) throw new Error('missing'); });
+
+const liteIndexSrc = readFile('src/lite/index.js');
+const liteChartsSrc = readFile('src/lite/report-charts.js');
+
+for (const fn of ['drawDbBarChart', 'drawChangeDetectionPlot', 'drawFootprintMap',
+  'drawRegionEstimates', 'drawTimelinePlot', 'drawHorizontalBars', 'renderReportDashboard']) {
+  check(`report-charts.js exports ${fn}`, () => {
+    assertContains(liteChartsSrc, `export function ${fn}`, `${fn} export`);
+  });
+  check(`lite/index.js re-exports ${fn}`, () => {
+    assertContains(liteIndexSrc, fn, `${fn} re-export`);
+  });
+}
+
+check('REPORT_COLORS exported', () => {
+  assertContains(liteChartsSrc, 'REPORT_COLORS', 'REPORT_COLORS export');
+});
+
+check('report-viewer.html imports from report-charts.js', () => {
+  const viewerHtml = readFile('src/lite/report-viewer.html');
+  assertContains(viewerHtml, "from './report-charts.js'", 'report-charts import');
+});
+
+check('report-viewer.html supports ?report= URL param', () => {
+  const viewerHtml = readFile('src/lite/report-viewer.html');
+  assertContains(viewerHtml, "get('report')", 'URL param support');
+});
+
+check('src/index.js re-exports lite charts', () => {
+  const mainIndex = readFile('src/index.js');
+  assertContains(mainIndex, "from './lite/index.js'", 'lite re-export');
+});
+
+suite('Lite report charts (functional)');
+
+try {
+  const {
+    drawDbBarChart, drawChangeDetectionPlot, drawFootprintMap,
+    drawRegionEstimates, drawTimelinePlot, drawHorizontalBars,
+    renderReportDashboard, REPORT_COLORS,
+  } = await import(join(rootDir, 'src/lite/index.js'));
+
+  // Minimal mock canvas context — records calls, doesn't render
+  function mockCtx() {
+    const calls = [];
+    const handler = {
+      get(target, prop) {
+        if (prop in target) return target[prop];
+        // Return a function that records the call
+        return (...args) => { calls.push({ method: prop, args }); };
+      },
+      set(target, prop, value) {
+        target[prop] = value;
+        return true;
+      },
+    };
+    return { ctx: new Proxy({ fillStyle: '', strokeStyle: '', font: '', textAlign: '', lineWidth: 1 }, handler), calls };
+  }
+
+  const rect = { x: 0, y: 0, w: 800, h: 400 };
+
+  const demoScenes = [
+    { date: '2025-06-15', meanDb: -12.3, floodSignal: false, bbox: [-163, 60, -162, 61] },
+    { date: '2025-06-27', meanDb: -11.8, floodSignal: false, bbox: [-162.5, 60.5, -161.5, 61.2] },
+    { date: '2025-07-09', meanDb: -18.5, floodSignal: true, bbox: [-163, 60, -162, 61] },
+    { date: '2025-07-21', meanDb: -13.1, floodSignal: false, bbox: [-162.5, 60.5, -161.5, 61.2] },
+  ];
+
+  check('drawDbBarChart runs without error', () => {
+    const { ctx } = mockCtx();
+    drawDbBarChart(ctx, demoScenes, rect);
+  });
+
+  check('drawDbBarChart is a no-op for empty scenes', () => {
+    const { ctx, calls } = mockCtx();
+    drawDbBarChart(ctx, [], rect);
+    if (calls.length > 0) throw new Error('Expected no calls for empty input');
+  });
+
+  check('drawChangeDetectionPlot runs without error', () => {
+    const { ctx } = mockCtx();
+    const pairs = [
+      { primary: 'A', secondary: 'B', dbChange: -3.2, significantChange: true },
+      { primary: 'B', secondary: 'C', dbChange: 1.5, significantChange: false },
+    ];
+    drawChangeDetectionPlot(ctx, pairs, rect);
+  });
+
+  check('drawFootprintMap runs without error', () => {
+    const { ctx } = mockCtx();
+    drawFootprintMap(ctx, demoScenes, rect);
+  });
+
+  check('drawRegionEstimates runs without error', () => {
+    const { ctx } = mockCtx();
+    drawRegionEstimates(ctx, {
+      'Bethel': { floodDetected: true, date: '2025-08-03', meanDb: -19.2 },
+      'Fairbanks': { floodDetected: false, date: '2025-07-22', meanDb: -11.4 },
+    }, rect);
+  });
+
+  check('drawTimelinePlot runs without error', () => {
+    const { ctx } = mockCtx();
+    drawTimelinePlot(ctx, demoScenes, rect);
+  });
+
+  check('drawTimelinePlot needs ≥2 points', () => {
+    const { ctx, calls } = mockCtx();
+    drawTimelinePlot(ctx, [demoScenes[0]], rect);
+    // Should not draw anything meaningful with 1 point
+    if (calls.some(c => c.method === 'lineTo')) throw new Error('Should not draw line for single point');
+  });
+
+  check('drawHorizontalBars runs without error', () => {
+    const { ctx } = mockCtx();
+    drawHorizontalBars(ctx, [
+      { label: 'search', value: 5 },
+      { label: 'analyze', value: 8 },
+    ], 'Exploration Log', rect);
+  });
+
+  check('renderReportDashboard runs without error', () => {
+    const { ctx } = mockCtx();
+    renderReportDashboard(ctx, { sceneResults: demoScenes, pairsTested: [] }, 1200, 600);
+  });
+
+  check('REPORT_COLORS has expected keys', () => {
+    for (const key of ['bg', 'panel', 'grid', 'text', 'accent', 'flood', 'normal']) {
+      if (!REPORT_COLORS[key]) throw new Error(`Missing color: ${key}`);
+    }
+  });
+
+  check('REPORT_COLORS values are CSS color strings', () => {
+    for (const [key, val] of Object.entries(REPORT_COLORS)) {
+      if (typeof val !== 'string' || !val.startsWith('#')) {
+        throw new Error(`${key}: expected hex color, got ${val}`);
+      }
+    }
+  });
+
+} catch (err) {
+  skip('lite report charts functional tests', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));

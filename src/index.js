@@ -155,6 +155,18 @@ export {
   parseS3Uri,
 } from './utils/s3-presign.js';
 
+// Lite report graphics (no heavy deps)
+export {
+  drawDbBarChart,
+  drawChangeDetectionPlot,
+  drawFootprintMap,
+  drawRegionEstimates,
+  drawTimelinePlot,
+  drawHorizontalBars,
+  renderReportDashboard,
+  REPORT_COLORS,
+} from './lite/index.js';
+
 // Components
 export { MetadataPanel } from './components/MetadataPanel.jsx';
 export { OverviewMap } from './components/OverviewMap.jsx';

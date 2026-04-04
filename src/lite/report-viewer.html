@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SARdine Report Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      color: #e2e8f0;
+      font-family: system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    header {
+      width: 100%;
+      padding: 16px 24px;
+      background: #16213e;
+      border-bottom: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    header h1 span { color: #38bdf8; }
+    .controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .controls label {
+      cursor: pointer;
+      background: #38bdf8;
+      color: #0f172a;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    .controls label:hover { background: #7dd3fc; }
+    .controls input[type="file"] { display: none; }
+    .controls button {
+      background: #334155;
+      color: #e2e8f0;
+      border: 1px solid #475569;
+      font-size: 13px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .controls button:hover { background: #475569; }
+    .info {
+      margin-left: auto;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    #drop-zone {
+      width: 100%;
+      max-width: 1200px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    #drop-zone.drag-over {
+      background: rgba(56, 189, 248, 0.08);
+      outline: 2px dashed #38bdf8;
+      outline-offset: -8px;
+      border-radius: 12px;
+    }
+    .placeholder {
+      text-align: center;
+      color: #94a3b8;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+    .placeholder kbd {
+      background: #334155;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    #canvas-container {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    canvas {
+      width: 100%;
+      border-radius: 8px;
+      background: #1a1a2e;
+    }
+    .panel-row {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .panel-row canvas { flex: 1; min-width: 300px; }
+    #report-meta {
+      width: 100%;
+      max-width: 1200px;
+      padding: 0 24px 16px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+    #report-meta pre {
+      background: #16213e;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      max-height: 200px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span>SARdine</span> Report Viewer</h1>
+    <div class="controls">
+      <label>Load JSON <input type="file" id="file-input" accept=".json"></label>
+      <button id="btn-demo">Demo Data</button>
+      <button id="btn-export">Export PNG</button>
+    </div>
+    <div class="info" id="status-text">No report loaded</div>
+  </header>
+
+  <div id="drop-zone">
+    <div class="placeholder" id="placeholder">
+      Drop a sardine-agent report JSON here<br>
+      or use <kbd>Load JSON</kbd> / <kbd>Demo Data</kbd>
+    </div>
+    <div id="canvas-container" style="display:none">
+      <canvas id="c-dashboard" height="500"></canvas>
+      <div class="panel-row">
+        <canvas id="c-timeline" height="280"></canvas>
+        <canvas id="c-regions" height="280"></canvas>
+      </div>
+      <canvas id="c-bars" height="240"></canvas>
+    </div>
+  </div>
+
+  <div id="report-meta"></div>
+
+  <script type="module">
+    import {
+      drawDbBarChart,
+      drawChangeDetectionPlot,
+      drawFootprintMap,
+      drawRegionEstimates,
+      drawTimelinePlot,
+      drawHorizontalBars,
+      renderReportDashboard,
+      REPORT_COLORS,
+    } from './report-charts.js';
+
+    // ── state ──
+    let currentReport = null;
+
+    // ── DOM refs ──
+    const fileInput     = document.getElementById('file-input');
+    const btnDemo       = document.getElementById('btn-demo');
+    const btnExport     = document.getElementById('btn-export');
+    const statusText    = document.getElementById('status-text');
+    const dropZone      = document.getElementById('drop-zone');
+    const placeholder   = document.getElementById('placeholder');
+    const container     = document.getElementById('canvas-container');
+    const reportMeta    = document.getElementById('report-meta');
+
+    const cDash     = document.getElementById('c-dashboard');
+    const cTimeline = document.getElementById('c-timeline');
+    const cRegions  = document.getElementById('c-regions');
+    const cBars     = document.getElementById('c-bars');
+
+    // ── file input ──
+    fileInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      file.text().then(text => loadReport(JSON.parse(text), file.name));
+    });
+
+    // ── drag & drop ──
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (!file) return;
+      file.text().then(text => loadReport(JSON.parse(text), file.name));
+    });
+
+    // ── URL param ──
+    const urlParam = new URLSearchParams(location.search).get('report');
+    if (urlParam) {
+      fetch(urlParam)
+        .then(r => r.json())
+        .then(data => loadReport(data, urlParam.split('/').pop()));
+    }
+
+    // ── demo data ──
+    btnDemo.addEventListener('click', () => loadReport(generateDemoReport(), 'demo'));
+
+    // ── export ──
+    btnExport.addEventListener('click', () => {
+      if (!currentReport) return;
+      const link = document.createElement('a');
+      link.download = 'sardine-report.png';
+      link.href = cDash.toDataURL('image/png');
+      link.click();
+    });
+
+    // ── render ──
+    function loadReport(report, name) {
+      currentReport = report;
+      placeholder.style.display = 'none';
+      container.style.display = '';
+
+      const scenes  = report.sceneResults  || [];
+      const pairs   = report.pairsTested   || [];
+      const regions = report.regionEstimates || {};
+
+      statusText.textContent = `${name} — ${scenes.length} scenes, ${pairs.length} pairs`;
+
+      // dashboard canvas
+      const dpr = window.devicePixelRatio || 1;
+      setupCanvas(cDash, cDash.parentElement.clientWidth, 500, dpr);
+      const ctxD = cDash.getContext('2d');
+      renderReportDashboard(ctxD, report, cDash.width / dpr, cDash.height / dpr);
+
+      // timeline
+      if (scenes.length >= 2) {
+        cTimeline.style.display = '';
+        setupCanvas(cTimeline, cTimeline.parentElement.clientWidth / 2 - 8, 280, dpr);
+        const ctxT = cTimeline.getContext('2d');
+        ctxT.fillStyle = REPORT_COLORS.bg;
+        ctxT.fillRect(0, 0, cTimeline.width, cTimeline.height);
+        drawTimelinePlot(ctxT, scenes, { x: 0, y: 0, w: cTimeline.width / dpr, h: cTimeline.height / dpr });
+      } else {
+        cTimeline.style.display = 'none';
+      }
+
+      // regions
+      const regionEntries = Object.keys(regions);
+      if (regionEntries.length > 0) {
+        cRegions.style.display = '';
+        setupCanvas(cRegions, cRegions.parentElement.clientWidth / 2 - 8, 280, dpr);
+        const ctxR = cRegions.getContext('2d');
+        ctxR.fillStyle = REPORT_COLORS.bg;
+        ctxR.fillRect(0, 0, cRegions.width, cRegions.height);
+        drawRegionEstimates(ctxR, regions, { x: 0, y: 0, w: cRegions.width / dpr, h: cRegions.height / dpr });
+      } else {
+        cRegions.style.display = 'none';
+      }
+
+      // exploration log bars
+      const log = report.explorationLog || [];
+      if (log.length > 0) {
+        cBars.style.display = '';
+        // summarise log into category counts
+        const counts = {};
+        for (const entry of log) {
+          const key = typeof entry === 'string'
+            ? (entry.match(/^\[(\w+)\]/) || ['', 'info'])[1]
+            : (entry.type || 'info');
+          counts[key] = (counts[key] || 0) + 1;
+        }
+        const items = Object.entries(counts)
+          .map(([label, value]) => ({ label, value }))
+          .sort((a, b) => b.value - a.value)
+          .slice(0, 10);
+
+        setupCanvas(cBars, cBars.parentElement.clientWidth, 240, dpr);
+        const ctxB = cBars.getContext('2d');
+        ctxB.fillStyle = REPORT_COLORS.bg;
+        ctxB.fillRect(0, 0, cBars.width, cBars.height);
+        drawHorizontalBars(ctxB, items, 'Exploration Log', { x: 0, y: 0, w: cBars.width / dpr, h: cBars.height / dpr });
+      } else {
+        cBars.style.display = 'none';
+      }
+
+      // metadata
+      const meta = { ...report };
+      delete meta.sceneResults;
+      delete meta.pairsTested;
+      delete meta.regionEstimates;
+      delete meta.explorationLog;
+      delete meta.geojson;
+      delete meta.markdownReport;
+      const interesting = Object.keys(meta).length > 0;
+      reportMeta.innerHTML = interesting
+        ? `<details><summary>Report metadata</summary><pre>${JSON.stringify(meta, null, 2)}</pre></details>`
+        : '';
+    }
+
+    function setupCanvas(canvas, cssW, cssH, dpr) {
+      canvas.width = cssW * dpr;
+      canvas.height = cssH * dpr;
+      canvas.style.width = cssW + 'px';
+      canvas.style.height = cssH + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+    }
+
+    // ── demo report generator ──
+    function generateDemoReport() {
+      const baseDate = new Date('2025-06-15');
+      const scenes = [];
+      for (let i = 0; i < 8; i++) {
+        const d = new Date(baseDate);
+        d.setDate(d.getDate() + i * 12);
+        const flood = i === 4 || i === 5;
+        scenes.push({
+          granuleId: `NISAR_L2_GCOV_00${i + 1}`,
+          date: d.toISOString().slice(0, 10),
+          meanDb: flood ? -18 - Math.random() * 3 : -12 + Math.random() * 2,
+          floodSignal: flood,
+          bbox: [-163.5 + i * 0.3, 60.5, -162.5 + i * 0.3, 61.2],
+        });
+      }
+      const pairs = [];
+      for (let i = 0; i < scenes.length - 1; i++) {
+        const change = scenes[i + 1].meanDb - scenes[i].meanDb;
+        pairs.push({
+          primary: scenes[i].granuleId,
+          secondary: scenes[i + 1].granuleId,
+          primaryDate: scenes[i].date,
+          secondaryDate: scenes[i + 1].date,
+          dbChange: change,
+          significantChange: Math.abs(change) > 3,
+        });
+      }
+      return {
+        scenesProcessed: scenes.length,
+        sceneBudgetRemaining: 2,
+        sceneResults: scenes,
+        pairsTested: pairs,
+        regionEstimates: {
+          'Bethel': { floodDetected: true, date: '2025-08-03', meanDb: -19.2 },
+          'Y-K Delta': { floodDetected: true, date: '2025-08-03', meanDb: -17.8 },
+          'Fairbanks': { floodDetected: false, date: '2025-07-22', meanDb: -11.4 },
+          'Anchorage': { floodDetected: false, date: '2025-07-10', meanDb: -10.1 },
+        },
+        explorationLog: [
+          '[search] CMR query for NISAR L2 GCOV',
+          '[search] Found 12 granules in bbox',
+          '[rank] Scored 12 scenes, selected top 8',
+          '[analyze] Processing scene 1/8',
+          '[analyze] Processing scene 2/8',
+          '[analyze] Processing scene 3/8',
+          '[analyze] Processing scene 4/8',
+          '[detect] Flood signal in scene 5 (mean -19.8 dB)',
+          '[analyze] Processing scene 5/8',
+          '[detect] Flood signal in scene 6 (mean -18.1 dB)',
+          '[analyze] Processing scene 6/8',
+          '[analyze] Processing scene 7/8',
+          '[analyze] Processing scene 8/8',
+          '[change] Significant change between scenes 4-5 (Δ-6.2 dB)',
+          '[change] Significant change between scenes 5-6 (Δ+1.7 dB)',
+          '[report] 2 flood scenes, 4 regions assessed',
+        ],
+        openQuestions: ['Confirm flood extent with optical imagery'],
+      };
+    }
+  </script>
+</body>
+</html>
