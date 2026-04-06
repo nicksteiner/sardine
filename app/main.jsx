@@ -500,6 +500,18 @@ function App() {
     setActiveViewer('main');
   }, [imageData]);
 
+  // URL parameter support: ?cog=<url> auto-loads a COG on mount
+  const urlCogTriggered = useRef(false);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const cogParam = params.get('cog');
+    if (cogParam) {
+      urlCogTriggered.current = true;
+      setFileType('cog');
+      setCogUrl(cogParam);
+    }
+  }, []);
+
   // Auto-select classifier bands when datasets change
   useEffect(() => {
     if (nisarDatasets.length < 2) return;
@@ -1838,6 +1850,14 @@ function App() {
       setLoading(false);
     }
   }, [cogUrl, useDecibels, addStatusLog, multiFileMode, multiFileModeType, fileList, bandNames]);
+
+  // Auto-load COG when set via ?cog= URL parameter
+  useEffect(() => {
+    if (urlCogTriggered.current && cogUrl && fileType === 'cog') {
+      urlCogTriggered.current = false;
+      handleLoadCOG();
+    }
+  }, [cogUrl, fileType, handleLoadCOG]);
 
   // Handle view state changes from viewer
   const handleViewStateChange = useCallback(({ viewState }) => {
