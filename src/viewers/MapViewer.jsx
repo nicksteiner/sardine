@@ -3,6 +3,7 @@ import { Map } from 'maplibre-gl';
 import DeckGL from '@deck.gl/react';
 import { MapView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
+import { SARSceneLayer } from '../layers/SARSceneLayer.js';
 import { getColormap } from '../utils/colormap.js';
 
 // Import MapLibre CSS - users need to include this in their build
@@ -25,6 +26,9 @@ export function MapViewer({
   showControls = true,
   onViewStateChange,
   style = {},
+  // Scene geometry overlay props
+  sceneMode = null,
+  sceneProps = {},
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -126,6 +130,18 @@ export function MapViewer({
     ];
   }, [getTile, bounds, contrastLimits, useDecibels, colormap, opacity]);
 
+  // Scene geometry overlay layer
+  const sceneLayers = useMemo(() => {
+    if (!sceneMode) return [];
+    return [
+      new SARSceneLayer({
+        id: 'sar-scene',
+        mode: sceneMode,
+        ...sceneProps,
+      }),
+    ];
+  }, [sceneMode, sceneProps]);
+
   const containerStyle = useMemo(
     () => ({
       position: 'relative',
@@ -154,7 +170,7 @@ export function MapViewer({
         views={new MapView({ repeat: true })}
         viewState={viewState}
         onViewStateChange={handleViewStateChange}
-        layers={layers}
+        layers={[...layers, ...sceneLayers]}
         controller={true}
         style={{ position: 'absolute', top: 0, left: 0 }}
       />

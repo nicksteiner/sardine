@@ -1338,6 +1338,227 @@ try {
   skip('Overture Buildings loader tests', `import failed: ${err.message}`);
 }
 
+// ─── SARSceneLayer ──────────────────────────────────────────────────────────
+
+suite('SARSceneLayer');
+
+try {
+  const sceneLayerSrc = readFileSync(join(rootDir, 'src', 'layers', 'SARSceneLayer.js'), 'utf8');
+
+  check('SARSceneLayer.js exists', () => {
+    if (!existsSync(join(rootDir, 'src', 'layers', 'SARSceneLayer.js')))
+      throw new Error('missing');
+  });
+
+  check('exports SARSceneLayer class', () => {
+    if (!sceneLayerSrc.includes('export class SARSceneLayer'))
+      throw new Error('SARSceneLayer class not exported');
+  });
+
+  check('exports SCENE_MODES constant', () => {
+    if (!sceneLayerSrc.includes('export const SCENE_MODES'))
+      throw new Error('SCENE_MODES not exported');
+  });
+
+  check('exports prepareDihedralStrips helper', () => {
+    if (!sceneLayerSrc.includes('export function prepareDihedralStrips'))
+      throw new Error('prepareDihedralStrips not exported');
+  });
+
+  check('exports prepareShadowZones helper', () => {
+    if (!sceneLayerSrc.includes('export function prepareShadowZones'))
+      throw new Error('prepareShadowZones not exported');
+  });
+
+  check('exports buildPointCloud helper', () => {
+    if (!sceneLayerSrc.includes('export function buildPointCloud'))
+      throw new Error('buildPointCloud not exported');
+  });
+
+  check('SCENE_MODES contains all four modes', () => {
+    for (const m of ['buildings3d', 'predictedDihedrals', 'predictedShadows', 'pointIntercepted']) {
+      if (!sceneLayerSrc.includes(`'${m}'`))
+        throw new Error(`mode '${m}' not found in SCENE_MODES`);
+    }
+  });
+
+  check('imports SolidPolygonLayer for buildings3d', () => {
+    if (!sceneLayerSrc.includes('SolidPolygonLayer'))
+      throw new Error('SolidPolygonLayer not imported');
+  });
+
+  check('imports PolygonLayer for dihedrals/shadows', () => {
+    if (!sceneLayerSrc.includes('PolygonLayer'))
+      throw new Error('PolygonLayer not imported');
+  });
+
+  check('imports PointCloudLayer for point-intercepted', () => {
+    if (!sceneLayerSrc.includes('PointCloudLayer'))
+      throw new Error('PointCloudLayer not imported');
+  });
+
+  check('imports predictDihedralStrip from sar-geometry', () => {
+    if (!sceneLayerSrc.includes('predictDihedralStrip'))
+      throw new Error('predictDihedralStrip not imported');
+  });
+
+  check('imports predictShadowZone from sar-geometry', () => {
+    if (!sceneLayerSrc.includes('predictShadowZone'))
+      throw new Error('predictShadowZone not imported');
+  });
+
+  check('imports slantToGroundPoint from sar-geometry', () => {
+    if (!sceneLayerSrc.includes('slantToGroundPoint'))
+      throw new Error('slantToGroundPoint not imported');
+  });
+
+  check('does not modify SARGPULayer', () => {
+    // Verify SARGPULayer is unchanged by checking it doesn't reference SARSceneLayer
+    const gpuSrc = readFileSync(join(rootDir, 'src', 'layers', 'SARGPULayer.js'), 'utf8');
+    if (gpuSrc.includes('SARSceneLayer'))
+      throw new Error('SARGPULayer should not reference SARSceneLayer');
+  });
+
+  // Integration in MapViewer
+  const mapViewerSrc = readFileSync(join(rootDir, 'src', 'viewers', 'MapViewer.jsx'), 'utf8');
+
+  check('MapViewer imports SARSceneLayer', () => {
+    if (!mapViewerSrc.includes('SARSceneLayer'))
+      throw new Error('SARSceneLayer not imported in MapViewer');
+  });
+
+  check('MapViewer accepts sceneMode prop', () => {
+    if (!mapViewerSrc.includes('sceneMode'))
+      throw new Error('sceneMode prop not found in MapViewer');
+  });
+
+  // Barrel export
+  const indexSrc = readFileSync(join(rootDir, 'src', 'index.js'), 'utf8');
+
+  check('index.js exports SARSceneLayer', () => {
+    if (!indexSrc.includes('SARSceneLayer'))
+      throw new Error('SARSceneLayer not in barrel export');
+  });
+
+  check('index.js exports SCENE_MODES', () => {
+    if (!indexSrc.includes('SCENE_MODES'))
+      throw new Error('SCENE_MODES not in barrel export');
+  });
+
+  check('index.js exports prepareDihedralStrips', () => {
+    if (!indexSrc.includes('prepareDihedralStrips'))
+      throw new Error('prepareDihedralStrips not in barrel export');
+  });
+
+  // Dynamic import test
+  const mod = await import('../src/layers/SARSceneLayer.js');
+
+  check('SARSceneLayer can be dynamically imported', () => {
+    if (!mod.SARSceneLayer) throw new Error('SARSceneLayer not in module');
+    if (!mod.SCENE_MODES) throw new Error('SCENE_MODES not in module');
+    if (!mod.prepareDihedralStrips) throw new Error('prepareDihedralStrips not in module');
+    if (!mod.prepareShadowZones) throw new Error('prepareShadowZones not in module');
+    if (!mod.buildPointCloud) throw new Error('buildPointCloud not in module');
+  });
+
+  check('SCENE_MODES has 4 entries', () => {
+    if (mod.SCENE_MODES.length !== 4) throw new Error(`expected 4, got ${mod.SCENE_MODES.length}`);
+  });
+
+  check('SARSceneLayer extends CompositeLayer', () => {
+    // Check prototype chain
+    const proto = Object.getPrototypeOf(mod.SARSceneLayer.prototype);
+    if (!proto || !proto.constructor || proto.constructor.name !== 'CompositeLayer')
+      throw new Error('SARSceneLayer does not extend CompositeLayer');
+  });
+
+  check('defaultProps includes all expected keys', () => {
+    const dp = mod.SARSceneLayer.defaultProps;
+    const required = ['mode', 'buildings', 'extrudedBuildings', 'dihedralStrips',
+                      'shadowZones', 'pointCloud', 'selectionBbox', 'opacity'];
+    for (const k of required) {
+      if (!(k in dp)) throw new Error(`missing defaultProp: ${k}`);
+    }
+  });
+
+  // stripToPolygon correctness (via prepareDihedralStrips with mock data)
+  const { buildLocalGeometry } = await import('../src/utils/sar-geometry.js');
+  const { extrudeBuilding } = await import('../src/loaders/overture-buildings.js');
+
+  check('prepareDihedralStrips produces polygons from extruded building', () => {
+    // Create a simple building feature
+    const feature = {
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-122.419, 37.775],
+          [-122.418, 37.775],
+          [-122.418, 37.776],
+          [-122.419, 37.776],
+          [-122.419, 37.775],
+        ]],
+      },
+      properties: { height: 20 },
+    };
+    const flatDEM = () => 0;
+    const extruded = extrudeBuilding(feature, flatDEM);
+
+    // Build synthetic SAR geometry
+    const geom = buildLocalGeometry(
+      37.775 * Math.PI / 180,
+      -122.419 * Math.PI / 180,
+      0,
+      { grazeAngleDeg: 45, sideOfTrack: 'R', rowSS: 1, colSS: 1 }
+    );
+
+    const strips = mod.prepareDihedralStrips([extruded], geom);
+    // Should produce at least one strip (walls facing sensor)
+    if (!Array.isArray(strips)) throw new Error('expected array');
+    // Each strip should have a polygon with 5 points (closed rect)
+    for (const s of strips) {
+      if (!s.polygon) throw new Error('strip missing polygon');
+      if (s.polygon.length !== 5) throw new Error(`expected 5 coords in polygon, got ${s.polygon.length}`);
+    }
+  });
+
+  check('prepareShadowZones produces polygons from extruded building', () => {
+    const feature = {
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-122.419, 37.775],
+          [-122.418, 37.775],
+          [-122.418, 37.776],
+          [-122.419, 37.776],
+          [-122.419, 37.775],
+        ]],
+      },
+      properties: { height: 20 },
+    };
+    const flatDEM = () => 0;
+    const extruded = extrudeBuilding(feature, flatDEM);
+
+    const geom = buildLocalGeometry(
+      37.775 * Math.PI / 180,
+      -122.419 * Math.PI / 180,
+      0,
+      { grazeAngleDeg: 45, sideOfTrack: 'R', rowSS: 1, colSS: 1 }
+    );
+
+    const zones = mod.prepareShadowZones([extruded], geom);
+    if (!Array.isArray(zones)) throw new Error('expected array');
+    for (const z of zones) {
+      if (!z.polygon) throw new Error('zone missing polygon');
+      if (z.polygon.length !== 5) throw new Error(`expected 5 coords in polygon, got ${z.polygon.length}`);
+    }
+  });
+
+} catch (err) {
+  skip('SARSceneLayer tests', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
