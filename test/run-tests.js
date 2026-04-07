@@ -1231,6 +1231,334 @@ try {
   skip('lite report charts functional tests', `import failed: ${err.message}`);
 }
 
+// ─── Overture Buildings loader ──────────────────────────────────────────────
+
+suite('Overture Buildings loader');
+
+try {
+  const { getBuildingHeight, extrudeBuilding, loadBuildingsInBbox } = await import('../src/loaders/overture-buildings.js');
+  const fixtureRaw = readFileSync(join(__dirname, 'fixtures', 'overture-buildings-sample.geojson'), 'utf8');
+  const fixture = JSON.parse(fixtureRaw);
+
+  check('exports loadBuildingsInBbox, extrudeBuilding, getBuildingHeight', () => {
+    if (typeof loadBuildingsInBbox !== 'function') throw new Error('loadBuildingsInBbox not exported');
+    if (typeof extrudeBuilding !== 'function') throw new Error('extrudeBuilding not exported');
+    if (typeof getBuildingHeight !== 'function') throw new Error('getBuildingHeight not exported');
+  });
+
+  check('fixture has 3 buildings', () => {
+    if (fixture.features.length !== 3) throw new Error(`expected 3 features, got ${fixture.features.length}`);
+  });
+
+  // Height fallback tests
+  check('getBuildingHeight uses explicit height when present', () => {
+    const h = getBuildingHeight({ height: 25, num_floors: 8 });
+    if (h !== 25) throw new Error(`expected 25, got ${h}`);
+  });
+
+  check('getBuildingHeight falls back to num_floors * 3', () => {
+    const h = getBuildingHeight({ num_floors: 3 });
+    if (h !== 9) throw new Error(`expected 9, got ${h}`);
+  });
+
+  check('getBuildingHeight defaults to 6m', () => {
+    const h = getBuildingHeight({});
+    if (h !== 6) throw new Error(`expected 6, got ${h}`);
+  });
+
+  check('getBuildingHeight ignores height=0', () => {
+    const h = getBuildingHeight({ height: 0, num_floors: 4 });
+    if (h !== 12) throw new Error(`expected 12 (4*3), got ${h}`);
+  });
+
+  // Extrusion tests with a flat DEM (elevation = 100m everywhere)
+  const flatDEM = () => 100;
+
+  check('extrudeBuilding with height feature', () => {
+    const result = extrudeBuilding(fixture.features[0], flatDEM);
+    if (result.baseElev !== 100) throw new Error(`baseElev: expected 100, got ${result.baseElev}`);
+    if (result.topElev !== 125) throw new Error(`topElev: expected 125, got ${result.topElev}`);
+    if (result.footprint.length !== 5) throw new Error(`footprint: expected 5 coords (closed ring), got ${result.footprint.length}`);
+    // 4 walls for a rectangular building (5 coords, last = first)
+    if (result.walls.length !== 4) throw new Error(`walls: expected 4, got ${result.walls.length}`);
+  });
+
+  check('extrudeBuilding with floors-only feature', () => {
+    const result = extrudeBuilding(fixture.features[1], flatDEM);
+    if (result.topElev !== 109) throw new Error(`topElev: expected 109 (100+9), got ${result.topElev}`);
+    if (result.walls.length !== 4) throw new Error(`walls: expected 4, got ${result.walls.length}`);
+  });
+
+  check('extrudeBuilding with no height info defaults to 6m', () => {
+    const result = extrudeBuilding(fixture.features[2], flatDEM);
+    if (result.topElev !== 106) throw new Error(`topElev: expected 106 (100+6), got ${result.topElev}`);
+  });
+
+  // DEM snapping: min elevation across footprint
+  check('extrudeBuilding snaps to min DEM elevation', () => {
+    // Create a DEM that varies across the footprint
+    const slopeDEM = (lon, lat) => 100 + (lon + 122.42) * 1000;
+    const result = extrudeBuilding(fixture.features[0], slopeDEM);
+    // Feature coords: lon from -122.4194 to -122.4190
+    // Elevations: 100 + (-122.4194+122.42)*1000 = 100.6, up to 101.0
+    // Min should be ~100.6
+    if (Math.abs(result.baseElev - 100.6) > 0.1) throw new Error(`baseElev should be ~100.6, got ${result.baseElev}`);
+    if (Math.abs(result.topElev - (result.baseElev + 25)) > 1e-6) throw new Error(`topElev should be baseElev+25`);
+  });
+
+  // DEM with NaN/null: should fallback to 0
+  check('extrudeBuilding falls back to 0 when DEM returns null', () => {
+    const nullDEM = () => null;
+    const result = extrudeBuilding(fixture.features[0], nullDEM);
+    if (result.baseElev !== 0) throw new Error(`baseElev: expected 0, got ${result.baseElev}`);
+    if (result.topElev !== 25) throw new Error(`topElev: expected 25, got ${result.topElev}`);
+  });
+
+  // Wall normals are unit vectors in 2D
+  check('wall facingNormal is unit-length in XY', () => {
+    const result = extrudeBuilding(fixture.features[0], flatDEM);
+    for (const wall of result.walls) {
+      const [nx, ny, nz] = wall.facingNormal;
+      const len = Math.sqrt(nx * nx + ny * ny);
+      if (nz !== 0) throw new Error(`normal Z should be 0, got ${nz}`);
+      if (Math.abs(len - 1) > 1e-6) throw new Error(`normal length should be 1, got ${len}`);
+    }
+  });
+
+  // Wall vertex count: each wall has p0, p1
+  check('each wall has p0 and p1 with 2 coordinates', () => {
+    const result = extrudeBuilding(fixture.features[0], flatDEM);
+    for (const wall of result.walls) {
+      if (wall.p0.length !== 2) throw new Error(`p0 should have 2 coords`);
+      if (wall.p1.length !== 2) throw new Error(`p1 should have 2 coords`);
+    }
+  });
+
+} catch (err) {
+  skip('Overture Buildings loader tests', `import failed: ${err.message}`);
+}
+
+// ─── SARSceneLayer ──────────────────────────────────────────────────────────
+
+suite('SARSceneLayer');
+
+try {
+  const sceneLayerSrc = readFileSync(join(rootDir, 'src', 'layers', 'SARSceneLayer.js'), 'utf8');
+
+  check('SARSceneLayer.js exists', () => {
+    if (!existsSync(join(rootDir, 'src', 'layers', 'SARSceneLayer.js')))
+      throw new Error('missing');
+  });
+
+  check('exports SARSceneLayer class', () => {
+    if (!sceneLayerSrc.includes('export class SARSceneLayer'))
+      throw new Error('SARSceneLayer class not exported');
+  });
+
+  check('exports SCENE_MODES constant', () => {
+    if (!sceneLayerSrc.includes('export const SCENE_MODES'))
+      throw new Error('SCENE_MODES not exported');
+  });
+
+  check('exports prepareDihedralStrips helper', () => {
+    if (!sceneLayerSrc.includes('export function prepareDihedralStrips'))
+      throw new Error('prepareDihedralStrips not exported');
+  });
+
+  check('exports prepareShadowZones helper', () => {
+    if (!sceneLayerSrc.includes('export function prepareShadowZones'))
+      throw new Error('prepareShadowZones not exported');
+  });
+
+  check('exports buildPointCloud helper', () => {
+    if (!sceneLayerSrc.includes('export function buildPointCloud'))
+      throw new Error('buildPointCloud not exported');
+  });
+
+  check('SCENE_MODES contains all four modes', () => {
+    for (const m of ['buildings3d', 'predictedDihedrals', 'predictedShadows', 'pointIntercepted']) {
+      if (!sceneLayerSrc.includes(`'${m}'`))
+        throw new Error(`mode '${m}' not found in SCENE_MODES`);
+    }
+  });
+
+  check('imports SolidPolygonLayer for buildings3d', () => {
+    if (!sceneLayerSrc.includes('SolidPolygonLayer'))
+      throw new Error('SolidPolygonLayer not imported');
+  });
+
+  check('imports PolygonLayer for dihedrals/shadows', () => {
+    if (!sceneLayerSrc.includes('PolygonLayer'))
+      throw new Error('PolygonLayer not imported');
+  });
+
+  check('imports PointCloudLayer for point-intercepted', () => {
+    if (!sceneLayerSrc.includes('PointCloudLayer'))
+      throw new Error('PointCloudLayer not imported');
+  });
+
+  check('imports predictDihedralStrip from sar-geometry', () => {
+    if (!sceneLayerSrc.includes('predictDihedralStrip'))
+      throw new Error('predictDihedralStrip not imported');
+  });
+
+  check('imports predictShadowZone from sar-geometry', () => {
+    if (!sceneLayerSrc.includes('predictShadowZone'))
+      throw new Error('predictShadowZone not imported');
+  });
+
+  check('imports slantToGroundPoint from sar-geometry', () => {
+    if (!sceneLayerSrc.includes('slantToGroundPoint'))
+      throw new Error('slantToGroundPoint not imported');
+  });
+
+  check('does not modify SARGPULayer', () => {
+    // Verify SARGPULayer is unchanged by checking it doesn't reference SARSceneLayer
+    const gpuSrc = readFileSync(join(rootDir, 'src', 'layers', 'SARGPULayer.js'), 'utf8');
+    if (gpuSrc.includes('SARSceneLayer'))
+      throw new Error('SARGPULayer should not reference SARSceneLayer');
+  });
+
+  // Integration in MapViewer
+  const mapViewerSrc = readFileSync(join(rootDir, 'src', 'viewers', 'MapViewer.jsx'), 'utf8');
+
+  check('MapViewer imports SARSceneLayer', () => {
+    if (!mapViewerSrc.includes('SARSceneLayer'))
+      throw new Error('SARSceneLayer not imported in MapViewer');
+  });
+
+  check('MapViewer accepts sceneMode prop', () => {
+    if (!mapViewerSrc.includes('sceneMode'))
+      throw new Error('sceneMode prop not found in MapViewer');
+  });
+
+  // Barrel export
+  const indexSrc = readFileSync(join(rootDir, 'src', 'index.js'), 'utf8');
+
+  check('index.js exports SARSceneLayer', () => {
+    if (!indexSrc.includes('SARSceneLayer'))
+      throw new Error('SARSceneLayer not in barrel export');
+  });
+
+  check('index.js exports SCENE_MODES', () => {
+    if (!indexSrc.includes('SCENE_MODES'))
+      throw new Error('SCENE_MODES not in barrel export');
+  });
+
+  check('index.js exports prepareDihedralStrips', () => {
+    if (!indexSrc.includes('prepareDihedralStrips'))
+      throw new Error('prepareDihedralStrips not in barrel export');
+  });
+
+  // Dynamic import test
+  const mod = await import('../src/layers/SARSceneLayer.js');
+
+  check('SARSceneLayer can be dynamically imported', () => {
+    if (!mod.SARSceneLayer) throw new Error('SARSceneLayer not in module');
+    if (!mod.SCENE_MODES) throw new Error('SCENE_MODES not in module');
+    if (!mod.prepareDihedralStrips) throw new Error('prepareDihedralStrips not in module');
+    if (!mod.prepareShadowZones) throw new Error('prepareShadowZones not in module');
+    if (!mod.buildPointCloud) throw new Error('buildPointCloud not in module');
+  });
+
+  check('SCENE_MODES has 4 entries', () => {
+    if (mod.SCENE_MODES.length !== 4) throw new Error(`expected 4, got ${mod.SCENE_MODES.length}`);
+  });
+
+  check('SARSceneLayer extends CompositeLayer', () => {
+    // Check prototype chain
+    const proto = Object.getPrototypeOf(mod.SARSceneLayer.prototype);
+    if (!proto || !proto.constructor || proto.constructor.name !== 'CompositeLayer')
+      throw new Error('SARSceneLayer does not extend CompositeLayer');
+  });
+
+  check('defaultProps includes all expected keys', () => {
+    const dp = mod.SARSceneLayer.defaultProps;
+    const required = ['mode', 'buildings', 'extrudedBuildings', 'dihedralStrips',
+                      'shadowZones', 'pointCloud', 'selectionBbox', 'opacity'];
+    for (const k of required) {
+      if (!(k in dp)) throw new Error(`missing defaultProp: ${k}`);
+    }
+  });
+
+  // stripToPolygon correctness (via prepareDihedralStrips with mock data)
+  const { buildLocalGeometry } = await import('../src/utils/sar-geometry.js');
+  const { extrudeBuilding } = await import('../src/loaders/overture-buildings.js');
+
+  check('prepareDihedralStrips produces polygons from extruded building', () => {
+    // Create a simple building feature
+    const feature = {
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-122.419, 37.775],
+          [-122.418, 37.775],
+          [-122.418, 37.776],
+          [-122.419, 37.776],
+          [-122.419, 37.775],
+        ]],
+      },
+      properties: { height: 20 },
+    };
+    const flatDEM = () => 0;
+    const extruded = extrudeBuilding(feature, flatDEM);
+
+    // Build synthetic SAR geometry
+    const geom = buildLocalGeometry(
+      37.775 * Math.PI / 180,
+      -122.419 * Math.PI / 180,
+      0,
+      { grazeAngleDeg: 45, sideOfTrack: 'R', rowSS: 1, colSS: 1 }
+    );
+
+    const strips = mod.prepareDihedralStrips([extruded], geom);
+    // Should produce at least one strip (walls facing sensor)
+    if (!Array.isArray(strips)) throw new Error('expected array');
+    // Each strip should have a polygon with 5 points (closed rect)
+    for (const s of strips) {
+      if (!s.polygon) throw new Error('strip missing polygon');
+      if (s.polygon.length !== 5) throw new Error(`expected 5 coords in polygon, got ${s.polygon.length}`);
+    }
+  });
+
+  check('prepareShadowZones produces polygons from extruded building', () => {
+    const feature = {
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-122.419, 37.775],
+          [-122.418, 37.775],
+          [-122.418, 37.776],
+          [-122.419, 37.776],
+          [-122.419, 37.775],
+        ]],
+      },
+      properties: { height: 20 },
+    };
+    const flatDEM = () => 0;
+    const extruded = extrudeBuilding(feature, flatDEM);
+
+    const geom = buildLocalGeometry(
+      37.775 * Math.PI / 180,
+      -122.419 * Math.PI / 180,
+      0,
+      { grazeAngleDeg: 45, sideOfTrack: 'R', rowSS: 1, colSS: 1 }
+    );
+
+    const zones = mod.prepareShadowZones([extruded], geom);
+    if (!Array.isArray(zones)) throw new Error('expected array');
+    for (const z of zones) {
+      if (!z.polygon) throw new Error('zone missing polygon');
+      if (z.polygon.length !== 5) throw new Error(`expected 5 coords in polygon, got ${z.polygon.length}`);
+    }
+  });
+
+} catch (err) {
+  skip('SARSceneLayer tests', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));

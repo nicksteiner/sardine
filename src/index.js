@@ -16,8 +16,10 @@ export {
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
 export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
+export { loadNITF, isNITFFile } from './loaders/nitf-loader.js';
 export { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from './loaders/nisar-gunw-loader.js';
 export { detectNISARProduct, openNISARReader, getRenderMode, RENDER_MODES } from './loaders/nisar-product.js';
+export { loadDEM, clearDEMCache } from './loaders/dem-loader.js';
 
 // WKT / ROI utilities
 export { parseWKT, wktToBbox, bboxToWKT, validateWKT, wktToGeoJSON } from './utils/wkt.js';
@@ -35,6 +37,13 @@ export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
 export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 export { SARGPUBitmapLayer } from './layers/SARGPUBitmapLayer.js';
 export { SARGPULayer } from './layers/SARGPULayer.js';
+export {
+  SARSceneLayer,
+  SCENE_MODES,
+  prepareDihedralStrips,
+  prepareShadowZones,
+  buildPointCloud,
+} from './layers/SARSceneLayer.js';
 export {
   sarVertexShader,
   sarFragmentShader,
@@ -102,6 +111,16 @@ export { exportFigure, downloadBlob } from './utils/figure-export.js';
 export { STRETCH_MODES, applyStretch } from './utils/stretch.js';
 
 export {
+  ecefToLLH,
+  llhToECEF,
+  slantToGroundPoint,
+  groundPointToSlant,
+  predictDihedralStrip,
+  predictShadowZone,
+  buildLocalGeometry,
+} from './utils/sar-geometry.js';
+
+export {
   adaptiveLogScale,
   percentileGammaStretch,
   localContrastEnhance,
@@ -136,8 +155,16 @@ export {
   fetchSceneContext,
   clearOvertureCache,
   getOvertureUrl,
+  bboxToTiles,
+  getZoomForBbox,
   OVERTURE_THEMES,
 } from './loaders/overture-loader.js';
+
+export {
+  loadBuildingsInBbox,
+  extrudeBuilding,
+  getBuildingHeight,
+} from './loaders/overture-buildings.js';
 
 export { createOvertureLayers } from './layers/OvertureLayer.js';
 
