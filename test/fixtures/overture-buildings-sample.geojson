@@ -1,0 +1,56 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "building-with-height",
+        "height": 25,
+        "num_floors": 8
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-122.4194, 37.7749],
+          [-122.4190, 37.7749],
+          [-122.4190, 37.7753],
+          [-122.4194, 37.7753],
+          [-122.4194, 37.7749]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "building-floors-only",
+        "num_floors": 3
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-122.4180, 37.7749],
+          [-122.4176, 37.7749],
+          [-122.4176, 37.7753],
+          [-122.4180, 37.7753],
+          [-122.4180, 37.7749]
+        ]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "building-no-info"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [-122.4170, 37.7749],
+          [-122.4166, 37.7749],
+          [-122.4166, 37.7753],
+          [-122.4170, 37.7753],
+          [-122.4170, 37.7749]
+        ]]
+      }
+    }
+  ]
+}
