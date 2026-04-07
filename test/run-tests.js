@@ -1328,6 +1328,86 @@ try {
   skip('overture buildings tests', `import failed: ${err.message}`);
 }
 
+// ─── SAR Geometry ────────────────────────────────────────────────────────────
+
+suite('SAR Geometry');
+
+import {
+  ecefToLLH,
+  llhToECEF,
+  slantToGroundPoint,
+  groundPointToSlant,
+  predictDihedralStrip,
+  predictShadowZone,
+  buildLocalGeometry,
+} from '../src/utils/sar-geometry.js';
+
+check('sar-geometry.js exports all 7 functions', () => {
+  const fns = [ecefToLLH, llhToECEF, slantToGroundPoint, groundPointToSlant,
+    predictDihedralStrip, predictShadowZone, buildLocalGeometry];
+  for (const fn of fns) {
+    if (typeof fn !== 'function') throw new Error(`Expected function, got ${typeof fn}`);
+  }
+});
+
+check('WGS84 round-trip: LLH → ECEF → LLH', () => {
+  const lat = 45.0, lon = -90.0, h = 500.0;
+  const ecef = llhToECEF(lat, lon, h);
+  const llh = ecefToLLH(ecef.x, ecef.y, ecef.z);
+  if (Math.abs(llh.lat - lat) > 1e-10) throw new Error(`lat diff: ${Math.abs(llh.lat - lat)}`);
+  if (Math.abs(llh.lon - lon) > 1e-10) throw new Error(`lon diff: ${Math.abs(llh.lon - lon)}`);
+  if (Math.abs(llh.h - h) > 1e-3) throw new Error(`h diff: ${Math.abs(llh.h - h)}`);
+});
+
+// Build synthetic geometry for slant↔ground tests
+const sarSceneCenter = { lat: 34.0, lon: -118.0, h: 0 };
+const sarScnECEF = llhToECEF(sarSceneCenter.lat, sarSceneCenter.lon, 0);
+const sarLatR = sarSceneCenter.lat * Math.PI / 180;
+const sarLonR = sarSceneCenter.lon * Math.PI / 180;
+const sarUp = [Math.cos(sarLatR) * Math.cos(sarLonR), Math.cos(sarLatR) * Math.sin(sarLonR), Math.sin(sarLatR)];
+const sarEast = [-Math.sin(sarLonR), Math.cos(sarLonR), 0];
+const sarAlt = 700000;
+const sarGeom = buildLocalGeometry({
+  arpECEF: {
+    x: sarScnECEF.x + sarUp[0] * sarAlt + sarEast[0] * (sarAlt / Math.tan(40 * Math.PI / 180)),
+    y: sarScnECEF.y + sarUp[1] * sarAlt + sarEast[1] * (sarAlt / Math.tan(40 * Math.PI / 180)),
+    z: sarScnECEF.z + sarUp[2] * sarAlt + sarEast[2] * (sarAlt / Math.tan(40 * Math.PI / 180)),
+  },
+  sceneCenter: sarSceneCenter,
+  rowSpacing: 5.0, colSpacing: 5.0, nRows: 1000, nCols: 1000, sideOfTrack: 1,
+});
+
+check('slant↔ground round-trip within 0.5 px (scene center)', () => {
+  const row = 500, col = 500;
+  const gnd = slantToGroundPoint(row, col, sarGeom);
+  const sl = groundPointToSlant(gnd.lat, gnd.lon, gnd.h, sarGeom);
+  if (Math.abs(sl.row - row) > 0.5) throw new Error(`row diff: ${Math.abs(sl.row - row)}`);
+  if (Math.abs(sl.col - col) > 0.5) throw new Error(`col diff: ${Math.abs(sl.col - col)}`);
+});
+
+check('slant↔ground round-trip within 0.5 px (off-center)', () => {
+  const row = 300, col = 700;
+  const gnd = slantToGroundPoint(row, col, sarGeom);
+  const sl = groundPointToSlant(gnd.lat, gnd.lon, gnd.h, sarGeom);
+  if (Math.abs(sl.row - row) > 0.5) throw new Error(`row diff: ${Math.abs(sl.row - row)}`);
+  if (Math.abs(sl.col - col) > 0.5) throw new Error(`col diff: ${Math.abs(sl.col - col)}`);
+});
+
+check('dihedral offset matches h/tan(grazeAngle)', () => {
+  const h = 20;
+  const wall = {
+    footprint: [{ lat: sarGeom.sceneCenterLLH.lat, lon: sarGeom.sceneCenterLLH.lon }],
+    height: h, baseElev: 0,
+  };
+  const base = groundPointToSlant(sarGeom.sceneCenterLLH.lat, sarGeom.sceneCenterLLH.lon, 0, sarGeom);
+  const dihedral = predictDihedralStrip(wall, sarGeom);
+  const expectedPxOffset = (h / Math.tan(sarGeom.grazeAngle)) * Math.cos(sarGeom.grazeAngle) / sarGeom.rowSpacing;
+  const actualOffset = Math.abs(dihedral[0].row - base.row);
+  if (Math.abs(actualOffset - expectedPxOffset) > 0.1) {
+    throw new Error(`offset ${actualOffset} vs expected ${expectedPxOffset}`);
+  }
+});
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
