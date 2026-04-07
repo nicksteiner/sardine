@@ -16,7 +16,6 @@ export {
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
 export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
-export { loadNITF, isNITFFile } from './loaders/nitf-loader.js';
 export { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from './loaders/nisar-gunw-loader.js';
 export { detectNISARProduct, openNISARReader, getRenderMode, RENDER_MODES } from './loaders/nisar-product.js';
 export { loadDEM, clearDEMCache } from './loaders/dem-loader.js';
