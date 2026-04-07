@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SARdine Scene Geometry Sidecar",
+  "description": "Per-file sidecar written next to loaded NITF as {filename}.sardine.json",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Schema version"
+    },
+    "jigger": {
+      "type": "object",
+      "description": "ARP and angle offset adjustments",
+      "properties": {
+        "arpDx": { "type": "number", "minimum": -500, "maximum": 500, "default": 0, "description": "ARP X offset in meters" },
+        "arpDy": { "type": "number", "minimum": -500, "maximum": 500, "default": 0, "description": "ARP Y offset in meters" },
+        "arpDz": { "type": "number", "minimum": -500, "maximum": 500, "default": 0, "description": "ARP Z offset in meters" },
+        "lookAngleBias": { "type": "number", "minimum": -2, "maximum": 2, "default": 0, "description": "Look angle bias in degrees" },
+        "azimuthBias": { "type": "number", "minimum": -2, "maximum": 2, "default": 0, "description": "Azimuth bias in degrees" }
+      },
+      "required": ["arpDx", "arpDy", "arpDz", "lookAngleBias", "azimuthBias"]
+    },
+    "demSource": {
+      "type": "string",
+      "enum": ["fabdem", "glo30", "off"],
+      "default": "glo30",
+      "description": "DEM source: FABDEM V2 (bare-earth), Copernicus GLO-30 (DSM), or off"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["2d", "3d", "dihedrals", "shadows", "pointcloud"],
+      "default": "2d",
+      "description": "Scene geometry display mode"
+    },
+    "buildingsEnabled": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether Overture buildings overlay is enabled"
+    }
+  },
+  "required": ["version", "jigger", "demSource", "mode"]
+}
