@@ -37,7 +37,13 @@ export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
 export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 export { SARGPUBitmapLayer } from './layers/SARGPUBitmapLayer.js';
 export { SARGPULayer } from './layers/SARGPULayer.js';
-export { SARSceneLayer, SCENE_MODES } from './layers/SARSceneLayer.js';
+export {
+  SARSceneLayer,
+  SCENE_MODES,
+  prepareDihedralStrips,
+  prepareShadowZones,
+  buildPointCloud,
+} from './layers/SARSceneLayer.js';
 export {
   sarVertexShader,
   sarFragmentShader,
