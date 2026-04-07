@@ -218,7 +218,7 @@ function lat2tile(lat, zoom) {
  * @param {number} zoom - Tile zoom level
  * @returns {{ minX: number, minY: number, maxX: number, maxY: number, zoom: number }}
  */
-function bboxToTiles(bbox, zoom) {
+export function bboxToTiles(bbox, zoom) {
   const [minLon, minLat, maxLon, maxLat] = bbox;
   return {
     minX: lon2tile(minLon, zoom),
@@ -233,7 +233,7 @@ function bboxToTiles(bbox, zoom) {
  * Determine appropriate zoom level for a bbox viewport.
  * Too high = too many tiles, too low = too coarse features.
  */
-function getZoomForBbox(bbox) {
+export function getZoomForBbox(bbox) {
   const [minLon, minLat, maxLon, maxLat] = bbox;
   const spanLon = maxLon - minLon;
   const spanLat = maxLat - minLat;

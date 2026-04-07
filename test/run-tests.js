@@ -1231,6 +1231,103 @@ try {
   skip('lite report charts functional tests', `import failed: ${err.message}`);
 }
 
+// ─── Overture Buildings loader ───────────────────────────────────────────────
+
+suite('Overture Buildings');
+
+try {
+  const { extrudeBuilding, resolveHeight } = await import('../src/loaders/overture-buildings.js');
+
+  const fixtureRaw = readFileSync(join(rootDir, 'test/fixtures/overture-buildings-sample.geojson'), 'utf8');
+  const fixture = JSON.parse(fixtureRaw);
+  const buildings = fixture.features;
+
+  check('resolveHeight uses height when present', () => {
+    const h = resolveHeight({ height: 25, num_floors: 8 });
+    if (h !== 25) throw new Error(`Expected 25, got ${h}`);
+  });
+
+  check('resolveHeight falls back to num_floors * 3', () => {
+    const h = resolveHeight({ num_floors: 3 });
+    if (h !== 9) throw new Error(`Expected 9, got ${h}`);
+  });
+
+  check('resolveHeight defaults to 6m with no info', () => {
+    const h = resolveHeight({});
+    if (h !== 6) throw new Error(`Expected 6, got ${h}`);
+  });
+
+  check('resolveHeight ignores zero height', () => {
+    const h = resolveHeight({ height: 0, num_floors: 4 });
+    if (h !== 12) throw new Error(`Expected 12, got ${h}`);
+  });
+
+  check('extrudeBuilding with height and no DEM', () => {
+    const result = extrudeBuilding(buildings[0], null);
+    if (result.baseElev !== 0) throw new Error(`Expected baseElev 0, got ${result.baseElev}`);
+    if (result.topElev !== 25) throw new Error(`Expected topElev 25, got ${result.topElev}`);
+  });
+
+  check('extrudeBuilding with num_floors only', () => {
+    const result = extrudeBuilding(buildings[1], null);
+    if (result.topElev !== 9) throw new Error(`Expected topElev 9, got ${result.topElev}`);
+  });
+
+  check('extrudeBuilding with no height info defaults to 6m', () => {
+    const result = extrudeBuilding(buildings[2], null);
+    if (result.topElev !== 6) throw new Error(`Expected topElev 6, got ${result.topElev}`);
+  });
+
+  check('extrudeBuilding returns correct footprint vertex count', () => {
+    const result = extrudeBuilding(buildings[0], null);
+    if (result.footprint.length !== 5) throw new Error(`Expected 5 footprint vertices, got ${result.footprint.length}`);
+  });
+
+  check('extrudeBuilding returns 4 walls for rectangular building', () => {
+    const result = extrudeBuilding(buildings[0], null);
+    if (result.walls.length !== 4) throw new Error(`Expected 4 walls, got ${result.walls.length}`);
+  });
+
+  check('extrudeBuilding wall normals have Z=0', () => {
+    const result = extrudeBuilding(buildings[0], null);
+    for (const wall of result.walls) {
+      if (wall.facingNormal[2] !== 0) throw new Error(`Expected Z=0 in normal`);
+    }
+  });
+
+  check('extrudeBuilding DEM-snaps base elevation', () => {
+    const demSampler = (lon, lat) => 100 + lon * 0.1;
+    const result = extrudeBuilding(buildings[0], demSampler);
+    if (result.baseElev <= 0) throw new Error(`Expected positive baseElev with DEM, got ${result.baseElev}`);
+    if (result.topElev !== result.baseElev + 25) throw new Error(`topElev should be baseElev + height`);
+  });
+
+  check('extrudeBuilding uses min DEM elevation across vertices', () => {
+    const coords = buildings[0].geometry.coordinates[0];
+    const demSampler = (lon, lat) => {
+      const idx = coords.findIndex(c => c[0] === lon && c[1] === lat);
+      return 50 + (idx >= 0 ? idx * 10 : 0);
+    };
+    const result = extrudeBuilding(buildings[0], demSampler);
+    if (result.baseElev !== 50) throw new Error(`Expected min elevation 50, got ${result.baseElev}`);
+  });
+
+  check('extrudeBuilding walls share baseElev and topElev', () => {
+    const result = extrudeBuilding(buildings[0], () => 42);
+    for (const wall of result.walls) {
+      if (wall.baseElev !== result.baseElev) throw new Error('Wall baseElev mismatch');
+      if (wall.topElev !== result.topElev) throw new Error('Wall topElev mismatch');
+    }
+  });
+
+  check('fixture has 3 buildings', () => {
+    if (buildings.length !== 3) throw new Error(`Expected 3 buildings, got ${buildings.length}`);
+  });
+
+} catch (err) {
+  skip('overture buildings tests', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
