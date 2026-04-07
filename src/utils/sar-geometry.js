@@ -1,67 +1,46 @@
 /**
- * SAR Scene Geometry — pure-math functions for coordinate transforms
- * and geometric predictions (dihedral strips, shadow zones).
+ * SAR Scene Geometry — Pure-math module for SAR coordinate transforms
+ * and geometric predictors (dihedral/shadow).
  *
- * Coordinate convention: row = range, col = azimuth (SICD RGAZIM).
+ * Coordinate convention: row = range, col = azimuth (RGAZIM / SICD Grid.Type)
  *
- * No DOM, no WebGL — Node-safe pure functions.
+ * Exports:
+ *   ecefToLLH(x, y, z)                → { lat, lon, h }   (degrees, meters)
+ *   llhToECEF(lat, lon, h)            → { x, y, z }       (meters)
+ *   slantToGroundPoint(row, col, geometry, demSampler)  → { lat, lon, h }
+ *   groundPointToSlant(lat, lon, h, geometry)           → { row, col }
+ *   predictDihedralStrip(wall, geometry)  → [{ row, col }]
+ *   predictShadowZone(wall, geometry)     → [{ row, col }]
+ *   buildLocalGeometry(options)            → geometry object
+ *
+ * @module sar-geometry
  */
 
-// ─── WGS84 constants ─────────────────────────────────────────────────────────
+// ─── WGS84 Constants ────────────────────────────────────────────────────────
 
-const WGS84_A = 6378137.0;                    // semi-major axis (m)
-const WGS84_F = 1 / 298.257223563;            // flattening
-const WGS84_B = WGS84_A * (1 - WGS84_F);     // semi-minor axis
+const WGS84_A = 6378137.0;                     // semi-major axis (m)
+const WGS84_F = 1.0 / 298.257223563;           // flattening
+const WGS84_B = WGS84_A * (1 - WGS84_F);      // semi-minor axis
 const WGS84_E2 = 2 * WGS84_F - WGS84_F * WGS84_F; // first eccentricity squared
+const WGS84_EP2 = (WGS84_A * WGS84_A - WGS84_B * WGS84_B) / (WGS84_B * WGS84_B);
 
-// ─── Vector helpers ──────────────────────────────────────────────────────────
+const DEG = Math.PI / 180;
 
-function dot(a, b) {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-function sub(a, b) {
-  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-}
-
-function add(a, b) {
-  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-}
-
-function scale(v, s) {
-  return [v[0] * s, v[1] * s, v[2] * s];
-}
-
-function norm(v) {
-  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-}
-
-function cross(a, b) {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-}
-
-// ─── WGS84 coordinate conversions ───────────────────────────────────────────
+// ─── WGS84 Coordinate Transforms ────────────────────────────────────────────
 
 /**
- * Convert ECEF (x, y, z) in meters to geodetic (lat, lon, h).
- * Uses Bowring's iterative method (3 iterations, sub-mm accuracy).
- *
- * @param {number} x - ECEF X (m)
- * @param {number} y - ECEF Y (m)
- * @param {number} z - ECEF Z (m)
- * @returns {{lat: number, lon: number, h: number}} lat/lon in radians, h in meters
+ * Convert ECEF (x,y,z) to geodetic (lat,lon,h) using Bowring's iterative method.
+ * @param {number} x - ECEF X (meters)
+ * @param {number} y - ECEF Y (meters)
+ * @param {number} z - ECEF Z (meters)
+ * @returns {{ lat: number, lon: number, h: number }} lat/lon in degrees, h in meters
  */
 export function ecefToLLH(x, y, z) {
-  const lon = Math.atan2(y, x);
   const p = Math.sqrt(x * x + y * y);
+  const lon = Math.atan2(y, x);
 
-  // Initial estimate
+  // Bowring's iterative method (converges in 2-3 iterations for any point)
   let lat = Math.atan2(z, p * (1 - WGS84_E2));
-
   for (let i = 0; i < 5; i++) {
     const sinLat = Math.sin(lat);
     const N = WGS84_A / Math.sqrt(1 - WGS84_E2 * sinLat * sinLat);
@@ -69,325 +48,265 @@ export function ecefToLLH(x, y, z) {
   }
 
   const sinLat = Math.sin(lat);
-  const cosLat = Math.cos(lat);
   const N = WGS84_A / Math.sqrt(1 - WGS84_E2 * sinLat * sinLat);
-  const h = cosLat > 1e-10 ? p / cosLat - N : Math.abs(z) / sinLat - N * (1 - WGS84_E2);
+  const h = p / Math.cos(lat) - N;
 
-  return { lat, lon, h };
+  return { lat: lat / DEG, lon: lon / DEG, h };
 }
 
 /**
- * Convert geodetic (lat, lon, h) to ECEF (x, y, z).
- *
- * @param {number} lat - Latitude in radians
- * @param {number} lon - Longitude in radians
- * @param {number} h   - Height above ellipsoid (m)
- * @returns {number[]} [x, y, z] in meters
+ * Convert geodetic (lat,lon,h) to ECEF (x,y,z).
+ * @param {number} lat - Latitude (degrees)
+ * @param {number} lon - Longitude (degrees)
+ * @param {number} h   - Height above ellipsoid (meters)
+ * @returns {{ x: number, y: number, z: number }} ECEF in meters
  */
 export function llhToECEF(lat, lon, h) {
-  const sinLat = Math.sin(lat);
-  const cosLat = Math.cos(lat);
-  const sinLon = Math.sin(lon);
-  const cosLon = Math.cos(lon);
+  const latR = lat * DEG;
+  const lonR = lon * DEG;
+  const sinLat = Math.sin(latR);
+  const cosLat = Math.cos(latR);
+  const sinLon = Math.sin(lonR);
+  const cosLon = Math.cos(lonR);
   const N = WGS84_A / Math.sqrt(1 - WGS84_E2 * sinLat * sinLat);
 
-  return [
-    (N + h) * cosLat * cosLon,
-    (N + h) * cosLat * sinLon,
-    (N * (1 - WGS84_E2) + h) * sinLat,
-  ];
+  return {
+    x: (N + h) * cosLat * cosLon,
+    y: (N + h) * cosLat * sinLon,
+    z: (N * (1 - WGS84_E2) + h) * sinLat,
+  };
 }
 
-// ─── Slant ↔ Ground projection ──────────────────────────────────────────────
+// ─── Vector helpers ──────────────────────────────────────────────────────────
+
+function vecSub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function vecAdd(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function vecScale(v, s) { return [v[0] * s, v[1] * s, v[2] * s]; }
+function vecDot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function vecNorm(v) { return Math.sqrt(vecDot(v, v)); }
+function vecNormalize(v) { const n = vecNorm(v); return [v[0] / n, v[1] / n, v[2] / n]; }
+
+// ─── Geometry Builder ────────────────────────────────────────────────────────
 
 /**
- * @typedef {Object} SARGeometry
- * @property {number[]} arpECEF     - Aperture Reference Point [x,y,z] (m)
- * @property {number[]} srpECEF     - Scene Reference Point [x,y,z] (m)
- * @property {number[]} rowUnitECEF - Range unit vector in ECEF
- * @property {number[]} colUnitECEF - Azimuth unit vector in ECEF
- * @property {number}   rowSS       - Row sample spacing (m)
- * @property {number}   colSS       - Col sample spacing (m)
- * @property {number}   srpRow      - SRP row index
- * @property {number}   srpCol      - SRP col index
- * @property {number}   grazeAngleDeg - Grazing angle at SRP (degrees)
- * @property {string}   sideOfTrack - 'L' or 'R'
+ * Build a local SAR imaging geometry descriptor from sensor and scene parameters.
+ *
+ * @param {Object} opts
+ * @param {{ x: number, y: number, z: number }} opts.arpECEF  - Antenna Reference Point in ECEF
+ * @param {{ lat: number, lon: number, h: number }} opts.sceneCenter - Scene center in LLH
+ * @param {number} opts.rowSpacing   - Range pixel spacing in meters
+ * @param {number} opts.colSpacing   - Azimuth pixel spacing in meters
+ * @param {number} opts.nRows        - Number of rows (range)
+ * @param {number} opts.nCols        - Number of columns (azimuth)
+ * @param {number} [opts.sideOfTrack=1]  - +1 = left-looking, -1 = right-looking
+ * @returns {Object} geometry descriptor
  */
+export function buildLocalGeometry(opts) {
+  const { arpECEF, sceneCenter, rowSpacing, colSpacing, nRows, nCols, sideOfTrack = 1 } = opts;
+  const arp = [arpECEF.x, arpECEF.y, arpECEF.z];
+  const scnECEF = llhToECEF(sceneCenter.lat, sceneCenter.lon, sceneCenter.h || 0);
+  const scn = [scnECEF.x, scnECEF.y, scnECEF.z];
+
+  // Up direction at scene center (ellipsoid normal)
+  const latR = sceneCenter.lat * DEG;
+  const lonR = sceneCenter.lon * DEG;
+  const up = [
+    Math.cos(latR) * Math.cos(lonR),
+    Math.cos(latR) * Math.sin(lonR),
+    Math.sin(latR),
+  ];
+
+  // Line-of-sight: scene center → ARP
+  const los = vecNormalize(vecSub(arp, scn));
+
+  // Along-track (azimuth) direction: perpendicular to LOS and up
+  // azDir = normalize(up × los) * sideOfTrack
+  const cross = [
+    up[1] * los[2] - up[2] * los[1],
+    up[2] * los[0] - up[0] * los[2],
+    up[0] * los[1] - up[1] * los[0],
+  ];
+  const azDir = vecScale(vecNormalize(cross), sideOfTrack);
+
+  // Range direction (ground-projected): perpendicular to azDir in ground plane
+  // rgDir = normalize(los - (los·up)*up)  — projection of LOS onto ground plane
+  const losDotUp = vecDot(los, up);
+  const rgDir = vecNormalize(vecSub(los, vecScale(up, losDotUp)));
+
+  // Graze angle
+  const grazeAngle = Math.asin(Math.abs(losDotUp));
+
+  // Slant range to scene center
+  const slantRange = vecNorm(vecSub(arp, scn));
+
+  return {
+    arp,
+    sceneCenter: scn,
+    sceneCenterLLH: sceneCenter,
+    up: vecNormalize(up),
+    los,
+    azDir,
+    rgDir,
+    rowSpacing,
+    colSpacing,
+    nRows,
+    nCols,
+    sideOfTrack,
+    grazeAngle,
+    slantRange,
+  };
+}
+
+// ─── Slant ↔ Ground Transforms ──────────────────────────────────────────────
 
 /**
- * Project slant-plane (row, col) to ground (lat, lon, h).
+ * Project a slant-plane pixel (row, col) to a ground point (lat, lon, h).
+ * Iterates: assume h=0, project to ground, sample DEM, repeat.
  *
- * Iterates DEM sampling 3 times starting from h=0 to converge
- * on the terrain surface.
- *
- * @param {number} row - Image row (range index)
- * @param {number} col - Image col (azimuth index)
- * @param {SARGeometry} geometry
- * @param {function(number,number): number} [demSampler] - (lat, lon) → height (m). Null → flat earth.
- * @returns {{lat: number, lon: number, h: number}} Radians and meters
+ * @param {number} row - Range index (fractional OK)
+ * @param {number} col - Azimuth index (fractional OK)
+ * @param {Object} geometry - From buildLocalGeometry
+ * @param {Function} [demSampler] - (lat, lon) → elevation in meters. Default returns 0.
+ * @param {number} [iterations=3] - Number of DEM refinement iterations
+ * @returns {{ lat: number, lon: number, h: number }}
  */
-export function slantToGroundPoint(row, col, geometry, demSampler) {
-  const { srpECEF, rowUnitECEF, colUnitECEF, rowSS, colSS, srpRow, srpCol } = geometry;
+export function slantToGroundPoint(row, col, geometry, demSampler = null, iterations = 3) {
+  const { sceneCenter, rgDir, azDir, rowSpacing, colSpacing, nRows, nCols, up, grazeAngle } = geometry;
 
-  // Scene-plane normal (moving along this preserves row/col projection)
-  const nVec = cross(rowUnitECEF, colUnitECEF);
-  const nHat = scale(nVec, 1 / norm(nVec));
+  // Offset from scene center in row/col
+  const dRow = row - nRows / 2;
+  const dCol = col - nCols / 2;
 
-  // Scene-plane ECEF point at (row, col)
-  const dr = (row - srpRow) * rowSS;
-  const dc = (col - srpCol) * colSS;
-  const pScene = add(srpECEF, add(scale(rowUnitECEF, dr), scale(colUnitECEF, dc)));
+  // Ground-range offset (meters)
+  const groundRangeOffset = dRow * rowSpacing / Math.cos(grazeAngle);
+  const azOffset = dCol * colSpacing;
 
-  // Find parameter t along nHat such that P(t) = pScene + t*nHat lies on
-  // the ellipsoid at target height. Newton iteration on h(t) - hTarget = 0.
-  let t = 0;
-  for (let i = 0; i < 6; i++) {
-    const pCur = add(pScene, scale(nHat, t));
-    const llh = ecefToLLH(pCur[0], pCur[1], pCur[2]);
-    const hTarget = demSampler ? demSampler(llh.lat, llh.lon) : 0;
-    const hErr = llh.h - hTarget;
-    if (Math.abs(hErr) < 1e-6) break;
+  // Initial ground point (h=0)
+  let pt = vecAdd(sceneCenter, vecAdd(
+    vecScale(rgDir, groundRangeOffset),
+    vecScale(azDir, azOffset),
+  ));
 
-    // dh/dt ≈ dot(nHat, local_up). Local up at pCur:
-    const sinLat = Math.sin(llh.lat);
-    const cosLat = Math.cos(llh.lat);
-    const sinLon = Math.sin(llh.lon);
-    const cosLon = Math.cos(llh.lon);
-    const upDir = [cosLat * cosLon, cosLat * sinLon, sinLat];
-    const dhdt = dot(nHat, upDir);
-    if (Math.abs(dhdt) < 1e-12) break;
+  const dem = demSampler || (() => 0);
 
-    t -= hErr / dhdt;
+  for (let i = 0; i < iterations; i++) {
+    const llh = ecefToLLH(pt[0], pt[1], pt[2]);
+    const hDEM = dem(llh.lat, llh.lon);
+    // Adjust point along ellipsoid normal to match DEM height
+    const ptLLH = llhToECEF(llh.lat, llh.lon, hDEM);
+    pt = [ptLLH.x, ptLLH.y, ptLLH.z];
   }
 
-  const pFinal = add(pScene, scale(nHat, t));
-  const llhFinal = ecefToLLH(pFinal[0], pFinal[1], pFinal[2]);
-  const hFinal = demSampler ? demSampler(llhFinal.lat, llhFinal.lon) : 0;
-
-  return { lat: llhFinal.lat, lon: llhFinal.lon, h: hFinal };
+  return ecefToLLH(pt[0], pt[1], pt[2]);
 }
 
 /**
- * Project a ground point (lat, lon, h) into slant-plane (row, col).
+ * Project a ground point (lat, lon, h) back to slant-plane pixel (row, col).
+ * Uses the geometry's grid vectors and ARP position.
  *
- * Uses grid row/col unit vectors and SRP position to project the ECEF
- * point onto the image grid.
- *
- * @param {number} lat - Latitude (radians)
- * @param {number} lon - Longitude (radians)
- * @param {number} h   - Height above ellipsoid (m)
- * @param {SARGeometry} geometry
- * @returns {{row: number, col: number}}
+ * @param {number} lat - Latitude (degrees)
+ * @param {number} lon - Longitude (degrees)
+ * @param {number} h   - Height above ellipsoid (meters)
+ * @param {Object} geometry - From buildLocalGeometry
+ * @returns {{ row: number, col: number }}
  */
 export function groundPointToSlant(lat, lon, h, geometry) {
-  const { srpECEF, rowUnitECEF, colUnitECEF, rowSS, colSS, srpRow, srpCol } = geometry;
-  const pECEF = llhToECEF(lat, lon, h);
-  const d = sub(pECEF, srpECEF);
+  const { sceneCenter, rgDir, azDir, rowSpacing, colSpacing, nRows, nCols, grazeAngle } = geometry;
+
+  const ptECEF = llhToECEF(lat, lon, h);
+  const pt = [ptECEF.x, ptECEF.y, ptECEF.z];
+
+  // Vector from scene center to target
+  const delta = vecSub(pt, sceneCenter);
+
+  // Project onto range and azimuth directions
+  const groundRangeOffset = vecDot(delta, rgDir);
+  const azOffset = vecDot(delta, azDir);
+
+  // Convert back to row/col
+  const dRow = groundRangeOffset * Math.cos(grazeAngle) / rowSpacing;
+  const dCol = azOffset / colSpacing;
+
   return {
-    row: srpRow + dot(d, rowUnitECEF) / rowSS,
-    col: srpCol + dot(d, colUnitECEF) / colSS,
+    row: nRows / 2 + dRow,
+    col: nCols / 2 + dCol,
   };
 }
 
-// ─── Dihedral & shadow prediction ────────────────────────────────────────────
+// ─── Dihedral & Shadow Predictors ────────────────────────────────────────────
 
 /**
- * @typedef {Object} BuildingFootprint
- * @property {Array<{lat: number, lon: number}>} footprint - Wall base vertices (radians)
- * @property {number} height    - Wall height (m)
- * @property {number} baseElev  - Base elevation above ellipsoid (m)
- */
-
-/**
- * Predict dihedral (double-bounce) strip in slant-plane coordinates
- * for walls facing the sensor.
+ * Predict the dihedral (double-bounce) strip in slant-plane coordinates
+ * for a vertical wall.
  *
- * For a vertical wall of height h at grazing angle θ on flat ground,
- * the dihedral strip extends h/tan(θ) in ground range toward the sensor
- * from the wall base.
+ * For a wall of height h on flat ground, the dihedral return appears
+ * offset by h / tan(grazeAngle) toward the sensor in ground range,
+ * which maps to h * cos(grazeAngle) / (sin(grazeAngle) * rowSpacing)
+ * pixels in the range (row) direction.
  *
- * @param {BuildingFootprint} building
- * @param {SARGeometry} geometry
- * @returns {Array<{baseRow: number, baseCol: number, offsetRow: number, offsetCol: number}>}
- *   Each entry is a wall segment with base position and dihedral offset in image pixels.
+ * @param {Object} wall
+ * @param {{ lat: number, lon: number }[]} wall.footprint - Wall base vertices in LLH
+ * @param {number} wall.height      - Wall height in meters
+ * @param {number} [wall.baseElev=0] - Base elevation in meters
+ * @param {Object} geometry - From buildLocalGeometry
+ * @returns {{ row: number, col: number }[]} Slant-plane polygon vertices
  */
-export function predictDihedralStrip(building, geometry) {
-  const { footprint, height, baseElev } = building;
-  const grazeRad = (geometry.grazeAngleDeg * Math.PI) / 180;
-  const groundRangeOffset = height / Math.tan(grazeRad);
+export function predictDihedralStrip(wall, geometry) {
+  const { height, baseElev = 0, footprint } = wall;
+  const { grazeAngle, sideOfTrack } = geometry;
 
-  // Determine sensor-facing direction in ECEF (from SRP toward ARP)
-  const toSensor = sub(geometry.arpECEF, geometry.srpECEF);
-  const toSensorNorm = scale(toSensor, 1 / norm(toSensor));
+  // Dihedral offset in ground range (toward sensor)
+  const dihedralGroundOffset = height / Math.tan(grazeAngle);
 
-  // Range direction: toward sensor is negative row (closer range)
-  const rangeSign = geometry.sideOfTrack === 'L' ? -1 : -1; // dihedral always toward sensor
+  const vertices = [];
+  for (const vertex of footprint) {
+    // Base vertex in slant plane
+    const base = groundPointToSlant(vertex.lat, vertex.lon, baseElev, geometry);
 
-  const results = [];
+    // Dihedral line is offset toward sensor in range
+    // "Toward sensor" = decreasing row for sideOfTrack convention
+    const rowOffset = -sideOfTrack * dihedralGroundOffset * Math.cos(grazeAngle) / geometry.rowSpacing;
 
-  for (let i = 0; i < footprint.length; i++) {
-    const j = (i + 1) % footprint.length;
-    const v0 = footprint[i];
-    const v1 = footprint[j];
-
-    // Wall midpoint
-    const midLat = (v0.lat + v1.lat) / 2;
-    const midLon = (v0.lon + v1.lon) / 2;
-
-    // Wall segment endpoints in ECEF
-    const p0 = llhToECEF(v0.lat, v0.lon, baseElev);
-    const p1 = llhToECEF(v1.lat, v1.lon, baseElev);
-
-    // Wall outward normal (horizontal component)
-    const wallVec = sub(p1, p0);
-    const up = scale(llhToECEF(midLat, midLon, baseElev + 1), 1); // approximate up
-    const upDir = sub(up, llhToECEF(midLat, midLon, baseElev));
-    const wallNormal = cross(wallVec, upDir);
-    const wallNormalLen = norm(wallNormal);
-    if (wallNormalLen < 1e-10) continue;
-    const wallNormalUnit = scale(wallNormal, 1 / wallNormalLen);
-
-    // Wall faces sensor if its normal has a positive component toward sensor
-    const facingSensor = dot(wallNormalUnit, toSensorNorm) > 0;
-    if (!facingSensor) {
-      // Try the opposite normal
-      const altNormal = scale(wallNormalUnit, -1);
-      if (dot(altNormal, toSensorNorm) <= 0) continue;
-    }
-
-    // Project wall base midpoint to slant plane
-    const base = groundPointToSlant(midLat, midLon, baseElev, geometry);
-
-    // Dihedral offset: h/tan(graze) in ground range toward sensor
-    // In image coordinates, this is along the row direction (range)
-    const offsetPixels = groundRangeOffset / geometry.rowSS;
-
-    results.push({
-      baseRow: base.row,
-      baseCol: base.col,
-      offsetRow: -offsetPixels, // toward sensor = decreasing range = negative row offset
-      offsetCol: 0,
+    vertices.push({
+      row: base.row + rowOffset,
+      col: base.col,
     });
   }
 
-  return results;
+  return vertices;
 }
 
 /**
- * Predict shadow zone in slant-plane coordinates for walls facing the sensor.
+ * Predict the shadow zone in slant-plane coordinates for a vertical wall.
  *
- * Shadow extends from the top of the structure away from the sensor.
- * Shadow length in ground range = h / tan(grazeAngle).
+ * Shadow extends away from the sensor by h / tan(grazeAngle) in ground range.
  *
- * @param {BuildingFootprint} building
- * @param {SARGeometry} geometry
- * @returns {Array<{baseRow: number, baseCol: number, offsetRow: number, offsetCol: number}>}
+ * @param {Object} wall
+ * @param {{ lat: number, lon: number }[]} wall.footprint - Wall base vertices in LLH
+ * @param {number} wall.height      - Wall height in meters
+ * @param {number} [wall.baseElev=0] - Base elevation in meters
+ * @param {Object} geometry - From buildLocalGeometry
+ * @returns {{ row: number, col: number }[]} Slant-plane polygon vertices
  */
-export function predictShadowZone(building, geometry) {
-  const { footprint, height, baseElev } = building;
-  const grazeRad = (geometry.grazeAngleDeg * Math.PI) / 180;
-  const groundRangeOffset = height / Math.tan(grazeRad);
+export function predictShadowZone(wall, geometry) {
+  const { height, baseElev = 0, footprint } = wall;
+  const { grazeAngle, sideOfTrack } = geometry;
 
-  const results = [];
+  // Shadow extends away from sensor in ground range
+  const shadowGroundOffset = height / Math.tan(grazeAngle);
 
-  for (let i = 0; i < footprint.length; i++) {
-    const j = (i + 1) % footprint.length;
-    const v0 = footprint[i];
-    const v1 = footprint[j];
+  const vertices = [];
+  for (const vertex of footprint) {
+    const base = groundPointToSlant(vertex.lat, vertex.lon, baseElev, geometry);
 
-    const midLat = (v0.lat + v1.lat) / 2;
-    const midLon = (v0.lon + v1.lon) / 2;
+    // "Away from sensor" = increasing row
+    const rowOffset = sideOfTrack * shadowGroundOffset * Math.cos(grazeAngle) / geometry.rowSpacing;
 
-    // Shadow starts from the wall base on the far side from sensor
-    // and extends away from sensor by h/tan(graze)
-    const base = groundPointToSlant(midLat, midLon, baseElev, geometry);
-
-    // Shadow extends away from sensor = increasing range = positive row offset
-    const offsetPixels = groundRangeOffset / geometry.rowSS;
-
-    results.push({
-      baseRow: base.row,
-      baseCol: base.col,
-      offsetRow: offsetPixels, // away from sensor = increasing range
-      offsetCol: 0,
+    vertices.push({
+      row: base.row + rowOffset,
+      col: base.col,
     });
   }
 
-  return results;
-}
-
-// ─── Utility: build local tangent-plane geometry ─────────────────────────────
-
-/**
- * Build a synthetic SARGeometry for a given SRP on the ellipsoid.
- * Useful for testing or when full SICD metadata is unavailable.
- *
- * @param {number} srpLat - SRP latitude (radians)
- * @param {number} srpLon - SRP longitude (radians)
- * @param {number} srpH   - SRP height (m)
- * @param {Object} opts
- * @param {number} opts.grazeAngleDeg - Grazing angle (degrees)
- * @param {string} opts.sideOfTrack   - 'L' or 'R'
- * @param {number} opts.azimuthAngleDeg - Azimuth angle from north (degrees), default 0 (north-flying)
- * @param {number} [opts.rowSS=1]     - Row sample spacing (m)
- * @param {number} [opts.colSS=1]     - Col sample spacing (m)
- * @param {number} [opts.srpRow=0]    - SRP row index
- * @param {number} [opts.srpCol=0]    - SRP col index
- * @returns {SARGeometry}
- */
-export function buildLocalGeometry(srpLat, srpLon, srpH, opts) {
-  const {
-    grazeAngleDeg,
-    sideOfTrack = 'R',
-    azimuthAngleDeg = 0,
-    rowSS = 1,
-    colSS = 1,
-    srpRow = 0,
-    srpCol = 0,
-  } = opts;
-
-  const srpECEF = llhToECEF(srpLat, srpLon, srpH);
-
-  // Local ENU (East-North-Up) unit vectors at SRP
-  const sinLat = Math.sin(srpLat);
-  const cosLat = Math.cos(srpLat);
-  const sinLon = Math.sin(srpLon);
-  const cosLon = Math.cos(srpLon);
-
-  const east  = [-sinLon,          cosLon,          0        ];
-  const north = [-sinLat * cosLon, -sinLat * sinLon, cosLat  ];
-  const up    = [ cosLat * cosLon,  cosLat * sinLon, sinLat  ];
-
-  // Azimuth direction (flight direction) in ENU, rotated from north
-  const azRad = (azimuthAngleDeg * Math.PI) / 180;
-  // Azimuth unit in ECEF (along-track)
-  const colUnit = add(scale(north, Math.cos(azRad)), scale(east, Math.sin(azRad)));
-
-  // Range direction: perpendicular to flight in the ground plane, then tilted by graze angle
-  // For right-looking: range points to the right of flight direction
-  const sideSign = sideOfTrack === 'L' ? -1 : 1;
-  const groundRange = add(scale(east, sideSign * Math.cos(azRad)), scale(north, -sideSign * Math.sin(azRad)));
-
-  // Slant range unit vector: ground range component at graze angle, with downward tilt
-  const grazeRad = (grazeAngleDeg * Math.PI) / 180;
-  const rowUnit = add(scale(groundRange, Math.cos(grazeRad)), scale(up, -Math.sin(grazeRad)));
-
-  // ARP position: along the line-of-sight direction from SRP, at some altitude
-  // Place it at a reasonable distance (e.g., 600 km for a satellite)
-  const losDir = add(scale(groundRange, -Math.cos(grazeRad)), scale(up, Math.sin(grazeRad)));
-  const arpDist = 600000; // 600 km
-  const arpECEF = add(srpECEF, scale(losDir, arpDist));
-
-  return {
-    arpECEF,
-    srpECEF,
-    rowUnitECEF: rowUnit,
-    colUnitECEF: colUnit,
-    rowSS,
-    colSS,
-    srpRow,
-    srpCol,
-    grazeAngleDeg,
-    sideOfTrack,
-  };
+  return vertices;
 }

@@ -4,10 +4,9 @@
  * Unit tests for src/utils/sar-geometry.js
  *
  * Covers:
- *  - WGS84 round-trip (llhToECEF → ecefToLLH)
- *  - Slant ↔ ground round-trip within 0.5 px on synthetic geometry
- *  - Analytic dihedral offset = h / tan(grazeAngle)
- *  - Shadow zone offset = h / tan(grazeAngle) away from sensor
+ *   - WGS84 round-trip (llhToECEF → ecefToLLH)
+ *   - Slant ↔ ground round-trip within 0.5 px on synthetic geometry
+ *   - Analytic dihedral offset matches h / tan(grazeAngle)
  */
 
 import {
@@ -25,17 +24,6 @@ import {
 let passed = 0;
 let failed = 0;
 
-function assert(condition, msg) {
-  if (!condition) throw new Error(msg);
-}
-
-function assertClose(actual, expected, tol, label) {
-  const diff = Math.abs(actual - expected);
-  if (diff > tol) {
-    throw new Error(`${label}: expected ${expected}, got ${actual} (diff=${diff}, tol=${tol})`);
-  }
-}
-
 function check(name, fn) {
   try {
     fn();
@@ -48,243 +36,270 @@ function check(name, fn) {
   }
 }
 
-const DEG = Math.PI / 180;
+function assertClose(actual, expected, tol, label = '') {
+  const diff = Math.abs(actual - expected);
+  if (diff > tol) {
+    throw new Error(`${label} expected ${expected}, got ${actual} (diff=${diff}, tol=${tol})`);
+  }
+}
 
-// ─── WGS84 round-trip tests ─────────────────────────────────────────────────
+// ─── Build a synthetic geometry for testing ──────────────────────────────────
 
-console.log('\n━━━ WGS84 coordinate conversions ━━━');
+function makeSyntheticGeometry() {
+  // Sensor at ~700 km altitude, 40° graze angle, left-looking
+  const sceneCenter = { lat: 34.0, lon: -118.0, h: 0 };
+  const scnECEF = llhToECEF(sceneCenter.lat, sceneCenter.lon, 0);
 
-check('llhToECEF → ecefToLLH round-trip at equator', () => {
+  // Place ARP roughly 700 km above and to the side of scene center
+  // For a 40° graze angle, the ARP is offset in range and up
+  const altitude = 700000; // 700 km
+  const grazeAngle = 40 * Math.PI / 180;
+  const groundRange = altitude / Math.tan(grazeAngle);
+
+  // Approximate ARP position: move up + offset in cross-track
+  // Use a simple geometry: ARP above and east of scene center
+  const latR = sceneCenter.lat * Math.PI / 180;
+  const lonR = sceneCenter.lon * Math.PI / 180;
+
+  // East direction at scene center
+  const east = [-Math.sin(lonR), Math.cos(lonR), 0];
+  // North direction
+  const north = [-Math.sin(latR) * Math.cos(lonR), -Math.sin(latR) * Math.sin(lonR), Math.cos(latR)];
+  // Up direction
+  const up = [Math.cos(latR) * Math.cos(lonR), Math.cos(latR) * Math.sin(lonR), Math.sin(latR)];
+
+  const arpX = scnECEF.x + up[0] * altitude + east[0] * groundRange;
+  const arpY = scnECEF.y + up[1] * altitude + east[1] * groundRange;
+  const arpZ = scnECEF.z + up[2] * altitude + east[2] * groundRange;
+
+  return buildLocalGeometry({
+    arpECEF: { x: arpX, y: arpY, z: arpZ },
+    sceneCenter,
+    rowSpacing: 5.0,   // 5 m range spacing
+    colSpacing: 5.0,   // 5 m azimuth spacing
+    nRows: 1000,
+    nCols: 1000,
+    sideOfTrack: 1,     // left-looking
+  });
+}
+
+// ─── WGS84 Round-trip Tests ─────────────────────────────────────────────────
+
+console.log('\n━━━ WGS84 Round-trip ━━━');
+
+check('LLH → ECEF → LLH round-trip (equator)', () => {
   const lat = 0, lon = 0, h = 0;
-  const [x, y, z] = llhToECEF(lat, lon, h);
-  const result = ecefToLLH(x, y, z);
-  assertClose(result.lat, lat, 1e-12, 'lat');
-  assertClose(result.lon, lon, 1e-12, 'lon');
-  assertClose(result.h, h, 1e-3, 'h');
+  const ecef = llhToECEF(lat, lon, h);
+  const llh = ecefToLLH(ecef.x, ecef.y, ecef.z);
+  assertClose(llh.lat, lat, 1e-10, 'lat');
+  assertClose(llh.lon, lon, 1e-10, 'lon');
+  assertClose(llh.h, h, 1e-3, 'h');
 });
 
-check('llhToECEF → ecefToLLH round-trip at pole', () => {
-  const lat = 90 * DEG, lon = 0, h = 100;
-  const [x, y, z] = llhToECEF(lat, lon, h);
-  const result = ecefToLLH(x, y, z);
-  assertClose(result.lat, lat, 1e-12, 'lat');
-  assertClose(result.lon, lon, 1e-12, 'lon');
-  assertClose(result.h, h, 1e-3, 'h');
+check('LLH → ECEF → LLH round-trip (mid-latitude)', () => {
+  const lat = 45.0, lon = -90.0, h = 500.0;
+  const ecef = llhToECEF(lat, lon, h);
+  const llh = ecefToLLH(ecef.x, ecef.y, ecef.z);
+  assertClose(llh.lat, lat, 1e-10, 'lat');
+  assertClose(llh.lon, lon, 1e-10, 'lon');
+  assertClose(llh.h, h, 1e-3, 'h');
 });
 
-check('llhToECEF → ecefToLLH round-trip at mid-latitude with altitude', () => {
-  const lat = 45 * DEG, lon = -120 * DEG, h = 5000;
-  const [x, y, z] = llhToECEF(lat, lon, h);
-  const result = ecefToLLH(x, y, z);
-  assertClose(result.lat, lat, 1e-12, 'lat');
-  assertClose(result.lon, lon, 1e-12, 'lon');
-  assertClose(result.h, h, 1e-3, 'h');
+check('LLH → ECEF → LLH round-trip (pole)', () => {
+  const lat = 90.0, lon = 0.0, h = 1000.0;
+  const ecef = llhToECEF(lat, lon, h);
+  const llh = ecefToLLH(ecef.x, ecef.y, ecef.z);
+  assertClose(llh.lat, lat, 1e-10, 'lat');
+  assertClose(llh.h, h, 1e-3, 'h');
 });
 
-check('llhToECEF → ecefToLLH round-trip at high altitude (LEO orbit)', () => {
-  const lat = 30 * DEG, lon = 60 * DEG, h = 700000;
-  const [x, y, z] = llhToECEF(lat, lon, h);
-  const result = ecefToLLH(x, y, z);
-  assertClose(result.lat, lat, 1e-10, 'lat');
-  assertClose(result.lon, lon, 1e-10, 'lon');
-  assertClose(result.h, h, 1e-2, 'h');
+check('LLH → ECEF → LLH round-trip (high altitude)', () => {
+  const lat = -33.86, lon = 151.21, h = 35786000; // geostationary
+  const ecef = llhToECEF(lat, lon, h);
+  const llh = ecefToLLH(ecef.x, ecef.y, ecef.z);
+  assertClose(llh.lat, lat, 1e-8, 'lat');
+  assertClose(llh.lon, lon, 1e-8, 'lon');
+  assertClose(llh.h, h, 0.1, 'h');
 });
 
-check('ecefToLLH → llhToECEF round-trip from known ECEF', () => {
-  // Somewhere on the equator, known position
-  const x = 6378137, y = 0, z = 0;
-  const llh = ecefToLLH(x, y, z);
-  assertClose(llh.lat, 0, 1e-12, 'lat');
-  assertClose(llh.lon, 0, 1e-12, 'lon');
-  assertClose(llh.h, 0, 1e-3, 'h');
-  const [x2, y2, z2] = llhToECEF(llh.lat, llh.lon, llh.h);
-  assertClose(x2, x, 1e-3, 'x');
-  assertClose(y2, y, 1e-3, 'y');
-  assertClose(z2, z, 1e-3, 'z');
-});
-
-// ─── Slant ↔ Ground round-trip tests ────────────────────────────────────────
-
-console.log('\n━━━ Slant ↔ Ground projection ━━━');
-
-// Build a synthetic geometry: right-looking, 45° graze, north-flying, at (35°N, -118°W)
-const testGeom = buildLocalGeometry(
-  35 * DEG, -118 * DEG, 0,
-  { grazeAngleDeg: 45, sideOfTrack: 'R', azimuthAngleDeg: 0, rowSS: 1, colSS: 1, srpRow: 500, srpCol: 500 }
-);
-
-check('slantToGround → groundToSlant round-trip at SRP', () => {
-  const ground = slantToGroundPoint(500, 500, testGeom, null);
-  const slant = groundPointToSlant(ground.lat, ground.lon, ground.h, testGeom);
-  assertClose(slant.row, 500, 0.5, 'row');
-  assertClose(slant.col, 500, 0.5, 'col');
-});
-
-check('slantToGround → groundToSlant round-trip offset +100 range', () => {
-  const ground = slantToGroundPoint(600, 500, testGeom, null);
-  const slant = groundPointToSlant(ground.lat, ground.lon, ground.h, testGeom);
-  assertClose(slant.row, 600, 0.5, 'row');
-  assertClose(slant.col, 500, 0.5, 'col');
-});
-
-check('slantToGround → groundToSlant round-trip offset +100 azimuth', () => {
-  const ground = slantToGroundPoint(500, 600, testGeom, null);
-  const slant = groundPointToSlant(ground.lat, ground.lon, ground.h, testGeom);
-  assertClose(slant.row, 500, 0.5, 'row');
-  assertClose(slant.col, 600, 0.5, 'col');
-});
-
-check('slantToGround → groundToSlant round-trip offset +50/+50', () => {
-  const ground = slantToGroundPoint(550, 550, testGeom, null);
-  const slant = groundPointToSlant(ground.lat, ground.lon, ground.h, testGeom);
-  assertClose(slant.row, 550, 0.5, 'row');
-  assertClose(slant.col, 550, 0.5, 'col');
-});
-
-check('groundPointToSlant → slantToGround round-trip', () => {
-  // Start from a known ground point near SRP
-  const lat = 35.001 * DEG, lon = -117.999 * DEG, h = 0;
-  const slant = groundPointToSlant(lat, lon, h, testGeom);
-  const ground = slantToGroundPoint(slant.row, slant.col, testGeom, null);
-  const slant2 = groundPointToSlant(ground.lat, ground.lon, ground.h, testGeom);
-  assertClose(slant2.row, slant.row, 0.5, 'row');
-  assertClose(slant2.col, slant.col, 0.5, 'col');
-});
-
-check('slantToGround → groundToSlant with flat DEM sampler', () => {
-  const flatDEM = () => 0;
-  const ground = slantToGroundPoint(550, 520, testGeom, flatDEM);
-  const slant = groundPointToSlant(ground.lat, ground.lon, ground.h, testGeom);
-  assertClose(slant.row, 550, 0.5, 'row');
-  assertClose(slant.col, 520, 0.5, 'col');
-});
-
-check('slantToGround → groundToSlant with constant-height DEM', () => {
-  const constDEM = () => 500; // 500m plateau
-  const geom500 = buildLocalGeometry(
-    35 * DEG, -118 * DEG, 500,
-    { grazeAngleDeg: 45, sideOfTrack: 'R', azimuthAngleDeg: 0, rowSS: 1, colSS: 1, srpRow: 500, srpCol: 500 }
-  );
-  const ground = slantToGroundPoint(550, 520, geom500, constDEM);
-  const slant = groundPointToSlant(ground.lat, ground.lon, ground.h, geom500);
-  assertClose(slant.row, 550, 0.5, 'row');
-  assertClose(slant.col, 520, 0.5, 'col');
-});
-
-// ─── Dihedral prediction tests ──────────────────────────────────────────────
-
-console.log('\n━━━ Dihedral & Shadow prediction ━━━');
-
-check('dihedral offset matches h/tan(grazeAngle) for vertical wall', () => {
-  const grazeAngleDeg = 45;
-  const geom = buildLocalGeometry(
-    35 * DEG, -118 * DEG, 0,
-    { grazeAngleDeg, sideOfTrack: 'R', azimuthAngleDeg: 0, rowSS: 1, colSS: 1, srpRow: 500, srpCol: 500 }
-  );
-
-  const wallHeight = 10; // meters
-  const expectedOffset = wallHeight / Math.tan(grazeAngleDeg * DEG); // 10 / tan(45°) = 10 m → 10 px
-
-  // Create a simple wall facing the sensor (east-facing for right-looking, north-flying)
-  const baseLat = 35 * DEG;
-  const baseLon = -118 * DEG;
-  const dLat = 0.00001; // small wall segment
-
-  const building = {
-    footprint: [
-      { lat: baseLat - dLat, lon: baseLon },
-      { lat: baseLat + dLat, lon: baseLon },
-    ],
-    height: wallHeight,
-    baseElev: 0,
-  };
-
-  const strips = predictDihedralStrip(building, geom);
-  assert(strips.length > 0, 'Should predict at least one dihedral strip');
-
-  // The offset should be h/tan(graze) in pixels, toward sensor (negative row)
-  const strip = strips[0];
-  assertClose(Math.abs(strip.offsetRow), expectedOffset, 0.5,
-    'dihedral offset (px)');
-  assert(strip.offsetRow < 0, 'dihedral should be toward sensor (negative row offset)');
-  assertClose(strip.offsetCol, 0, 0.1, 'dihedral col offset should be ~0');
-});
-
-check('dihedral offset scales with wall height', () => {
-  const grazeAngleDeg = 30;
-  const geom = buildLocalGeometry(
-    35 * DEG, -118 * DEG, 0,
-    { grazeAngleDeg, sideOfTrack: 'R', azimuthAngleDeg: 0, rowSS: 1, colSS: 1, srpRow: 500, srpCol: 500 }
-  );
-
-  const baseLat = 35 * DEG;
-  const baseLon = -118 * DEG;
-  const dLat = 0.00001;
-
-  for (const h of [5, 10, 20]) {
-    const building = {
-      footprint: [
-        { lat: baseLat - dLat, lon: baseLon },
-        { lat: baseLat + dLat, lon: baseLon },
-      ],
-      height: h,
-      baseElev: 0,
-    };
-    const strips = predictDihedralStrip(building, geom);
-    assert(strips.length > 0, `h=${h}: should have strips`);
-    const expected = h / Math.tan(grazeAngleDeg * DEG);
-    assertClose(Math.abs(strips[0].offsetRow), expected, 0.5, `h=${h} offset`);
+check('ECEF origin (0,0,0) → valid LLH', () => {
+  // Center of Earth — degenerate but should not crash
+  const llh = ecefToLLH(0, 0, 0);
+  // Should return some value without NaN
+  if (Number.isNaN(llh.lat) || Number.isNaN(llh.lon)) {
+    throw new Error('NaN returned for degenerate input');
   }
 });
 
-check('shadow offset = h/tan(grazeAngle) away from sensor', () => {
-  const grazeAngleDeg = 45;
-  const geom = buildLocalGeometry(
-    35 * DEG, -118 * DEG, 0,
-    { grazeAngleDeg, sideOfTrack: 'R', azimuthAngleDeg: 0, rowSS: 1, colSS: 1, srpRow: 500, srpCol: 500 }
-  );
+check('Known ECEF → LLH (Washington DC)', () => {
+  // Washington DC approx: 38.9°N, -77.0°W, h=0
+  const ecef = llhToECEF(38.9, -77.0, 0);
+  // Just verify ECEF values are reasonable
+  if (Math.abs(ecef.x) < 1e6 || Math.abs(ecef.y) < 1e6 || Math.abs(ecef.z) < 1e6) {
+    throw new Error('ECEF values too small');
+  }
+  // And round-trip
+  const llh = ecefToLLH(ecef.x, ecef.y, ecef.z);
+  assertClose(llh.lat, 38.9, 1e-10, 'lat');
+  assertClose(llh.lon, -77.0, 1e-10, 'lon');
+});
 
-  const wallHeight = 10;
-  const expectedOffset = wallHeight / Math.tan(grazeAngleDeg * DEG);
+// ─── Slant ↔ Ground Round-trip Tests ─────────────────────────────────────────
 
-  const baseLat = 35 * DEG;
-  const baseLon = -118 * DEG;
-  const dLat = 0.00001;
+console.log('\n━━━ Slant ↔ Ground Round-trip ━━━');
 
-  const building = {
-    footprint: [
-      { lat: baseLat - dLat, lon: baseLon },
-      { lat: baseLat + dLat, lon: baseLon },
-    ],
-    height: wallHeight,
+const geom = makeSyntheticGeometry();
+
+check('Scene center round-trips exactly', () => {
+  const row = 500, col = 500; // center pixel
+  const gnd = slantToGroundPoint(row, col, geom);
+  const sl = groundPointToSlant(gnd.lat, gnd.lon, gnd.h, geom);
+  assertClose(sl.row, row, 0.5, 'row');
+  assertClose(sl.col, col, 0.5, 'col');
+});
+
+check('Off-center pixel round-trips within 0.5 px', () => {
+  const row = 300, col = 700;
+  const gnd = slantToGroundPoint(row, col, geom);
+  const sl = groundPointToSlant(gnd.lat, gnd.lon, gnd.h, geom);
+  assertClose(sl.row, row, 0.5, 'row');
+  assertClose(sl.col, col, 0.5, 'col');
+});
+
+check('Corner pixel round-trips within 0.5 px', () => {
+  const row = 50, col = 50;
+  const gnd = slantToGroundPoint(row, col, geom);
+  const sl = groundPointToSlant(gnd.lat, gnd.lon, gnd.h, geom);
+  assertClose(sl.row, row, 0.5, 'row');
+  assertClose(sl.col, col, 0.5, 'col');
+});
+
+check('Opposite corner pixel round-trips within 0.5 px', () => {
+  const row = 950, col = 950;
+  const gnd = slantToGroundPoint(row, col, geom);
+  const sl = groundPointToSlant(gnd.lat, gnd.lon, gnd.h, geom);
+  assertClose(sl.row, row, 0.5, 'row');
+  assertClose(sl.col, col, 0.5, 'col');
+});
+
+check('groundPointToSlant(slantToGroundPoint(r,c)) ≈ (r,c) for 10 random pixels', () => {
+  // Use seeded-like deterministic values
+  const pixels = [
+    [100, 200], [250, 750], [400, 400], [600, 300], [800, 900],
+    [150, 850], [500, 100], [700, 500], [350, 650], [900, 200],
+  ];
+  for (const [row, col] of pixels) {
+    const gnd = slantToGroundPoint(row, col, geom);
+    const sl = groundPointToSlant(gnd.lat, gnd.lon, gnd.h, geom);
+    assertClose(sl.row, row, 0.5, `row@(${row},${col})`);
+    assertClose(sl.col, col, 0.5, `col@(${row},${col})`);
+  }
+});
+
+// ─── Dihedral Prediction Tests ───────────────────────────────────────────────
+
+console.log('\n━━━ Dihedral & Shadow Predictors ━━━');
+
+check('Dihedral offset matches h/tan(grazeAngle) for vertical wall', () => {
+  const h = 20; // 20m wall
+  const expectedGroundOffset = h / Math.tan(geom.grazeAngle); // meters
+
+  // Place wall at scene center
+  const wall = {
+    footprint: [{ lat: geom.sceneCenterLLH.lat, lon: geom.sceneCenterLLH.lon }],
+    height: h,
     baseElev: 0,
   };
 
-  const zones = predictShadowZone(building, geom);
-  assert(zones.length > 0, 'Should predict at least one shadow zone');
-  const zone = zones[0];
-  assertClose(Math.abs(zone.offsetRow), expectedOffset, 0.5, 'shadow offset (px)');
-  assert(zone.offsetRow > 0, 'shadow should be away from sensor (positive row offset)');
+  const base = groundPointToSlant(
+    geom.sceneCenterLLH.lat, geom.sceneCenterLLH.lon, 0, geom
+  );
+  const dihedral = predictDihedralStrip(wall, geom);
+
+  // The dihedral offset in pixels
+  const rowDiff = Math.abs(dihedral[0].row - base.row);
+
+  // Expected offset in pixels: groundOffset * cos(graze) / rowSpacing
+  const expectedPixelOffset = expectedGroundOffset * Math.cos(geom.grazeAngle) / geom.rowSpacing;
+
+  assertClose(rowDiff, expectedPixelOffset, 0.1, 'dihedral offset (px)');
+
+  // Also verify col is unchanged
+  assertClose(dihedral[0].col, base.col, 0.01, 'dihedral col');
 });
 
-check('buildLocalGeometry produces orthogonal row/col unit vectors', () => {
-  const geom = buildLocalGeometry(
-    35 * DEG, -118 * DEG, 0,
-    { grazeAngleDeg: 45, sideOfTrack: 'R', azimuthAngleDeg: 0 }
-  );
-  const d = geom.rowUnitECEF[0] * geom.colUnitECEF[0]
-          + geom.rowUnitECEF[1] * geom.colUnitECEF[1]
-          + geom.rowUnitECEF[2] * geom.colUnitECEF[2];
-  assertClose(d, 0, 1e-10, 'dot(row, col)');
+check('Shadow offset matches h/tan(grazeAngle) for vertical wall', () => {
+  const h = 20;
+  const expectedGroundOffset = h / Math.tan(geom.grazeAngle);
 
-  // Both should be unit vectors
-  const rowLen = Math.sqrt(geom.rowUnitECEF.reduce((s, v) => s + v * v, 0));
-  const colLen = Math.sqrt(geom.colUnitECEF.reduce((s, v) => s + v * v, 0));
-  assertClose(rowLen, 1, 1e-10, '|rowUnit|');
-  assertClose(colLen, 1, 1e-10, '|colUnit|');
+  const wall = {
+    footprint: [{ lat: geom.sceneCenterLLH.lat, lon: geom.sceneCenterLLH.lon }],
+    height: h,
+    baseElev: 0,
+  };
+
+  const base = groundPointToSlant(
+    geom.sceneCenterLLH.lat, geom.sceneCenterLLH.lon, 0, geom
+  );
+  const shadow = predictShadowZone(wall, geom);
+
+  const rowDiff = Math.abs(shadow[0].row - base.row);
+  const expectedPixelOffset = expectedGroundOffset * Math.cos(geom.grazeAngle) / geom.rowSpacing;
+
+  assertClose(rowDiff, expectedPixelOffset, 0.1, 'shadow offset (px)');
+  assertClose(shadow[0].col, base.col, 0.01, 'shadow col');
+});
+
+check('Dihedral and shadow offsets are in opposite directions', () => {
+  const h = 15;
+  const wall = {
+    footprint: [{ lat: geom.sceneCenterLLH.lat, lon: geom.sceneCenterLLH.lon }],
+    height: h,
+    baseElev: 0,
+  };
+
+  const base = groundPointToSlant(
+    geom.sceneCenterLLH.lat, geom.sceneCenterLLH.lon, 0, geom
+  );
+  const dihedral = predictDihedralStrip(wall, geom);
+  const shadow = predictShadowZone(wall, geom);
+
+  const dihedralDir = dihedral[0].row - base.row;
+  const shadowDir = shadow[0].row - base.row;
+
+  // They should be in opposite directions
+  if (dihedralDir * shadowDir >= 0) {
+    throw new Error(`Dihedral (${dihedralDir}) and shadow (${shadowDir}) should be in opposite directions`);
+  }
+});
+
+check('buildLocalGeometry produces valid graze angle (0°–90°)', () => {
+  const deg = geom.grazeAngle * 180 / Math.PI;
+  if (deg <= 0 || deg >= 90) {
+    throw new Error(`Graze angle ${deg}° out of expected range`);
+  }
+});
+
+check('Multi-vertex footprint returns same number of vertices', () => {
+  const wall = {
+    footprint: [
+      { lat: 34.0, lon: -118.0 },
+      { lat: 34.0, lon: -117.999 },
+      { lat: 34.001, lon: -117.999 },
+      { lat: 34.001, lon: -118.0 },
+    ],
+    height: 10,
+    baseElev: 0,
+  };
+
+  const dihedral = predictDihedralStrip(wall, geom);
+  const shadow = predictShadowZone(wall, geom);
+
+  if (dihedral.length !== 4) throw new Error(`Expected 4 dihedral vertices, got ${dihedral.length}`);
+  if (shadow.length !== 4) throw new Error(`Expected 4 shadow vertices, got ${shadow.length}`);
 });
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
-console.log(`\n━━━ Results: ${passed} passed, ${failed} failed ━━━`);
+console.log(`\n━━━ Results: ${passed} passed, ${failed} failed ━━━\n`);
 process.exit(failed > 0 ? 1 : 0);

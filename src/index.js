@@ -163,7 +163,7 @@ export {
 export {
   loadBuildingsInBbox,
   extrudeBuilding,
-  getBuildingHeight,
+  resolveHeight,
 } from './loaders/overture-buildings.js';
 
 export { createOvertureLayers } from './layers/OvertureLayer.js';

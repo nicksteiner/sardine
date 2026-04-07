@@ -461,6 +461,9 @@ function App() {
   const [sceneGeomJigger, setSceneGeomJigger] = useState({
     arpDx: 0, arpDy: 0, arpDz: 0, lookAngleBias: 0, azimuthBias: 0,
   });
+  const [sceneGeomPointCloudBbox, setSceneGeomPointCloudBbox] = useState(null); // [minLon, minLat, maxLon, maxLat]
+  const [sceneGeomBboxDrawing, setSceneGeomBboxDrawing] = useState(false); // rubber-band active
+  const sceneGeomBboxStartRef = useRef(null); // drag start point for bbox
   const sceneGeomSidecarDebounceRef = useRef(null);
   const sceneGeomDirHandleRef = useRef(null); // File System Access API directory handle
   const sceneGeomNitfFileRef = useRef(null); // current NITF file for sidecar keying
@@ -521,6 +524,23 @@ function App() {
       setSceneGeomDemSource('fabdem');
     }
   }, []);
+
+  // ─── Scene Geometry: jiggered geometry (cloned + offsets applied) ──
+  const sceneGeomJiggered = useMemo(() => {
+    const geom = imageData?.nitfInfo?.sicd?.geometry;
+    if (!geom) return null;
+    // Clone original geometry, apply jigger offsets — original untouched
+    return {
+      ...geom,
+      arpPos: geom.arpPos ? {
+        x: (geom.arpPos.x || 0) + sceneGeomJigger.arpDx,
+        y: (geom.arpPos.y || 0) + sceneGeomJigger.arpDy,
+        z: (geom.arpPos.z || 0) + sceneGeomJigger.arpDz,
+      } : { x: sceneGeomJigger.arpDx, y: sceneGeomJigger.arpDy, z: sceneGeomJigger.arpDz },
+      incidenceAng: (geom.incidenceAng || 0) + sceneGeomJigger.lookAngleBias,
+      azimAng: (geom.azimAng || 0) + sceneGeomJigger.azimuthBias,
+    };
+  }, [imageData, sceneGeomJigger]);
 
   // ─── Scene Geometry: sidecar persistence (debounced write) ──────
   useEffect(() => {
@@ -5048,13 +5068,50 @@ function App() {
               </div>
             </div>
 
+            {/* Point Cloud Bbox Selector */}
+            {sceneGeomMode === 'pointcloud' && (
+              <div className="control-group">
+                <label>Point Cloud Region</label>
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                  <button
+                    onClick={() => setSceneGeomBboxDrawing(!sceneGeomBboxDrawing)}
+                    style={{
+                      fontSize: '0.7rem', padding: '3px 8px', cursor: 'pointer',
+                      background: sceneGeomBboxDrawing ? 'var(--sardine-accent, #4a9eff)' : undefined,
+                      color: sceneGeomBboxDrawing ? '#fff' : undefined,
+                    }}
+                  >
+                    {sceneGeomBboxDrawing ? 'Drawing…' : 'Draw bbox'}
+                  </button>
+                  {sceneGeomPointCloudBbox && (
+                    <button
+                      onClick={() => { setSceneGeomPointCloudBbox(null); setSceneGeomBboxDrawing(false); }}
+                      style={{ fontSize: '0.7rem', padding: '3px 8px', cursor: 'pointer' }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                {sceneGeomPointCloudBbox && (
+                  <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {sceneGeomPointCloudBbox.map(v => v.toFixed(4)).join(', ')}
+                  </div>
+                )}
+                {sceneGeomBboxDrawing && (
+                  <div style={{ fontSize: '0.6rem', color: 'var(--sardine-amber, #f0a030)', marginTop: '2px' }}>
+                    Click and drag on the map to select region
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Geometry Readout */}
             {imageData.nitfInfo?.sicd?.geometry && (
               <div className="control-group">
-                <label>Geometry</label>
+                <label>Geometry{sceneGeomJiggered && (sceneGeomJigger.lookAngleBias || sceneGeomJigger.azimuthBias) ? ' (jiggered)' : ''}</label>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
-                  <div>Incidence: {imageData.nitfInfo.sicd.geometry.incidenceAng?.toFixed(2)}°</div>
-                  <div>Azimuth: {imageData.nitfInfo.sicd.geometry.azimAng?.toFixed(2)}°</div>
+                  <div>Incidence: {(sceneGeomJiggered?.incidenceAng ?? imageData.nitfInfo.sicd.geometry.incidenceAng)?.toFixed(2)}°</div>
+                  <div>Azimuth: {(sceneGeomJiggered?.azimAng ?? imageData.nitfInfo.sicd.geometry.azimAng)?.toFixed(2)}°</div>
                   <div>Side: {imageData.nitfInfo.sicd.geometry.sideOfTrack || '—'}</div>
                 </div>
               </div>
