@@ -137,7 +137,15 @@ export {
   clearOvertureCache,
   getOvertureUrl,
   OVERTURE_THEMES,
+  bboxToTiles,
+  getZoomForBbox,
 } from './loaders/overture-loader.js';
+
+export {
+  loadBuildingsInBbox,
+  extrudeBuilding,
+  resolveHeight,
+} from './loaders/overture-buildings.js';
 
 export { createOvertureLayers } from './layers/OvertureLayer.js';
 
@@ -188,6 +196,17 @@ export {
   formatDatetime,
   itemBbox,
 } from './loaders/stac-client.js';
+
+// SAR Scene Geometry
+export {
+  ecefToLLH,
+  llhToECEF,
+  slantToGroundPoint,
+  groundPointToSlant,
+  predictDihedralStrip,
+  predictShadowZone,
+  buildLocalGeometry,
+} from './utils/sar-geometry.js';
 
 // Import for default export
 import { loadCOG } from './loaders/cog-loader.js';
