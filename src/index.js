@@ -37,6 +37,7 @@ export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
 export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 export { SARGPUBitmapLayer } from './layers/SARGPUBitmapLayer.js';
 export { SARGPULayer } from './layers/SARGPULayer.js';
+export { SARSceneLayer, SCENE_MODES } from './layers/SARSceneLayer.js';
 export {
   sarVertexShader,
   sarFragmentShader,
@@ -102,6 +103,16 @@ export { writeRGBAGeoTIFF, writeRGBGeoTIFF, writeFloat32GeoTIFF, downloadBuffer 
 export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
 export { STRETCH_MODES, applyStretch } from './utils/stretch.js';
+
+export {
+  ecefToLLH,
+  llhToECEF,
+  slantToGroundPoint,
+  groundPointToSlant,
+  predictDihedralStrip,
+  predictShadowZone,
+  buildLocalGeometry,
+} from './utils/sar-geometry.js';
 
 export {
   adaptiveLogScale,
