@@ -1231,6 +1231,107 @@ try {
   skip('lite report charts functional tests', `import failed: ${err.message}`);
 }
 
+// ─── Overture Buildings loader ──────────────────────────────────────────────
+
+suite('Overture Buildings loader');
+
+try {
+  const { getBuildingHeight, extrudeBuilding } = await import('../src/loaders/overture-buildings.js');
+  const fixtureRaw = readFileSync(join(__dirname, 'fixtures', 'overture-buildings-sample.geojson'), 'utf8');
+  const fixture = JSON.parse(fixtureRaw);
+
+  check('fixture has 3 buildings', () => {
+    if (fixture.features.length !== 3) throw new Error(`expected 3 features, got ${fixture.features.length}`);
+  });
+
+  // Height fallback tests
+  check('getBuildingHeight uses explicit height when present', () => {
+    const h = getBuildingHeight({ height: 25, num_floors: 8 });
+    if (h !== 25) throw new Error(`expected 25, got ${h}`);
+  });
+
+  check('getBuildingHeight falls back to num_floors * 3', () => {
+    const h = getBuildingHeight({ num_floors: 3 });
+    if (h !== 9) throw new Error(`expected 9, got ${h}`);
+  });
+
+  check('getBuildingHeight defaults to 6m', () => {
+    const h = getBuildingHeight({});
+    if (h !== 6) throw new Error(`expected 6, got ${h}`);
+  });
+
+  check('getBuildingHeight ignores height=0', () => {
+    const h = getBuildingHeight({ height: 0, num_floors: 4 });
+    if (h !== 12) throw new Error(`expected 12 (4*3), got ${h}`);
+  });
+
+  // Extrusion tests with a flat DEM (elevation = 100m everywhere)
+  const flatDEM = () => 100;
+
+  check('extrudeBuilding with height feature', () => {
+    const result = extrudeBuilding(fixture.features[0], flatDEM);
+    if (result.baseElev !== 100) throw new Error(`baseElev: expected 100, got ${result.baseElev}`);
+    if (result.topElev !== 125) throw new Error(`topElev: expected 125, got ${result.topElev}`);
+    if (result.footprint.length !== 5) throw new Error(`footprint: expected 5 coords (closed ring), got ${result.footprint.length}`);
+    // 4 walls for a rectangular building (5 coords, last = first)
+    if (result.walls.length !== 4) throw new Error(`walls: expected 4, got ${result.walls.length}`);
+  });
+
+  check('extrudeBuilding with floors-only feature', () => {
+    const result = extrudeBuilding(fixture.features[1], flatDEM);
+    if (result.topElev !== 109) throw new Error(`topElev: expected 109 (100+9), got ${result.topElev}`);
+    if (result.walls.length !== 4) throw new Error(`walls: expected 4, got ${result.walls.length}`);
+  });
+
+  check('extrudeBuilding with no height info defaults to 6m', () => {
+    const result = extrudeBuilding(fixture.features[2], flatDEM);
+    if (result.topElev !== 106) throw new Error(`topElev: expected 106 (100+6), got ${result.topElev}`);
+  });
+
+  // DEM snapping: min elevation across footprint
+  check('extrudeBuilding snaps to min DEM elevation', () => {
+    // Create a DEM that varies across the footprint
+    const slopeDEM = (lon, lat) => 100 + (lon + 122.42) * 1000;
+    const result = extrudeBuilding(fixture.features[0], slopeDEM);
+    // Feature coords: lon from -122.4194 to -122.4190
+    // Elevations: 100 + (-122.4194+122.42)*1000 = 100.6, up to 101.0
+    // Min should be ~100.6
+    if (Math.abs(result.baseElev - 100.6) > 0.1) throw new Error(`baseElev should be ~100.6, got ${result.baseElev}`);
+    if (Math.abs(result.topElev - (result.baseElev + 25)) > 1e-6) throw new Error(`topElev should be baseElev+25`);
+  });
+
+  // DEM with NaN/null: should fallback to 0
+  check('extrudeBuilding falls back to 0 when DEM returns null', () => {
+    const nullDEM = () => null;
+    const result = extrudeBuilding(fixture.features[0], nullDEM);
+    if (result.baseElev !== 0) throw new Error(`baseElev: expected 0, got ${result.baseElev}`);
+    if (result.topElev !== 25) throw new Error(`topElev: expected 25, got ${result.topElev}`);
+  });
+
+  // Wall normals are unit vectors in 2D
+  check('wall facingNormal is unit-length in XY', () => {
+    const result = extrudeBuilding(fixture.features[0], flatDEM);
+    for (const wall of result.walls) {
+      const [nx, ny, nz] = wall.facingNormal;
+      const len = Math.sqrt(nx * nx + ny * ny);
+      if (nz !== 0) throw new Error(`normal Z should be 0, got ${nz}`);
+      if (Math.abs(len - 1) > 1e-6) throw new Error(`normal length should be 1, got ${len}`);
+    }
+  });
+
+  // Wall vertex count: each wall has p0, p1
+  check('each wall has p0 and p1 with 2 coordinates', () => {
+    const result = extrudeBuilding(fixture.features[0], flatDEM);
+    for (const wall of result.walls) {
+      if (wall.p0.length !== 2) throw new Error(`p0 should have 2 coords`);
+      if (wall.p1.length !== 2) throw new Error(`p1 should have 2 coords`);
+    }
+  });
+
+} catch (err) {
+  skip('Overture Buildings loader tests', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
