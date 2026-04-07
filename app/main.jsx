@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '../src/index.js';
+import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer, loadNITF, isNITFFile } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
@@ -453,6 +453,18 @@ function App() {
   const [overtureOpacity, setOvertureOpacity] = useState(0.7);
   const overtureDebounceRef = useRef(null);
 
+  // ─── Scene Geometry state ───────────────────────────────────────────
+  const [sceneGeomDemSource, setSceneGeomDemSource] = useState('glo30'); // 'fabdem' | 'glo30' | 'off'
+  const [sceneGeomFabdemAvailable, setSceneGeomFabdemAvailable] = useState(false);
+  const [sceneGeomBuildingsEnabled, setSceneGeomBuildingsEnabled] = useState(false);
+  const [sceneGeomMode, setSceneGeomMode] = useState('2d'); // '2d' | '3d' | 'dihedrals' | 'shadows' | 'pointcloud'
+  const [sceneGeomJigger, setSceneGeomJigger] = useState({
+    arpDx: 0, arpDy: 0, arpDz: 0, lookAngleBias: 0, azimuthBias: 0,
+  });
+  const sceneGeomSidecarDebounceRef = useRef(null);
+  const sceneGeomDirHandleRef = useRef(null); // File System Access API directory handle
+  const sceneGeomNitfFileRef = useRef(null); // current NITF file for sidecar keying
+
   // Memoize initialViewState to prevent infinite re-renders
   const initialViewState = useMemo(
     () => ({
@@ -500,13 +512,91 @@ function App() {
     setActiveViewer('main');
   }, [imageData]);
 
+  // ─── Scene Geometry: FABDEM availability probe ───────────────────
+  useEffect(() => {
+    // Check if FABDEM V2 is configured (env variable or window global)
+    const fabdemRoot = window.SARDINE_FABDEM_ROOT || window.DEM_FABDEM_V2_ROOT;
+    setSceneGeomFabdemAvailable(!!fabdemRoot);
+    if (fabdemRoot) {
+      setSceneGeomDemSource('fabdem');
+    }
+  }, []);
+
+  // ─── Scene Geometry: sidecar persistence (debounced write) ──────
+  useEffect(() => {
+    if (sceneGeomSidecarDebounceRef.current) clearTimeout(sceneGeomSidecarDebounceRef.current);
+    sceneGeomSidecarDebounceRef.current = setTimeout(() => {
+      const sidecar = {
+        version: 1,
+        jigger: sceneGeomJigger,
+        demSource: sceneGeomDemSource,
+        mode: sceneGeomMode,
+        buildingsEnabled: sceneGeomBuildingsEnabled,
+      };
+      // Try File System Access API if we have a directory handle
+      const dirHandle = sceneGeomDirHandleRef.current;
+      const nitfFile = sceneGeomNitfFileRef.current;
+      if (dirHandle && nitfFile) {
+        const sidecarName = nitfFile.name + '.sardine.json';
+        dirHandle.getFileHandle(sidecarName, { create: true }).then(fh =>
+          fh.createWritable().then(w => w.write(JSON.stringify(sidecar, null, 2)).then(() => w.close()))
+        ).catch(() => {}); // silently fail if no permission
+      }
+      // Always persist to localStorage as fallback
+      if (nitfFile) {
+        const key = `sardine-sidecar:${nitfFile.name}:${nitfFile.size}:${nitfFile.lastModified}`;
+        try { localStorage.setItem(key, JSON.stringify(sidecar)); } catch {}
+      }
+    }, 500);
+    return () => { if (sceneGeomSidecarDebounceRef.current) clearTimeout(sceneGeomSidecarDebounceRef.current); };
+  }, [sceneGeomJigger, sceneGeomDemSource, sceneGeomMode, sceneGeomBuildingsEnabled]);
+
+  // ─── Scene Geometry: load sidecar on NITF file change ───────────
+  const loadSceneGeomSidecar = useCallback((file, dirHandle) => {
+    sceneGeomNitfFileRef.current = file;
+    sceneGeomDirHandleRef.current = dirHandle || null;
+
+    // Try localStorage fallback first (always available)
+    const key = `sardine-sidecar:${file.name}:${file.size}:${file.lastModified}`;
+    let loaded = false;
+    try {
+      const stored = localStorage.getItem(key);
+      if (stored) {
+        const sc = JSON.parse(stored);
+        if (sc.version === 1) {
+          if (sc.jigger) setSceneGeomJigger(sc.jigger);
+          if (sc.demSource) setSceneGeomDemSource(sc.demSource);
+          if (sc.mode) setSceneGeomMode(sc.mode);
+          if (sc.buildingsEnabled !== undefined) setSceneGeomBuildingsEnabled(sc.buildingsEnabled);
+          loaded = true;
+          addStatusLog('info', 'Loaded scene geometry sidecar from localStorage');
+        }
+      }
+    } catch {}
+
+    // Try File System Access API sidecar
+    if (dirHandle && !loaded) {
+      const sidecarName = file.name + '.sardine.json';
+      dirHandle.getFileHandle(sidecarName).then(fh =>
+        fh.getFile().then(f => f.text()).then(txt => {
+          const sc = JSON.parse(txt);
+          if (sc.version === 1) {
+            if (sc.jigger) setSceneGeomJigger(sc.jigger);
+            if (sc.demSource) setSceneGeomDemSource(sc.demSource);
+            if (sc.mode) setSceneGeomMode(sc.mode);
+            if (sc.buildingsEnabled !== undefined) setSceneGeomBuildingsEnabled(sc.buildingsEnabled);
+            addStatusLog('info', `Loaded scene geometry sidecar: ${sidecarName}`);
+          }
+        })
+      ).catch(() => {}); // no sidecar file — that's fine
+    }
+  }, [addStatusLog]);
+
   // URL parameter support: ?cog=<url> auto-loads a COG on mount
-  const urlCogTriggered = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const cogParam = params.get('cog');
     if (cogParam) {
-      urlCogTriggered.current = true;
       setFileType('cog');
       setCogUrl(cogParam);
     }
@@ -1851,10 +1941,11 @@ function App() {
     }
   }, [cogUrl, useDecibels, addStatusLog, multiFileMode, multiFileModeType, fileList, bandNames]);
 
-  // Auto-load COG when set via ?cog= URL parameter
+  // Auto-load COG when cogUrl is set (via ?cog= URL parameter or remote file select)
+  const prevCogUrlRef = useRef('');
   useEffect(() => {
-    if (urlCogTriggered.current && cogUrl && fileType === 'cog') {
-      urlCogTriggered.current = false;
+    if (cogUrl && fileType === 'cog' && cogUrl !== prevCogUrlRef.current) {
+      prevCogUrlRef.current = cogUrl;
       handleLoadCOG();
     }
   }, [cogUrl, fileType, handleLoadCOG]);
@@ -2051,6 +2142,54 @@ function App() {
     }
   }, [addStatusLog, applyPendingPNGState]);
 
+  // Handle NITF file selection
+  const handleNITFFileSelect = useCallback(async (file) => {
+    if (!file) return;
+
+    setLoading(true);
+    setLoadProgress(0);
+    setError(null);
+    addStatusLog('info', `Loading NITF: ${file.name} (${(file.size / 1e9).toFixed(2)} GB)`);
+
+    try {
+      const gen = ++loadGenRef.current;
+      const data = await loadNITF(file, (pct) => setLoadProgress(pct));
+      if (gen !== loadGenRef.current) return;
+
+      setImageData(data);
+
+      const info = data.nitfInfo || {};
+      const label = info.isComplex
+        ? `NITF SICD: ${data.width}×${data.height} complex (amplitude)`
+        : `NITF: ${data.width}×${data.height}`;
+      addStatusLog('success', label,
+        [info.title, info.sicd?.collector, info.sicd?.modeType].filter(Boolean).join(' · ') || undefined);
+
+      // Auto-contrast: calibrated sigma0 power in dB
+      setUseDecibels(true);
+      setContrastMin(-25);
+      setContrastMax(0);
+      addStatusLog('info',
+        info.sicd?.sigmaZeroSF
+          ? `Calibrated σ₀ (SF=${info.sicd.sigmaZeroSF.toExponential(3)})`
+          : 'Uncalibrated power',
+        'contrast: [-25, 0] dB');
+
+      if (data.geoBounds) {
+        autoFitIfNewScene(data.bounds);
+      }
+      setLoadProgress(100);
+
+      // Load scene geometry sidecar if available
+      loadSceneGeomSidecar(file, sceneGeomDirHandleRef.current);
+    } catch (e) {
+      setError(`Failed to load NITF: ${e.message}`);
+      addStatusLog('error', 'Failed to load NITF', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog, autoFitIfNewScene, loadSceneGeomSidecar]);
+
   // Handle local TIF file selection (single or multi-select mosaic)
   const handleLocalTIFMultiSelect = useCallback(async (files) => {
     if (!files || files.length === 0) return;
@@ -2137,7 +2276,10 @@ function App() {
     const file = files[0];
     const name = file.name.toLowerCase();
 
-    if (name.endsWith('.h5') || name.endsWith('.hdf5') || name.endsWith('.he5')) {
+    if (name.endsWith('.nitf') || name.endsWith('.ntf')) {
+      setFileType('local-tif');  // reuse local-tif path (same imageData shape)
+      handleNITFFileSelect(file);
+    } else if (name.endsWith('.h5') || name.endsWith('.hdf5') || name.endsWith('.he5')) {
       // Auto-detect GCOV vs GUNW from filename
       if (name.includes('gunw') || name.includes('_unw_')) {
         setFileType('nisar-gunw');
@@ -2194,9 +2336,9 @@ function App() {
         addStatusLog('error', `Failed to read PNG state: ${file.name}`, err.message);
       });
     } else {
-      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .geojson, or a SARdine-exported .png');
+      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
+  }, [handleNISARFileSelect, handleNITFFileSelect, handleLocalTIFMultiSelect, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
@@ -2209,6 +2351,16 @@ function App() {
     const fetchHeaders = cleanToken ? { 'Authorization': `Bearer ${cleanToken}` } : undefined;
     handleRemoteFileSelect._fetchHeaders = fetchHeaders;
     console.log(`[SARdine] Token: ${cleanToken ? `set (${cleanToken.slice(0, 8)}...)` : 'none'}, URL: ${url.slice(0, 80)}`);
+
+    // COGs load via geotiff.js which handles CORS + Range natively — skip proxy
+    if (type === 'cog') {
+      setCogUrl(url);
+      setFileType('cog');
+      addStatusLog('info', `Loading COG from: ${url}`);
+      return;
+    }
+
+    // Non-COG paths need Earthdata token for DAAC URLs
     if (!cleanToken) {
       addStatusLog('warning', 'No Earthdata token — DAAC data URLs require authentication');
     }
@@ -2222,14 +2374,6 @@ function App() {
         resolvedUrl = `${window.location.origin}/stac-proxy/${encodeURIComponent(url)}`;
       }
     } catch { /* keep original if URL parsing fails */ }
-
-    if (type === 'cog') {
-      // Load as COG directly
-      setCogUrl(resolvedUrl);
-      setFileType('cog');
-      addStatusLog('info', `Loading COG from: ${url}`);
-      return;
-    }
 
     // NISAR HDF5 — stream from URL
     setRemoteUrl(resolvedUrl);
@@ -4832,6 +4976,151 @@ function App() {
             )}
           </CollapsibleSection>
 
+          {/* Scene Geometry — visible when NITF is loaded */}
+          {imageData?.nitfInfo && (
+          <CollapsibleSection title="Scene Geometry" defaultOpen={false}>
+            {/* DEM Source Selector */}
+            <div className="control-group">
+              <label>DEM Source</label>
+              <select
+                value={sceneGeomDemSource}
+                onChange={(e) => setSceneGeomDemSource(e.target.value)}
+              >
+                <option value="fabdem" disabled={!sceneGeomFabdemAvailable}>
+                  FABDEM V2 (bare-earth{!sceneGeomFabdemAvailable ? ' — unavailable' : ', recommended'})
+                </option>
+                <option value="glo30">Copernicus GLO-30 (DSM, fallback)</option>
+                <option value="off">Off</option>
+              </select>
+              {sceneGeomDemSource === 'fabdem' && (
+                <span style={{ fontSize: '0.65rem', color: 'var(--sardine-green)', marginTop: '2px', display: 'block' }}>
+                  ● bare-earth
+                </span>
+              )}
+              {sceneGeomDemSource === 'glo30' && (
+                <span style={{ fontSize: '0.65rem', color: 'var(--sardine-amber, #f0a030)', marginTop: '2px', display: 'block' }}>
+                  ● DSM (biased in cities)
+                </span>
+              )}
+              {!sceneGeomFabdemAvailable && sceneGeomDemSource !== 'fabdem' && (
+                <span style={{ fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: '2px', display: 'block' }}>
+                  FABDEM V2 requires a local mirror — see docs/DEM_SOURCES.md
+                </span>
+              )}
+            </div>
+
+            {/* Overture Buildings Toggle */}
+            <div className="control-group">
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="sceneGeomBuildings"
+                  checked={sceneGeomBuildingsEnabled}
+                  onChange={(e) => setSceneGeomBuildingsEnabled(e.target.checked)}
+                />
+                <label htmlFor="sceneGeomBuildings">Overture Buildings</label>
+              </div>
+            </div>
+
+            {/* Mode Selector */}
+            <div className="control-group">
+              <label>Mode</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                {[
+                  ['2d', '2D'],
+                  ['3d', '3D buildings'],
+                  ['dihedrals', '+ dihedrals'],
+                  ['shadows', '+ shadows'],
+                  ['pointcloud', 'Point cloud'],
+                ].map(([val, label]) => (
+                  <div className="control-row" key={val}>
+                    <input
+                      type="radio"
+                      name="sceneGeomMode"
+                      id={`sceneGeomMode-${val}`}
+                      value={val}
+                      checked={sceneGeomMode === val}
+                      onChange={() => setSceneGeomMode(val)}
+                    />
+                    <label htmlFor={`sceneGeomMode-${val}`}>{label}</label>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Geometry Readout */}
+            {imageData.nitfInfo?.sicd?.geometry && (
+              <div className="control-group">
+                <label>Geometry</label>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                  <div>Incidence: {imageData.nitfInfo.sicd.geometry.incidenceAng?.toFixed(2)}°</div>
+                  <div>Azimuth: {imageData.nitfInfo.sicd.geometry.azimAng?.toFixed(2)}°</div>
+                  <div>Side: {imageData.nitfInfo.sicd.geometry.sideOfTrack || '—'}</div>
+                </div>
+              </div>
+            )}
+            {!imageData.nitfInfo?.sicd?.geometry && (
+              <div className="control-group">
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                  No SICD geometry available for this file
+                </div>
+              </div>
+            )}
+
+            {/* Jiggering Controls */}
+            <div className="control-group">
+              <label>Jiggering (ARP + angle offsets)</label>
+              {[
+                { key: 'arpDx', label: 'ARP Δx (m)', min: -500, max: 500, step: 1 },
+                { key: 'arpDy', label: 'ARP Δy (m)', min: -500, max: 500, step: 1 },
+                { key: 'arpDz', label: 'ARP Δz (m)', min: -500, max: 500, step: 1 },
+                { key: 'lookAngleBias', label: 'Look angle (°)', min: -2, max: 2, step: 0.01 },
+                { key: 'azimuthBias', label: 'Azimuth (°)', min: -2, max: 2, step: 0.01 },
+              ].map(({ key, label, min, max, step }) => (
+                <div key={key} style={{ marginBottom: '4px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.7rem' }}>
+                    <span>{label}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                      <input
+                        type="number"
+                        value={sceneGeomJigger[key]}
+                        min={min}
+                        max={max}
+                        step={step}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value) || 0;
+                          setSceneGeomJigger(prev => ({ ...prev, [key]: Math.max(min, Math.min(max, v)) }));
+                        }}
+                        style={{ width: '60px', fontSize: '0.65rem', textAlign: 'right' }}
+                      />
+                      <button
+                        onClick={() => setSceneGeomJigger(prev => ({ ...prev, [key]: 0 }))}
+                        style={{ fontSize: '0.6rem', padding: '1px 4px', cursor: 'pointer' }}
+                        title="Reset to 0"
+                      >↺</button>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={min}
+                    max={max}
+                    step={step}
+                    value={sceneGeomJigger[key]}
+                    onChange={(e) => setSceneGeomJigger(prev => ({ ...prev, [key]: parseFloat(e.target.value) }))}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              ))}
+              <button
+                onClick={() => setSceneGeomJigger({ arpDx: 0, arpDy: 0, arpDz: 0, lookAngleBias: 0, azimuthBias: 0 })}
+                style={{ marginTop: '4px', fontSize: '0.7rem', padding: '3px 8px', cursor: 'pointer' }}
+              >
+                Reset All
+              </button>
+            </div>
+          </CollapsibleSection>
+          )}
+
           {/* Display Settings */}
           <CollapsibleSection title="Display">
             
@@ -5568,8 +5857,29 @@ function App() {
               </div>
             )}
 
-            {/* Multi-look toggle — hidden on main branch, needs more work */}
-            {/* Speckle filter — hidden on main branch, needs more work */}
+            {/* Speckle filter — GPU Gaussian with hardware bilinear trick */}
+            {displayMode === 'single' && (
+              <div className="control-group">
+                <label>Smooth</label>
+                <div className="control-row">
+                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', minWidth: '28px' }}>
+                    {speckleKernelSize <= 1 ? 'off' : speckleKernelSize <= 3 ? '3×3' : speckleKernelSize <= 5 ? '5×5' : '7×7'}
+                  </span>
+                  <input
+                    type="range"
+                    min={1} max={7} step={2}
+                    value={speckleKernelSize}
+                    onChange={(e) => {
+                      const k = parseInt(e.target.value);
+                      setSpeckleKernelSize(k);
+                      setSpeckleFilterType(k <= 1 ? 'none' : 'gaussian');
+                      addStatusLog('info', k <= 1 ? 'Smooth: off' : `Smooth: ${k <= 3 ? '3×3' : k <= 5 ? '5×5' : '7×7'} Gaussian`);
+                    }}
+                    style={{ flex: 1 }}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Mask toggles — only shown when mask dataset is available */}
             {imageData?.hasMask && (
