@@ -1236,9 +1236,15 @@ try {
 suite('Overture Buildings loader');
 
 try {
-  const { getBuildingHeight, extrudeBuilding } = await import('../src/loaders/overture-buildings.js');
+  const { getBuildingHeight, extrudeBuilding, loadBuildingsInBbox } = await import('../src/loaders/overture-buildings.js');
   const fixtureRaw = readFileSync(join(__dirname, 'fixtures', 'overture-buildings-sample.geojson'), 'utf8');
   const fixture = JSON.parse(fixtureRaw);
+
+  check('exports loadBuildingsInBbox, extrudeBuilding, getBuildingHeight', () => {
+    if (typeof loadBuildingsInBbox !== 'function') throw new Error('loadBuildingsInBbox not exported');
+    if (typeof extrudeBuilding !== 'function') throw new Error('extrudeBuilding not exported');
+    if (typeof getBuildingHeight !== 'function') throw new Error('getBuildingHeight not exported');
+  });
 
   check('fixture has 3 buildings', () => {
     if (fixture.features.length !== 3) throw new Error(`expected 3 features, got ${fixture.features.length}`);
