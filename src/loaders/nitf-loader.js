@@ -12,6 +12,8 @@
  * loadLocalTIF so the rest of SARdine can use it unchanged.
  */
 
+import { buildSICDProjection, imageBboxFromProjection } from '../utils/sicd-projection.js';
+
 // ─── NITF header parsing ────────────────────────────────────────────
 
 /**
@@ -236,63 +238,171 @@ function parseIGEOLO(icords, igeolo) {
  * Parse SICD XML from a DES segment to extract corner coordinates.
  * Returns { corners: [[lat,lon]×4], scp: {lat,lon,hae}, pixelType, nrows, ncols }
  */
-function parseSICDXml(xmlStr) {
-  const parser = new DOMParser();
+function parseSICDXml(xmlStr, DOMParserImpl) {
+  const ParserCtor = DOMParserImpl || (typeof DOMParser !== 'undefined' ? DOMParser : null);
+  if (!ParserCtor) throw new Error('No DOMParser available; pass one as the second argument');
+  const parser = new ParserCtor();
   const doc = parser.parseFromString(xmlStr, 'text/xml');
+
+  // ── helpers: walk descendants by tag-name path (works in browser + xmldom) ──
+  // findOne('ImageData','SCPPixel','Row') returns the first <Row> inside the
+  // first <SCPPixel> inside the first <ImageData>. Returns null if any level
+  // is missing.
+  function findOne(...tags) {
+    let node = doc;
+    for (const tag of tags) {
+      if (!node) return null;
+      const kids = node.getElementsByTagName(tag);
+      if (!kids || kids.length === 0) return null;
+      node = kids[0];
+    }
+    return node;
+  }
+  function findAll(root, tag) {
+    if (!root) return [];
+    const kids = root.getElementsByTagName(tag);
+    const arr = [];
+    for (let i = 0; i < kids.length; i++) arr.push(kids[i]);
+    return arr;
+  }
+  const textOf = (el) => {
+    if (!el) return null;
+    // xmldom lacks .textContent on some nodes; walk children
+    if (el.textContent != null) return el.textContent;
+    let s = '';
+    for (let n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeValue != null) s += n.nodeValue;
+    }
+    return s;
+  };
+  const numOf = (el) => { const t = textOf(el); return t == null ? null : parseFloat(t); };
+  const intOf = (el) => { const t = textOf(el); return t == null ? null : parseInt(t, 10); };
+  const strOf = (el) => { const t = textOf(el); return t == null ? null : t.trim(); };
+  // Read an XYZ triple from a child element (e.g. <ARPPos><X/><Y/><Z/></ARPPos>)
+  const xyzOf = (el) => {
+    if (!el) return null;
+    const x = numOf(findAll(el, 'X')[0]);
+    const y = numOf(findAll(el, 'Y')[0]);
+    const z = numOf(findAll(el, 'Z')[0]);
+    if (x == null || y == null || z == null) return null;
+    return { x, y, z };
+  };
 
   const result = {};
 
-  // Image corners
-  const icps = doc.querySelectorAll('ImageCorners ICP');
-  if (icps.length >= 4) {
-    // SICD corner order: 1:FRFC (UL), 2:FRLC (UR), 3:LRLC (LR), 4:LRFC (LL)
-    const corners = [];
-    for (const icp of icps) {
-      const lat = parseFloat(icp.querySelector('Lat')?.textContent);
-      const lon = parseFloat(icp.querySelector('Lon')?.textContent);
-      corners.push([lat, lon]);
+  // Image corners (ICP) — parsed but NOT used by the projection.
+  const icContainer = findOne('ImageCorners');
+  if (icContainer) {
+    const icps = findAll(icContainer, 'ICP');
+    if (icps.length >= 4) {
+      const corners = [];
+      for (const icp of icps) {
+        const lat = numOf(findAll(icp, 'Lat')[0]);
+        const lon = numOf(findAll(icp, 'Lon')[0]);
+        corners.push([lat, lon]);
+      }
+      result.corners = corners;
     }
-    result.corners = corners;
   }
 
   // Scene center point
-  const scpLat = doc.querySelector('GeoData SCP LLH Lat');
-  const scpLon = doc.querySelector('GeoData SCP LLH Lon');
-  const scpHae = doc.querySelector('GeoData SCP LLH HAE');
-  if (scpLat && scpLon) {
-    result.scp = {
-      lat: parseFloat(scpLat.textContent),
-      lon: parseFloat(scpLon.textContent),
-      hae: scpHae ? parseFloat(scpHae.textContent) : 0,
-    };
+  const scpLat = numOf(findOne('GeoData', 'SCP', 'LLH', 'Lat'));
+  const scpLon = numOf(findOne('GeoData', 'SCP', 'LLH', 'Lon'));
+  const scpHae = numOf(findOne('GeoData', 'SCP', 'LLH', 'HAE'));
+  if (scpLat != null && scpLon != null) {
+    result.scp = { lat: scpLat, lon: scpLon, hae: scpHae || 0 };
   }
 
-  // Image dimensions (from SICD metadata, cross-check)
-  const numRows = doc.querySelector('ImageData NumRows');
-  const numCols = doc.querySelector('ImageData NumCols');
-  if (numRows) result.nrows = parseInt(numRows.textContent);
-  if (numCols) result.ncols = parseInt(numCols.textContent);
+  // Image dimensions
+  const numRows = intOf(findOne('ImageData', 'NumRows'));
+  const numCols = intOf(findOne('ImageData', 'NumCols'));
+  if (numRows != null) result.nrows = numRows;
+  if (numCols != null) result.ncols = numCols;
 
-  // Pixel type
-  const pixelType = doc.querySelector('ImageData PixelType');
-  if (pixelType) result.pixelType = pixelType.textContent;
+  // Full image dimensions (pre-chip)
+  const fullRows = intOf(findOne('ImageData', 'FullImage', 'NumRows'));
+  const fullCols = intOf(findOne('ImageData', 'FullImage', 'NumCols'));
+  if (fullRows != null) result.fullRows = fullRows;
+  if (fullCols != null) result.fullCols = fullCols;
 
-  // Collector info
-  const collector = doc.querySelector('CollectionInfo CollectorName');
-  if (collector) result.collector = collector.textContent;
+  // Chip offset
+  const firstRow = intOf(findOne('ImageData', 'FirstRow'));
+  const firstCol = intOf(findOne('ImageData', 'FirstCol'));
+  result.firstRow = firstRow != null ? firstRow : 0;
+  result.firstCol = firstCol != null ? firstCol : 0;
 
-  const modeType = doc.querySelector('RadarMode ModeType');
-  if (modeType) result.modeType = modeType.textContent;
+  // SCPPixel in full-image coords
+  const spRow = intOf(findOne('ImageData', 'SCPPixel', 'Row'));
+  const spCol = intOf(findOne('ImageData', 'SCPPixel', 'Col'));
+  if (spRow != null && spCol != null) {
+    result.scpPixel = { row: spRow, col: spCol };
+  }
 
-  // Radiometric calibration scale factors (constant polynomials)
-  const sigmaZeroSF = doc.querySelector('Radiometric SigmaZeroSFPoly Coef');
-  if (sigmaZeroSF) result.sigmaZeroSF = parseFloat(sigmaZeroSF.textContent);
+  // Pixel type / collector / mode
+  const pixelType = strOf(findOne('ImageData', 'PixelType'));
+  if (pixelType) result.pixelType = pixelType;
+  const collector = strOf(findOne('CollectionInfo', 'CollectorName'));
+  if (collector) result.collector = collector;
+  const modeType = strOf(findOne('CollectionInfo', 'RadarMode', 'ModeType'))
+    || strOf(findOne('RadarMode', 'ModeType'));
+  if (modeType) result.modeType = modeType;
 
-  const betaZeroSF = doc.querySelector('Radiometric BetaZeroSFPoly Coef');
-  if (betaZeroSF) result.betaZeroSF = parseFloat(betaZeroSF.textContent);
+  // Radiometric cal (constant-polynomial scale factors)
+  const sigmaZeroSF = numOf(findOne('Radiometric', 'SigmaZeroSFPoly', 'Coef'));
+  if (sigmaZeroSF != null) result.sigmaZeroSF = sigmaZeroSF;
+  const betaZeroSF = numOf(findOne('Radiometric', 'BetaZeroSFPoly', 'Coef'));
+  if (betaZeroSF != null) result.betaZeroSF = betaZeroSF;
+  const gammaZeroSF = numOf(findOne('Radiometric', 'GammaZeroSFPoly', 'Coef'));
+  if (gammaZeroSF != null) result.gammaZeroSF = gammaZeroSF;
 
-  const gammaZeroSF = doc.querySelector('Radiometric GammaZeroSFPoly Coef');
-  if (gammaZeroSF) result.gammaZeroSF = parseFloat(gammaZeroSF.textContent);
+  // ── View geometry: SCPCOA + Grid + GeoData/SCP/ECF ─────────────────
+  const geometry = {};
+
+  const scpcoa = findOne('SCPCOA');
+  if (scpcoa) {
+    const arpPos = xyzOf(findAll(scpcoa, 'ARPPos')[0]);
+    if (arpPos) geometry.arpPos = arpPos;
+    const arpVel = xyzOf(findAll(scpcoa, 'ARPVel')[0]);
+    if (arpVel) geometry.arpVel = arpVel;
+    const sot = strOf(findAll(scpcoa, 'SideOfTrack')[0]);
+    if (sot) geometry.sideOfTrack = sot;
+    const sr = numOf(findAll(scpcoa, 'SlantRange')[0]);
+    if (sr != null) geometry.slantRange = sr;
+    const gr = numOf(findAll(scpcoa, 'GrazeAng')[0]);
+    if (gr != null) geometry.grazeAng = gr;
+    const inc = numOf(findAll(scpcoa, 'IncidenceAng')[0]);
+    if (inc != null) geometry.incidenceAng = inc;
+    const tw = numOf(findAll(scpcoa, 'TwistAng')[0]);
+    if (tw != null) geometry.twistAng = tw;
+    const sl = numOf(findAll(scpcoa, 'SlopeAng')[0]);
+    if (sl != null) geometry.slopeAng = sl;
+    const az = numOf(findAll(scpcoa, 'AzimAng')[0]);
+    if (az != null) geometry.azimAng = az;
+    const lay = numOf(findAll(scpcoa, 'LayoverAng')[0]);
+    if (lay != null) geometry.layoverAng = lay;
+  }
+
+  // Grid
+  const gridType = strOf(findOne('Grid', 'Type'));
+  if (gridType) geometry.gridType = gridType;
+  geometry.rowUVect = xyzOf(findOne('Grid', 'Row', 'UVectECF')) || undefined;
+  geometry.colUVect = xyzOf(findOne('Grid', 'Col', 'UVectECF')) || undefined;
+  const rowSS = numOf(findOne('Grid', 'Row', 'SS'));
+  if (rowSS != null) geometry.rowSS = rowSS;
+  const colSS = numOf(findOne('Grid', 'Col', 'SS'));
+  if (colSS != null) geometry.colSS = colSS;
+
+  // SCP ECF
+  const scpEcef = xyzOf(findOne('GeoData', 'SCP', 'ECF'));
+  if (scpEcef && result.scp) result.scp.ecef = scpEcef;
+
+  // Polarization
+  const pol = strOf(findOne('ImageFormation', 'TxRcvPolarizationProc'));
+  if (pol) geometry.polarization = pol;
+
+  if (geometry.arpPos && result.scp) {
+    result.geometry = geometry;
+  }
 
   return result;
 }
@@ -501,11 +611,54 @@ export async function loadNITF(file, onProgress) {
     }
   }
 
-  if (corners) {
-    geoBounds = cornersToBbox(corners);
-  } else {
-    console.warn('[NITF Loader] No georeferencing found, using pixel coordinates');
-    geoBounds = [0, 0, img.ncols, img.nrows];
+  // ── Build rigorous projection from SICD geometry (sarpy-equivalent) ──
+  //
+  // If the SICD XML provides the Grid + SCP + SCPPixel fields, we compute
+  // geoBounds from imageBboxFromProjection() rather than from the ImageCorners
+  // ICPs. The ICPs are metadata and may be less accurate than the rigorous
+  // plane projection built from SCP + Grid.Row/Col.UVectECF.
+  let projection = null;
+  let projectedCorners = null;
+  if (sicd && sicd.geometry?.rowUVect && sicd.geometry?.colUVect &&
+      sicd.geometry?.rowSS && sicd.geometry?.colSS &&
+      sicd.scp?.ecef && sicd.scpPixel) {
+    try {
+      // Inject chip dimensions in case SICD didn't populate NumRows/NumCols
+      if (!sicd.nrows) sicd.nrows = img.nrows;
+      if (!sicd.ncols) sicd.ncols = img.ncols;
+      const proj = buildSICDProjection(sicd);
+      const { bbox, corners: projCorners } = imageBboxFromProjection(proj);
+      projection = proj;
+      projectedCorners = projCorners;
+      geoBounds = bbox;
+      console.log('[NITF Loader] Georeferencing: SICD projection (sarpy-equivalent)');
+      console.log('[NITF Loader]   bbox:', bbox.map(v => v.toFixed(5)).join(', '));
+    } catch (e) {
+      console.warn('[NITF Loader] SICD projection build failed:', e.message);
+    }
+  }
+
+  if (!projection) {
+    if (corners) {
+      geoBounds = cornersToBbox(corners);
+      console.warn(
+        '\n' +
+        '════════════════════════════════════════════════════════════════════\n' +
+        '⚠  NITF Loader: Falling back to ImageCorners (ICP) for geoBounds.\n' +
+        '   The SICD projection requires:\n' +
+        '     • GeoData.SCP.ECF\n' +
+        '     • ImageData.SCPPixel (Row + Col)\n' +
+        '     • Grid.Row.UVectECF + Grid.Row.SS\n' +
+        '     • Grid.Col.UVectECF + Grid.Col.SS\n' +
+        '   One or more of these is missing from this NITF. Geolocation\n' +
+        '   will use the ICP corners directly, which may be less accurate\n' +
+        '   than a rigorous plane projection and does not model layover.\n' +
+        '════════════════════════════════════════════════════════════════════'
+      );
+    } else {
+      console.warn('[NITF Loader] No georeferencing found, using pixel coordinates');
+      geoBounds = [0, 0, img.ncols, img.nrows];
+    }
   }
 
   progress(25);
@@ -704,6 +857,9 @@ export async function loadNITF(file, onProgress) {
     bounds: [0, 0, ncols, nrows],    // pixel space for deck.gl tile indexing
     geoBounds,
     worldBounds: geoBounds,
+    // Rigorous sarpy-equivalent projection (null if SICD fields missing → ICP fallback)
+    projection,
+    projectedCorners,
     crs: 'EPSG:4326',
     width: ncols,
     height: nrows,
@@ -741,6 +897,52 @@ export async function loadNITF(file, onProgress) {
 
   return result;
 }
+
+/**
+ * Parse a NITF file from an in-memory ArrayBuffer (no File needed).
+ * Suitable for Node scripts — pass a DOMParser implementation for SICD XML.
+ *
+ * Only parses header/subheader/SICD metadata. Does NOT read pixel data.
+ *
+ * @param {ArrayBuffer} buffer   Full NITF file as ArrayBuffer
+ * @param {Function} [DOMParserImpl]  DOMParser constructor (e.g. from @xmldom/xmldom)
+ * @returns {{ fileHeader, imageSubheader, sicd }}
+ */
+export function parseNITFMetadataFromBuffer(buffer, DOMParserImpl) {
+  const fh = parseFileHeader(buffer.slice(0, 2048));
+  if (fh.numi === 0) throw new Error('NITF file contains no image segments');
+
+  const imgSubStart = fh.hl;
+  const imgSubLen = fh.images[0].subheaderLen;
+  const img = parseImageSubheader(buffer.slice(imgSubStart, imgSubStart + imgSubLen));
+
+  const dataOffset = imgSubStart + imgSubLen;
+  const dataLen = fh.images[0].dataLen;
+
+  let sicd = null;
+  if (fh.numdes > 0) {
+    let desOffset = dataOffset + dataLen;
+    for (let i = 0; i < fh.numdes; i++) {
+      const desSubLen = fh.des[i].subheaderLen;
+      const desDataLen = fh.des[i].dataLen;
+      const desSubBuf = buffer.slice(desOffset, desOffset + desSubLen);
+      const desSubStr = readStr(new DataView(desSubBuf), 0, Math.min(25, desSubLen));
+      if (desSubStr.includes('XML_DATA_CONTENT')) {
+        const desDataBuf = buffer.slice(desOffset + desSubLen, desOffset + desSubLen + desDataLen);
+        const xmlStr = new TextDecoder('utf-8').decode(desDataBuf);
+        if (xmlStr.includes('<SICD')) {
+          sicd = parseSICDXml(xmlStr, DOMParserImpl);
+          break;
+        }
+      }
+      desOffset += desSubLen + desDataLen;
+    }
+  }
+
+  return { fileHeader: fh, imageSubheader: img, sicd };
+}
+
+export { parseSICDXml, parseFileHeader, parseImageSubheader };
 
 /**
  * Check if a filename looks like a NITF file.
