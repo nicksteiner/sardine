@@ -28,7 +28,13 @@ import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84, wgs84ToProjectedPoint } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+import { createOvertureSlantLayers } from '../src/layers/OvertureSlantLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
+// Scene geometry overlay (D170-D175 stack)
+import { SARSceneLayer, prepareDihedralStrips, prepareShadowZones } from '../src/layers/SARSceneLayer.js';
+import { loadBuildingsInBbox, extrudeBuilding } from '../src/loaders/overture-buildings.js';
+import { buildLocalGeometry } from '../src/utils/sar-geometry.js';
+import { loadDEM } from '../src/loaders/dem-loader.js';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
@@ -451,6 +457,7 @@ function App() {
   const [overtureData, setOvertureData] = useState(null);
   const [overtureLoading, setOvertureLoading] = useState(false);
   const [overtureOpacity, setOvertureOpacity] = useState(0.7);
+  const [overtureShowLayover, setOvertureShowLayover] = useState(false);
   const overtureDebounceRef = useRef(null);
 
   // ─── Scene Geometry state ───────────────────────────────────────────
@@ -542,6 +549,142 @@ function App() {
     };
   }, [imageData, sceneGeomJigger]);
 
+  // ─── Scene Geometry: build the math-module geometry struct ────────
+  // Converts the SICD-shaped struct (sceneGeomJiggered) into the
+  // buildLocalGeometry shape that sar-geometry.js predictors expect.
+  const sceneGeomBuilt = useMemo(() => {
+    if (!sceneGeomJiggered) return null;
+    const sicd = imageData?.nitfInfo?.sicd;
+    const scp = sicd?.scp;
+    const g = sceneGeomJiggered;
+    if (!g.arpPos || !scp) return null;
+
+    const sourceWidth = imageData?.sourceWidth || imageData?.width;
+    const sourceHeight = imageData?.sourceHeight || imageData?.height;
+    if (!sourceWidth || !sourceHeight) return null;
+
+    // SICD SideOfTrack: 'L' (left-looking) → +1, 'R' (right-looking) → -1
+    const sideOfTrack = g.sideOfTrack === 'L' ? 1 : -1;
+
+    try {
+      return buildLocalGeometry({
+        arpECEF: g.arpPos,
+        sceneCenter: { lat: scp.lat, lon: scp.lon, h: scp.hae || 0 },
+        rowSpacing: g.rowSS || 1, // meters per pixel in slant plane
+        colSpacing: g.colSS || 1,
+        nRows: sourceHeight,
+        nCols: sourceWidth,
+        sideOfTrack,
+      });
+    } catch (e) {
+      console.warn('[scene-geom] buildLocalGeometry failed:', e.message);
+      return null;
+    }
+  }, [sceneGeomJiggered, imageData]);
+
+  // ─── Scene Geometry: building data (loaded on toggle) ────────────
+  const [sceneGeomBuildings, setSceneGeomBuildings] = useState(null); // GeoJSON Feature[]
+  const [sceneGeomDEM, setSceneGeomDEM] = useState(null); // dem-loader result {sampleDEM, ...}
+  const [sceneGeomExtruded, setSceneGeomExtruded] = useState(null); // extrudeBuilding output[]
+
+  // Load DEM when source changes (and we have scene bounds)
+  useEffect(() => {
+    if (sceneGeomDemSource === 'off' || !imageData?.geoBounds) {
+      setSceneGeomDEM(null);
+      return;
+    }
+    let cancelled = false;
+    const bbox = imageData.geoBounds;
+    loadDEM(bbox, { source: sceneGeomDemSource === 'fabdem' ? 'fabdem-v2' : 'glo30' })
+      .then(dem => { if (!cancelled) setSceneGeomDEM(dem); })
+      .catch(e => {
+        if (!cancelled) {
+          console.warn('[scene-geom] DEM load failed:', e.message);
+          setSceneGeomDEM(null);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [sceneGeomDemSource, imageData?.geoBounds]);
+
+  // Load Overture buildings when toggle flips on
+  useEffect(() => {
+    if (!sceneGeomBuildingsEnabled || !imageData?.geoBounds) {
+      setSceneGeomBuildings(null);
+      setSceneGeomExtruded(null);
+      return;
+    }
+    let cancelled = false;
+    loadBuildingsInBbox(imageData.geoBounds)
+      .then(features => {
+        if (cancelled) return;
+        console.log(`[scene-geom] Loaded ${features.length} Overture buildings`);
+        setSceneGeomBuildings(features);
+      })
+      .catch(e => {
+        if (!cancelled) {
+          console.warn('[scene-geom] Buildings load failed:', e.message);
+          setSceneGeomBuildings(null);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [sceneGeomBuildingsEnabled, imageData?.geoBounds]);
+
+  // Extrude buildings whenever buildings or DEM change
+  useEffect(() => {
+    if (!sceneGeomBuildings || sceneGeomBuildings.length === 0) {
+      setSceneGeomExtruded(null);
+      return;
+    }
+    const sampler = sceneGeomDEM?.sampleDEM || null;
+    const extruded = sceneGeomBuildings.map(f => {
+      try { return extrudeBuilding(f, sampler); }
+      catch { return null; }
+    }).filter(Boolean);
+    setSceneGeomExtruded(extruded);
+    console.log(`[scene-geom] Extruded ${extruded.length} buildings (DEM: ${sampler ? 'on' : 'off'})`);
+  }, [sceneGeomBuildings, sceneGeomDEM]);
+
+  // ─── Scene Geometry: construct overlay layers for SARViewer ────────
+  // SARViewer uses an OrthographicView in slant-range pixel space, so
+  // only modes that produce pixel-space output work here:
+  //   'dihedrals'  → predictedDihedrals (slant-range strips)
+  //   'shadows'    → predictedShadows  (slant-range strips)
+  //   '3d'         → buildings3d  (lon/lat — won't align in slant view, deferred)
+  //   'pointcloud' → pointIntercepted  (lon/lat — deferred)
+  //   '2d'         → off
+  const sceneOverlayLayers = useMemo(() => {
+    if (!sceneGeomBuilt || !sceneGeomExtruded || sceneGeomExtruded.length === 0) return [];
+    if (sceneGeomMode !== 'dihedrals' && sceneGeomMode !== 'shadows') return [];
+
+    const layers = [];
+    try {
+      if (sceneGeomMode === 'dihedrals') {
+        const strips = prepareDihedralStrips(sceneGeomExtruded, sceneGeomBuilt);
+        if (strips.length > 0) {
+          layers.push(new SARSceneLayer({
+            id: 'sar-scene-dihedrals',
+            mode: 'predictedDihedrals',
+            dihedralStrips: strips,
+            opacity: 0.6,
+          }));
+        }
+      } else if (sceneGeomMode === 'shadows') {
+        const zones = prepareShadowZones(sceneGeomExtruded, sceneGeomBuilt);
+        if (zones.length > 0) {
+          layers.push(new SARSceneLayer({
+            id: 'sar-scene-shadows',
+            mode: 'predictedShadows',
+            shadowZones: zones,
+            opacity: 0.5,
+          }));
+        }
+      }
+    } catch (e) {
+      console.warn('[scene-geom] Overlay layer build failed:', e.message);
+    }
+    return layers;
+  }, [sceneGeomBuilt, sceneGeomExtruded, sceneGeomMode]);
+
   // ─── Scene Geometry: sidecar persistence (debounced write) ──────
   useEffect(() => {
     if (sceneGeomSidecarDebounceRef.current) clearTimeout(sceneGeomSidecarDebounceRef.current);
@@ -589,7 +732,7 @@ function App() {
           if (sc.mode) setSceneGeomMode(sc.mode);
           if (sc.buildingsEnabled !== undefined) setSceneGeomBuildingsEnabled(sc.buildingsEnabled);
           loaded = true;
-          addStatusLog('info', 'Loaded scene geometry sidecar from localStorage');
+          console.log('[scene-geom] Loaded sidecar from localStorage');
         }
       }
     } catch {}
@@ -605,12 +748,12 @@ function App() {
             if (sc.demSource) setSceneGeomDemSource(sc.demSource);
             if (sc.mode) setSceneGeomMode(sc.mode);
             if (sc.buildingsEnabled !== undefined) setSceneGeomBuildingsEnabled(sc.buildingsEnabled);
-            addStatusLog('info', `Loaded scene geometry sidecar: ${sidecarName}`);
+            console.log(`[scene-geom] Loaded sidecar: ${sidecarName}`);
           }
         })
       ).catch(() => {}); // no sidecar file — that's fine
     }
-  }, [addStatusLog]);
+  }, []);
 
   // URL parameter support: ?cog=<url> auto-loads a COG on mount
   useEffect(() => {
@@ -4132,12 +4275,22 @@ function App() {
     return () => { if (overtureDebounceRef.current) clearTimeout(overtureDebounceRef.current); };
   }, [overtureEnabled, overtureThemes, imageData, addStatusLog]);
 
-  // Build Overture overlay layers for deck.gl
+  // Build Overture overlay layers for deck.gl.
+  // When a SICD NITF is loaded, imageData.projection is populated with a
+  // sarpy-equivalent plane projection — use it to render Overture features
+  // directly in slant-range pixel coordinates. Otherwise fall back to the
+  // lon/lat GeoJsonLayer path.
   const overtureLayers = useMemo(() => {
     if (!overtureEnabled || !overtureData) return [];
+    if (imageData?.projection) {
+      return createOvertureSlantLayers(overtureData, imageData.projection, {
+        opacity: overtureOpacity,
+        showLayover: overtureShowLayover,
+      });
+    }
     const crs = imageData?.crs || 'EPSG:4326';
     return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs });
-  }, [overtureEnabled, overtureData, overtureOpacity, imageData]);
+  }, [overtureEnabled, overtureData, overtureOpacity, overtureShowLayover, imageData]);
 
   // Build GeoJSON overlay layers from dropped files
   const geojsonOverlayLayers = useMemo(() => {
@@ -4984,6 +5137,25 @@ function App() {
                     onChange={(e) => setOvertureOpacity(Number(e.target.value))}
                   />
                 </div>
+
+                {imageData?.projection && (
+                  <div className="control-group">
+                    <div className="control-row">
+                      <input
+                        type="checkbox"
+                        id="overtureShowLayover"
+                        checked={overtureShowLayover}
+                        onChange={(e) => setOvertureShowLayover(e.target.checked)}
+                      />
+                      <label htmlFor="overtureShowLayover" title="Project Overture building footprints a second time at their Overture height — the shifted polygons show where the building tops actually image in slant-range.">
+                        Show SAR layover (building tops)
+                      </label>
+                    </div>
+                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '20px' }}>
+                      Using sarpy-equivalent SICD projection
+                    </div>
+                  </div>
+                )}
 
                 {overtureData && (
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
@@ -6152,7 +6324,7 @@ function App() {
                   height="100%"
                   onViewStateChange={handleViewStateChange}
                   initialViewState={initialViewState}
-                  extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
+                  extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers, ...sceneOverlayLayers]}
                   roi={roi}
                   onROIChange={setROI}
                   imageWidth={imageData?.sourceWidth || imageData?.width}

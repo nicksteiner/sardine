@@ -16,7 +16,7 @@ export {
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
 export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
-export { loadNITF, isNITFFile } from './loaders/nitf-loader.js';
+export { loadNITF, isNITFFile, parseNITFMetadataFromBuffer, parseSICDXml } from './loaders/nitf-loader.js';
 export { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from './loaders/nisar-gunw-loader.js';
 export { detectNISARProduct, openNISARReader, getRenderMode, RENDER_MODES } from './loaders/nisar-product.js';
 export { loadDEM, clearDEMCache } from './loaders/dem-loader.js';
@@ -167,6 +167,16 @@ export {
 } from './loaders/overture-buildings.js';
 
 export { createOvertureLayers } from './layers/OvertureLayer.js';
+export { createOvertureSlantLayers } from './layers/OvertureSlantLayer.js';
+
+// SICD projection (sarpy-equivalent ground↔image)
+export {
+  buildSICDProjection,
+  groundToImage,
+  groundToImageBulk,
+  imageToGround,
+  imageBboxFromProjection,
+} from './utils/sicd-projection.js';
 
 // Metadata Cube
 export { MetadataCube, loadMetadataCube } from './utils/metadata-cube.js';
