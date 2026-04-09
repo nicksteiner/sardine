@@ -14,7 +14,7 @@ GLO-30 tiles are fetched on demand from AWS — no setup required. This is the f
 
 **Caveat:** Because GLO-30 is a DSM, it includes building rooftops and canopy heights. This biases SAR layover and dihedral predictions high in urban and forested areas.
 
-## FABDEM V2 (Preferred for SAR)
+## FABDEM V2 ()
 
 **Type:** Digital Terrain Model (DTM) — bare-earth, buildings and canopy removed  
 **Resolution:** ~30 m (1 arc-second)  

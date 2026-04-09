@@ -59,3 +59,5 @@ test_sar_*.tif
 
 # Benchmark results (generated output)
 test/benchmarks/results/
+
+docs/local
