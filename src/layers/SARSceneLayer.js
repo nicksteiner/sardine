@@ -23,7 +23,7 @@
 
 import { CompositeLayer } from '@deck.gl/core';
 import { SolidPolygonLayer, PolygonLayer, PointCloudLayer } from '@deck.gl/layers';
-import { getBuildingHeight } from '../loaders/overture-buildings.js';
+import { resolveHeight } from '../loaders/overture-buildings.js';
 import {
   predictDihedralStrip,
   predictShadowZone,
@@ -45,23 +45,26 @@ const DEFAULTS = {
 const DEG = Math.PI / 180;
 const RAD = 180 / Math.PI;
 
-// ─── Helpers: convert D171 strip results to polygon arrays ──────────
+// ─── Helpers: convert D171 vertex arrays to polygon arrays ──────────
 
 /**
- * Convert a strip segment (base + offset in pixel coords) into a thin
- * rectangle polygon in pixel space, with a half-width of `azWidth` pixels.
+ * Convert an array of {row, col} vertices (from predictDihedralStrip /
+ * predictShadowZone) into a closed [x, y] polygon for deck.gl.
+ *
+ * SARViewer uses an OrthographicView with flipY:false and the SAR image
+ * placed with row 0 at world y = nRows (top). So image (row, col) maps to
+ * deck.gl world (col, nRows - row).
+ *
+ * @param {{row:number, col:number}[]} vertices
+ * @param {number} nRows  - Image height in pixels (for Y flip)
+ * @returns {number[][]}  Closed polygon ring in [x, y]
  */
-function stripToPolygon(seg, azWidth = 4) {
-  const { baseRow, baseCol, offsetRow, offsetCol } = seg;
-  const endRow = baseRow + offsetRow;
-  const endCol = baseCol + offsetCol;
-  return [
-    [baseCol - azWidth, baseRow],
-    [baseCol + azWidth, baseRow],
-    [endCol + azWidth, endRow],
-    [endCol - azWidth, endRow],
-    [baseCol - azWidth, baseRow], // close ring
-  ];
+function verticesToPolygon(vertices, nRows) {
+  if (!vertices || vertices.length < 3) return null;
+  const ring = vertices.map(v => [v.col, nRows - v.row]);
+  // Close the ring
+  ring.push([ring[0][0], ring[0][1]]);
+  return ring;
 }
 
 /**
@@ -79,33 +82,43 @@ function stripToPolygon(seg, azWidth = 4) {
  * @returns {Array<{polygon: number[][], intensity?: number}>}
  */
 export function prepareDihedralStrips(extrudedBuildings, geometry, opts = {}) {
-  const { azWidth = 4, getTile } = opts;
+  const { getTile } = opts;
+  const nRows = geometry?.nRows;
+  if (!nRows) {
+    console.warn('[SARSceneLayer] prepareDihedralStrips: geometry.nRows missing');
+    return [];
+  }
   const result = [];
 
   for (const bldg of extrudedBuildings) {
-    // Convert footprint from [lon, lat] degrees to {lat, lon} radians
-    const footprintRad = bldg.footprint.map(([lon, lat]) => ({
-      lat: lat * DEG,
-      lon: lon * DEG,
-    }));
+    // predictDihedralStrip wants footprint as {lat, lon} in DEGREES
+    // (groundPointToSlant takes degrees and converts internally)
+    const footprintLL = bldg.footprint.map(([lon, lat]) => ({ lat, lon }));
 
-    const building = {
-      footprint: footprintRad,
+    const wall = {
+      footprint: footprintLL,
       height: bldg.topElev - bldg.baseElev,
       baseElev: bldg.baseElev,
     };
 
-    const strips = predictDihedralStrip(building, geometry);
-    for (const seg of strips) {
-      const polygon = stripToPolygon(seg, azWidth);
-      const entry = { polygon };
-      if (getTile) {
-        const midRow = seg.baseRow + seg.offsetRow / 2;
-        const midCol = seg.baseCol;
-        entry.intensity = getTile(Math.round(midRow), Math.round(midCol)) || 0;
-      }
-      result.push(entry);
+    let vertices;
+    try {
+      vertices = predictDihedralStrip(wall, geometry);
+    } catch (e) {
+      continue;
     }
+    const polygon = verticesToPolygon(vertices, nRows);
+    if (!polygon) continue;
+
+    const entry = { polygon };
+    if (getTile) {
+      // Sample intensity at the centroid
+      let cr = 0, cc = 0;
+      for (const v of vertices) { cr += v.row; cc += v.col; }
+      cr /= vertices.length; cc /= vertices.length;
+      entry.intensity = getTile(Math.round(cr), Math.round(cc)) || 0;
+    }
+    result.push(entry);
   }
 
   return result;
@@ -121,25 +134,31 @@ export function prepareDihedralStrips(extrudedBuildings, geometry, opts = {}) {
  * @returns {Array<{polygon: number[][]}>}
  */
 export function prepareShadowZones(extrudedBuildings, geometry, opts = {}) {
-  const { azWidth = 4 } = opts;
+  const nRows = geometry?.nRows;
+  if (!nRows) {
+    console.warn('[SARSceneLayer] prepareShadowZones: geometry.nRows missing');
+    return [];
+  }
   const result = [];
 
   for (const bldg of extrudedBuildings) {
-    const footprintRad = bldg.footprint.map(([lon, lat]) => ({
-      lat: lat * DEG,
-      lon: lon * DEG,
-    }));
+    const footprintLL = bldg.footprint.map(([lon, lat]) => ({ lat, lon }));
 
-    const building = {
-      footprint: footprintRad,
+    const wall = {
+      footprint: footprintLL,
       height: bldg.topElev - bldg.baseElev,
       baseElev: bldg.baseElev,
     };
 
-    const zones = predictShadowZone(building, geometry);
-    for (const seg of zones) {
-      result.push({ polygon: stripToPolygon(seg, azWidth) });
+    let vertices;
+    try {
+      vertices = predictShadowZone(wall, geometry);
+    } catch (e) {
+      continue;
     }
+    const polygon = verticesToPolygon(vertices, nRows);
+    if (!polygon) continue;
+    result.push({ polygon });
   }
 
   return result;
@@ -283,7 +302,7 @@ export class SARSceneLayer extends CompositeLayer {
         },
         getElevation: d => {
           if (isExtruded) return d.topElev - d.baseElev;
-          return getBuildingHeight(d.properties || {});
+          return resolveHeight(d.properties || {});
         },
         elevationScale: 1,
         getFillColor: buildingColor,
