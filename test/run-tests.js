@@ -334,8 +334,8 @@ check('COLORMAP_IDS has all 5 colormaps', () => {
   }
 });
 
-check('STRETCH_MODE_IDS has all 5 modes', () => {
-  for (const sm of ['linear', 'sqrt', 'log', 'gamma', 'sigmoid']) {
+check('STRETCH_MODE_IDS has all 6 modes', () => {
+  for (const sm of ['linear', 'sqrt', 'cbrt', 'log', 'gamma', 'sigmoid']) {
     assertContains(shadersContent, `${sm}:`, `${sm} in STRETCH_MODE_IDS`);
   }
 });
@@ -444,6 +444,13 @@ try {
     const result = applyStretch(0.25, 'sqrt');
     if (Math.abs(result - 0.5) > 1e-10) {
       throw new Error(`sqrt(0.25) = ${result}, expected 0.5`);
+    }
+  });
+
+  check('cbrt stretch: cbrt(0.125) = 0.5', () => {
+    const result = applyStretch(0.125, 'cbrt');
+    if (Math.abs(result - 0.5) > 1e-10) {
+      throw new Error(`cbrt(0.125) = ${result}, expected 0.5`);
     }
   });
 

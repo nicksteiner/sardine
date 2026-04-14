@@ -43,7 +43,7 @@ uniform float uMin;
 uniform float uMax;
 uniform bool uUseDecibels;
 uniform int uColormap;
-uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=log, 3=gamma, 4=sigmoid
+uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=cbrt, 3=log, 4=gamma, 5=sigmoid
 uniform float uGamma;
 
 in vec2 vTexCoord;
@@ -248,19 +248,23 @@ void main(void) {
     // sqrt stretch
     value = sqrt(value);
   } else if (uStretchMode == 2) {
+    // cbrt stretch — pow(x, 1/3) for positive values
+    value = pow(max(value, 0.0), 1.0 / 3.0);
+  } else if (uStretchMode == 3) {
     // log stretch: log(1 + k*x) / log(1 + k), k = 10^(1+gamma)
     float k = pow(10.0, 1.0 + uGamma);
     value = log(1.0 + k * value) / log(1.0 + k);
-  } else if (uStretchMode == 3) {
+  } else if (uStretchMode == 4) {
     // gamma stretch
     value = pow(value, uGamma);
-  } else if (uStretchMode == 4) {
+  } else if (uStretchMode == 5) {
     // sigmoid stretch
     float gain = uGamma * 8.0;
     float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
     float lo = 1.0 / (1.0 + exp(gain * 0.5));
     float hi = 1.0 / (1.0 + exp(-gain * 0.5));
-    value = clamp((raw - lo) / (hi - lo), 0.0, 1.0);
+    float denom = hi - lo;
+    value = denom > 0.0 ? clamp((raw - lo) / denom, 0.0, 1.0) : value;
   }
   // else: linear (no modification)
 
@@ -338,9 +342,10 @@ export function getColormapId(name) {
 export const STRETCH_MODE_IDS = {
   linear: 0,
   sqrt: 1,
-  log: 2,
-  gamma: 3,
-  sigmoid: 4,
+  cbrt: 2,
+  log: 3,
+  gamma: 4,
+  sigmoid: 5,
 };
 
 /**
