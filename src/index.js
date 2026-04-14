@@ -38,6 +38,7 @@ export { SARGPULayer } from './layers/SARGPULayer.js';
 export {
   sarVertexShader,
   sarFragmentShader,
+  glslColormaps,
   COLORMAP_IDS,
   getColormapId,
   STRETCH_MODE_IDS,
