@@ -222,12 +222,12 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
  * @returns {Promise<Object>} Combined statistics
  */
 export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = true) {
-  // Collect values with streaming min/max/sum to avoid O(n log n) sort
-  let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
   const numBins = 256;
-  // We'll do a two-pass approach: first collect all values for min/max, then bin
-  const allValues = [];
   const gridSize = Math.ceil(Math.sqrt(sampleSize));
+
+  // Pass 1: stream tiles to find min/max/sum/count (no intermediate array)
+  let min = Infinity, max = -Infinity, sum = 0, sqSum = 0, count = 0;
+  const tileCache = [];
 
   for (let y = 0; y < gridSize; y++) {
     for (let x = 0; x < gridSize; x++) {
@@ -235,6 +235,7 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
       try {
         const tile = await getTile({ x, y, z: 2 });
         if (tile && tile.data) {
+          tileCache.push(tile.data);
           for (let i = 0; i < tile.data.length; i++) {
             let val = tile.data[i];
             if (isNaN(val)) continue;
@@ -248,7 +249,6 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
             if (val > max) max = val;
             sum += val;
             sqSum += val * val;
-            allValues.push(val);
             count++;
           }
         }
@@ -268,12 +268,23 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
   const mean = sum / count;
   const std = Math.sqrt(Math.max(0, sqSum / count - mean * mean));
 
-  // Bin-walk CDF for percentiles and median
+  // Pass 2: bin directly from tile data (no allValues array)
   const binWidth = (max - min) / numBins || 1;
   const bins = new Array(numBins).fill(0);
-  for (const val of allValues) {
-    const idx = Math.floor((val - min) / binWidth);
-    bins[Math.max(0, Math.min(numBins - 1, idx))]++;
+
+  for (const data of tileCache) {
+    for (let i = 0; i < data.length; i++) {
+      let val = data[i];
+      if (isNaN(val)) continue;
+      if (useDecibels) {
+        if (val <= 0) continue;
+        val = 10 * Math.log10(val);
+      } else {
+        if (val === 0) continue;
+      }
+      const idx = Math.floor((val - min) / binWidth);
+      bins[Math.max(0, Math.min(numBins - 1, idx))]++;
+    }
   }
 
   const p2Target = Math.floor(0.02 * count);
