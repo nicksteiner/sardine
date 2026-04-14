@@ -2,8 +2,16 @@
   "name": "sardine",
   "version": "0.9.0",
   "description": "GPU-accelerated SAR browser viewer with STAC catalog and file serving",
-  "transport": "http",
+  "transport": "stdio",
+  "command": ["node", "server/mcp-server.mjs"],
   "url": "http://localhost:5173",
+  "mcp_servers": {
+    "default": {
+      "transport": "stdio",
+      "command": ["node", "server/mcp-server.mjs"],
+      "description": "Node.js stdio MCP server — bridges viewer HTTP endpoints (4 tools)"
+    }
+  },
   "skills": [
     {
       "name": "sardine_viewer_stac_search",
