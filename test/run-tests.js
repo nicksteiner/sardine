@@ -513,6 +513,45 @@ try {
   skip('colormap LUT tests', `import failed: ${err.message}`);
 }
 
+// ─── 10c. Stats robustness ──────────────────────────────────────────────────
+
+suite('Stats robustness');
+
+try {
+  const { computeStats, autoContrastLimits, computeChannelStats } = await import(join(rootDir, 'src/utils/stats.js'));
+
+  check('computeStats filters Infinity values', () => {
+    const data = new Float32Array([1, 2, Infinity, -Infinity, 3, NaN, 4]);
+    const stats = computeStats(data, false);
+    if (!isFinite(stats.max)) throw new Error(`max is ${stats.max}, expected finite`);
+    if (!isFinite(stats.min)) throw new Error(`min is ${stats.min}, expected finite`);
+    if (stats.count !== 4) throw new Error(`count is ${stats.count}, expected 4`);
+  });
+
+  check('autoContrastLimits filters Infinity values', () => {
+    const data = new Float32Array([0.1, 0.5, Infinity, 0.9]);
+    const [lo, hi] = autoContrastLimits(data, true);
+    if (!isFinite(lo)) throw new Error(`lo is ${lo}, expected finite`);
+    if (!isFinite(hi)) throw new Error(`hi is ${hi}, expected finite`);
+  });
+
+  check('computeChannelStats handles all-NaN input', () => {
+    const data = new Float32Array([NaN, NaN, NaN]);
+    const result = computeChannelStats(data, false);
+    if (result !== null) throw new Error(`Expected null for all-NaN, got ${JSON.stringify(result)}`);
+  });
+
+  check('computeStats handles empty valid data', () => {
+    const data = new Float32Array([0, 0, NaN]);
+    const stats = computeStats(data, false);
+    if (stats.min !== 0) throw new Error(`Expected min=0, got ${stats.min}`);
+    if (stats.max !== 0) throw new Error(`Expected max=0, got ${stats.max}`);
+    if (stats.mean !== 0) throw new Error(`Expected mean=0, got ${stats.mean}`);
+  });
+} catch (err) {
+  skip('stats robustness tests', `import failed: ${err.message}`);
+}
+
 // ─── 11. GeoTIFF writer correctness ───────────────────────────────────────────
 
 suite('GeoTIFF writer');

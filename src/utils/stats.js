@@ -18,7 +18,7 @@ export function computeStats(data, useDecibels = true) {
 
   for (let i = 0; i < data.length; i++) {
     let val = data[i];
-    if (isNaN(val)) continue;
+    if (isNaN(val) || !isFinite(val)) continue;
     if (useDecibels) {
       if (val <= 0) continue;
       val = 10 * Math.log10(val);
@@ -85,7 +85,7 @@ export function autoContrastLimits(
 
   for (let i = 0; i < data.length; i++) {
     let val = data[i];
-    if (isNaN(val)) continue;
+    if (isNaN(val) || !isFinite(val)) continue;
     if (useDecibels) {
       if (val <= 0) continue;
       val = 10 * Math.log10(val);
@@ -155,7 +155,7 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
     max = -Infinity;
     for (let i = 0; i < data.length; i++) {
       let val = data[i];
-      if (isNaN(val)) continue;
+      if (isNaN(val) || !isFinite(val)) continue;
       if (useDecibels) {
         if (val <= 0) continue;
         val = 10 * Math.log10(val);
@@ -198,7 +198,7 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
     // Range was provided — must convert on the fly
     for (let i = 0; i < data.length; i++) {
       let val = data[i];
-      if (isNaN(val)) continue;
+      if (isNaN(val) || !isFinite(val)) continue;
       if (useDecibels) {
         if (val <= 0) continue;
         val = 10 * Math.log10(val);
@@ -238,7 +238,7 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
           tileCache.push(tile.data);
           for (let i = 0; i < tile.data.length; i++) {
             let val = tile.data[i];
-            if (isNaN(val)) continue;
+            if (isNaN(val) || !isFinite(val)) continue;
             if (useDecibels) {
               if (val <= 0) continue;
               val = 10 * Math.log10(val);
@@ -275,7 +275,7 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
   for (const data of tileCache) {
     for (let i = 0; i < data.length; i++) {
       let val = data[i];
-      if (isNaN(val)) continue;
+      if (isNaN(val) || !isFinite(val)) continue;
       if (useDecibels) {
         if (val <= 0) continue;
         val = 10 * Math.log10(val);
@@ -328,7 +328,7 @@ export function computeChannelStats(values, useDecibels = false, numBins = 128, 
 
   for (let i = 0; i < values.length; i += stride) {
     let val = values[i];
-    if (isNaN(val)) continue;
+    if (isNaN(val) || !isFinite(val)) continue;
     if (useDecibels) {
       if (val <= 0) continue;
       val = 10 * Math.log10(val);
@@ -436,9 +436,9 @@ export async function sampleViewportStats(
         const v = tileData.data[j];
         // For dB mode: skip zeros/NaN (nodata) but keep positive values
         // For linear mode: keep all finite non-NaN values (phase/offset data can be negative)
-        if (isNaN(v)) continue;
-        if (useDecibels && v <= 0) continue; // dB needs positive input
-        if (!useDecibels && v === 0) continue; // skip exact zero (nodata)
+        if (isNaN(v) || !isFinite(v)) continue;
+        if (useDecibels && v <= 0) continue;
+        if (!useDecibels && v === 0) continue;
         allValues.push(v);
       }
     }
