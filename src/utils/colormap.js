@@ -450,12 +450,17 @@ export function createColorbarCanvas(
   return canvas;
 }
 
+const _lutCache = new Map();
+
 /**
  * Build a 256-entry RGBA lookup table for a colormap.
+ * Results are cached — repeated calls with the same name return the same LUT.
  * @param {string} colormapName - Name of the colormap
  * @returns {Uint8Array} 256×4 = 1024-byte LUT (RGBA per entry)
  */
 export function buildColormapLUT(colormapName) {
+  const cached = _lutCache.get(colormapName);
+  if (cached) return cached;
   const colormap = getColormap(colormapName);
   const lut = new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
@@ -466,6 +471,7 @@ export function buildColormapLUT(colormapName) {
     lut[off + 2] = b;
     lut[off + 3] = 255;
   }
+  _lutCache.set(colormapName, lut);
   return lut;
 }
 
