@@ -7,11 +7,12 @@
  */
 
 export const STRETCH_MODES = {
-  linear:  { name: 'Linear',      description: 'No transform' },
-  sqrt:    { name: 'Square Root',  description: 'Enhance low values' },
-  log:     { name: 'Logarithmic', description: 'Strong low-value enhancement (SAR speckle)' },
-  gamma:   { name: 'Gamma',       description: 'Adjustable power curve' },
-  sigmoid: { name: 'Sigmoid',     description: 'S-curve, emphasize midtones' },
+  linear:   { name: 'Linear',      description: 'No transform' },
+  sqrt:     { name: 'Square Root',  description: 'Enhance low values' },
+  cbrt:     { name: 'Cube Root',    description: 'Mild low-value enhancement (SAR backscatter)' },
+  log:      { name: 'Logarithmic', description: 'Strong low-value enhancement (SAR speckle)' },
+  gamma:    { name: 'Gamma',       description: 'Adjustable power curve' },
+  sigmoid:  { name: 'Sigmoid',     description: 'S-curve, emphasize midtones' },
 };
 
 /**
@@ -20,7 +21,7 @@ export const STRETCH_MODES = {
  * Pipeline: raw → dB (optional) → normalize to [0,1] → applyStretch → colormap
  *
  * @param {number} value - Normalized input in [0, 1]
- * @param {string} mode - One of: 'linear', 'sqrt', 'log', 'gamma', 'sigmoid'
+ * @param {string} mode - One of: 'linear', 'sqrt', 'cbrt', 'log', 'gamma', 'sigmoid'
  * @param {number} gamma - Gamma exponent (default 1.0).
  *   For gamma mode: output = value^gamma. gamma < 1 brightens, gamma > 1 darkens.
  *   For sigmoid mode: gamma controls steepness (higher = steeper S-curve).
@@ -30,6 +31,9 @@ export function applyStretch(value, mode = 'linear', gamma = 1.0) {
   switch (mode) {
     case 'sqrt':
       return Math.sqrt(value);
+
+    case 'cbrt':
+      return Math.cbrt(value);
 
     case 'log':
       // Logarithmic stretch: strong enhancement of low values.
@@ -44,13 +48,14 @@ export function applyStretch(value, mode = 'linear', gamma = 1.0) {
       return Math.pow(value, gamma);
 
     case 'sigmoid': {
-      // Sigmoid centered at 0.5 with adjustable steepness
       const gain = gamma * 8;
+      if (gain === 0) return value;
       const raw = 1.0 / (1.0 + Math.exp(-gain * (value - 0.5)));
-      // Normalize so endpoints map to [0, 1]
       const lo = 1.0 / (1.0 + Math.exp(gain * 0.5));
       const hi = 1.0 / (1.0 + Math.exp(-gain * 0.5));
-      return Math.max(0, Math.min(1, (raw - lo) / (hi - lo)));
+      const denom = hi - lo;
+      if (denom === 0) return value;
+      return Math.max(0, Math.min(1, (raw - lo) / denom));
     }
 
     case 'linear':
