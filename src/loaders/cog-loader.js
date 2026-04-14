@@ -1,8 +1,8 @@
 import GeoTIFF, { fromUrl, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
 
-/** @deprecated Use normalizeS3Url from utils/s3-url.js */
-function normalizeUrl(url) {
+/** @deprecated Use normalizeS3Url from utils/s3-url.js directly */
+export function normalizeUrl(url) {
   return normalizeS3Url(url);
 }
 
@@ -1163,5 +1163,4 @@ export async function loadTemporalCOGs(acquisitions) {
   };
 }
 
-export { normalizeUrl };
 export default loadCOG;
