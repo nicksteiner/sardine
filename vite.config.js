@@ -1,6 +1,5 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { VitePWA } from 'vite-plugin-pwa';
 import https from 'node:https';
 import http from 'node:http';
 
@@ -164,100 +163,7 @@ function corsProxyPlugin() {
 }
 
 export default defineConfig({
-  plugins: [
-    react(),
-    corsProxyPlugin(),
-    VitePWA({
-      // Auto-update in the background; users get the new version on next launch.
-      registerType: 'autoUpdate',
-
-      // Icons live in app/public (publicDir), served from '/'.
-      includeAssets: [
-        'favicon.ico',
-        'sardine-icon.svg',
-        'apple-touch-icon-180x180.png',
-      ],
-
-      manifest: {
-        name: 'SARdine — SAR Data Inspection and Exploration',
-        short_name: 'SARdine',
-        description:
-          'Browser-native SAR analysis tool. Stream NISAR HDF5 GCOV products and Cloud Optimized GeoTIFFs with GPU-accelerated rendering.',
-        theme_color: '#0a1628',
-        background_color: '#0a1628',
-        display: 'standalone',
-        orientation: 'any',
-        start_url: './',
-        scope: './',
-        lang: 'en',
-        categories: ['science', 'productivity', 'utilities'],
-        icons: [
-          { src: 'pwa-64x64.png',  sizes: '64x64',   type: 'image/png' },
-          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-          { src: 'maskable-icon-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-        ],
-      },
-
-      // Workbox service worker. Precache the app shell (JS/CSS/HTML + WASM)
-      // and set runtime caching rules so basemap tiles and CDN assets work
-      // offline after first load.
-      workbox: {
-        // Default globs miss .wasm — SARdine ships h5wasm + parquet-wasm,
-        // which must be precached for offline use.
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2,wasm}'],
-
-        // h5wasm + parquet-wasm bundles are larger than the 2 MiB default.
-        maximumFileSizeToCacheInBytes: 15 * 1024 * 1024,
-
-        // SPA fallback — navigations resolve to index.html.
-        navigateFallback: 'index.html',
-        navigateFallbackDenylist: [/^\/api/, /^\/data/, /^\/stac-proxy/],
-
-        runtimeCaching: [
-          {
-            // MapLibre basemap vector tiles and sprites
-            urlPattern: ({ url }) =>
-              url.hostname.includes('openmaptiles') ||
-              url.hostname.includes('maptiler') ||
-              url.hostname.includes('protomaps'),
-            handler: 'StaleWhileRevalidate',
-            options: {
-              cacheName: 'basemap-tiles',
-              expiration: { maxEntries: 500, maxAgeSeconds: 60 * 60 * 24 * 30 },
-            },
-          },
-          {
-            // MapLibre CSS from unpkg
-            urlPattern: ({ url }) => url.hostname === 'unpkg.com',
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'cdn-assets',
-              expiration: { maxEntries: 30, maxAgeSeconds: 60 * 60 * 24 * 365 },
-            },
-          },
-          {
-            // Google/system fonts if referenced
-            urlPattern: ({ url }) =>
-              url.hostname === 'fonts.googleapis.com' ||
-              url.hostname === 'fonts.gstatic.com',
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'fonts',
-              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
-            },
-          },
-        ],
-      },
-
-      // Dev-mode service worker so "Add to Home Screen" works off the dev
-      // server too. Disabled by default to avoid caching during development.
-      devOptions: {
-        enabled: false,
-        type: 'module',
-      },
-    }),
-  ],
+  plugins: [react(), corsProxyPlugin()],
   base: './',   // Relative paths for JupyterHub proxy
   root: 'app',
   resolve: {
