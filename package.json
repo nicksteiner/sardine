@@ -24,7 +24,8 @@
     "report": "node src/lite/serve.js",
     "report:open": "node src/lite/serve.js --open",
     "launch": "node server/launch.cjs",
-    "launch:dev": "npm run build && node server/launch.cjs"
+    "launch:dev": "npm run build && node server/launch.cjs",
+    "pwa:icons": "pwa-assets-generator --preset minimal-2023 app/public/sardine-icon.svg"
   },
   "keywords": [
     "sar",
@@ -61,9 +62,11 @@
     "react-dom": "^18.2.0"
   },
   "devDependencies": {
+    "@vite-pwa/assets-generator": "^0.2.6",
     "@vitejs/plugin-react": "^4.0.0",
     "puppeteer": "^24.37.5",
-    "vite": "^4.5.14"
+    "vite": "^4.5.14",
+    "vite-plugin-pwa": "^0.17.5"
   },
   "peerDependencies": {
     "react": "^18.2.0",
