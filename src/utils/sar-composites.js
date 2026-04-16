@@ -10,7 +10,7 @@
  *   to HHVV_re (real) and HHVV_im (imaginary) by the loader.
  */
 
-import { applyStretch } from './stretch.js';
+import { createStretchFn } from './stretch.js';
 
 /**
  * Colorblind-safe color matrices for RGB composites.
@@ -407,6 +407,7 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
   const numPixels = width * height;
   const rgba = new Uint8ClampedArray(numPixels * 4);
   const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+  const stretchFn = needsStretch ? createStretchFn(stretchMode, gamma) : null;
   const cvdMatrix = COLORBLIND_MATRICES[colorblindMode] || null;
 
   // Hoist per-channel invariants out of the hot loop
@@ -444,7 +445,7 @@ export function createRGBTexture(bands, width, height, contrastLimits, useDecibe
 
       if (value < 0) value = 0;
       else if (value > 1) value = 1;
-      if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+      if (stretchFn !== null) value = stretchFn(value);
       if (c === 0) v0 = value;
       else if (c === 1) v1 = value;
       else v2 = value;

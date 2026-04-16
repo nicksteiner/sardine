@@ -100,7 +100,7 @@ export { writeRGBAGeoTIFF, writeRGBGeoTIFF, writeFloat32GeoTIFF, downloadBuffer 
 
 export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
-export { STRETCH_MODES, applyStretch } from './utils/stretch.js';
+export { STRETCH_MODES, applyStretch, createStretchFn } from './utils/stretch.js';
 
 export {
   adaptiveLogScale,
