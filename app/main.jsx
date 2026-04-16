@@ -24,7 +24,7 @@ import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
-import { STRETCH_MODES, applyStretch } from '../src/utils/stretch.js';
+import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84, wgs84ToProjectedPoint } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
@@ -3277,6 +3277,7 @@ function App() {
           const cMin = contrastMin;
           const cMax = contrastMax;
           const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+          const stretchFn = needsStretch ? createStretchFn(stretchMode, gamma) : null;
           const rgbaData = new Uint8ClampedArray(numPixels * 4);
           const bandData = bands[bandNames[0]];
 
@@ -3290,7 +3291,7 @@ function App() {
               value = (amplitude - cMin) / (cMax - cMin);
             }
             value = Math.max(0, Math.min(1, value));
-            if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+            if (stretchFn !== null) value = stretchFn(value);
             const [r, g, b] = colormapFunc(value);
             rgbaData[i * 4] = r;
             rgbaData[i * 4 + 1] = g;
@@ -3494,6 +3495,8 @@ function App() {
           const numPixels = exportWidth * exportHeight;
           const rgbaData = new Uint8ClampedArray(numPixels * 4);
           const bandData = bands[bandNames[0]];
+          const tsNeedsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+          const tsStretchFn = tsNeedsStretch ? createStretchFn(stretchMode, gamma) : null;
 
           for (let i = 0; i < numPixels; i++) {
             const amp = bandData[i];
@@ -3501,7 +3504,7 @@ function App() {
               ? (10 * Math.log10(Math.max(amp, 1e-10)) - cMin) / (cMax - cMin)
               : (amp - cMin) / (cMax - cMin);
             v = Math.max(0, Math.min(1, v));
-            if (stretchMode !== 'linear' || gamma !== 1.0) v = applyStretch(v, stretchMode, gamma);
+            if (tsStretchFn !== null) v = tsStretchFn(v);
             const [r, g, b] = colormapFunc(v);
             rgbaData[i * 4] = r; rgbaData[i * 4 + 1] = g; rgbaData[i * 4 + 2] = b;
             rgbaData[i * 4 + 3] = (amp === 0 || isNaN(amp)) ? 0 : 255;
