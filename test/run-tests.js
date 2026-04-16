@@ -272,8 +272,8 @@ check('uses getColormap from colormap.js', () => {
   assertContains(cpuBitmapContent, 'getColormap', 'getColormap import');
 });
 
-check('uses applyStretch from stretch.js', () => {
-  assertContains(cpuBitmapContent, 'applyStretch', 'applyStretch import');
+check('uses createStretchFn from stretch.js', () => {
+  assertContains(cpuBitmapContent, 'createStretchFn', 'createStretchFn import');
 });
 
 check('has CPU dB conversion', () => {
@@ -429,7 +429,7 @@ try {
 suite('Stretch correctness (CPU)');
 
 try {
-  const { applyStretch } = await import(join(rootDir, 'src/utils/stretch.js'));
+  const { applyStretch, createStretchFn } = await import(join(rootDir, 'src/utils/stretch.js'));
 
   check('linear stretch is identity', () => {
     for (const v of [0, 0.25, 0.5, 0.75, 1]) {
@@ -477,6 +477,32 @@ try {
     // Log stretch should pull 0.1 upward (enhance low values)
     if (atMid <= 0.1) throw new Error(`log(0.1) = ${atMid}, expected > 0.1 (enhancement)`);
     if (atMid >= 1.0) throw new Error(`log(0.1) = ${atMid}, expected < 1.0`);
+  });
+
+  check('createStretchFn matches applyStretch across all modes', () => {
+    const modes = ['linear', 'sqrt', 'cbrt', 'log', 'gamma', 'sigmoid'];
+    const gammas = [0.5, 1.0, 2.0];
+    const samples = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+    for (const mode of modes) {
+      for (const g of gammas) {
+        const fn = createStretchFn(mode, g);
+        for (const v of samples) {
+          const direct = applyStretch(v, mode, g);
+          const viaFn = fn(v);
+          // Tolerance: log/sigmoid reorder ops (invLog, invDenom) → tiny FP drift
+          if (Math.abs(direct - viaFn) > 1e-9) {
+            throw new Error(`mode=${mode} gamma=${g} v=${v}: direct=${direct}, fn=${viaFn}`);
+          }
+        }
+      }
+    }
+  });
+
+  check('createStretchFn sigmoid gain=0 edge case returns identity', () => {
+    const fn = createStretchFn('sigmoid', 0);
+    for (const v of [0, 0.3, 0.7, 1.0]) {
+      if (fn(v) !== v) throw new Error(`sigmoid(gain=0)(${v}) = ${fn(v)}, expected ${v}`);
+    }
   });
 } catch (err) {
   skip('stretch correctness tests', `import failed: ${err.message}`);

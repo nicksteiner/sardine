@@ -14,7 +14,7 @@
  */
 
 import { getColormap } from './colormap.js';
-import { applyStretch } from './stretch.js';
+import { createStretchFn } from './stretch.js';
 import { SAR_COMPOSITES, COLORBLIND_MATRICES } from './sar-composites.js';
 import { drawHistogramCanvas } from '../components/HistogramOverlay.jsx';
 import {
@@ -1302,6 +1302,7 @@ export function exportRGBColorbar(options = {}) {
   const d01 = e0[0] * e1[0] + e0[1] * e1[1];
   const d11 = e1[0] * e1[0] + e1[1] * e1[1];
   const invDenom = 1 / (d00 * d11 - d01 * d01);
+  const stretchFn = createStretchFn(stretchMode, gamma);
 
   for (let iy = 0; iy < imgH; iy++) {
     for (let ix = 0; ix < imgW; ix++) {
@@ -1316,9 +1317,9 @@ export function exportRGBColorbar(options = {}) {
       const wR = 1 - wG - wB;
 
       if (wR >= 0 && wG >= 0 && wB >= 0) {
-        let sr = applyStretch(wR, stretchMode, gamma);
-        let sg = applyStretch(wG, stretchMode, gamma);
-        let sb = applyStretch(wB, stretchMode, gamma);
+        let sr = stretchFn(wR);
+        let sg = stretchFn(wG);
+        let sb = stretchFn(wB);
         // Apply colorblind remap so triangle matches what the viewer shows
         const cbMatrix = COLORBLIND_MATRICES[colorblindMode];
         if (cbMatrix) {
