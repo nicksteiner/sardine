@@ -73,15 +73,21 @@ const FS = `#version 300 es
     // dB conversion
     float db = 10.0 * log(max(amp, 1e-10)) / log(10.0);
     float value = clamp((db - uMin) / (uMax - uMin), 0.0, 1.0);
-    // Stretch
+    // Stretch: 0=linear, 1=sqrt, 2=cbrt, 3=log, 4=gamma, 5=sigmoid
     if (uStretchMode == 1) { value = sqrt(value); }
-    else if (uStretchMode == 2) { value = pow(value, uGamma); }
+    else if (uStretchMode == 2) { value = pow(max(value, 0.0), 1.0/3.0); }
     else if (uStretchMode == 3) {
+      float k = pow(10.0, 1.0 + uGamma);
+      value = log(1.0 + k * value) / log(1.0 + k);
+    }
+    else if (uStretchMode == 4) { value = pow(value, uGamma); }
+    else if (uStretchMode == 5) {
       float gain = uGamma * 8.0;
       float raw = 1.0/(1.0+exp(-gain*(value-0.5)));
       float lo = 1.0/(1.0+exp(gain*0.5));
       float hi = 1.0/(1.0+exp(-gain*0.5));
-      value = clamp((raw-lo)/(hi-lo), 0.0, 1.0);
+      float denom = hi - lo;
+      value = denom > 0.0 ? clamp((raw-lo)/denom, 0.0, 1.0) : value;
     }
     // Colormap
     vec3 rgb;
@@ -223,13 +229,13 @@ async function runAll() {
   // Test 3: Gamma sweep (100 frames)
   results.gamma_sweep = runTest(ctx, 'Gamma sweep', 100, i => ({
     min: -25, max: 0, gamma: 0.1 + (i / 100) * 2.9,
-    stretchMode: 2, colormap: 1, scale: 1.0
+    stretchMode: 4, colormap: 1, scale: 1.0
   }));
 
   // Test 4: Stretch mode cycle (40 frames)
   results.stretch_cycle = runTest(ctx, 'Stretch mode cycle', 40, i => ({
     min: -25, max: 0, gamma: 0.5,
-    stretchMode: i % 4, colormap: 1, scale: 1.0
+    stretchMode: i % 6, colormap: 1, scale: 1.0
   }));
 
   // Test 5: Simulated pan (100 frames)

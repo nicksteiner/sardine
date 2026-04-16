@@ -1,7 +1,7 @@
 import { TileLayer } from '@deck.gl/geo-layers';
 import { getColormap } from '../utils/colormap.js';
 import { computeRGBBands } from '../utils/sar-composites.js';
-import { applyStretch } from '../utils/stretch.js';
+import { createStretchFn } from '../utils/stretch.js';
 import { SARGPULayer } from './SARGPULayer.js';
 
 /**
@@ -314,6 +314,7 @@ function createSARTexture(data, width, height, contrastLimits, useDecibels, colo
   const colormapFunc = getColormap(colormap);
   const rgba = new Uint8ClampedArray(width * height * 4);
   const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
+  const stretchFn = needsStretch ? createStretchFn(stretchMode, gamma) : null;
 
   for (let i = 0; i < data.length; i++) {
     const amplitude = data[i];
@@ -327,7 +328,7 @@ function createSARTexture(data, width, height, contrastLimits, useDecibels, colo
     }
 
     value = Math.max(0, Math.min(1, value));
-    if (needsStretch) value = applyStretch(value, stretchMode, gamma);
+    if (stretchFn !== null) value = stretchFn(value);
 
     const [r, g, b] = colormapFunc(value);
     const idx = i * 4;
