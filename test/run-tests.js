@@ -518,7 +518,7 @@ try {
 suite('Stats robustness');
 
 try {
-  const { computeStats, autoContrastLimits, computeChannelStats } = await import(join(rootDir, 'src/utils/stats.js'));
+  const { computeStats, autoContrastLimits, computeChannelStats, computeHistogram, sampleTileStats, sampleViewportStats } = await import(join(rootDir, 'src/utils/stats.js'));
 
   check('computeStats filters Infinity values', () => {
     const data = new Float32Array([1, 2, Infinity, -Infinity, 3, NaN, 4]);
@@ -547,6 +547,56 @@ try {
     if (stats.min !== 0) throw new Error(`Expected min=0, got ${stats.min}`);
     if (stats.max !== 0) throw new Error(`Expected max=0, got ${stats.max}`);
     if (stats.mean !== 0) throw new Error(`Expected mean=0, got ${stats.mean}`);
+  });
+
+  check('computeChannelStats honors stride parameter', () => {
+    // Values at even indices are 1, odd indices are 100 — with stride=2 we pick only evens.
+    const data = new Float32Array(100);
+    for (let i = 0; i < 100; i++) data[i] = (i % 2 === 0) ? 1 : 100;
+    const r = computeChannelStats(data, false, 32, 2);
+    if (!r) throw new Error('Expected non-null');
+    if (r.count !== 50) throw new Error(`Expected count=50 with stride=2, got ${r.count}`);
+    if (r.max !== 1 || r.min !== 1) throw new Error(`Expected all 1s, got min=${r.min}, max=${r.max}`);
+  });
+
+  check('computeHistogram with range skips caching', () => {
+    const data = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0, NaN]);
+    const h = computeHistogram(data, false, 4, [0, 1]);
+    if (h.totalCount !== 5) throw new Error(`Expected count=5, got ${h.totalCount}`);
+    if (h.min !== 0 || h.max !== 1) throw new Error(`Range mismatch: ${h.min},${h.max}`);
+    if (h.bins.length !== 4) throw new Error(`Expected 4 bins, got ${h.bins.length}`);
+  });
+
+  check('computeHistogram without range auto-fits', () => {
+    const data = new Float32Array([1, 5, 10, 15, 20]);
+    const h = computeHistogram(data, false, 10);
+    if (h.min !== 1 || h.max !== 20) throw new Error(`Expected [1,20], got [${h.min},${h.max}]`);
+    if (h.totalCount !== 5) throw new Error(`Expected count=5, got ${h.totalCount}`);
+  });
+
+  await asyncCheck('sampleTileStats handles empty tile fetcher', async () => {
+    const getTile = async () => null;
+    const result = await sampleTileStats(getTile, 4, true);
+    if (!result.contrastLimits) throw new Error('Expected contrastLimits');
+    if (result.stats.count !== 0) throw new Error(`Expected count=0, got ${result.stats.count}`);
+  });
+
+  await asyncCheck('sampleViewportStats returns null on empty tiles', async () => {
+    const getTile = async () => null;
+    const result = await sampleViewportStats(getTile, 100, 100, true, 64);
+    if (result !== null) throw new Error(`Expected null, got ${JSON.stringify(result)}`);
+  });
+
+  await asyncCheck('sampleViewportStats computes percentiles from synthetic tiles', async () => {
+    // Build uniform tile fetcher — each tile returns 256×256 dB values
+    const tileData = new Float32Array(256 * 256);
+    for (let i = 0; i < tileData.length; i++) tileData[i] = 1e-2 + (i % 100) * 1e-3;
+    const getTile = async () => ({ data: tileData, width: 256, height: 256 });
+    const result = await sampleViewportStats(getTile, 300, 300, true, 32);
+    if (!result) throw new Error('Expected non-null result');
+    if (!('p2' in result) || !('p98' in result)) throw new Error('Missing p2/p98');
+    if (!isFinite(result.p2) || !isFinite(result.p98)) throw new Error('Percentiles non-finite');
+    if (result.p2 > result.p98) throw new Error(`p2 > p98: ${result.p2} > ${result.p98}`);
   });
 } catch (err) {
   skip('stats robustness tests', `import failed: ${err.message}`);
