@@ -124,14 +124,21 @@ function nanmean(arr, mask) {
 /**
  * Compute per-image correction factors: rolling-mean scene average divided by
  * the long-term scene mean.
+ *
+ * Matches the JPL notebook, which computes `np.nanmean(rolling[kk])` over the
+ * FULL rolling-mean frame (mask NOT applied — rolling stack has no NaNs since
+ * it was built from raw clipped data). The long-term mean is the nanmean of
+ * meanStack, which was NaN-filled at masked pixels before averaging, so only
+ * that denominator reflects the mask.
+ *
  * @param {Float32Array[]} rolling
  * @param {number} longTermMean - nanmean of meanStack for the polarization
- * @param {Uint8Array} mask
+ * @param {Uint8Array} [_mask] - unused; retained for signature stability
  */
-export function correctionFactors(rolling, longTermMean, mask) {
+export function correctionFactors(rolling, longTermMean, _mask) {
   const out = new Float32Array(rolling.length);
   for (let kk = 0; kk < rolling.length; kk++) {
-    out[kk] = nanmean(rolling[kk], mask) / longTermMean;
+    out[kk] = nanmean(rolling[kk]) / longTermMean;
   }
   return out;
 }
@@ -158,13 +165,19 @@ export function applyCorrection(stack, factors, Nave) {
  * Per-pixel classification for one image pair (HH, HV corrected).
  * Returns Uint8Array with values 0..5 or INUNDATION_MASKED_VALUE (10).
  *
- * Matches the notebook: classes are assigned in order 5, 4, 3, 2, 1, 0 so that
- * the lowest-numbered class "wins" when multiple thresholds match. Pixels with
- * no matching threshold and mask==1 default to INUNDATION_MASKED_VALUE.
+ * Matches the JPL notebook: classes are evaluated in order 5, 4, 3, 2, 1, 0 so
+ * that the lowest-numbered class "wins" when multiple thresholds match (later
+ * writes stomp earlier ones). The mask is NOT applied during classification —
+ * the notebook runs the thresholds over the full corrected stack, and zero /
+ * ratio=inf pixels are naturally excluded by the strict `>` bounds
+ * (all `hhMin` and `ratioMin` values are `>= 0` with strict inequalities, so
+ * pixels where HH==0 or HV==0 stay at the default masked sentinel).
+ *
+ * The `mask` parameter is retained for signature stability but is not used.
  */
-export function classifyPair(hh, hv, mask, thresholds = DEFAULT_INUNDATION_THRESHOLDS) {
+export function classifyPair(hh, hv, _mask, thresholds = DEFAULT_INUNDATION_THRESHOLDS) {
   const n = hh.length;
-  if (hv.length !== n || mask.length !== n) {
+  if (hv.length !== n) {
     throw new Error('classifyPair: length mismatch');
   }
   const out = new Uint8Array(n);
@@ -172,10 +185,10 @@ export function classifyPair(hh, hv, mask, thresholds = DEFAULT_INUNDATION_THRES
   const order = ['class5', 'class4', 'class3', 'class2', 'class1', 'class0'];
   const classIdx = { class0: 0, class1: 1, class2: 2, class3: 3, class4: 4, class5: 5 };
   for (let i = 0; i < n; i++) {
-    if (!mask[i]) continue;
     const hhVal = hh[i], hvVal = hv[i];
     if (!Number.isFinite(hhVal) || !Number.isFinite(hvVal) || hvVal === 0) continue;
     const ratio = hhVal / hvVal;
+    if (!Number.isFinite(ratio)) continue;
     for (const key of order) {
       const t = thresholds[key];
       if (ratio > t.ratioMin && ratio <= t.ratioMax &&
