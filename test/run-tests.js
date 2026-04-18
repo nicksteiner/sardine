@@ -1558,6 +1558,137 @@ try {
   skip('NISAR ATBD functional tests', `import failed: ${err.message}`);
 }
 
+// ─── 16. NISAR ATBD app integration (D288) ──────────────────────────────────
+
+suite('NISAR ATBD app integration (palettes + runner)');
+
+try {
+  const palettes = await import(join(rootDir, 'src/utils/atbd-palettes.js'));
+  const runner = await import(join(rootDir, 'src/utils/atbd-runner.js'));
+
+  check('atbd-palettes exports 3 palettes with matching labels', () => {
+    const specs = [
+      [palettes.INUNDATION_PALETTE, palettes.INUNDATION_CLASS_LABELS, 6],
+      [palettes.CROP_PALETTE, palettes.CROP_CLASS_LABELS, 2],
+      [palettes.DISTURBANCE_PALETTE, palettes.DISTURBANCE_CLASS_LABELS, 2],
+    ];
+    for (const [pal, labels, n] of specs) {
+      if (pal.length !== n) throw new Error(`palette size ${pal.length} != ${n}`);
+      if (labels.length !== n) throw new Error(`labels size ${labels.length} != ${n}`);
+      for (const entry of pal) {
+        if (entry.length !== 4) throw new Error('palette entry must be [r,g,b,a]');
+      }
+    }
+  });
+
+  check('classifiedToRGBA paints palette colors for in-range classes', () => {
+    const cm = new Uint8Array([0, 1, 2, 10]); // last is masked for inundation
+    const rgba = palettes.classifiedToRGBA(cm, 4, 1, palettes.INUNDATION_PALETTE);
+    if (rgba.length !== 16) throw new Error('rgba length wrong');
+    // cls 0 → first palette entry → [93, 63, 211, 220]
+    if (rgba[0] !== 93 || rgba[3] !== 220) throw new Error('cls 0 color wrong');
+    // cls 10 (masked) → transparent (alpha 0)
+    if (rgba[12] !== 0 || rgba[15] !== 0) throw new Error('masked class should be transparent');
+  });
+
+  check('classifiedToRGBA throws on length mismatch', () => {
+    let threw = false;
+    try {
+      palettes.classifiedToRGBA(new Uint8Array(3), 2, 2, palettes.CROP_PALETTE);
+    } catch { threw = true; }
+    if (!threw) throw new Error('expected throw on length mismatch');
+  });
+
+  check('paletteToClassRegions produces hex colors keyed by label', () => {
+    const regions = palettes.paletteToClassRegions(
+      palettes.CROP_PALETTE, palettes.CROP_CLASS_LABELS,
+    );
+    if (regions.length !== 2) throw new Error(`expected 2 regions, got ${regions.length}`);
+    if (!/^#[0-9a-f]{6}$/i.test(regions[0].color)) throw new Error(`bad hex: ${regions[0].color}`);
+    if (regions[1].name !== 'Cropland') throw new Error(`label wrong: ${regions[1].name}`);
+  });
+
+  check('ATBD_ALGORITHMS lists the three ported algorithms', () => {
+    const ids = runner.ATBD_ALGORITHMS.map(a => a.id).sort();
+    if (ids.join(',') !== 'crop,disturbance,inundation') {
+      throw new Error(`wrong algorithms: ${ids.join(',')}`);
+    }
+  });
+
+  // Synthetic single-pol frames factory
+  const makeSinglePolFrames = (n) => {
+    const frames = [];
+    for (let k = 0; k < n; k++) {
+      const arr = new Float32Array(16);
+      for (let i = 0; i < 16; i++) {
+        // Pixel 3 is a step-change halfway through the series.
+        arr[i] = i === 3 ? (k < n / 2 ? 0.2 : 2.0) : 0.5 + 0.05 * k + 0.01 * i;
+      }
+      frames.push({
+        requiredPols: ['HHHH'],
+        getTile: async () => ({ data: arr, width: 4, height: 4 }),
+      });
+    }
+    return frames;
+  };
+
+  check('runATBD (crop) flags pixel with large temporal variation', async () => {
+    const frames = makeSinglePolFrames(6);
+    const res = await runner.runATBD(frames, [0, 0, 10, 10], {
+      algorithm: 'crop', cvThreshold: 0.2,
+    });
+    if (res.width !== 4 || res.height !== 4) throw new Error('tile size wrong');
+    if (res.classMap[3] !== 1) throw new Error('step-change pixel should be flagged');
+    if (res.metadata.polarization !== 'HHHH') throw new Error('metadata.polarization wrong');
+  });
+
+  check('runATBD (disturbance) flags pixel with CUSUM step-change', async () => {
+    const frames = makeSinglePolFrames(6);
+    const res = await runner.runATBD(frames, [0, 0, 10, 10], {
+      algorithm: 'disturbance', sdiffThresholdPercentile: 80,
+    });
+    if (res.classMap[3] !== 1) throw new Error('step-change pixel should be disturbed');
+  });
+
+  check('runATBD (inundation) requires dual-pol frames, errors otherwise', async () => {
+    const frames = makeSinglePolFrames(4);
+    let threw = false;
+    try {
+      await runner.runATBD(frames, [0, 0, 10, 10], { algorithm: 'inundation' });
+    } catch { threw = true; }
+    if (!threw) throw new Error('expected throw for single-pol inundation');
+  });
+
+  check('runATBD (inundation) runs on dual-pol frames and returns a classMap', async () => {
+    const frames = [];
+    for (let k = 0; k < 5; k++) {
+      const hh = new Float32Array(16);
+      const hv = new Float32Array(16);
+      for (let i = 0; i < 16; i++) { hh[i] = 1.0 + 0.1 * k; hv[i] = 0.5 + 0.02 * k; }
+      frames.push({
+        requiredPols: ['HHHH', 'HVHV'],
+        isRGB: true,
+        getTile: async () => ({ bands: { HHHH: hh, HVHV: hv }, width: 4, height: 4 }),
+      });
+    }
+    const res = await runner.runATBD(frames, [0, 0, 10, 10], { algorithm: 'inundation' });
+    if (res.classMap.length !== 16) throw new Error('classMap length wrong');
+    if (res.metadata.numFrames !== 5) throw new Error('numFrames meta wrong');
+  });
+
+  check('runATBD rejects unknown algorithm', async () => {
+    const frames = makeSinglePolFrames(3);
+    let threw = false;
+    try {
+      await runner.runATBD(frames, [0, 0, 10, 10], { algorithm: 'nope' });
+    } catch { threw = true; }
+    if (!threw) throw new Error('expected throw for unknown algorithm');
+  });
+
+} catch (err) {
+  skip('NISAR ATBD app integration', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
