@@ -34,6 +34,8 @@ import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
+import { runATBD, ATBD_ALGORITHMS } from '../src/utils/atbd-runner.js';
+import { classifiedToRGBA, paletteToClassRegions } from '../src/utils/atbd-palettes.js';
 import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
 import { loadMetadataCube } from '../src/utils/metadata-cube.js';
 import { loadAllCorrections, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
@@ -399,6 +401,13 @@ function App() {
   const [roiTSPlaying, setRoiTSPlaying] = useState(false);    // Animation playing
   const [roiTSContrastLimits, setRoiTSContrastLimits] = useState(null); // [min, max] shared across frames
   const [roiTSHistogramData, setRoiTSHistogramData] = useState(null);   // Histogram for current frame
+
+  // NISAR ecosystem ATBD state (D288)
+  const [atbdAlgorithm, setAtbdAlgorithm] = useState('crop'); // 'inundation' | 'crop' | 'disturbance'
+  const [atbdResult, setAtbdResult] = useState(null);         // ClassificationResult from atbd-runner
+  const [atbdRunning, setAtbdRunning] = useState(false);
+  const [atbdProgress, setAtbdProgress] = useState(0);
+  const [atbdOverlayVisible, setAtbdOverlayVisible] = useState(true);
   const [wktInput, setWktInput] = useState('');       // WKT text input value
   const [wktError, setWktError] = useState(null);     // WKT validation error message
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
@@ -3893,6 +3902,111 @@ function App() {
     }
   }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, isRGBDisplayMode, colorblindMode, addStatusLog]);
 
+  // NISAR ecosystem ATBD runner (D288) — runs selected algorithm against the
+  // currently loaded ROI time-series and stashes a ClassificationResult for
+  // overlay rendering + GeoTIFF export.
+  const handleRunATBD = useCallback(async () => {
+    if (!roiTSFrames || !roiTSFrames.length) {
+      addStatusLog('warning', 'Load an ROI time-series first (ATBD needs a multi-temporal stack)');
+      return;
+    }
+    if (!roiTSBounds) {
+      addStatusLog('error', 'ATBD: no ROI bounds available');
+      return;
+    }
+    const algoDef = ATBD_ALGORITHMS.find(a => a.id === atbdAlgorithm);
+    if (!algoDef) {
+      addStatusLog('error', `ATBD: unknown algorithm "${atbdAlgorithm}"`);
+      return;
+    }
+    if (roiTSFrames.length < algoDef.minFrames) {
+      addStatusLog('error',
+        `${algoDef.name} needs >= ${algoDef.minFrames} frames; loaded ${roiTSFrames.length}`);
+      return;
+    }
+    setAtbdRunning(true);
+    setAtbdProgress(0);
+    setAtbdResult(null);
+    addStatusLog('info', `--- ATBD: ${algoDef.name} ---`);
+    addStatusLog('info', `Frames: ${roiTSFrames.length}, bounds: ${roiTSBounds.map(v => v.toFixed(4)).join(', ')}`);
+    try {
+      const t0 = performance.now();
+      const result = await runATBD(roiTSFrames, roiTSBounds, {
+        algorithm: atbdAlgorithm,
+        polarization: selectedPolarization,
+        onProgress: (i, n) => setAtbdProgress(Math.round(100 * i / n)),
+      });
+      setAtbdProgress(100);
+      const dt = ((performance.now() - t0) / 1000).toFixed(1);
+      const classified = result.classMap.reduce((s, v) => s + (v > 0 && v < 10 ? 1 : 0), 0);
+      addStatusLog('success',
+        `ATBD done in ${dt}s: ${result.width}x${result.height} px, ${classified} classified pixels`,
+        JSON.stringify(result.metadata));
+      setAtbdResult(result);
+      setAtbdOverlayVisible(true);
+    } catch (e) {
+      addStatusLog('error', `ATBD failed: ${e.message}`);
+      console.error('[ATBD]', e);
+    } finally {
+      setAtbdRunning(false);
+    }
+  }, [roiTSFrames, roiTSBounds, atbdAlgorithm, selectedPolarization, addStatusLog]);
+
+  const handleExportATBD = useCallback(async () => {
+    if (!atbdResult) {
+      addStatusLog('warning', 'No ATBD result to export — run an algorithm first');
+      return;
+    }
+    try {
+      const { classMap, width, height, bounds, palette, algorithm } = atbdResult;
+      const rgba = classifiedToRGBA(classMap, width, height, palette);
+      const epsgMatch = imageData?.crs?.match(/EPSG:(\d+)/);
+      const epsgCode = epsgMatch ? parseInt(epsgMatch[1]) : 4326;
+      addStatusLog('info', `Encoding ATBD GeoTIFF (${width}x${height}, EPSG:${epsgCode})...`);
+      const buffer = await writeRGBAGeoTIFF(rgba, width, height, bounds, epsgCode, {
+        generateOverviews: width >= 1024 && height >= 1024,
+      });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const filename = `atbd_${algorithm}_${stamp}.tif`;
+      downloadBuffer(buffer, filename);
+      addStatusLog('success', `Saved ${filename}`);
+    } catch (e) {
+      addStatusLog('error', `ATBD export failed: ${e.message}`);
+      console.error('[ATBD export]', e);
+    }
+  }, [atbdResult, imageData, addStatusLog]);
+
+  // Adapter that feeds atbdResult into the existing ClassificationOverlay
+  // plumbing on SARViewer. Overlay values are 1-based + only non-transparent
+  // palette entries are kept, so the LUT indexing in ClassificationOverlay
+  // lines up with our palette semantics.
+  const atbdOverlayData = useMemo(() => {
+    if (!atbdResult) return null;
+    const { classMap, palette, classLabels, width, height } = atbdResult;
+    const visible = [];
+    for (let i = 0; i < palette.length; i++) {
+      if (palette[i][3] > 0) visible.push({ origIdx: i, rgba: palette[i] });
+    }
+    if (!visible.length) return null;
+    const MAX_CLS = Math.max(11, palette.length + 1);
+    const remap = new Int16Array(MAX_CLS); // 0 → transparent
+    visible.forEach((v, k) => { remap[v.origIdx] = k + 1; });
+    const mapped = new Uint8Array(classMap.length);
+    for (let i = 0; i < classMap.length; i++) {
+      const v = classMap[i];
+      mapped[i] = v >= 0 && v < remap.length ? remap[v] : 0;
+    }
+    const classRegions = visible.map(v => {
+      const [r, g, b] = v.rgba;
+      const hex = '#' +
+        r.toString(16).padStart(2, '0') +
+        g.toString(16).padStart(2, '0') +
+        b.toString(16).padStart(2, '0');
+      return { name: classLabels[v.origIdx] || `cls${v.origIdx}`, color: hex };
+    });
+    return { classificationMap: mapped, classRegions, roiDims: { w: width, h: height } };
+  }, [atbdResult]);
+
   // Reload/restart current rendering — full data + state refresh
   const handleReload = useCallback(async () => {
     if (!imageData) {
@@ -5103,6 +5217,119 @@ function App() {
                         {roiTSFrames.length} frames loaded
                       </div>
                     )}
+
+                    {/* NISAR ecosystem ATBD controls (D288) */}
+                    {roiTSFrames && (
+                      <div style={{
+                        marginTop: '8px', padding: '6px 8px',
+                        background: 'var(--surface-2)', border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)',
+                      }}>
+                        <div style={{
+                          fontSize: '0.65rem', color: 'var(--text-muted)',
+                          textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px',
+                        }}>
+                          NISAR ATBD
+                        </div>
+                        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                          <select
+                            value={atbdAlgorithm}
+                            onChange={(e) => setAtbdAlgorithm(e.target.value)}
+                            disabled={atbdRunning}
+                            style={{
+                              flex: 1, fontSize: '0.65rem',
+                              background: 'var(--surface)', color: 'var(--text)',
+                              border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                              padding: '3px 6px',
+                            }}
+                          >
+                            {ATBD_ALGORITHMS.map(a => (
+                              <option key={a.id} value={a.id}>{a.name}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={handleRunATBD}
+                            disabled={atbdRunning || !roiTSFrames}
+                            style={{
+                              fontSize: '0.65rem', padding: '3px 8px',
+                              background: 'rgba(78, 201, 212, 0.15)',
+                              border: '1px solid rgba(78, 201, 212, 0.3)',
+                              color: '#4ec9d4', borderRadius: 'var(--radius-sm)',
+                              cursor: atbdRunning ? 'not-allowed' : 'pointer',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {atbdRunning ? `${atbdProgress}%` : 'Run'}
+                          </button>
+                        </div>
+                        {atbdResult && (
+                          <div style={{ marginTop: '6px' }}>
+                            <div style={{ fontSize: '0.6rem', color: '#4ec9d4', marginBottom: '4px' }}>
+                              {atbdResult.algorithm}: {atbdResult.width}×{atbdResult.height} px
+                            </div>
+                            <div style={{ display: 'flex', gap: '4px' }}>
+                              <button
+                                onClick={() => setAtbdOverlayVisible(v => !v)}
+                                style={{
+                                  flex: 1, fontSize: '0.6rem', padding: '2px 6px',
+                                  background: atbdOverlayVisible ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
+                                  border: '1px solid var(--border)',
+                                  color: atbdOverlayVisible ? '#4ec9d4' : 'var(--text-muted)',
+                                  borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                                }}
+                              >
+                                {atbdOverlayVisible ? 'Overlay: on' : 'Overlay: off'}
+                              </button>
+                              <button
+                                onClick={handleExportATBD}
+                                style={{
+                                  flex: 1, fontSize: '0.6rem', padding: '2px 6px',
+                                  background: 'rgba(46, 204, 113, 0.15)',
+                                  border: '1px solid rgba(46, 204, 113, 0.3)',
+                                  color: '#2ecc71', borderRadius: 'var(--radius-sm)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Export GeoTIFF
+                              </button>
+                              <button
+                                onClick={() => setAtbdResult(null)}
+                                style={{
+                                  fontSize: '0.6rem', padding: '2px 6px',
+                                  background: 'transparent',
+                                  border: '1px solid var(--border)',
+                                  color: 'var(--text-muted)', borderRadius: 'var(--radius-sm)',
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                Clear
+                              </button>
+                            </div>
+                            <div style={{ marginTop: '4px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                              {atbdResult.palette.map((rgba, idx) => {
+                                if (rgba[3] === 0) return null;
+                                const [r, g, b, a] = rgba;
+                                return (
+                                  <span
+                                    key={idx}
+                                    style={{ display: 'flex', alignItems: 'center', gap: '3px', fontSize: '0.6rem' }}
+                                  >
+                                    <span style={{
+                                      width: '10px', height: '10px',
+                                      background: `rgba(${r},${g},${b},${(a/255).toFixed(2)})`,
+                                      border: '1px solid var(--border)',
+                                    }} />
+                                    <span style={{ color: 'var(--text-muted)' }}>
+                                      {atbdResult.classLabels[idx] || `cls${idx}`}
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -5800,9 +6027,13 @@ function App() {
                   yCoords={imageData?.yCoords}
                   roiProfile={null}
                   profileShow={{ v: false, h: false, i: false }}
-                  classificationMap={classifierOpen ? classificationMap : null}
-                  classRegions={classRegions}
-                  classifierRoiDims={classifierRoiDims}
+                  classificationMap={classifierOpen
+                    ? classificationMap
+                    : (atbdOverlayVisible ? atbdOverlayData?.classificationMap : null)}
+                  classRegions={classifierOpen ? classRegions : (atbdOverlayData?.classRegions || classRegions)}
+                  classifierRoiDims={classifierOpen
+                    ? classifierRoiDims
+                    : (atbdOverlayVisible ? atbdOverlayData?.roiDims : null)}
                 />
               </div>
 

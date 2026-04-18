@@ -102,6 +102,21 @@ export { exportFigure, downloadBlob } from './utils/figure-export.js';
 
 export { STRETCH_MODES, applyStretch, createStretchFn } from './utils/stretch.js';
 
+// NISAR ecosystem ATBD algorithms + app-layer runner/palettes (D285, D288)
+export * as nisarATBD from './algorithms/index.js';
+export { runATBD, ATBD_ALGORITHMS } from './utils/atbd-runner.js';
+export {
+  ATBD_PALETTES,
+  INUNDATION_PALETTE,
+  INUNDATION_CLASS_LABELS,
+  CROP_PALETTE,
+  CROP_CLASS_LABELS,
+  DISTURBANCE_PALETTE,
+  DISTURBANCE_CLASS_LABELS,
+  classifiedToRGBA,
+  paletteToClassRegions,
+} from './utils/atbd-palettes.js';
+
 export {
   adaptiveLogScale,
   percentileGammaStretch,
