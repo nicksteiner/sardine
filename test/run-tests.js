@@ -1418,12 +1418,35 @@ try {
     if (out[0] !== 0) throw new Error(`expected 0, got ${out[0]}`);
   });
 
-  check('inundation.classifyPair returns masked value for mask==0', () => {
+  check('inundation.classifyPair returns masked for pixel matching no class', () => {
+    // ratio=1.0 fails every threshold (all use strict ratio > 1.0 except class5,
+    // and class5 requires hh <= 0.5 which also fails for hh=1.0).
     const out = inundation.classifyPair(
       new Float32Array([1.0]), new Float32Array([1.0]), new Uint8Array([0]),
     );
     if (out[0] !== inundation.INUNDATION_MASKED_VALUE) {
       throw new Error(`expected masked value, got ${out[0]}`);
+    }
+  });
+
+  check('inundation.classifyPair ignores mask — classifies by thresholds only (D289)', () => {
+    // Matches the JPL notebook: classification is a threshold test on the
+    // corrected data; the stack-wide zero/NaN mask is NOT applied. Zero pixels
+    // stay at the masked sentinel because the thresholds use strict `>`.
+    const m0 = new Uint8Array([0]);
+    const m1 = new Uint8Array([1]);
+    const out0 = inundation.classifyPair(new Float32Array([1.0]), new Float32Array([0.5]), m0);
+    const out1 = inundation.classifyPair(new Float32Array([1.0]), new Float32Array([0.5]), m1);
+    if (out0[0] !== out1[0]) throw new Error(`mask=0 gave ${out0[0]}, mask=1 gave ${out1[0]}`);
+    if (out0[0] !== 0) throw new Error(`expected class 0, got ${out0[0]}`);
+  });
+
+  check('inundation.classifyPair masks zero HV (ratio=Inf, no class matches)', () => {
+    const out = inundation.classifyPair(
+      new Float32Array([1.0]), new Float32Array([0.0]), new Uint8Array([1]),
+    );
+    if (out[0] !== inundation.INUNDATION_MASKED_VALUE) {
+      throw new Error(`expected masked, got ${out[0]}`);
     }
   });
 
