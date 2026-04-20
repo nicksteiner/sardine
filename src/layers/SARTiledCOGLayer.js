@@ -1,7 +1,7 @@
 import { CompositeLayer } from '@deck.gl/core';
 import { SARBitmapLayer } from './SARBitmapLayer.js';
 import { fromUrl } from 'geotiff';
-import { normalizeUrl } from '../loaders/cog-loader.js';
+import { normalizeS3Url } from '../utils/s3-url.js';
 import { smartToneMap } from '../utils/tone-mapping.js';
 
 /**
@@ -51,7 +51,7 @@ export class SARTiledCOGLayer extends CompositeLayer {
     if (!url) return;
 
     try {
-      const normalizedUrl = normalizeUrl(url);
+      const normalizedUrl = normalizeS3Url(url);
       const tiff = await fromUrl(normalizedUrl);
       const mainImage = await tiff.getImage(0);
       const imageCount = await tiff.getImageCount();

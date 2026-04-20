@@ -272,8 +272,8 @@ check('uses getColormap from colormap.js', () => {
   assertContains(cpuBitmapContent, 'getColormap', 'getColormap import');
 });
 
-check('uses applyStretch from stretch.js', () => {
-  assertContains(cpuBitmapContent, 'applyStretch', 'applyStretch import');
+check('uses createStretchFn from stretch.js', () => {
+  assertContains(cpuBitmapContent, 'createStretchFn', 'createStretchFn import');
 });
 
 check('has CPU dB conversion', () => {
@@ -334,8 +334,8 @@ check('COLORMAP_IDS has all 5 colormaps', () => {
   }
 });
 
-check('STRETCH_MODE_IDS has all 5 modes', () => {
-  for (const sm of ['linear', 'sqrt', 'log', 'gamma', 'sigmoid']) {
+check('STRETCH_MODE_IDS has all 6 modes', () => {
+  for (const sm of ['linear', 'sqrt', 'cbrt', 'log', 'gamma', 'sigmoid']) {
     assertContains(shadersContent, `${sm}:`, `${sm} in STRETCH_MODE_IDS`);
   }
 });
@@ -429,7 +429,7 @@ try {
 suite('Stretch correctness (CPU)');
 
 try {
-  const { applyStretch } = await import(join(rootDir, 'src/utils/stretch.js'));
+  const { applyStretch, createStretchFn } = await import(join(rootDir, 'src/utils/stretch.js'));
 
   check('linear stretch is identity', () => {
     for (const v of [0, 0.25, 0.5, 0.75, 1]) {
@@ -444,6 +444,13 @@ try {
     const result = applyStretch(0.25, 'sqrt');
     if (Math.abs(result - 0.5) > 1e-10) {
       throw new Error(`sqrt(0.25) = ${result}, expected 0.5`);
+    }
+  });
+
+  check('cbrt stretch: cbrt(0.125) = 0.5', () => {
+    const result = applyStretch(0.125, 'cbrt');
+    if (Math.abs(result - 0.5) > 1e-10) {
+      throw new Error(`cbrt(0.125) = ${result}, expected 0.5`);
     }
   });
 
@@ -470,6 +477,32 @@ try {
     // Log stretch should pull 0.1 upward (enhance low values)
     if (atMid <= 0.1) throw new Error(`log(0.1) = ${atMid}, expected > 0.1 (enhancement)`);
     if (atMid >= 1.0) throw new Error(`log(0.1) = ${atMid}, expected < 1.0`);
+  });
+
+  check('createStretchFn matches applyStretch across all modes', () => {
+    const modes = ['linear', 'sqrt', 'cbrt', 'log', 'gamma', 'sigmoid'];
+    const gammas = [0.5, 1.0, 2.0];
+    const samples = [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+    for (const mode of modes) {
+      for (const g of gammas) {
+        const fn = createStretchFn(mode, g);
+        for (const v of samples) {
+          const direct = applyStretch(v, mode, g);
+          const viaFn = fn(v);
+          // Tolerance: log/sigmoid reorder ops (invLog, invDenom) → tiny FP drift
+          if (Math.abs(direct - viaFn) > 1e-9) {
+            throw new Error(`mode=${mode} gamma=${g} v=${v}: direct=${direct}, fn=${viaFn}`);
+          }
+        }
+      }
+    }
+  });
+
+  check('createStretchFn sigmoid gain=0 edge case returns identity', () => {
+    const fn = createStretchFn('sigmoid', 0);
+    for (const v of [0, 0.3, 0.7, 1.0]) {
+      if (fn(v) !== v) throw new Error(`sigmoid(gain=0)(${v}) = ${fn(v)}, expected ${v}`);
+    }
   });
 } catch (err) {
   skip('stretch correctness tests', `import failed: ${err.message}`);
@@ -504,6 +537,95 @@ try {
   });
 } catch (err) {
   skip('colormap LUT tests', `import failed: ${err.message}`);
+}
+
+// ─── 10c. Stats robustness ──────────────────────────────────────────────────
+
+suite('Stats robustness');
+
+try {
+  const { computeStats, autoContrastLimits, computeChannelStats, computeHistogram, sampleTileStats, sampleViewportStats } = await import(join(rootDir, 'src/utils/stats.js'));
+
+  check('computeStats filters Infinity values', () => {
+    const data = new Float32Array([1, 2, Infinity, -Infinity, 3, NaN, 4]);
+    const stats = computeStats(data, false);
+    if (!isFinite(stats.max)) throw new Error(`max is ${stats.max}, expected finite`);
+    if (!isFinite(stats.min)) throw new Error(`min is ${stats.min}, expected finite`);
+    if (stats.count !== 4) throw new Error(`count is ${stats.count}, expected 4`);
+  });
+
+  check('autoContrastLimits filters Infinity values', () => {
+    const data = new Float32Array([0.1, 0.5, Infinity, 0.9]);
+    const [lo, hi] = autoContrastLimits(data, true);
+    if (!isFinite(lo)) throw new Error(`lo is ${lo}, expected finite`);
+    if (!isFinite(hi)) throw new Error(`hi is ${hi}, expected finite`);
+  });
+
+  check('computeChannelStats handles all-NaN input', () => {
+    const data = new Float32Array([NaN, NaN, NaN]);
+    const result = computeChannelStats(data, false);
+    if (result !== null) throw new Error(`Expected null for all-NaN, got ${JSON.stringify(result)}`);
+  });
+
+  check('computeStats handles empty valid data', () => {
+    const data = new Float32Array([0, 0, NaN]);
+    const stats = computeStats(data, false);
+    if (stats.min !== 0) throw new Error(`Expected min=0, got ${stats.min}`);
+    if (stats.max !== 0) throw new Error(`Expected max=0, got ${stats.max}`);
+    if (stats.mean !== 0) throw new Error(`Expected mean=0, got ${stats.mean}`);
+  });
+
+  check('computeChannelStats honors stride parameter', () => {
+    // Values at even indices are 1, odd indices are 100 — with stride=2 we pick only evens.
+    const data = new Float32Array(100);
+    for (let i = 0; i < 100; i++) data[i] = (i % 2 === 0) ? 1 : 100;
+    const r = computeChannelStats(data, false, 32, 2);
+    if (!r) throw new Error('Expected non-null');
+    if (r.count !== 50) throw new Error(`Expected count=50 with stride=2, got ${r.count}`);
+    if (r.max !== 1 || r.min !== 1) throw new Error(`Expected all 1s, got min=${r.min}, max=${r.max}`);
+  });
+
+  check('computeHistogram with range skips caching', () => {
+    const data = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0, NaN]);
+    const h = computeHistogram(data, false, 4, [0, 1]);
+    if (h.totalCount !== 5) throw new Error(`Expected count=5, got ${h.totalCount}`);
+    if (h.min !== 0 || h.max !== 1) throw new Error(`Range mismatch: ${h.min},${h.max}`);
+    if (h.bins.length !== 4) throw new Error(`Expected 4 bins, got ${h.bins.length}`);
+  });
+
+  check('computeHistogram without range auto-fits', () => {
+    const data = new Float32Array([1, 5, 10, 15, 20]);
+    const h = computeHistogram(data, false, 10);
+    if (h.min !== 1 || h.max !== 20) throw new Error(`Expected [1,20], got [${h.min},${h.max}]`);
+    if (h.totalCount !== 5) throw new Error(`Expected count=5, got ${h.totalCount}`);
+  });
+
+  await asyncCheck('sampleTileStats handles empty tile fetcher', async () => {
+    const getTile = async () => null;
+    const result = await sampleTileStats(getTile, 4, true);
+    if (!result.contrastLimits) throw new Error('Expected contrastLimits');
+    if (result.stats.count !== 0) throw new Error(`Expected count=0, got ${result.stats.count}`);
+  });
+
+  await asyncCheck('sampleViewportStats returns null on empty tiles', async () => {
+    const getTile = async () => null;
+    const result = await sampleViewportStats(getTile, 100, 100, true, 64);
+    if (result !== null) throw new Error(`Expected null, got ${JSON.stringify(result)}`);
+  });
+
+  await asyncCheck('sampleViewportStats computes percentiles from synthetic tiles', async () => {
+    // Build uniform tile fetcher — each tile returns 256×256 dB values
+    const tileData = new Float32Array(256 * 256);
+    for (let i = 0; i < tileData.length; i++) tileData[i] = 1e-2 + (i % 100) * 1e-3;
+    const getTile = async () => ({ data: tileData, width: 256, height: 256 });
+    const result = await sampleViewportStats(getTile, 300, 300, true, 32);
+    if (!result) throw new Error('Expected non-null result');
+    if (!('p2' in result) || !('p98' in result)) throw new Error('Missing p2/p98');
+    if (!isFinite(result.p2) || !isFinite(result.p98)) throw new Error('Percentiles non-finite');
+    if (result.p2 > result.p98) throw new Error(`p2 > p98: ${result.p2} > ${result.p98}`);
+  });
+} catch (err) {
+  skip('stats robustness tests', `import failed: ${err.message}`);
 }
 
 // ─── 11. GeoTIFF writer correctness ───────────────────────────────────────────

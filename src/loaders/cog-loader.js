@@ -1,11 +1,6 @@
 import GeoTIFF, { fromUrl, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
 
-/** @deprecated Use normalizeS3Url from utils/s3-url.js */
-function normalizeUrl(url) {
-  return normalizeS3Url(url);
-}
-
 /**
  * Load a Cloud Optimized GeoTIFF (COG) and return a tile fetcher for deck.gl
  * @param {string} url - URL of the COG file (supports S3 URIs like s3://bucket/key or HTTPS URLs)
@@ -13,7 +8,7 @@ function normalizeUrl(url) {
  */
 export async function loadCOG(url) {
   console.log('[COG Loader] Loading COG from:', url);
-  const normalizedUrl = normalizeUrl(url);
+  const normalizedUrl = normalizeS3Url(url);
   console.log('[COG Loader] Normalized URL:', normalizedUrl);
 
   const tiff = await fromUrl(normalizedUrl);
@@ -384,7 +379,7 @@ export async function loadCOG(url) {
  */
 export async function loadCOGFullImage(url, maxSize = 2048) {
   console.log('[COG Loader] Loading full COG image from:', url);
-  const normalizedUrl = normalizeUrl(url);
+  const normalizedUrl = normalizeS3Url(url);
   const tiff = await fromUrl(normalizedUrl);
 
   // Get the main image for georeferencing
@@ -1163,5 +1158,4 @@ export async function loadTemporalCOGs(acquisitions) {
   };
 }
 
-export { normalizeUrl };
 export default loadCOG;
