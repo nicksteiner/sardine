@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SARdine — Style Guide</title>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Serif:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Serif:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
 <style>
   :root {
     /* ─── PRIMARY PALETTE ─── */
@@ -65,16 +67,20 @@
     --space-3xl: 64px;
 
     /* ─── RADII ─── */
-    --radius-sm: 2px;
-    --radius-md: 3px;
-    --radius-lg: 4px;
+    --radius-sm:   2px;
+    --radius-md:   3px;
+    --radius-lg:   4px;
+    --radius-full: 9999px;
 
     /* ─── TRANSITIONS ─── */
     --transition-fast: 150ms ease;
     --transition-med:  250ms ease;
+
+    /* ─── FOCUS RING ─── */
+    --focus-ring: 0 0 0 3px var(--sardine-cyan-bg), 0 0 0 1px var(--sardine-cyan);
   }
 
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
     background: var(--sardine-bg);
@@ -82,23 +88,68 @@
     font-family: var(--font-body);
     line-height: 1.6;
     min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
   }
 
-  /* ─── SCANLINE OVERLAY ─── */
-  body::after {
+  /* ─── GLOBAL FOCUS RING ─── */
+  :focus { outline: none; }
+  :focus-visible {
+    outline: 2px solid var(--sardine-cyan);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  /* ─── SCANLINE TEXTURE (opt-in) ─── */
+  .has-scanlines {
+    position: relative;
+    isolation: isolate;
+  }
+  .has-scanlines::after {
     content: '';
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
+    position: absolute;
+    inset: 0;
     background: repeating-linear-gradient(
       0deg,
-      transparent,
-      transparent 2px,
-      rgba(0,0,0,0.03) 2px,
-      rgba(0,0,0,0.03) 4px
+      transparent 0 2px,
+      rgba(0,0,0,0.04) 2px 4px
     );
     pointer-events: none;
-    z-index: 9999;
+    mix-blend-mode: multiply;
   }
+
+  /* ─── SCREEN-READER ONLY ─── */
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap; border: 0;
+  }
+
+  /* ─── SKIP LINK ─── */
+  .skip-link {
+    position: absolute;
+    top: -40px; left: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--sardine-cyan);
+    color: var(--sardine-bg);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    text-decoration: none;
+    z-index: 100;
+    transition: top var(--transition-fast);
+  }
+  .skip-link:focus { top: var(--space-md); }
+
+  /* ─── MARGIN UTILITIES ─── */
+  .mt-md { margin-top: var(--space-md) !important; }
+  .mt-lg { margin-top: var(--space-lg) !important; }
+  .mt-xl { margin-top: var(--space-xl) !important; }
+  .mb-sm { margin-bottom: var(--space-sm) !important; }
+  .mb-md { margin-bottom: var(--space-md) !important; }
+  .mb-lg { margin-bottom: var(--space-lg) !important; }
+  .mb-xl { margin-bottom: var(--space-xl) !important; }
 
   /* ─── LAYOUT ─── */
   .guide {
@@ -360,8 +411,15 @@
     border-radius: var(--radius-sm);
     border: 1px solid transparent;
     cursor: pointer;
-    transition: all var(--transition-fast);
+    transition: background var(--transition-fast),
+                border-color var(--transition-fast),
+                color var(--transition-fast),
+                box-shadow var(--transition-fast);
     text-transform: uppercase;
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
   }
 
   .btn-primary {
@@ -464,7 +522,7 @@
     padding-right: 32px;
   }
 
-  /* ─── TOGGLE ─── */
+  /* ─── TOGGLE (accessible checkbox) ─── */
   .toggle-row {
     display: flex;
     align-items: center;
@@ -474,36 +532,44 @@
     border: 1px solid var(--sardine-border);
     border-radius: var(--radius-sm);
     margin-bottom: var(--space-sm);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .toggle-input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
   }
 
   .toggle-track {
     width: 44px;
     height: 24px;
     background: var(--sardine-border);
-    border-radius: 12px;
+    border-radius: var(--radius-full);
     position: relative;
-    cursor: pointer;
     transition: background var(--transition-fast);
     flex-shrink: 0;
   }
 
-  .toggle-track.active {
-    background: var(--sardine-cyan);
-  }
-
-  .toggle-thumb {
-    width: 18px;
-    height: 18px;
-    background: var(--text-primary);
-    border-radius: 50%;
+  .toggle-track::after {
+    content: '';
     position: absolute;
-    top: 3px;
-    left: 3px;
+    top: 3px; left: 3px;
+    width: 18px; height: 18px;
+    background: var(--text-primary);
+    border-radius: var(--radius-full);
     transition: transform var(--transition-fast);
   }
 
-  .toggle-track.active .toggle-thumb {
+  .toggle-input:checked + .toggle-track {
+    background: var(--sardine-cyan);
+  }
+  .toggle-input:checked + .toggle-track::after {
     transform: translateX(20px);
+  }
+  .toggle-input:focus-visible + .toggle-track {
+    box-shadow: var(--focus-ring);
   }
 
   .toggle-label {
@@ -663,7 +729,7 @@
     background: linear-gradient(90deg, var(--sardine-orange-dim), var(--sardine-orange));
   }
 
-  /* ─── SEGMENTED PROGRESS (à la DisTrO) ─── */
+  /* ─── SEGMENTED PROGRESS ─── */
   .seg-progress {
     display: flex;
     gap: 2px;
@@ -1008,7 +1074,8 @@
     cursor: pointer;
   }
 
-  .arrow-link:hover {
+  .arrow-link:hover,
+  .arrow-link:focus-visible {
     color: var(--sardine-cyan);
   }
 
@@ -1017,7 +1084,8 @@
     color: var(--text-disabled);
   }
 
-  .arrow-link:hover::before {
+  .arrow-link:hover::before,
+  .arrow-link:focus-visible::before {
     color: var(--sardine-cyan);
   }
 
@@ -1060,20 +1128,6 @@
     position: relative;
     overflow: hidden;
     margin-bottom: var(--space-md);
-  }
-
-  .crt-title::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: repeating-linear-gradient(
-      0deg,
-      transparent,
-      transparent 3px,
-      rgba(78, 201, 212, 0.03) 3px,
-      rgba(78, 201, 212, 0.03) 6px
-    );
-    pointer-events: none;
   }
 
   .crt-subtitle {
@@ -1402,112 +1456,6 @@
   .metric-delta.up { color: var(--sardine-green); }
   .metric-delta.down { color: var(--status-flood); }
 
-  /* ─── LIGHT THEME ─── */
-  .light-theme-preview {
-    --lt-bg:          #f5f3ef;
-    --lt-bg-raised:   #ffffff;
-    --lt-border:      #d8dde6;
-    --lt-border-subtle: #e8ecf2;
-    --lt-text-primary: #1a2233;
-    --lt-text-secondary: #4a5568;
-    --lt-text-muted:  #8895a7;
-    --lt-cyan:        #0e94a0;
-    --lt-cyan-bg:     rgba(14, 148, 160, 0.08);
-    --lt-orange:      #c96a25;
-    --lt-orange-bg:   rgba(201, 106, 37, 0.08);
-    --lt-green:       #1a8a4a;
-    --lt-magenta:     #9b3dbb;
-
-    background: var(--lt-bg);
-    color: var(--lt-text-primary);
-    border: 1px solid var(--lt-border);
-    border-radius: var(--radius-md);
-    padding: var(--space-xl);
-  }
-
-  .light-theme-preview .lt-card {
-    background: var(--lt-bg-raised);
-    border: 1px solid var(--lt-border);
-    border-radius: var(--radius-sm);
-    padding: var(--space-md);
-    margin-bottom: var(--space-sm);
-  }
-
-  .light-theme-preview .lt-title {
-    font-family: var(--font-mono);
-    font-weight: 700;
-    color: var(--lt-text-primary);
-  }
-
-  .light-theme-preview .lt-title .sar { color: var(--lt-cyan); }
-
-  .light-theme-preview .lt-text {
-    font-family: var(--font-body);
-    font-size: 0.9rem;
-    color: var(--lt-text-secondary);
-  }
-
-  .light-theme-preview .lt-muted {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    color: var(--lt-text-muted);
-  }
-
-  .light-theme-preview .lt-btn {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 500;
-    letter-spacing: 0.5px;
-    padding: 8px 16px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--lt-cyan);
-    background: var(--lt-cyan);
-    color: #ffffff;
-    cursor: pointer;
-    text-transform: uppercase;
-  }
-
-  .light-theme-preview .lt-btn-ghost {
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 500;
-    letter-spacing: 0.5px;
-    padding: 8px 16px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--lt-border);
-    background: transparent;
-    color: var(--lt-text-secondary);
-    cursor: pointer;
-    text-transform: uppercase;
-  }
-
-  .light-theme-preview .lt-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    letter-spacing: 0.5px;
-    padding: 4px 12px;
-    border-radius: var(--radius-sm);
-    text-transform: uppercase;
-    background: var(--lt-cyan-bg);
-    color: var(--lt-cyan);
-    border: 1px solid var(--lt-border);
-  }
-
-  .light-theme-preview .lt-swatch-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: var(--space-sm);
-  }
-
-  .light-theme-preview .lt-swatch {
-    height: 40px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--lt-border);
-  }
-
   /* ─── FOOTER ─── */
   .guide-footer {
     margin-top: var(--space-3xl);
@@ -1558,21 +1506,9 @@
     --status-success: #1a8a4a;
   }
 
-  [data-theme="light"] body::after {
-    background: none;
-  }
-
-  [data-theme="light"] .crt-title::after {
-    background: none;
-  }
-
-  [data-theme="light"] .hero-logo {
-    text-shadow: none;
-  }
-
-  [data-theme="light"] .crt-title {
-    text-shadow: none;
-  }
+  [data-theme="light"] .has-scanlines::after { display: none; }
+  [data-theme="light"] .hero-logo,
+  [data-theme="light"] .crt-title { text-shadow: none; }
 
   /* ─── THEME TOGGLE ─── */
   .theme-toggle {
@@ -1764,21 +1700,38 @@
 </head>
 <body>
 
-<button class="theme-toggle" onclick="document.documentElement.toggleAttribute('data-theme') || (document.documentElement.getAttribute('data-theme') ? document.documentElement.removeAttribute('data-theme') : document.documentElement.setAttribute('data-theme','light')); this.textContent = document.documentElement.getAttribute('data-theme') === 'light' ? '☀ Light' : '☾ Dark';" id="themeBtn">☾ Dark</button>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<button class="theme-toggle" id="themeBtn" type="button" aria-pressed="false" aria-label="Toggle color theme">☾ Dark</button>
 <script>
-  document.getElementById('themeBtn').onclick = function() {
-    const html = document.documentElement;
-    if (html.getAttribute('data-theme') === 'light') {
-      html.removeAttribute('data-theme');
-      this.textContent = '☾ Dark';
-    } else {
-      html.setAttribute('data-theme', 'light');
-      this.textContent = '☀ Light';
-    }
-  };
+  (function () {
+    const root = document.documentElement;
+    const btn  = document.getElementById('themeBtn');
+    const STORAGE_KEY = 'sardine-theme';
+
+    const apply = (theme) => {
+      if (theme === 'light') {
+        root.setAttribute('data-theme', 'light');
+        btn.textContent = '☀ Light';
+        btn.setAttribute('aria-pressed', 'true');
+      } else {
+        root.removeAttribute('data-theme');
+        btn.textContent = '☾ Dark';
+        btn.setAttribute('aria-pressed', 'false');
+      }
+    };
+
+    try { apply(localStorage.getItem(STORAGE_KEY) || 'dark'); } catch (_) {}
+
+    btn.addEventListener('click', () => {
+      const next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      apply(next);
+      try { localStorage.setItem(STORAGE_KEY, next); } catch (_) {}
+    });
+  })();
 </script>
 
-<div class="guide">
+<main id="main" class="guide">
 
   <!-- ═══ HERO ═══ -->
   <header class="hero">
@@ -1821,25 +1774,25 @@
   <!-- ═══ HORIZONTAL NAV DEMO ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">01b</span>
+      <span class="section-number">02</span>
       <h2 class="section-title">Horizontal Navigation</h2>
     </div>
-    <p class="section-desc">Top navigation bar with dashed underline separator. All-caps monospace links with generous letter-spacing. Matches the Nous Research horizontal nav pattern.</p>
+    <p class="section-desc">Top navigation bar with a dashed underline separator. All-caps monospace links with generous letter-spacing.</p>
 
-    <nav class="nav-horizontal">
-      <a class="active">Dashboard</a>
-      <a>Map Viewer</a>
-      <a>Scene Queue</a>
-      <a>Analytics</a>
-      <a>Pipeline</a>
-      <a>Settings</a>
+    <nav class="nav-horizontal" aria-label="Primary">
+      <a class="active" href="#" aria-current="page">Dashboard</a>
+      <a href="#">Map Viewer</a>
+      <a href="#">Scene Queue</a>
+      <a href="#">Analytics</a>
+      <a href="#">Pipeline</a>
+      <a href="#">Settings</a>
     </nav>
   </section>
 
   <!-- ═══ ASCII ART HERO ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">01c</span>
+      <span class="section-number">03</span>
       <h2 class="section-title">ASCII Art Hero</h2>
     </div>
     <p class="section-desc">Generative ASCII graphic for hero sections. Terminal/CRT aesthetic matching the mining pool dashboard pattern — monospace characters forming a satellite dish / radar sweep.</p>
@@ -1885,7 +1838,7 @@
   <!-- ═══ 02 COLOR SYSTEM ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">02</span>
+      <span class="section-number">04</span>
       <h2 class="section-title">Color System</h2>
     </div>
     <p class="section-desc">Inspired by radar displays and satellite telemetry interfaces. Deep navy bases with high-contrast signal colors. Each accent has a semantic role tied to SAR operations.</p>
@@ -1894,7 +1847,7 @@
       <div class="color-group-label">Backgrounds</div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#0a1628"></div>
+        <div class="color-swatch" style="background:var(--sardine-bg)"></div>
         <div class="color-info">
           <div class="color-name">Base Background</div>
           <div class="color-var">--sardine-bg</div>
@@ -1903,7 +1856,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#0f1f38"></div>
+        <div class="color-swatch" style="background:var(--sardine-bg-raised)"></div>
         <div class="color-info">
           <div class="color-name">Raised Surface</div>
           <div class="color-var">--sardine-bg-raised</div>
@@ -1912,7 +1865,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#122240"></div>
+        <div class="color-swatch" style="background:var(--sardine-bg-panel)"></div>
         <div class="color-info">
           <div class="color-name">Panel</div>
           <div class="color-var">--sardine-bg-panel</div>
@@ -1921,7 +1874,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#1a2d50"></div>
+        <div class="color-swatch" style="background:var(--sardine-bg-hover)"></div>
         <div class="color-info">
           <div class="color-name">Hover State</div>
           <div class="color-var">--sardine-bg-hover</div>
@@ -1932,7 +1885,7 @@
       <div class="color-group-label">Accents — Signal Colors</div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#4ec9d4"></div>
+        <div class="color-swatch" style="background:var(--sardine-cyan)"></div>
         <div class="color-info">
           <div class="color-name">SAR Signal Cyan</div>
           <div class="color-var">--sardine-cyan</div>
@@ -1941,7 +1894,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#e8833a"></div>
+        <div class="color-swatch" style="background:var(--sardine-orange)"></div>
         <div class="color-info">
           <div class="color-name">Flood Alert Orange</div>
           <div class="color-var">--sardine-orange</div>
@@ -1950,7 +1903,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#3ddc84"></div>
+        <div class="color-swatch" style="background:var(--sardine-green)"></div>
         <div class="color-info">
           <div class="color-name">VV Polarization Green</div>
           <div class="color-var">--sardine-green</div>
@@ -1959,7 +1912,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#d45cff"></div>
+        <div class="color-swatch" style="background:var(--sardine-magenta)"></div>
         <div class="color-info">
           <div class="color-name">HH Polarization Magenta</div>
           <div class="color-var">--sardine-magenta</div>
@@ -1970,7 +1923,7 @@
       <div class="color-group-label">Text Hierarchy</div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#e8edf5"></div>
+        <div class="color-swatch" style="background:var(--text-primary)"></div>
         <div class="color-info">
           <div class="color-name">Primary Text</div>
           <div class="color-var">--text-primary</div>
@@ -1979,7 +1932,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#8fa4c4"></div>
+        <div class="color-swatch" style="background:var(--text-secondary)"></div>
         <div class="color-info">
           <div class="color-name">Secondary Text</div>
           <div class="color-var">--text-secondary</div>
@@ -1988,7 +1941,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#5a7099"></div>
+        <div class="color-swatch" style="background:var(--text-muted)"></div>
         <div class="color-info">
           <div class="color-name">Muted Text</div>
           <div class="color-var">--text-muted</div>
@@ -1997,7 +1950,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#3a5070"></div>
+        <div class="color-swatch" style="background:var(--text-disabled)"></div>
         <div class="color-info">
           <div class="color-name">Disabled Text</div>
           <div class="color-var">--text-disabled</div>
@@ -2008,7 +1961,7 @@
       <div class="color-group-label">Status Semantics</div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#ff5c5c"></div>
+        <div class="color-swatch" style="background:var(--status-flood)"></div>
         <div class="color-info">
           <div class="color-name">Flood Detected</div>
           <div class="color-var">--status-flood</div>
@@ -2017,7 +1970,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#4ea8ff"></div>
+        <div class="color-swatch" style="background:var(--status-water)"></div>
         <div class="color-info">
           <div class="color-name">Water / Permanent</div>
           <div class="color-var">--status-water</div>
@@ -2026,7 +1979,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#c4a35a"></div>
+        <div class="color-swatch" style="background:var(--status-dry)"></div>
         <div class="color-info">
           <div class="color-name">Dry / No Change</div>
           <div class="color-var">--status-dry</div>
@@ -2035,7 +1988,7 @@
       </div>
 
       <div class="color-card">
-        <div class="color-swatch" style="background:#3ddc84"></div>
+        <div class="color-swatch" style="background:var(--status-success)"></div>
         <div class="color-info">
           <div class="color-name">Success / Complete</div>
           <div class="color-var">--status-success</div>
@@ -2048,7 +2001,7 @@
   <!-- ═══ 03 TYPOGRAPHY ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">03</span>
+      <span class="section-number">05</span>
       <h2 class="section-title">Typography</h2>
     </div>
     <p class="section-desc">Three-tier font stack: monospace for data/code/metrics, geometric sans for headings, humanist sans for body text.</p>
@@ -2109,12 +2062,12 @@
   <!-- ═══ 04 COMPONENTS ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">04</span>
+      <span class="section-number">06</span>
       <h2 class="section-title">Components</h2>
     </div>
 
     <!-- Buttons -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Buttons</strong></p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Buttons</strong></p>
     <div class="btn-grid">
       <button class="btn btn-primary">Process Scene</button>
       <button class="btn btn-secondary">Export GeoTIFF</button>
@@ -2124,7 +2077,7 @@
     </div>
 
     <!-- Status Chips -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Status Indicators</strong></p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Status Indicators</strong></p>
     <div class="status-grid">
       <div class="status-chip status-processing"><span class="status-dot"></span> Processing</div>
       <div class="status-chip status-flood-detected"><span class="status-dot"></span> Flood Detected</div>
@@ -2133,7 +2086,7 @@
     </div>
 
     <!-- Progress -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Progress Bars</strong></p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Progress Bars</strong></p>
     <div class="progress-container">
       <div class="progress-label"><span>Scene Processing</span><span>73%</span></div>
       <div class="progress-track"><div class="progress-fill" style="width:73%"></div></div>
@@ -2143,8 +2096,8 @@
       <div class="progress-track"><div class="progress-fill alert" style="width:84%"></div></div>
     </div>
 
-    <!-- Segmented Progress (DisTrO-inspired) -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Segmented Progress (Batch Monitor)</strong></p>
+    <!-- Segmented Progress -->
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Segmented Progress (Batch Monitor)</strong></p>
     <div class="seg-progress">
       <div class="seg-block"></div><div class="seg-block"></div><div class="seg-block"></div>
       <div class="seg-block"></div><div class="seg-block"></div><div class="seg-block"></div>
@@ -2159,7 +2112,7 @@
     </div>
 
     <!-- Forms -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Form Elements</strong></p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Form Elements</strong></p>
     <div class="form-grid">
       <div class="form-group">
         <label class="form-label">AOI Name</label>
@@ -2191,27 +2144,30 @@
     </div>
 
     <!-- Toggles -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Toggles</strong></p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Toggles</strong></p>
     <div style="max-width: 400px;">
-      <div class="toggle-row">
-        <div class="toggle-track active"><div class="toggle-thumb"></div></div>
+      <label class="toggle-row">
+        <input class="toggle-input" type="checkbox" checked>
+        <span class="toggle-track"></span>
         <span class="toggle-label">Apply speckle filter</span>
-      </div>
-      <div class="toggle-row">
-        <div class="toggle-track"><div class="toggle-thumb"></div></div>
+      </label>
+      <label class="toggle-row">
+        <input class="toggle-input" type="checkbox">
+        <span class="toggle-track"></span>
         <span class="toggle-label">Auto-export flood mask</span>
-      </div>
-      <div class="toggle-row">
-        <div class="toggle-track active"><div class="toggle-thumb"></div></div>
+      </label>
+      <label class="toggle-row">
+        <input class="toggle-input" type="checkbox" checked>
+        <span class="toggle-track"></span>
         <span class="toggle-label">Show permanent water overlay</span>
-      </div>
+      </label>
     </div>
   </section>
 
   <!-- ═══ 05 PANELS & DATA ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">05</span>
+      <span class="section-number">07</span>
       <h2 class="section-title">Panels & Data Display</h2>
     </div>
 
@@ -2240,7 +2196,7 @@
     </div>
 
     <!-- Data Table -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Data Table</strong></p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Data Table</strong></p>
     <div style="overflow-x: auto; border: 1px solid var(--sardine-border); border-radius: var(--radius-md);">
       <table class="data-table">
         <thead>
@@ -2283,7 +2239,7 @@
     </div>
 
     <!-- Filled Table Header Variant -->
-    <p class="section-desc" style="margin-bottom: var(--space-md); margin-top: var(--space-xl);"><strong style="color:var(--text-primary)">Filled Header Table</strong> — Solid colored header row inspired by the mining pool leaderboard. Orange accent for emphasis.</p>
+    <p class="section-desc mb-md mt-xl"><strong style="color:var(--text-primary)">Filled Header Table</strong> — Solid colored header row with an orange accent for emphasis.</p>
     <div style="overflow-x: auto; border: 1px solid var(--sardine-border); margin-bottom: var(--space-xl);">
       <table class="data-table data-table-filled">
         <thead>
@@ -2339,10 +2295,10 @@
   <!-- ═══ DUOTONE IMAGE TREATMENT ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">05b</span>
+      <span class="section-number">08</span>
       <h2 class="section-title">Duotone Image Treatment</h2>
     </div>
-    <p class="section-desc">Monochrome photos with color overlay, matching the Nous Research homepage image style. Apply to SAR scene thumbnails, documentation hero images, or team photos. Three accent variants.</p>
+    <p class="section-desc">Monochrome photos with a single-color tint. Apply to SAR scene thumbnails, documentation hero images, or team photos. Three accent variants.</p>
     <p class="section-desc" style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); margin-bottom: var(--space-md);">CSS: <code style="color: var(--sardine-cyan);">.duotone-container</code> wraps an <code style="color: var(--sardine-cyan);">&lt;img&gt;</code> — container background sets the tint color, image uses <code style="color: var(--sardine-cyan);">filter: grayscale(100%); mix-blend-mode: multiply;</code></p>
 
     <div class="duotone-demo">
@@ -2367,8 +2323,8 @@
   <!-- ═══ 06 SIDEBAR NAV ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">06</span>
-      <h2 class="section-title">Navigation</h2>
+      <span class="section-number">09</span>
+      <h2 class="section-title">Sidebar Navigation</h2>
     </div>
     <p class="section-desc">Left sidebar navigation with monospace branding and icon-label pairs. Active state uses cyan left-border accent.</p>
 
@@ -2391,7 +2347,7 @@
   <!-- ═══ 07 CODE DISPLAY ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">07</span>
+      <span class="section-number">10</span>
       <h2 class="section-title">Code & Syntax</h2>
     </div>
     <p class="section-desc">Code blocks use JetBrains Mono with semantic syntax colors mapped to the accent palette.</p>
@@ -2414,7 +2370,7 @@
   <!-- ═══ 08 SPACING ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">08</span>
+      <span class="section-number">11</span>
       <h2 class="section-title">Spacing Scale</h2>
     </div>
     <div class="spacing-demo">
@@ -2431,7 +2387,7 @@
   <!-- ═══ 09 DO / DON'T ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">09</span>
+      <span class="section-number">12</span>
       <h2 class="section-title">Do / Don't</h2>
     </div>
     <div class="do-dont-grid">
@@ -2460,13 +2416,13 @@
   <!-- ═══ 10 NOUS-INSPIRED PATTERNS ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">10</span>
-      <h2 class="section-title">Nous-Inspired Patterns</h2>
+      <span class="section-number">13</span>
+      <h2 class="section-title">Content Patterns</h2>
     </div>
-    <p class="section-desc">Key UI patterns adapted from the Nous Research design language — CRT title treatments, metadata strips, arrow links, session banners, workspace switchers, and template cards.</p>
+    <p class="section-desc">Reusable content patterns — CRT title treatments, metadata strips, arrow links, session banners, workspace switchers, and template cards.</p>
 
     <!-- CRT Title -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">CRT Title Treatment</strong> — Scanline overlay + cyan glow for hero/dashboard titles (à la DisTrO dashboard)</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">CRT Title Treatment</strong> — Cyan glow + optional scanline overlay (via <code style="color:var(--sardine-cyan)">.has-scanlines</code>) for hero and dashboard titles.</p>
     <div class="crt-title">
       SAR dine
     </div>
@@ -2475,7 +2431,7 @@
     <div style="height: var(--space-xl)"></div>
 
     <!-- Output/Seed Metadata Strip -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Metadata Strip</strong> — Terminal-log aesthetic for scene acquisition metadata (from Nous homepage OUTPUT/SEED pattern)</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Metadata Strip</strong> — Terminal-log aesthetic for scene acquisition metadata: scene ID, threshold, acquisition timestamp.</p>
     <div style="background: var(--sardine-bg-raised); padding: var(--space-lg); border: 1px solid var(--sardine-border); border-radius: var(--radius-md); margin-bottom: var(--space-xl);">
       <div style="font-family: var(--font-body); font-size: 0.95rem; color: var(--text-secondary);">Flood extent analysis detected 342 km² of newly inundated area in the Zambezi River Basin, representing a 47% increase from the previous acquisition.</div>
       <div class="meta-strip">
@@ -2486,53 +2442,53 @@
     </div>
 
     <!-- Arrow Links -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Arrow Links</strong> — Nous uses → prefixed links throughout their navigation and footer</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Arrow Links</strong> — → prefixed links for inline navigation and footer listings.</p>
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-xl); margin-bottom: var(--space-xl);">
       <div class="arrow-links">
-        <a class="arrow-link">Dashboard</a>
-        <a class="arrow-link">Scene Queue</a>
-        <a class="arrow-link">Flood Archive</a>
-        <a class="arrow-link">Pipeline Config</a>
+        <a class="arrow-link" href="#">Dashboard</a>
+        <a class="arrow-link" href="#">Scene Queue</a>
+        <a class="arrow-link" href="#">Flood Archive</a>
+        <a class="arrow-link" href="#">Pipeline Config</a>
       </div>
       <div class="arrow-links">
-        <a class="arrow-link">API Documentation</a>
-        <a class="arrow-link">GitHub</a>
-        <a class="arrow-link">NASA HiFLOWS</a>
-        <a class="arrow-link">Earth Big Data</a>
+        <a class="arrow-link" href="#">API Documentation</a>
+        <a class="arrow-link" href="#">GitHub</a>
+        <a class="arrow-link" href="#">NASA HiFLOWS</a>
+        <a class="arrow-link" href="#">Earth Big Data</a>
       </div>
     </div>
 
     <!-- Nodes Footer -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Nodes Footer</strong> — Structured link footer inspired by Nous "NODES" section</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Nodes Footer</strong> — Three-column structured link footer for site navigation and partner/node listings.</p>
     <div class="nodes-footer">
       <div>
         <div class="nodes-col-title">SARdine</div>
         <div class="arrow-links">
-          <a class="arrow-link">Dashboard</a>
-          <a class="arrow-link">Map Viewer</a>
-          <a class="arrow-link">Analytics</a>
+          <a class="arrow-link" href="#">Dashboard</a>
+          <a class="arrow-link" href="#">Map Viewer</a>
+          <a class="arrow-link" href="#">Analytics</a>
         </div>
       </div>
       <div>
         <div class="nodes-col-title">Resources</div>
         <div class="arrow-links">
-          <a class="arrow-link">API Docs</a>
-          <a class="arrow-link">GitHub</a>
-          <a class="arrow-link">Tutorial</a>
+          <a class="arrow-link" href="#">API Docs</a>
+          <a class="arrow-link" href="#">GitHub</a>
+          <a class="arrow-link" href="#">Tutorial</a>
         </div>
       </div>
       <div>
         <div class="nodes-col-title">Nodes</div>
         <div class="arrow-links">
-          <a class="arrow-link">NASA HiFLOWS</a>
-          <a class="arrow-link">Earth Big Data</a>
-          <a class="arrow-link">CCNY EAS</a>
+          <a class="arrow-link" href="#">NASA HiFLOWS</a>
+          <a class="arrow-link" href="#">Earth Big Data</a>
+          <a class="arrow-link" href="#">CCNY EAS</a>
         </div>
       </div>
     </div>
 
     <!-- Workspace Switcher + Session Banner -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Workspace Switcher & Session Banner</strong> — Context-switching for different AOIs/projects (from Nous Chat workspace pattern)</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Workspace Switcher & Session Banner</strong> — Context-switching for different AOIs or projects, paired with an authentication state banner.</p>
     <div style="max-width: 360px; margin-bottom: var(--space-xl);">
       <div class="workspace-switcher">
         <span>📂 Mozambique Floods</span>
@@ -2556,7 +2512,7 @@
     </div>
 
     <!-- Template Cards -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Quick-Start Templates</strong> — Conversation starters adapted as action cards (from Nous Chat template pattern)</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Quick-Start Templates</strong> — Action cards for common workflows, used on empty states and landing screens.</p>
     <div class="template-grid">
       <div class="template-card">
         <span class="template-icon">🌊</span>
@@ -2584,7 +2540,7 @@
     <div style="height: var(--space-xl)"></div>
 
     <!-- Dashed Rules -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Dashed Rules</strong> — Section dividers inspired by Psyche's sparse, technical aesthetic. Three variants: default (border color), cyan accent, and orange accent.</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Dashed Rules</strong> — Lightweight section dividers. Three variants: default, cyan accent, orange accent.</p>
     <div style="background: var(--sardine-bg-raised); padding: var(--space-lg); border: 1px solid var(--sardine-border); border-radius: var(--radius-md); margin-bottom: var(--space-xl);">
       <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-muted); margin-bottom: var(--space-sm);">DEFAULT</div>
       <hr class="dashed-rule">
@@ -2595,7 +2551,7 @@
     </div>
 
     <!-- Tab Filters -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Tab Filters</strong> — Segmented filter bar for switching between views. Inspired by Psyche run-status tabs. Monospace labels, pill-group container.</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Tab Filters</strong> — Segmented filter bar for switching between views. Monospace labels inside a pill-group container.</p>
     <div style="margin-bottom: var(--space-xl);">
       <div class="tab-filter" style="margin-bottom: var(--space-md);">
         <span class="tab-filter-item active">All Runs</span>
@@ -2612,7 +2568,7 @@
     </div>
 
     <!-- Ornamental Boxes -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Ornamental Boxes</strong> — Left-accent callout cards inspired by Psyche's TLDR component. Colored left border indicates semantic category. Four variants: cyan (info), orange (warning), green (success), magenta (technical).</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Ornamental Boxes</strong> — Left-accent callout cards. The colored left border signals the semantic category. Four variants: cyan (info), orange (warning), green (success), magenta (technical).</p>
     <div style="margin-bottom: var(--space-xl);">
       <div class="ornamental-box">
         <div class="ornamental-box-label">Info</div>
@@ -2633,7 +2589,7 @@
     </div>
 
     <!-- Metric Boxes -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Metric Boxes</strong> — Compact inline metric displays inspired by Psyche's training run stats (tokens/s, loss, participants). Each box shows value, label, and optional delta indicator.</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Metric Boxes</strong> — Compact inline metric displays. Each box shows a value, label, and optional delta indicator.</p>
     <div class="metric-row" style="margin-bottom: var(--space-md);">
       <div class="metric-box">
         <div class="metric-value">16,704</div>
@@ -2675,7 +2631,7 @@
     </div>
 
     <!-- Network Map Concept -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Live Status Map</strong> — Global node/sensor status display inspired by DisTrO's live training map. Use dark basemap with orange node markers and connection lines.</p>
+    <p class="section-desc mb-md"><strong style="color:var(--text-primary)">Live Status Map</strong> — Global node/sensor status display. Dark basemap with orange node markers and connection lines.</p>
     <div class="network-map">
       <div class="network-map-title"><span class="live-dot"></span> Live Sensor Coverage</div>
       <svg viewBox="0 0 800 300" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -2711,7 +2667,7 @@
   <!-- ═══ 11 MAP INTEGRATION ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">11</span>
+      <span class="section-number">14</span>
       <h2 class="section-title">Map Integration</h2>
     </div>
     <p class="section-desc">Map views use dark basemaps (Mapbox Dark, CARTO Dark Matter). Flood extents rendered with translucent overlays using status colors. SAR imagery displayed as grayscale with cyan/orange flood mask overlays.</p>
@@ -2723,122 +2679,86 @@
   <!-- ═══ 12 LIGHT THEME ═══ -->
   <section class="section">
     <div class="section-header">
-      <span class="section-number">12</span>
+      <span class="section-number">15</span>
       <h2 class="section-title">Light Theme</h2>
     </div>
-    <p class="section-desc">Light theme variant toggled via the ☾/☀ button (top-right). Warm cream palette inspired by the Nous Research / Psyche aesthetic. All CSS custom properties swap automatically via <code style="font-family: var(--font-mono); color: var(--sardine-cyan);">[data-theme="light"]</code>. Use for documentation, printable reports, and light-context embeds.</p>
+    <p class="section-desc">Light theme variant toggled via the ☾/☀ button (top-right). Warm cream palette for documentation, printable reports, and light-context embeds. All CSS custom properties swap automatically via <code style="font-family: var(--font-mono); color: var(--sardine-cyan);">[data-theme="light"]</code>, and the user preference is persisted to <code style="font-family: var(--font-mono); color: var(--sardine-cyan);">localStorage</code>.</p>
 
-    <!-- Light palette swatches -->
-    <div class="light-theme-preview" style="margin-bottom: var(--space-xl);">
-      <div style="font-family: var(--font-mono); font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--lt-text-muted); margin-bottom: var(--space-md);">Light Palette</div>
-      <div class="lt-swatch-grid" style="margin-bottom: var(--space-lg);">
-        <div>
-          <div class="lt-swatch" style="background: #f5f7fa;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">bg #f5f7fa</div>
+    <!-- Light palette swatches — values match [data-theme="light"] -->
+    <div class="color-grid mb-xl">
+      <div class="color-group-label">Light Palette — Surfaces</div>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#f5f3ef"></div>
+        <div class="color-info">
+          <div class="color-name">Cream Base</div>
+          <div class="color-var">--sardine-bg (light)</div>
+          <div class="color-hex">#f5f3ef</div>
         </div>
-        <div>
-          <div class="lt-swatch" style="background: #ffffff;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">raised #ffffff</div>
+      </div>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#ffffff; border-bottom:1px solid var(--sardine-border)"></div>
+        <div class="color-info">
+          <div class="color-name">Raised</div>
+          <div class="color-var">--sardine-bg-raised (light)</div>
+          <div class="color-hex">#ffffff</div>
         </div>
-        <div>
-          <div class="lt-swatch" style="background: #d8dde6;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">border #d8dde6</div>
+      </div>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#d4cdb8"></div>
+        <div class="color-info">
+          <div class="color-name">Border</div>
+          <div class="color-var">--sardine-border (light)</div>
+          <div class="color-hex">#d4cdb8</div>
         </div>
-        <div>
-          <div class="lt-swatch" style="background: #1a2233;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">text #1a2233</div>
+      </div>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#1a2233"></div>
+        <div class="color-info">
+          <div class="color-name">Primary Text</div>
+          <div class="color-var">--text-primary (light)</div>
+          <div class="color-hex">#1a2233</div>
         </div>
       </div>
 
-      <div class="lt-swatch-grid" style="margin-bottom: var(--space-lg);">
-        <div>
-          <div class="lt-swatch" style="background: #0e94a0;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">cyan #0e94a0</div>
-        </div>
-        <div>
-          <div class="lt-swatch" style="background: #c96a25;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">orange #c96a25</div>
-        </div>
-        <div>
-          <div class="lt-swatch" style="background: #1a8a4a;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">green #1a8a4a</div>
-        </div>
-        <div>
-          <div class="lt-swatch" style="background: #9b3dbb;"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: var(--lt-text-muted); margin-top: 4px;">magenta #9b3dbb</div>
+      <div class="color-group-label">Light Palette — Accents</div>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#0e8a96"></div>
+        <div class="color-info">
+          <div class="color-name">Cyan (light)</div>
+          <div class="color-var">--sardine-cyan</div>
+          <div class="color-hex">#0e8a96</div>
         </div>
       </div>
-
-      <hr style="border: none; border-top: 1px dashed var(--lt-border); margin: var(--space-lg) 0;">
-
-      <!-- Light theme component preview -->
-      <div style="font-family: var(--font-mono); font-size: 0.65rem; letter-spacing: 2px; text-transform: uppercase; color: var(--lt-text-muted); margin-bottom: var(--space-md);">Component Preview</div>
-
-      <div class="lt-card" style="margin-bottom: var(--space-md);">
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-sm);">
-          <span class="lt-title" style="font-size: 1.2rem;"><span class="sar">SAR</span>dine</span>
-          <span class="lt-chip">Processing</span>
-        </div>
-        <div class="lt-text" style="margin-bottom: var(--space-md);">NISAR L2 GCOV — frequencyA HHHH — 16,704 x 16,272 px — EPSG:4326</div>
-        <div style="display: flex; gap: var(--space-sm);">
-          <button class="lt-btn">Export GeoTIFF</button>
-          <button class="lt-btn-ghost">Cancel</button>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#c96a25"></div>
+        <div class="color-info">
+          <div class="color-name">Orange (light)</div>
+          <div class="color-var">--sardine-orange</div>
+          <div class="color-hex">#c96a25</div>
         </div>
       </div>
-
-      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--space-sm); margin-bottom: var(--space-md);">
-        <div class="lt-card" style="text-align: center;">
-          <div style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: var(--lt-cyan);">-12.4 dB</div>
-          <div class="lt-muted">Mean σ°</div>
-        </div>
-        <div class="lt-card" style="text-align: center;">
-          <div style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: var(--lt-orange);">4x</div>
-          <div class="lt-muted">Multilook</div>
-        </div>
-        <div class="lt-card" style="text-align: center;">
-          <div style="font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700; color: var(--lt-green);">1.08 GB</div>
-          <div class="lt-muted">File Size</div>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#1a8a4a"></div>
+        <div class="color-info">
+          <div class="color-name">Green (light)</div>
+          <div class="color-var">--sardine-green</div>
+          <div class="color-hex">#1a8a4a</div>
         </div>
       </div>
-
-      <div class="lt-muted" style="text-align: right;">Light theme — for docs, reports, and print export only</div>
+      <div class="color-card">
+        <div class="color-swatch" style="background:#9b3dbb"></div>
+        <div class="color-info">
+          <div class="color-name">Magenta (light)</div>
+          <div class="color-var">--sardine-magenta</div>
+          <div class="color-hex">#9b3dbb</div>
+        </div>
+      </div>
     </div>
 
-    <!-- Psyche warm palette variant -->
-    <p class="section-desc" style="margin-bottom: var(--space-md)"><strong style="color:var(--text-primary)">Psyche Warm Variant</strong> — Alternate warm-cream palette based on Nous Research/Psyche blog aesthetic. Cream background with forest green text and gold accents.</p>
+    <p class="section-desc mb-md">
+      Toggle the theme with the button in the top-right to preview every component under the light palette. Nothing else on the page needs to change — the theme swap is entirely driven by CSS custom properties.
+    </p>
 
-    <div style="background: #f5f2e9; color: #253d26; border: 1px solid #d4cdb8; border-radius: var(--radius-md); padding: var(--space-xl); margin-bottom: var(--space-xl);">
-      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-sm); margin-bottom: var(--space-lg);">
-        <div>
-          <div style="height: 40px; background: #f5f2e9; border: 1px solid #d4cdb8; border-radius: var(--radius-sm);"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">cream #f5f2e9</div>
-        </div>
-        <div>
-          <div style="height: 40px; background: #253d26; border-radius: var(--radius-sm);"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">green #253d26</div>
-        </div>
-        <div>
-          <div style="height: 40px; background: #c9b75c; border-radius: var(--radius-sm);"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">gold #c9b75c</div>
-        </div>
-        <div>
-          <div style="height: 40px; background: #2f3a30; border-radius: var(--radius-sm);"></div>
-          <div style="font-family: var(--font-mono); font-size: 0.6rem; color: #7a7560; margin-top: 4px;">dark #2f3a30</div>
-        </div>
-      </div>
-
-      <div style="background: #ffffff; border: 1px solid #d4cdb8; border-radius: var(--radius-sm); padding: var(--space-md); margin-bottom: var(--space-md);">
-        <div style="font-family: var(--font-mono); font-size: 1rem; font-weight: 700; color: #253d26; margin-bottom: var(--space-xs);">Scene Metadata</div>
-        <div style="font-family: var(--font-body); font-size: 0.85rem; color: #4a5c4b; line-height: 1.6;">Flood extent analysis detected 342 km² of newly inundated area. GCOV product acquired 2026-02-05 at 06:14 UTC.</div>
-        <div style="font-family: var(--font-mono); font-size: 0.7rem; color: #7a7560; margin-top: var(--space-sm); padding-top: var(--space-sm); border-top: 1px dashed #d4cdb8; display: flex; gap: var(--space-lg);">
-          <span>SCENE <span style="color: #253d26; font-weight: 600;">NISAR_L2_GCOV</span></span>
-          <span>BAND <span style="color: #c9b75c; font-weight: 600;">L-SAR</span></span>
-          <span>POL <span style="color: #253d26; font-weight: 600;">HHHH</span></span>
-        </div>
-      </div>
-
-      <div style="font-family: var(--font-mono); font-size: 0.65rem; color: #7a7560; letter-spacing: 1px; text-align: right;">Psyche warm palette — reference only</div>
-    </div>
   </section>
 
   <footer class="guide-footer">
@@ -2846,7 +2766,14 @@
     steinerlab - ccny — Feb 2026
   </footer>
 
-</div>
+</main>
+
+<script>
+  // Demo links on this style guide are for display only — don't navigate.
+  document.querySelectorAll('a[href="#"]').forEach((a) => {
+    a.addEventListener('click', (e) => e.preventDefault());
+  });
+</script>
 
 </body>
 </html>

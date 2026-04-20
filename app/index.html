@@ -4,12 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SARdine — SAR Data INspection and Exploration</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://unpkg.com/maplibre-gl@4.0.0/dist/maplibre-gl.css"
       rel="stylesheet"
     />
+    <script>
+      // Apply persisted theme before React mounts to avoid a flash of the wrong theme.
+      (function () {
+        try {
+          var t = localStorage.getItem('sardine-theme');
+          if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        } catch (_) {}
+      })();
+    </script>
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to content</a>
     <div id="app"></div>
     <script type="module" src="./main.jsx"></script>
   </body>

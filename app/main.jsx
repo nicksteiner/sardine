@@ -4046,11 +4046,14 @@ function App() {
 
   // NOTE: Duplicate block removed — all handlers defined above
   return (
-    <div id="app"
+    <main
+      id="main"
+      className="app-shell"
       onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
       onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDragOver(false); }}
       onDrop={handleFileDrop}
     >
+      <ThemeToggle />
       {/* Drag-and-drop overlay */}
       {dragOver && (
         <div style={{
@@ -4724,8 +4727,8 @@ function App() {
                   fontFamily: 'var(--font-mono)',
                   fontSize: '0.7rem',
                   color: 'var(--text-muted)',
-                  background: 'var(--surface-alt)',
-                  border: '1px solid var(--border)',
+                  background: 'var(--sardine-bg-raised)',
+                  border: '1px solid var(--sardine-border)',
                   padding: '4px 12px',
                   borderRadius: 'var(--radius-sm)',
                   cursor: imageData?.bounds ? 'pointer' : 'not-allowed',
@@ -4742,7 +4745,7 @@ function App() {
                 }}
                 onMouseLeave={(e) => {
                   if (imageData?.bounds) {
-                    e.target.style.background = 'var(--surface-alt)';
+                    e.target.style.background = 'var(--sardine-bg-raised)';
                     e.target.style.color = 'var(--text-muted)';
                   }
                 }}
@@ -5024,8 +5027,8 @@ function App() {
                         onChange={(e) => setRoiCompositeId(e.target.value || null)}
                         style={{
                           flex: 1, fontSize: '0.65rem',
-                          background: 'var(--surface-2)', color: 'var(--text)',
-                          border: '1px solid var(--border)',
+                          background: 'var(--sardine-bg-panel)', color: 'var(--text-primary)',
+                          border: '1px solid var(--sardine-border)',
                           borderRadius: 'var(--radius-sm)', padding: '2px 4px',
                         }}
                       >
@@ -5117,8 +5120,8 @@ function App() {
                       placeholder="BBOX(west, south, east, north) or POLYGON(...)"
                       style={{
                         flex: 1, fontSize: '0.65rem',
-                        background: 'var(--surface-2)', color: 'var(--text)',
-                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--border)',
+                        background: 'var(--sardine-bg-panel)', color: 'var(--text-primary)',
+                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--sardine-border)',
                         borderRadius: 'var(--radius-sm)', padding: '3px 6px',
                         fontFamily: "'JetBrains Mono', monospace",
                       }}
@@ -5242,7 +5245,7 @@ function App() {
                     style={{
                       flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                       background: activeViewer === 'main' ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
-                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--border)',
+                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--sardine-border)',
                       color: activeViewer === 'main' ? '#ffc832' : 'var(--text-muted)',
                       cursor: 'pointer',
                     }}
@@ -5255,7 +5258,7 @@ function App() {
                       style={{
                         flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                         background: activeViewer === 'roi-rgb' ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
-                        border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--border)',
+                        border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--sardine-border)',
                         color: activeViewer === 'roi-rgb' ? '#4ec9d4' : 'var(--text-muted)',
                         cursor: 'pointer',
                       }}
@@ -5269,7 +5272,7 @@ function App() {
                       style={{
                         flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                         background: activeViewer === 'roi-ts' ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
-                        border: activeViewer === 'roi-ts' ? '1px solid rgba(46, 204, 113, 0.4)' : '1px solid var(--border)',
+                        border: activeViewer === 'roi-ts' ? '1px solid rgba(46, 204, 113, 0.4)' : '1px solid var(--sardine-border)',
                         color: activeViewer === 'roi-ts' ? '#2ecc71' : 'var(--text-muted)',
                         cursor: 'pointer',
                       }}
@@ -5417,10 +5420,10 @@ function App() {
                   const btnStyle = (active) => ({
                     fontSize: '0.6rem',
                     padding: '3px 6px',
-                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--border)'}`,
+                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--sardine-border)'}`,
                     borderRadius: '3px',
                     background: active ? 'var(--sardine-cyan)' : 'transparent',
-                    color: active ? '#000' : 'var(--text)',
+                    color: active ? '#000' : 'var(--text-primary)',
                     cursor: 'pointer',
                     transition: 'all 0.15s',
                   });
@@ -5440,7 +5443,7 @@ function App() {
                   const availableKeys = Object.keys(CORRECTION_TYPES).filter(k => !!correctionLayers[k]);
                   const allEnabled = availableKeys.length > 0 && availableKeys.every(k => enabledCorrections.has(k));
                   return (
-                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
+                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--sardine-border)', paddingTop: '6px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
                         <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Phase Corrections</span>
                         <button
@@ -5711,7 +5714,7 @@ function App() {
                 style={{
                   position: 'absolute', top: '8px', right: '8px', zIndex: 10,
                   background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
                   padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
                 }}
               >
@@ -5810,7 +5813,7 @@ function App() {
               {roiRGBData && roiRGBBounds && roiRGBContrastLimits && (
                 <>
                   <div style={{
-                    width: '3px', background: 'var(--border)',
+                    width: '3px', background: 'var(--sardine-border)',
                     flexShrink: 0,
                   }} />
                   <div
@@ -5833,7 +5836,7 @@ function App() {
                       style={{
                         position: 'absolute', top: '8px', right: '8px', zIndex: 10,
                         background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                        border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
                         padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
                       }}
                     >
@@ -5862,7 +5865,7 @@ function App() {
               {roiTSFrames && roiTSBounds && roiTSContrastLimits && (
                 <>
                   <div style={{
-                    width: '3px', background: 'var(--border)',
+                    width: '3px', background: 'var(--sardine-border)',
                     flexShrink: 0,
                   }} />
                   <div
@@ -5899,7 +5902,7 @@ function App() {
                         onClick={(e) => { e.stopPropagation(); setRoiTSFrames(null); setRoiTSBounds(null); setRoiTSContrastLimits(null); setRoiTSHistogramData(null); setRoiTSPlaying(false); setActiveViewer('main'); }}
                         style={{
                           background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                          border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
                           padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
                         }}
                       >
@@ -6084,7 +6087,34 @@ function App() {
       </footer>
 
       {/* Histogram overlay moved inside viewer-container */}
-    </div>
+    </main>
+  );
+}
+
+// Subtle theme toggle — fixed top-right, icon-only, persists to localStorage.
+function ThemeToggle() {
+  const [theme, setTheme] = useState(() => {
+    if (typeof document === 'undefined') return 'dark';
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  });
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'light') root.setAttribute('data-theme', 'light');
+    else root.removeAttribute('data-theme');
+    try { localStorage.setItem('sardine-theme', theme); } catch (_) {}
+  }, [theme]);
+  const isLight = theme === 'light';
+  return (
+    <button
+      type="button"
+      className="theme-toggle"
+      aria-pressed={isLight}
+      aria-label={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
+      title={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
+      onClick={() => setTheme(isLight ? 'dark' : 'light')}
+    >
+      {isLight ? '☀' : '☾'}
+    </button>
   );
 }
 

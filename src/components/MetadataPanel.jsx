@@ -184,9 +184,9 @@ function MiniMap({ wgs84Bounds, style }) {
       width={svgW}
       height={svgH}
       style={{
-        background: '#060e1a',
-        borderRadius: '4px',
-        border: '1px solid var(--sardine-border, #1e3a5f)',
+        background: 'var(--sardine-bg)',
+        borderRadius: 'var(--radius-lg)',
+        border: '1px solid var(--sardine-border)',
         ...style,
       }}
     >
