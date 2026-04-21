@@ -10,7 +10,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "example": "vite --config vite.example.config.js",
-    "test": "node test/run-tests.js",
+    "test": "node test/run-tests.js && npm run lint:shared",
+    "lint": "eslint \"src/**/*.{js,jsx,mjs}\"",
+    "lint:shared": "node scripts/check-shared-usage.mjs",
+    "test:e2e": "playwright test",
     "test:layer": "vite --config vite.test.config.js --open /test/layer-test.html",
     "test:quick": "node test/quick-validation.js",
     "test:watch": "nodemon -w src -x 'npm run test:quick'",
@@ -21,6 +24,7 @@
     "test:gpu:sw": "node test/test-gpu-compat.mjs --software",
     "test:h5": "node test/test-h5-pipeline.mjs",
     "test:png-state": "node test/test-png-state.mjs",
+    "test:inundation-regression": "node --max-old-space-size=4096 test/test-inundation-regression.mjs",
     "report": "node src/lite/serve.js",
     "report:open": "node src/lite/serve.js --open",
     "launch": "node server/launch.cjs",
@@ -58,10 +62,13 @@
     "pmtiles": "^4.4.0",
     "proj4": "^2.20.4",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "wouter": "^3.9.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@vitejs/plugin-react": "^4.0.0",
+    "eslint": "^10.2.1",
     "puppeteer": "^24.37.5",
     "vite": "^4.5.14"
   },

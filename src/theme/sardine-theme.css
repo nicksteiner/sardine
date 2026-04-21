@@ -9,7 +9,7 @@
  */
 
 /* ─── WEB FONTS ─── */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Serif:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Serif:ital,wght@0,400;1,400&display=swap');
 
 /* ═══════════════════════════════════════════════
    DESIGN TOKENS (CSS Custom Properties)
@@ -73,20 +73,24 @@
   --space-3xl: 64px;
 
   /* ─── RADII ─── */
-  --radius-sm: 2px;
-  --radius-md: 3px;
-  --radius-lg: 4px;
+  --radius-sm:   2px;
+  --radius-md:   3px;
+  --radius-lg:   4px;
+  --radius-full: 9999px;
 
   /* ─── TRANSITIONS ─── */
   --transition-fast: 150ms ease;
   --transition-med:  250ms ease;
+
+  /* ─── FOCUS RING ─── */
+  --focus-ring: 0 0 0 3px var(--sardine-cyan-bg), 0 0 0 1px var(--sardine-cyan);
 }
 
 
 /* ═══════════════════════════════════════════════
    RESET & BASE
    ═══════════════════════════════════════════════ */
-* {
+*, *::before, *::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -98,29 +102,68 @@ body {
   font-family: var(--font-body);
   line-height: 1.6;
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* ─── SCANLINE OVERLAY (subtle radar-display feel) ─── */
-body::after {
+/* ─── GLOBAL FOCUS RING ─── */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--sardine-cyan);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ─── SCANLINE TEXTURE (opt-in via .has-scanlines) ─── */
+.has-scanlines {
+  position: relative;
+  isolation: isolate;
+}
+.has-scanlines::after {
   content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
+  position: absolute;
+  inset: 0;
   background: repeating-linear-gradient(
     0deg,
-    transparent,
-    transparent 2px,
-    rgba(0,0,0,0.03) 2px,
-    rgba(0,0,0,0.03) 4px
+    transparent 0 2px,
+    rgba(0,0,0,0.04) 2px 4px
   );
   pointer-events: none;
-  z-index: 9999;
+  mix-blend-mode: multiply;
 }
+
+/* ─── SCREEN-READER ONLY + SKIP LINK ─── */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--sardine-cyan);
+  color: var(--sardine-bg);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  text-decoration: none;
+  z-index: 10000;
+  transition: top var(--transition-fast);
+}
+.skip-link:focus { top: var(--space-md); }
+
 
 
 /* ═══════════════════════════════════════════════
    APP LAYOUT
    ═══════════════════════════════════════════════ */
-#app {
+.app-shell {
   width: 100vw;
   height: 100vh;
   display: flex;
@@ -330,6 +373,10 @@ body::after {
 
 
 /* ─── BUTTONS ─── */
+/*
+ * The default <button> rule is the implicit primary (cyan fill). Many places in
+ * main.jsx rely on this. Variant classes override via higher specificity.
+ */
 button {
   font-family: var(--font-mono);
   font-size: 0.8rem;
@@ -341,13 +388,21 @@ button {
   background: var(--sardine-cyan);
   color: var(--sardine-bg);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: background var(--transition-fast),
+              border-color var(--transition-fast),
+              color var(--transition-fast),
+              box-shadow var(--transition-fast);
   text-transform: uppercase;
 }
 
 button:hover {
   background: #5ed8e6;
   box-shadow: 0 0 20px var(--sardine-cyan-glow);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 button:disabled {
@@ -358,39 +413,164 @@ button:disabled {
   box-shadow: none;
 }
 
-/* Secondary / ghost button variant */
+/* Explicit primary (semantic alias for the default look) */
+button.btn-primary {
+  background: var(--sardine-cyan);
+  color: var(--sardine-bg);
+  border-color: var(--sardine-cyan);
+}
+
+/* Secondary / ghost button variants */
 button.btn-secondary {
   background: transparent;
   color: var(--sardine-cyan);
   border-color: var(--sardine-cyan-dim);
+  box-shadow: none;
 }
-
 button.btn-secondary:hover {
   background: var(--sardine-cyan-bg);
   border-color: var(--sardine-cyan);
+  box-shadow: none;
 }
 
-/* Alert button variant */
+button.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--sardine-border);
+  box-shadow: none;
+}
+button.btn-ghost:hover {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+  background: transparent;
+  box-shadow: none;
+}
+
 button.btn-alert {
   background: var(--sardine-orange);
   border-color: var(--sardine-orange);
   color: var(--sardine-bg);
 }
-
 button.btn-alert:hover {
+  background: var(--sardine-orange);
   box-shadow: 0 0 20px var(--sardine-orange-glow);
 }
 
-/* Danger button variant */
 button.btn-danger {
   background: rgba(255, 92, 92, 0.1);
   color: var(--status-flood);
   border-color: rgba(255, 92, 92, 0.3);
 }
-
 button.btn-danger:hover {
   background: rgba(255, 92, 92, 0.2);
   border-color: var(--status-flood);
+  box-shadow: none;
+}
+
+/* ─── STATUS WINDOW (bottom-dock pull-tab + expanded bar) ─── */
+.status-window-tab,
+.status-window-header,
+.status-window-icon-btn {
+  /* opt out of the default cyan-primary button rule */
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--sardine-border);
+  font-family: var(--font-mono);
+  text-transform: none;
+  letter-spacing: 0.5px;
+  box-shadow: none;
+}
+.status-window-tab {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1001;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 14px;
+  background: var(--sardine-bg-panel);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  font-size: 0.6rem;
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.status-window-tab:hover {
+  color: var(--sardine-cyan);
+  border-color: var(--sardine-cyan-dim);
+  background: var(--sardine-bg-panel);
+  box-shadow: none;
+}
+.status-window-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.status-window-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--sardine-bg-panel);
+  border: none;
+  border-bottom: 1px solid var(--sardine-border-subtle);
+  cursor: pointer;
+  user-select: none;
+  text-align: left;
+  font-size: 0.75rem;
+}
+.status-window-header:hover {
+  background: var(--sardine-bg-panel);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+.status-window-header:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ─── THEME TOGGLE (subtle, fixed top-right) ─── */
+.theme-toggle {
+  position: fixed;
+  top: var(--space-xs);
+  right: var(--space-xs);
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  line-height: 1;
+  text-transform: none;
+  letter-spacing: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-disabled);
+  cursor: pointer;
+  z-index: 10001;
+  border-radius: var(--radius-sm);
+  opacity: 0.4;
+  transition: opacity var(--transition-fast),
+              color var(--transition-fast),
+              border-color var(--transition-fast),
+              background var(--transition-fast);
+}
+.theme-toggle:hover {
+  opacity: 1;
+  color: var(--sardine-cyan);
+  border-color: var(--sardine-border);
+  background: var(--sardine-bg-raised);
+  box-shadow: none;
+}
+.theme-toggle:focus-visible {
+  opacity: 1;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 
@@ -972,9 +1152,7 @@ button.btn-danger:hover {
   --status-success: #1a8a4a;
 }
 
-[data-theme="light"] body::after {
-  background: none;
-}
+[data-theme="light"] .has-scanlines::after { display: none; }
 
 
 /* ─── DATA DISCOVERY / BUCKET BROWSER ─── */
