@@ -33,8 +33,9 @@ test('gcov-explorer: route mounts without crashing the ErrorBoundary', async ({ 
 });
 
 test('gcov-explorer: back-to-landing link works from a coming-soon route', async ({ page }) => {
-  // S292 promoted /inundation to live. /crop is still coming-soon (S293 lands it).
-  await page.goto('/#/crop');
+  // S293 promoted /crop + /disturbance to live. /explore/gunw is still
+  // coming-soon (S294 lands it).
+  await page.goto('/#/explore/gunw');
   await expect(page.getByTestId('coming-soon')).toBeVisible();
   await page.getByRole('link', { name: /Back to chooser/ }).click();
   await expect(page.getByTestId('landing-grid')).toBeVisible();

@@ -1802,6 +1802,90 @@ try {
     }
   });
 
+  // ─── S293: per-algorithm stack policies ───────────────────────────────────
+  check('ALGORITHM_POLICIES sets crop min-frames=6, min-span=60d', () => {
+    const p = auto.ALGORITHM_POLICIES.crop;
+    if (!p) throw new Error('crop policy missing');
+    if (p.minFrames !== 6) throw new Error(`crop minFrames should be 6, got ${p.minFrames}`);
+    if (p.minSpanDays !== 60) throw new Error(`crop minSpanDays should be 60, got ${p.minSpanDays}`);
+  });
+
+  check('ALGORITHM_POLICIES sets disturbance min-frames=3, no span floor', () => {
+    const p = auto.ALGORITHM_POLICIES.disturbance;
+    if (p.minFrames !== 3) throw new Error(`disturbance minFrames should be 3, got ${p.minFrames}`);
+    if (p.minSpanDays !== 0) throw new Error(`disturbance minSpanDays should be 0, got ${p.minSpanDays}`);
+  });
+
+  check('ALGORITHM_POLICIES defaultMaxFrames sized per algorithm', () => {
+    if (auto.ALGORITHM_POLICIES.inundation.defaultMaxFrames !== 6) throw new Error('inundation default should be 6');
+    if (auto.ALGORITHM_POLICIES.crop.defaultMaxFrames !== 8) throw new Error('crop default should be 8');
+    if (auto.ALGORITHM_POLICIES.disturbance.defaultMaxFrames !== 10) throw new Error('disturbance default should be 10');
+  });
+
+  check('ALGORITHM_MIN_FRAMES stays in sync with ALGORITHM_POLICIES', () => {
+    for (const [algo, pol] of Object.entries(auto.ALGORITHM_POLICIES)) {
+      if (auto.ALGORITHM_MIN_FRAMES[algo] !== pol.minFrames) {
+        throw new Error(`ALGORITHM_MIN_FRAMES.${algo} out of sync with ALGORITHM_POLICIES.${algo}.minFrames`);
+      }
+    }
+  });
+
+  // Crop rejection — a 6-frame stack spanning only 30 days (< 60d floor) should
+  // be filtered out by the policy even though it has enough frames.
+  check('crop policy rejects 6 frames that span < 60 days', () => {
+    const short = [];
+    for (let i = 0; i < 6; i++) {
+      // 6 days apart → 30-day span
+      short.push(makeGranule({
+        id: `cg${i}`, track: 123, direction: 'D', frame: 456,
+        datetime: new Date(Date.UTC(2026, 0, 1 + i * 6)).toISOString(),
+        polarization: 'DHDH',
+        bbox: [-74, -9, -73, -8],
+        dataUrl: `https://asf/cg${i}.h5`,
+      }));
+    }
+    const ranked = auto.rankGroups(auto.groupByStackKey(short));
+    if (ranked.length !== 1) throw new Error(`expected 1 group, got ${ranked.length}`);
+    if (ranked[0].spanDays >= 60) throw new Error(`span too long: ${ranked[0].spanDays}`);
+    const p = auto.ALGORITHM_POLICIES.crop;
+    const viable = ranked.filter((g) => g.numFrames >= p.minFrames && g.spanDays >= p.minSpanDays);
+    if (viable.length !== 0) throw new Error('short-span stack should be rejected by crop policy');
+  });
+
+  // Crop acceptance — 6 frames over 75 days passes.
+  check('crop policy accepts 6 frames spanning >= 60 days', () => {
+    const ok = [];
+    for (let i = 0; i < 6; i++) {
+      // 15 days apart → 75-day span
+      ok.push(makeGranule({
+        id: `kg${i}`, track: 123, direction: 'D', frame: 456,
+        datetime: new Date(Date.UTC(2026, 0, 1 + i * 15)).toISOString(),
+        polarization: 'DHDH',
+        bbox: [-74, -9, -73, -8],
+        dataUrl: `https://asf/kg${i}.h5`,
+      }));
+    }
+    const ranked = auto.rankGroups(auto.groupByStackKey(ok));
+    if (ranked[0].spanDays < 60) throw new Error(`expected span >= 60, got ${ranked[0].spanDays}`);
+    const p = auto.ALGORITHM_POLICIES.crop;
+    const viable = ranked.filter((g) => g.numFrames >= p.minFrames && g.spanDays >= p.minSpanDays);
+    if (viable.length !== 1) throw new Error('long-span 6-frame stack should pass crop policy');
+  });
+
+  // Disturbance uses only minFrames — span floor is 0, so a 3-frame stack of
+  // any span passes.
+  check('disturbance policy accepts 3 frames of any span', () => {
+    const three = [
+      makeGranule({ id: 'd1', track: 7, direction: 'D', frame: 1, datetime: '2026-01-01T00:00:00Z', bbox: [-74,-9,-73,-8], dataUrl: 'x' }),
+      makeGranule({ id: 'd2', track: 7, direction: 'D', frame: 1, datetime: '2026-01-03T00:00:00Z', bbox: [-74,-9,-73,-8], dataUrl: 'x' }),
+      makeGranule({ id: 'd3', track: 7, direction: 'D', frame: 1, datetime: '2026-01-05T00:00:00Z', bbox: [-74,-9,-73,-8], dataUrl: 'x' }),
+    ];
+    const ranked = auto.rankGroups(auto.groupByStackKey(three));
+    const p = auto.ALGORITHM_POLICIES.disturbance;
+    const viable = ranked.filter((g) => g.numFrames >= p.minFrames && g.spanDays >= p.minSpanDays);
+    if (viable.length !== 1) throw new Error('3-frame stack should pass disturbance policy');
+  });
+
 } catch (err) {
   skip('ATBD auto-stack', `import failed: ${err.message}`);
 }
