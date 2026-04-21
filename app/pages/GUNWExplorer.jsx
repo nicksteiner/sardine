@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs } from '@src/index.js';
+import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '@src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '@src/loaders/nisar-loader.js';
+import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '@src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '@src/loaders/nisar-product.js';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '@src/loaders/h5chunk.js';
 import { validateWKT } from '@src/utils/wkt.js';
@@ -35,6 +36,7 @@ import { runATBD, ATBD_ALGORITHMS } from '@src/utils/atbd-runner.js';
 import { classifiedToRGBA, paletteToClassRegions } from '@src/utils/atbd-palettes.js';
 import { IncidenceScatter, sampleScatterData } from '@src/components/IncidenceScatter.jsx';
 import { loadMetadataCube } from '@src/utils/metadata-cube.js';
+import { loadAllCorrections, CORRECTION_TYPES } from '@src/utils/phase-corrections.js';
 import { embedStateInPNG, extractStateFromPNG } from '@src/utils/png-state.js';
 
 /**
@@ -276,7 +278,7 @@ function computeLogNormalHist(mean, std, numBins = 128, syntheticCount = 100000)
  * SARdine - SAR Data INspection and Exploration
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
-export default function GCOVExplorer() {
+export default function GUNWExplorer() {
   // GPU capability detection (cached, runs once)
   const gpuInfo = useMemo(() => probeGPU(), []);
 
@@ -284,8 +286,15 @@ export default function GCOVExplorer() {
   const workerInfo = useMemo(() => getWorkerPoolInfo(), []);
   const [workerCount, setWorkerCount] = useState(workerInfo.size);
 
-  // Unified load mode — single selector replaces old format × source matrix
-  const [fileType, setFileType] = useState('nisar'); // 'nisar' | 'local-tif' | 'remote' | 'cog' | 'catalog' | 'cmr'
+  // S294: this page is GUNW-only. `nisarProductType` is pinned to 'GUNW';
+  // the (unused) setter exists so any surviving `setNisarProductType('GUNW')`
+  // call from the shared codepath is a no-op rather than a ReferenceError.
+  const nisarProductType = 'GUNW';
+  const setNisarProductType = () => {};
+
+  // Unified load mode — single selector replaces old format × source matrix.
+  // GUNW page defaults to GUNW file loader; GCOV option is removed from UI.
+  const [fileType, setFileType] = useState('nisar-gunw'); // 'nisar-gunw' | 'remote' | 'catalog' | 'cmr'
   const [cogUrl, setCogUrl] = useState('');
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
@@ -307,10 +316,21 @@ export default function GCOVExplorer() {
   const [selectedFrequency, setSelectedFrequency] = useState('B');
   const [selectedPolarization, setSelectedPolarization] = useState('HHHH');
 
-  // S294: this page is GCOV-only. GUNW files now route to `/explore/gunw`;
-  // dropping a GUNW file here surfaces an explicit error from the loader
-  // rather than silently trying to render interferogram datasets with GCOV
-  // UI. See `app/pages/GUNWExplorer.jsx`.
+  // GUNW-specific state
+  const [gunwDatasets, setGunwDatasets] = useState(null); // listNISARGUNWDatasets result
+  const [selectedLayer, setSelectedLayer] = useState('unwrappedInterferogram');
+  const [selectedGunwDataset, setSelectedGunwDataset] = useState('unwrappedPhase');
+  const [useCoherenceMask, setUseCoherenceMask] = useState(false);
+  const [coherenceThreshold, setCoherenceThreshold] = useState(0.3);
+  const [losDisplacement, setLosDisplacement] = useState(false); // radians → meters
+  const [verticalDisplacement, setVerticalDisplacement] = useState(false); // LOS → vertical via cos(θ)
+  const [gunwIncidenceAngleGrid, setGunwIncidenceAngleGrid] = useState(null); // {data, width, height}
+  const [gunwPairedView, setGunwPairedView] = useState(null); // {left, right} image configs for ComparisonViewer
+
+  // GUNW phase corrections — individual layers uploaded to GPU as separate textures
+  const [correctionLayers, setCorrectionLayers] = useState(null); // {ionosphere, troposphereWet, ...}
+  const [enabledCorrections, setEnabledCorrections] = useState(new Set()); // Set of enabled correction keys
+  // rampCoefficients state removed — planar ramp correction removed
 
   // Drag-and-drop state
   const [dragOver, setDragOver] = useState(false);
@@ -341,8 +361,8 @@ export default function GCOVExplorer() {
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [useDecibels, setUseDecibels] = useState(true);
-  // GCOV is always power/backscatter — dB is always a valid axis.
-  const effectiveUseDecibels = useDecibels;
+  // GUNW data is in radians/meters — dB conversion is never valid
+  const effectiveUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
   const [showGrid, setShowGrid] = useState(true);
   const [pixelExplorer, setPixelExplorer] = useState(false);
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
@@ -929,13 +949,21 @@ export default function GCOVExplorer() {
 
       addStatusLog('info', `Loading time-series: ${roiTSFiles.length} files for ROI`);
 
+      const isGUNW = nisarProductType === 'GUNW';
       const frames = [];
       for (let i = 0; i < roiTSFiles.length; i++) {
         const file = roiTSFiles[i];
         addStatusLog('info', `Loading file ${i + 1}/${roiTSFiles.length}: ${file.name}`);
         try {
           let data;
-          if (isRGBDisplayMode) {
+          if (isGUNW) {
+            data = await loadNISARGUNW(file, {
+              frequency: selectedFrequency,
+              layer: selectedLayer,
+              dataset: selectedGunwDataset,
+              polarization: selectedPolarization,
+            });
+          } else if (isRGBDisplayMode) {
             const requiredPols = getRequiredDatasets(compositeId);
             const requiredComplexPols = getRequiredComplexDatasets(compositeId);
             data = await loadNISARRGBComposite(file, {
@@ -951,9 +979,18 @@ export default function GCOVExplorer() {
             });
           }
           // Extract date from identification metadata or filename
-          const ident = data.identification || {};
-          const date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || file.name;
-          const label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
+          let date, label;
+          if (isGUNW) {
+            // GUNW: use reference acquisition date from metadata, or parse from filename
+            const ident = data.identification || {};
+            date = ident.referenceZeroDopplerStartTime || ident.secondaryZeroDopplerStartTime || file.name;
+            // GUNW filenames often contain date pairs; extract for label
+            label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
+          } else {
+            const ident = data.identification || {};
+            date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || file.name;
+            label = typeof date === 'string' && date.length > 10 ? date.slice(0, 10) : file.name.replace(/\.[^.]+$/, '');
+          }
           const isRGBMode = isRGBDisplayMode && !!data.getRGBTile;
           frames.push({
             getTile: isRGBMode ? data.getRGBTile : data.getTile,
@@ -988,7 +1025,7 @@ export default function GCOVExplorer() {
       const [minX, minY, maxX, maxY] = subBounds;
       const regionW = maxX - minX;
       const regionH = maxY - minY;
-      const applyDeci = useDecibels;
+      const applyDeci = isGUNW ? false : useDecibels;
 
       const isRGBTS = frames.length > 0 && frames[0].isRGB;
       for (let fi = 0; fi < frames.length; fi++) {
@@ -1045,7 +1082,10 @@ export default function GCOVExplorer() {
         tsContrast = [Number(firstStats.p2.toFixed(1)), Number(firstStats.p98.toFixed(1))];
         tsHist = { single: firstStats };
       } else {
-        tsContrast = [-25, 0];
+        const renderMode = frames[0].renderMode;
+        tsContrast = isGUNW && renderMode?.defaultRange
+          ? [...renderMode.defaultRange]
+          : [-25, 0];
       }
 
       setRoiTSBounds(subBounds);
@@ -1054,14 +1094,15 @@ export default function GCOVExplorer() {
       setRoiTSHistogramData(tsHist);
       setActiveViewer('roi-ts');
 
-      addStatusLog('success', `Time-series loaded: ${frames.length} frames (${selectedPolarization})`,
+      const dsLabel = isGUNW ? `${GUNW_DATASET_LABELS[selectedGunwDataset] || selectedGunwDataset}` : selectedPolarization;
+      addStatusLog('success', `Time-series loaded: ${frames.length} frames (${dsLabel})`,
         frames.map(f => f.label).join(', '));
     } catch (err) {
       addStatusLog('error', `Time-series load failed: ${err.message}`);
     } finally {
       setRoiTSLoading(false);
     }
-  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, useDecibels, displayMode, compositeId, addStatusLog]);
+  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, displayMode, compositeId, addStatusLog]);
 
   // Update histogram and contrast when time-series frame changes
   useEffect(() => {
@@ -1247,6 +1288,13 @@ export default function GCOVExplorer() {
     }
     if (histogramScope === 'roi' && !roi) {
       addStatusLog('warning', 'No ROI drawn — draw a region with Shift+drag first');
+      return;
+    }
+
+    // Skip histogram for GUNW datasets with fixed ranges (wrapped phase = always [-pi, pi])
+    if (nisarProductType === 'GUNW' && imageData.renderMode?.defaultRange && imageData.renderMode?.isComplex) {
+      const [lo, hi] = imageData.renderMode.defaultRange;
+      addStatusLog('info', `Fixed range for ${selectedGunwDataset}: ${lo.toFixed(3)} to ${hi.toFixed(3)} ${imageData.renderMode.unit || ''}`);
       return;
     }
 
@@ -1436,7 +1484,7 @@ export default function GCOVExplorer() {
       console.error('[histogram] recompute error:', e);
       addStatusLog('warning', 'Histogram recompute failed', e.message);
     }
-  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, effectiveUseDecibels, roi, addStatusLog]);
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, effectiveUseDecibels, nisarProductType, selectedGunwDataset, roi, addStatusLog]);
 
   // Recompute histogram when scope changes — but skip on initial load if
   // metadata-based contrast was already applied (avoids redundant tile reads).
@@ -1916,54 +1964,63 @@ export default function GCOVExplorer() {
     addStatusLog('info', `Reading NISAR metadata from: ${file.name}`);
 
     try {
-      // Auto-detect product type — on the GCOV page, surface a clear error
-      // and redirect suggestion if a GUNW file was dropped. S294 routes
-      // GUNW files to `/explore/gunw`.
+      // Auto-detect product type — on the GUNW page we error out loudly if a
+      // non-GUNW file was dropped, rather than silently routing into GCOV UI.
       const streamReader = await openNISARReader(file);
       const { band, productType } = await detectNISARProduct(streamReader);
-      if (productType === 'GUNW') {
+      if (productType !== 'GUNW') {
         throw new Error(
-          `File is a NISAR GUNW, not GCOV. ` +
-          `Open it from the GUNW Explorer (/#/explore/gunw) instead.`
+          `File is a NISAR ${productType}, not GUNW. ` +
+          `Open it from the GCOV Explorer (/#/explore/gcov) instead.`
         );
       }
-      addStatusLog('info', `Detected product type: GCOV (${band})`);
+      addStatusLog('info', `Detected product type: GUNW (${band})`);
 
-      const datasets = await listNISARDatasets(file);
+      // GUNW path — list layers and datasets
+      const gunwResult = await listNISARGUNWDatasets(file, { band, _streamReader: streamReader });
+      setGunwDatasets(gunwResult);
+
+      // Build a flat dataset list for the shared UI (frequency + polarization)
+      const datasets = gunwResult.datasets;
       setNisarDatasets(datasets);
 
+      // Set defaults — prefer frequency B when available
       if (datasets.length > 0) {
-        // Prefer frequency B when available
         const preferB = datasets.find(d => d.frequency === 'B') || datasets[0];
         setSelectedFrequency(preferB.frequency);
         setSelectedPolarization(preferB.polarization);
-
-        // Apply auto-contrast immediately from metadata stats
-        const firstStats = preferB.stats;
-        if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
-          const meanDb = 10 * Math.log10(firstStats.mean_value);
-          const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
-          setContrastMin(Math.round(meanDb - 2 * stdDb));
-          setContrastMax(Math.round(meanDb + 2 * stdDb));
-          addStatusLog('info', 'Auto-contrast from metadata',
-            `${(meanDb - 2 * stdDb).toFixed(1)} to ${(meanDb + 2 * stdDb).toFixed(1)} dB`);
-        }
+        setSelectedLayer(preferB.layer);
+        setSelectedGunwDataset(preferB.dataset);
       }
 
-      const composites = getAvailableComposites(datasets);
-      setAvailableComposites(composites);
-
-      const autoComposite = autoSelectComposite(datasets);
-      setCompositeId(autoComposite);
+      // No RGB composites for GUNW
+      setAvailableComposites([]);
+      setCompositeId(null);
       setDisplayMode('single');
 
-      if (autoComposite) {
-        addStatusLog('info', `RGB composite available: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
-      }
-
-      addStatusLog('success', `Found ${datasets.length} datasets`,
-        datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
+      const layers = [...new Set(datasets.map(d => d.layer))];
+      addStatusLog('success', `Found ${datasets.length} GUNW datasets across ${layers.length} layer groups`,
+        layers.map(l => GUNW_LAYER_LABELS[l] || l).join(', '));
       applyPendingPNGState();
+
+      // Log GUNW metadata
+      const meta = gunwResult.metadata;
+      if (meta) {
+        const parts = [];
+        if (meta.trackNumber != null) parts.push(`Track ${meta.trackNumber}`);
+        if (meta.frameNumber != null) parts.push(`Frame ${meta.frameNumber}`);
+        if (meta.orbitPassDirection) parts.push(meta.orbitPassDirection);
+        if (meta.temporalBaseline != null) parts.push(`${meta.temporalBaseline} day baseline`);
+        if (meta.wavelength) parts.push(`λ=${(meta.wavelength * 100).toFixed(1)} cm`);
+        if (meta.referenceZeroDopplerStartTime) {
+          const refDate = meta.referenceZeroDopplerStartTime.slice(0, 10);
+          const secDate = meta.secondaryZeroDopplerStartTime?.slice(0, 10);
+          parts.push(secDate ? `${refDate} → ${secDate}` : refDate);
+        }
+        if (parts.length > 0) {
+          addStatusLog('info', 'GUNW metadata', parts.join(' · '));
+        }
+      }
     } catch (e) {
       setError(`Failed to read NISAR file: ${e.message}`);
       addStatusLog('error', 'Failed to read NISAR metadata', e.message);
@@ -2059,18 +2116,11 @@ export default function GCOVExplorer() {
     const name = file.name.toLowerCase();
 
     if (name.endsWith('.h5') || name.endsWith('.hdf5') || name.endsWith('.he5')) {
-      // GCOV page: if a GUNW filename is dropped, redirect to the GUNW route.
-      // File objects can't survive a navigation, so the user re-selects there.
-      if (name.includes('gunw') || name.includes('_unw_')) {
-        addStatusLog('info', 'GUNW file detected — redirecting to GUNW Explorer. Select the file again there.');
-        window.location.hash = '/explore/gunw';
-        return;
-      }
-      setFileType('nisar');
+      // GUNW page: always route HDF5 drops through the GUNW loader. Non-GUNW
+      // HDF5 files surface an error from the loader itself (wrong /science
+      // group) rather than being silently reinterpreted.
+      setFileType('nisar-gunw');
       handleNISARFileSelect(file);
-    } else if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-      setFileType('local-tif');
-      handleLocalTIFMultiSelect(files);
     } else if (name.endsWith('.geojson') || name.endsWith('.json')) {
       // Read GeoJSON and add as overlay
       const reader = new FileReader();
@@ -2460,18 +2510,30 @@ export default function GCOVExplorer() {
       let data;
 
       if (displayMode === 'multi-temporal') {
-        // ── Multi-temporal RGB: same dataset from 3 separate GCOV files ──
+        // ── Multi-temporal RGB: same dataset from 3 separate files (GCOV or GUNW) ──
         const mtFiles = [nisarFile, nisarFile2, nisarFile3].filter(Boolean);
         if (mtFiles.length < 2) {
           throw new Error('Select at least 2 files for multi-temporal RGB');
         }
         const channelNames = ['R', 'G', 'B'];
+        const isGUNW = nisarProductType === 'GUNW';
+        const dsLabel = isGUNW
+          ? `${selectedLayer}/${selectedGunwDataset} (${selectedPolarization})`
+          : `${selectedFrequency}/${selectedPolarization}`;
         addStatusLog('info',
-          `Loading multi-temporal RGB: ${selectedFrequency}/${selectedPolarization} from ${mtFiles.length} files`);
+          `Loading multi-temporal RGB: ${dsLabel} from ${mtFiles.length} files`);
 
         const mtLoaders = await Promise.all(
           mtFiles.map((f, i) => {
             addStatusLog('info', `  File ${i + 1} (${channelNames[i]}): ${f.name}`);
+            if (isGUNW) {
+              return loadNISARGUNW(f, {
+                frequency: selectedFrequency,
+                layer: selectedLayer,
+                polarization: selectedPolarization,
+                dataset: selectedGunwDataset,
+              });
+            }
             return loadNISARGCOV(f, {
               frequency: selectedFrequency,
               polarization: selectedPolarization,
@@ -2495,11 +2557,20 @@ export default function GCOVExplorer() {
 
         data = { bounds, width, height, crs, getRGBTile, getTile: getRGBTile };
         setCompositeId('multi-temporal');
-        // Multi-temporal uses linear scale by default (GCOV power users
-        // can still enable dB via the scale toggle after loading).
+        // Multi-temporal uses linear scale by default (coherence is 0–1; GCOV power users
+        // can still enable dB via the scale toggle after loading)
         setUseDecibels(false);
         useDecibelsRef.current = false; // pre-sync so the useDecibels effect doesn't fire
-        setRgbContrastLimits({ R: [0, 0.5], G: [0, 0.5], B: [0, 0.5] });
+        if (isGUNW) {
+          // Set per-channel contrast limits from the first loader's render mode default,
+          // otherwise fall back to [0, 1] (correct for coherence/magnitude datasets).
+          const rm0 = mtLoaders[0]?.renderMode;
+          const dr = rm0?.defaultRange || [0, 1];
+          setRgbContrastLimits({ R: [dr[0], dr[1]], G: [dr[0], dr[1]], B: [dr[0], dr[1]] });
+        } else {
+          // GCOV multi-temporal: default linear contrast, refined when user selects viewport scope.
+          setRgbContrastLimits({ R: [0, 0.5], G: [0, 0.5], B: [0, 0.5] });
+        }
         // Skip the auto-triggered histogram recompute on load for all multi-temporal types.
         // The user can trigger it via the scope selector (Viewport button).
         skipInitialHistogramRef.current = true;
@@ -2507,6 +2578,110 @@ export default function GCOVExplorer() {
         addStatusLog('success', 'Multi-temporal RGB loaded',
           `${width}x${height}, Files: ${mtFiles.map(f => f.name).join(' / ')}`);
 
+      } else if (nisarProductType === 'GUNW') {
+        // ── GUNW loading path ──
+        const dsLabel = `${selectedLayer}/${selectedGunwDataset} (${selectedPolarization})`;
+        addStatusLog('info', `Loading GUNW dataset: ${dsLabel}`);
+
+        data = await loadNISARGUNW(nisarFile, {
+          frequency: selectedFrequency,
+          layer: selectedLayer,
+          polarization: selectedPolarization,
+          dataset: selectedGunwDataset,
+          withCoherence: true,  // Always load coherence — checkbox controls shader masking
+          _streamReader: gunwDatasets?._streamReader || null,
+        });
+
+        addStatusLog('success', 'GUNW dataset loaded',
+          `${data.width}x${data.height}, CRS: ${data.crs || 'N/A'}, bounds: [${(data.bounds || []).map(b => b.toFixed(2)).join(', ')}]`);
+
+        // Apply render mode defaults — GUNW uses linear scaling, not dB
+        const rm = data.renderMode || {};
+        setUseDecibels(rm.transform === 'dB');
+        if (rm.colormap) setColormap(rm.colormap);
+        if (rm.defaultRange) {
+          setContrastMin(rm.defaultRange[0]);
+          setContrastMax(rm.defaultRange[1]);
+        } else if (data.attributes) {
+          // Use HDF5 valid_min/valid_max attributes for initial contrast if available
+          const attrs = data.attributes;
+          const vMin = attrs.valid_min ?? attrs.valid_range?.[0];
+          const vMax = attrs.valid_max ?? attrs.valid_range?.[1];
+          if (vMin != null && vMax != null && isFinite(vMin) && isFinite(vMax)) {
+            const isDiverging = rm.colormap === 'rdbu' || rm.colormap === 'diverging';
+            if (isDiverging) {
+              const absMax = Math.max(Math.abs(vMin), Math.abs(vMax));
+              setContrastMin(Number((-absMax).toFixed(3)));
+              setContrastMax(Number(absMax.toFixed(3)));
+            } else {
+              setContrastMin(Number(Number(vMin).toFixed(3)));
+              setContrastMax(Number(Number(vMax).toFixed(3)));
+            }
+            addStatusLog('info', `Initial contrast from metadata: ${vMin} to ${vMax} ${rm.unit || ''}`);
+          }
+        }
+
+        // Load incidence angle grid from GUNW radarGrid metadata cube
+        try {
+          const reader = data._streamReader || gunwDatasets?._streamReader;
+          const band = data.band || 'LSAR';
+          if (reader) {
+            const cube = await loadMetadataCube(reader, band, { product: 'GUNW', fields: ['incidenceAngle'] });
+            if (cube && cube.fields.incidenceAngle) {
+              // Evaluate on a coarse grid matching image extent
+              const iaWidth = Math.min(512, data.width);
+              const iaHeight = Math.min(512, data.height);
+              // Build coordinate arrays spanning the image bounds
+              const [bMinX, bMinY, bMaxX, bMaxY] = data.bounds;
+              const iaXCoords = new Float64Array(iaWidth);
+              const iaYCoords = new Float64Array(iaHeight);
+              for (let i = 0; i < iaWidth; i++) iaXCoords[i] = bMinX + (i / (iaWidth - 1)) * (bMaxX - bMinX);
+              for (let i = 0; i < iaHeight; i++) iaYCoords[i] = bMaxY - (i / (iaHeight - 1)) * (bMaxY - bMinY);
+              const iaGrid = cube.evaluateOnGrid('incidenceAngle', iaXCoords, iaYCoords, iaWidth, iaHeight, null, 4);
+              setGunwIncidenceAngleGrid({ data: iaGrid, width: iaWidth, height: iaHeight });
+              const angles = Array.from(iaGrid).filter(v => !isNaN(v));
+              if (angles.length > 0) {
+                const sorted = angles.sort((a, b) => a - b);
+                addStatusLog('info', `GUNW incidence angle: ${sorted[0].toFixed(1)}°–${sorted[sorted.length - 1].toFixed(1)}°`);
+              }
+            } else {
+              setGunwIncidenceAngleGrid(null);
+            }
+          }
+        } catch (e) {
+          console.warn('[main] Failed to load GUNW incidence angle grid:', e);
+          setGunwIncidenceAngleGrid(null);
+        }
+
+        // Load phase correction layers (iono, tropo, SET) in background
+        if (selectedGunwDataset === 'unwrappedPhase') {
+          try {
+            const reader = data._streamReader || gunwDatasets?._streamReader;
+            const band = data.band || 'LSAR';
+            if (reader) {
+              addStatusLog('info', 'Loading phase correction layers...');
+              const corrections = await loadAllCorrections(
+                reader, band, selectedFrequency, selectedPolarization,
+                { bounds: data.bounds, width: data.width, height: data.height }
+              );
+              setCorrectionLayers(corrections);
+              setEnabledCorrections(new Set());
+
+              const available = Object.keys(corrections);
+              if (available.length > 0) {
+                addStatusLog('success', `Phase corrections available: ${available.map(k => CORRECTION_TYPES[k]?.label || k).join(', ')}`);
+              } else {
+                addStatusLog('info', 'No phase correction layers found in this GUNW product');
+              }
+            }
+          } catch (e) {
+            console.warn('[main] Failed to load phase corrections:', e);
+            setCorrectionLayers(null);
+          }
+        } else {
+          setCorrectionLayers(null);
+          setEnabledCorrections(new Set());
+        }
       } else if (displayMode === 'rgb' && compositeId) {
         // ── GCOV RGB composite mode ──
         const requiredPols = getRequiredDatasets(compositeId);
@@ -2665,14 +2840,20 @@ export default function GCOVExplorer() {
         }
       }
 
+      // For GUNW with a default render-mode range, apply it immediately (no tile reads)
+      if (nisarProductType === 'GUNW' && data.renderMode?.defaultRange) {
+        const rm = data.renderMode;
+        addStatusLog('success', `Using default range: ${rm.defaultRange[0]} to ${rm.defaultRange[1]} ${rm.unit || ''}`);
+      }
+
       // Single-band auto-contrast from HDF5 stats is already applied above
-      // (inside the GCOV single-band loading block).
+      // (inside the GCOV single-band loading block, lines ~2156-2167).
 
       // Histogram computation runs non-blocking via useEffect → handleRecomputeHistogram
       // after setImageData triggers a re-render. This avoids blocking the UI for
       // large files (previously 60+ seconds for 7 GB GCOV RGB composites).
 
-      addStatusLog('success', 'NISAR GCOV loaded and ready to display');
+      addStatusLog('success', `NISAR ${nisarProductType} loaded and ready to display`);
     } catch (e) {
       setError(`Failed to load NISAR dataset: ${e.message}`);
       setImageData(null);
@@ -2681,7 +2862,7 @@ export default function GCOVExplorer() {
     } finally {
       setLoading(false);
     }
-  }, [nisarFile, nisarFile2, nisarFile3, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog, autoFitIfNewScene]);
+  }, [nisarFile, nisarFile2, nisarFile3, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene]);
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
@@ -3281,7 +3462,7 @@ export default function GCOVExplorer() {
           filename = `sardine_ts_${frame.label}_${frame.compositeId}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
         } else {
           // Single-band rendered
-          const tsUseDecibels = useDecibels;
+          const tsUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
           const [cMin, cMax] = Array.isArray(roiTSContrastLimits) ? roiTSContrastLimits : [-25, 0];
           const colormapFunc = getColormap(colormap);
           const numPixels = exportWidth * exportHeight;
@@ -3330,7 +3511,7 @@ export default function GCOVExplorer() {
       setExportProgress(0);
     }
   }, [roiTSFrames, roiTSIndex, roiTSBounds, roiTSContrastLimits, exportMultilookWindow, exportMode,
-      gamma, stretchMode, colormap, useDecibels, addStatusLog]);
+      gamma, stretchMode, colormap, useDecibels, nisarProductType, addStatusLog]);
 
   // Serialize current visualization state for embedding in exported PNGs
   const serializeViewerState = useCallback(() => ({
@@ -3458,7 +3639,7 @@ export default function GCOVExplorer() {
         const secondaryOpts = isTS ? {
           colormap,
           contrastLimits: roiTSContrastLimits,
-          useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : useDecibels,
+          useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
           compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
           viewState: secondaryVS,
           bounds: roiTSBounds,
@@ -3473,7 +3654,7 @@ export default function GCOVExplorer() {
           compositeId: roiCompositeId,
           viewState: secondaryVS,
           bounds: roiRGBBounds,
-          filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
+          filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
           crs: imageData?.crs || '',
           histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
           identification: imageData?.identification || null,
@@ -3501,7 +3682,7 @@ export default function GCOVExplorer() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, serializeViewerState]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async () => {
@@ -3553,7 +3734,7 @@ export default function GCOVExplorer() {
         const secondaryOpts = isTS ? {
           colormap,
           contrastLimits: roiTSContrastLimits,
-          useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : useDecibels,
+          useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
           compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
           viewState: secondaryVS,
           bounds: roiTSBounds,
@@ -3568,7 +3749,7 @@ export default function GCOVExplorer() {
           compositeId: roiCompositeId,
           viewState: secondaryVS,
           bounds: roiRGBBounds,
-          filename: fileType === 'nisar' ? nisarFile?.name : cogUrl,
+          filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
           crs: imageData?.crs || '',
           histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
           identification: imageData?.identification || null,
@@ -3617,7 +3798,7 @@ export default function GCOVExplorer() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, serializeViewerState]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -4032,8 +4213,7 @@ export default function GCOVExplorer() {
           <CollapsibleSection title="Data Source">
             <div className="control-group">
               <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
-                <option value="nisar">Local HDF5 (NISAR GCOV)</option>
-                <option value="local-tif">Local GeoTIFF</option>
+                <option value="nisar-gunw">Local HDF5 (NISAR GUNW)</option>
                 <option value="remote">Remote URL / S3</option>
                 <option value="cmr">NISAR Search (CMR)</option>
               </select>
@@ -4090,8 +4270,8 @@ export default function GCOVExplorer() {
           )}
 
           {/* NISAR HDF5 Input */}
-          {fileType === 'nisar' && (
-            <CollapsibleSection title="Load NISAR GCOV">
+          {(fileType === 'nisar' || fileType === 'nisar-gunw') && (
+            <CollapsibleSection title={`Load NISAR ${nisarProductType}`}>
               <div className="control-group">
                 <label>HDF5 File</label>
                 <input
@@ -4247,6 +4427,11 @@ export default function GCOVExplorer() {
               <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
                 {nisarFile ? nisarFile.name : remoteName || 'Remote'}
                 {nisarFile && ` (${(nisarFile.size / 1e9).toFixed(2)} GB)`}
+                {nisarProductType !== 'GCOV' && (
+                  <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)', fontWeight: 600 }}>
+                    {nisarProductType}
+                  </span>
+                )}
               </div>
 
               <div className="control-group">
@@ -4258,6 +4443,10 @@ export default function GCOVExplorer() {
                     const freqDs = nisarDatasets.filter(d => d.frequency === e.target.value);
                     if (freqDs.length > 0) {
                       setSelectedPolarization(freqDs[0].polarization);
+                      if (nisarProductType === 'GUNW') {
+                        setSelectedLayer(freqDs[0].layer);
+                        setSelectedGunwDataset(freqDs[0].dataset);
+                      }
                       // Update contrast from metadata stats for the new frequency
                       const ds = freqDs[0];
                       if (ds?.stats?.mean_value > 0 && ds?.stats?.sample_stddev > 0) {
@@ -4274,6 +4463,59 @@ export default function GCOVExplorer() {
                   ))}
                 </select>
               </div>
+
+              {/* GUNW-specific: Layer group selector */}
+              {nisarProductType === 'GUNW' && (
+                <div className="control-group">
+                  <label>Layer</label>
+                  <select
+                    value={selectedLayer}
+                    onChange={(e) => {
+                      setSelectedLayer(e.target.value);
+                      // Auto-select first dataset + polarization in the new layer
+                      const layerDs = nisarDatasets.filter(d =>
+                        d.frequency === selectedFrequency && d.layer === e.target.value
+                      );
+                      if (layerDs.length > 0) {
+                        setSelectedPolarization(layerDs[0].polarization);
+                        setSelectedGunwDataset(layerDs[0].dataset);
+                      }
+                    }}
+                  >
+                    {[...new Set(nisarDatasets
+                      .filter(d => d.frequency === selectedFrequency)
+                      .map(d => d.layer)
+                    )].map(l => (
+                      <option key={l} value={l}>
+                        {GUNW_LAYER_LABELS[l] || l}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {/* GUNW-specific: Dataset selector within layer */}
+              {nisarProductType === 'GUNW' && (
+                <div className="control-group">
+                  <label>Dataset</label>
+                  <select
+                    value={selectedGunwDataset}
+                    onChange={(e) => setSelectedGunwDataset(e.target.value)}
+                  >
+                    {[...new Set(nisarDatasets
+                      .filter(d =>
+                        d.frequency === selectedFrequency &&
+                        d.layer === selectedLayer
+                      )
+                      .map(d => d.dataset)
+                    )].map(ds => (
+                      <option key={ds} value={ds}>
+                        {GUNW_DATASET_LABELS[ds] || ds}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="control-group">
                 <label>Polarization</label>
@@ -4293,7 +4535,10 @@ export default function GCOVExplorer() {
                   }}
                 >
                   {[...new Set(nisarDatasets
-                    .filter(d => d.frequency === selectedFrequency)
+                    .filter(d => nisarProductType === 'GUNW'
+                      ? (d.frequency === selectedFrequency && d.layer === selectedLayer)
+                      : d.frequency === selectedFrequency
+                    )
                     .map(d => d.polarization)
                   )].map(pol => (
                     <option key={pol} value={pol}>
@@ -4303,7 +4548,7 @@ export default function GCOVExplorer() {
                 </select>
               </div>
 
-              {/* Display mode — single band, RGB composite, or multi-temporal */}
+              {/* Display mode — single band, RGB composite (GCOV only), or multi-temporal */}
               <div className="control-group">
                 <label>Display Mode</label>
                 <select
@@ -4311,14 +4556,16 @@ export default function GCOVExplorer() {
                   onChange={(e) => setDisplayMode(e.target.value)}
                 >
                   <option value="single">Single Band</option>
-                  <option value="rgb" disabled={availableComposites.length === 0}>
-                    RGB Composite
-                  </option>
+                  {nisarProductType === 'GCOV' && (
+                    <option value="rgb" disabled={availableComposites.length === 0}>
+                      RGB Composite
+                    </option>
+                  )}
                   <option value="multi-temporal">Multi-temporal RGB (3 dates)</option>
                 </select>
               </div>
 
-              {displayMode === 'rgb' && availableComposites.length > 0 && (
+              {displayMode === 'rgb' && availableComposites.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
                   <label>Composite</label>
                   <select
@@ -4386,8 +4633,41 @@ export default function GCOVExplorer() {
                     </button>
                   </div>
                   <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    {`Same ${selectedFrequency}/${selectedPolarization} dataset loaded from each file.`}
+                    {nisarProductType === 'GUNW'
+                      ? `Same ${selectedLayer}/${selectedGunwDataset} (${selectedPolarization}) loaded from each file.`
+                      : `Same ${selectedFrequency}/${selectedPolarization} dataset loaded from each file.`}
                   </div>
+                </div>
+              )}
+
+              {/* GUNW-specific: Coherence mask toggle */}
+              {nisarProductType === 'GUNW' && selectedGunwDataset !== 'coherenceMagnitude' && (
+                <div className="control-group">
+                  <div className="control-row">
+                    <input
+                      type="checkbox"
+                      id="cohMask"
+                      checked={useCoherenceMask}
+                      onChange={(e) => setUseCoherenceMask(e.target.checked)}
+                    />
+                    <label htmlFor="cohMask">Coherence Mask</label>
+                  </div>
+                  {useCoherenceMask && (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Threshold</span>
+                        <span className="value-display">{coherenceThreshold.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={coherenceThreshold}
+                        onChange={(e) => setCoherenceThreshold(Number(e.target.value))}
+                      />
+                    </>
+                  )}
                 </div>
               )}
 
@@ -4399,6 +4679,54 @@ export default function GCOVExplorer() {
                 >
                   {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : displayMode === 'multi-temporal' ? 'Load Multi-temporal RGB' : 'Load Dataset'}
                 </button>
+
+                {/* GUNW paired view: phase + coherence side-by-side */}
+                {nisarProductType === 'GUNW' && (
+                  <button
+                    className="btn-secondary"
+                    disabled={loading}
+                    style={{ fontSize: '0.65rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                    title="Load unwrapped phase + coherence side-by-side"
+                    onClick={async () => {
+                      setLoading(true);
+                      try {
+                        const reader = gunwDatasets?._streamReader || null;
+                        const opts = { frequency: selectedFrequency, polarization: selectedPolarization, band: nisarFile ? undefined : 'LSAR' };
+
+                        // Load phase
+                        const phase = await loadNISARGUNW(nisarFile, {
+                          ...opts, layer: 'unwrappedInterferogram', dataset: 'unwrappedPhase', _streamReader: reader,
+                        });
+                        // Load coherence
+                        const coh = await loadNISARGUNW(nisarFile, {
+                          ...opts, layer: 'unwrappedInterferogram', dataset: 'coherenceMagnitude', _streamReader: reader,
+                        });
+
+                        const phaseRm = phase.renderMode || {};
+                        const cohRm = coh.renderMode || {};
+                        setGunwPairedView({
+                          left: {
+                            getTile: phase.getTile, bounds: phase.bounds,
+                            contrastLimits: phaseRm.defaultRange || [-Math.PI, Math.PI],
+                            useDecibels: false, colormap: phaseRm.colormap || 'twilight',
+                          },
+                          right: {
+                            getTile: coh.getTile, bounds: coh.bounds,
+                            contrastLimits: cohRm.defaultRange || [0, 1],
+                            useDecibels: false, colormap: cohRm.colormap || 'viridis',
+                          },
+                        });
+                        addStatusLog('success', 'Paired view loaded: Phase + Coherence');
+                      } catch (e) {
+                        addStatusLog('error', 'Failed to load paired view', e.message);
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                  >
+                    Paired
+                  </button>
+                )}
               </div>
             </CollapsibleSection>
           )}
@@ -4617,9 +4945,10 @@ export default function GCOVExplorer() {
                   type="checkbox"
                   id="useDb"
                   checked={effectiveUseDecibels}
+                  disabled={nisarProductType === 'GUNW'}
                   onChange={(e) => setUseDecibels(e.target.checked)}
                 />
-                <label htmlFor="useDb">dB Scaling</label>
+                <label htmlFor="useDb">dB Scaling{nisarProductType === 'GUNW' ? ' (N/A)' : ''}</label>
               </div>
             </div>
 
@@ -5155,7 +5484,7 @@ export default function GCOVExplorer() {
                     ? (roiRGBContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] })
                     : (rgbContrastLimits || { R: [0, 1], G: [0, 1], B: [0, 1] }))}
                 useDecibels={sidebarIsRoiTS ? false : (sidebarIsRoiRGB ? false : effectiveUseDecibels)}
-                logScale={false}
+                logScale={nisarProductType !== 'GCOV'}
                 onContrastChange={sidebarIsRoiTS ? setRoiTSContrastLimits : (sidebarIsRoiRGB ? setRoiRGBContrastLimits : setRgbContrastLimits)}
                 onAutoStretch={handleAutoStretch}
                 showHeader={false}
@@ -5169,7 +5498,7 @@ export default function GCOVExplorer() {
                 mode="single"
                 contrastLimits={sidebarIsRoiTS ? roiTSContrastLimits : contrastLimits}
                 useDecibels={effectiveUseDecibels}
-                logScale={false}
+                logScale={nisarProductType !== 'GCOV'}
                 onContrastChange={sidebarIsRoiTS
                   ? (([min, max]) => setRoiTSContrastLimits([Math.round(min), Math.round(max)]))
                   : (([min, max]) => { setContrastMin(min); setContrastMax(max); })
@@ -5179,6 +5508,169 @@ export default function GCOVExplorer() {
               />
             )}
 
+            {/* GUNW phase controls: LOS displacement toggle + symmetric range presets */}
+            {nisarProductType === 'GUNW' && imageData && (
+              <div className="control-group">
+                {/* LOS displacement toggle (radians → meters) */}
+                {(selectedGunwDataset === 'unwrappedPhase' || selectedGunwDataset === 'wrappedInterferogram' || selectedGunwDataset === 'ionospherePhaseScreen') && (
+                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                    <input
+                      type="checkbox"
+                      id="losToggle"
+                      checked={losDisplacement}
+                      onChange={(e) => {
+                        const toLOS = e.target.checked;
+                        setLosDisplacement(toLOS);
+                        // λ = 0.2384m (NISAR L-band), d = phase * λ/(4π)
+                        const scale = 0.2384 / (4 * Math.PI);
+                        if (toLOS) {
+                          // radians → meters
+                          setContrastMin(Number((contrastMin * scale).toFixed(4)));
+                          setContrastMax(Number((contrastMax * scale).toFixed(4)));
+                        } else {
+                          // meters → radians
+                          setContrastMin(Number((contrastMin / scale).toFixed(3)));
+                          setContrastMax(Number((contrastMax / scale).toFixed(3)));
+                          setVerticalDisplacement(false);
+                        }
+                      }}
+                    />
+                    <label htmlFor="losToggle">
+                      LOS Displacement
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                        {losDisplacement ? '(m)' : '(rad)'}
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {/* Vertical displacement toggle — requires incidence angle grid */}
+                {losDisplacement && gunwIncidenceAngleGrid && (
+                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                    <input
+                      type="checkbox"
+                      id="vertDispToggle"
+                      checked={verticalDisplacement}
+                      onChange={(e) => setVerticalDisplacement(e.target.checked)}
+                    />
+                    <label htmlFor="vertDispToggle">
+                      Vertical Displacement
+                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                        d<sub>vert</sub> = d<sub>LOS</sub> / cos({'\u03B8'})
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {/* Symmetric range presets */}
+                <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', width: '100%', marginBottom: '2px' }}>Range Presets</span>
+                  {(() => {
+                    const scale = losDisplacement ? 0.2384 / (4 * Math.PI) : 1;
+                    const unit = losDisplacement ? 'm' : 'rad';
+                    const presets = [
+                      { label: String.fromCharCode(0xB1) + String.fromCharCode(0x03C0), val: Math.PI },
+                      { label: String.fromCharCode(0xB1) + '2' + String.fromCharCode(0x03C0), val: 2 * Math.PI },
+                      { label: String.fromCharCode(0xB1) + '10' + String.fromCharCode(0x03C0), val: 10 * Math.PI },
+                      { label: 'Auto', val: null },
+                    ];
+                    return presets.map(p => (
+                      <button
+                        key={p.label}
+                        className="btn-secondary"
+                        style={{ flex: 1, fontSize: '0.65rem', padding: '2px 4px', minWidth: '40px' }}
+                        onClick={() => {
+                          if (p.val === null) {
+                            // Auto: use histogram p2/p98 if available
+                            const stats = histogramData?.single;
+                            if (stats) {
+                              const p2 = losDisplacement ? stats.p2 * scale : stats.p2;
+                              const p98 = losDisplacement ? stats.p98 * scale : stats.p98;
+                              const absMax = Math.max(Math.abs(p2), Math.abs(p98));
+                              setContrastMin(Number((-absMax).toFixed(3)));
+                              setContrastMax(Number(absMax.toFixed(3)));
+                            }
+                          } else {
+                            const v = p.val * scale;
+                            setContrastMin(Number((-v).toFixed(4)));
+                            setContrastMax(Number(v.toFixed(4)));
+                          }
+                        }}
+                        title={p.val !== null ? `${(-p.val * scale).toFixed(3)} to ${(p.val * scale).toFixed(3)} ${unit}` : 'Auto symmetric from histogram'}
+                      >
+                        {p.label}
+                      </button>
+                    ));
+                  })()}
+                </div>
+
+                {/* Phase corrections panel */}
+                {selectedGunwDataset === 'unwrappedPhase' && correctionLayers && Object.keys(correctionLayers).length > 0 && (() => {
+                  const btnStyle = (active) => ({
+                    fontSize: '0.6rem',
+                    padding: '3px 6px',
+                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--sardine-border)'}`,
+                    borderRadius: '3px',
+                    background: active ? 'var(--sardine-cyan)' : 'transparent',
+                    color: active ? '#000' : 'var(--text-primary)',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                  });
+                  const resetContrast = () => {
+                    // Corrections shift the effective data range — reset to wide default
+                    const rm = imageData?.renderMode;
+                    const [lo, hi] = rm?.defaultRange || [-50, 50];
+                    setContrastMin(lo);
+                    setContrastMax(hi);
+                  };
+                  const toggle = (key) => {
+                    const next = new Set(enabledCorrections);
+                    if (next.has(key)) next.delete(key); else next.add(key);
+                    setEnabledCorrections(next);
+                    resetContrast();
+                  };
+                  const availableKeys = Object.keys(CORRECTION_TYPES).filter(k => !!correctionLayers[k]);
+                  const allEnabled = availableKeys.length > 0 && availableKeys.every(k => enabledCorrections.has(k));
+                  return (
+                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--sardine-border)', paddingTop: '6px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Phase Corrections</span>
+                        <button
+                          style={{ ...btnStyle(allEnabled), fontSize: '0.55rem', padding: '2px 5px' }}
+                          onClick={() => { setEnabledCorrections(allEnabled ? new Set() : new Set(availableKeys)); resetContrast(); }}
+                        >{allEnabled ? 'Clear All' : 'Apply All'}</button>
+                      </div>
+                      {/* Ionosphere — same-grid correction */}
+                      {correctionLayers.ionosphere && (
+                        <div style={{ marginBottom: '3px' }}>
+                          <button style={btnStyle(enabledCorrections.has('ionosphere'))} onClick={() => toggle('ionosphere')}>
+                            Ionosphere
+                          </button>
+                        </div>
+                      )}
+                      {/* Metadata cube corrections */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
+                        {correctionLayers.troposphereWet && (
+                          <button style={btnStyle(enabledCorrections.has('troposphereWet'))} onClick={() => toggle('troposphereWet')}>
+                            Tropo (Wet)
+                          </button>
+                        )}
+                        {correctionLayers.troposphereHydrostatic && (
+                          <button style={btnStyle(enabledCorrections.has('troposphereHydrostatic'))} onClick={() => toggle('troposphereHydrostatic')}>
+                            Tropo (Hydro)
+                          </button>
+                        )}
+                        {correctionLayers.solidEarthTides && (
+                          <button style={btnStyle(enabledCorrections.has('solidEarthTides'))} onClick={() => toggle('solidEarthTides')}>
+                            Solid Earth Tides
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* Brightness (Window/Level) slider — shifts window center (single-band only) */}
             {sidebarDisplayMode !== 'rgb' && (
@@ -5318,8 +5810,8 @@ export default function GCOVExplorer() {
               </div>
             )}
 
-            {/* Incidence angle mask — only when metadata cube provides one */}
-            {incidenceAngleGrid && (
+            {/* Incidence angle mask — only for GCOV with metadata cube */}
+            {incidenceAngleGrid && nisarProductType === 'GCOV' && (
               <div className="control-group">
                 <div className="control-row">
                   <input
@@ -5403,7 +5895,32 @@ export default function GCOVExplorer() {
             </div>
           )}
 
-          {imageData && (
+          {/* GUNW Paired View: Phase + Coherence side-by-side */}
+          {gunwPairedView && (
+            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+              <button
+                onClick={() => setGunwPairedView(null)}
+                style={{
+                  position: 'absolute', top: '8px', right: '8px', zIndex: 10,
+                  background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                  border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                }}
+              >
+                Close Paired View
+              </button>
+              <ComparisonViewer
+                leftImage={gunwPairedView.left}
+                rightImage={gunwPairedView.right}
+                leftLabel="Unwrapped Phase"
+                rightLabel="Coherence"
+                width="100%"
+                height="100%"
+              />
+            </div>
+          )}
+
+          {imageData && !gunwPairedView && (
             <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
               {/* Loading overlay — shown on top of existing data while new data streams */}
               {loading && (
@@ -5445,11 +5962,14 @@ export default function GCOVExplorer() {
                   multiLook={multiLook}
                   maskInvalid={maskInvalid}
                   maskLayoverShadow={maskLayoverShadow}
-                  useCoherenceMask={useIncidenceAngleMask}
-                  coherenceThreshold={useIncidenceAngleMask ? incAngleMin : 0}
+                  useCoherenceMask={useCoherenceMask || useIncidenceAngleMask}
+                  coherenceThreshold={useIncidenceAngleMask ? incAngleMin : coherenceThreshold}
                   coherenceThresholdMax={useIncidenceAngleMask ? incAngleMax : 1.0}
                   coherenceMaskMode={useIncidenceAngleMask ? 1 : 0}
-                  incidenceAngleData={useIncidenceAngleMask ? incidenceAngleGrid : null}
+                  incidenceAngleData={useIncidenceAngleMask ? incidenceAngleGrid : (verticalDisplacement ? gunwIncidenceAngleGrid : null)}
+                  verticalDisplacement={verticalDisplacement}
+                  correctionLayers={correctionLayers}
+                  enabledCorrections={enabledCorrections}
                   speckleFilterType={speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
                   rgbSaturation={rgbSaturation}
@@ -5620,7 +6140,7 @@ export default function GCOVExplorer() {
                       tileVersion={roiTSIndex}
                       bounds={roiTSBounds}
                       contrastLimits={roiTSContrastLimits}
-                      useDecibels={roiTSFrames[roiTSIndex]?.isRGB ? false : useDecibels}
+                      useDecibels={roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels)}
                       compositeId={roiTSFrames[roiTSIndex]?.compositeId || null}
                       colormap={colormap}
                       gamma={gamma}
@@ -5682,7 +6202,7 @@ export default function GCOVExplorer() {
               mode={isRGBDisplayMode ? 'rgb' : displayMode}
               contrastLimits={isRGBDisplayMode ? rgbContrastLimits : [contrastMin, contrastMax]}
               useDecibels={effectiveUseDecibels}
-              logScale={false}
+              logScale={nisarProductType !== 'GCOV'}
               polarization={selectedPolarization}
               compositeId={compositeId}
               onClose={() => setShowHistogramOverlay(false)}

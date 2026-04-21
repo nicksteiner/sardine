@@ -42,7 +42,7 @@ const ROUTES = [
     title: 'GUNW Explorer',
     blurb: 'NISAR L2 GUNW: interferograms, coherence, unwrapped phase.',
     directive: 'S294',
-    live: false,
+    live: true,
   },
   {
     href: '/explore/cog',
