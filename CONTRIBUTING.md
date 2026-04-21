@@ -23,6 +23,20 @@ npm run test:e2e       # Playwright route smoke tests (R5)
 npm run build          # Production build → dist/
 ```
 
+### Dev default route
+
+Set `VITE_DEFAULT_ROUTE` in an `.env.local` to boot the dev server into a
+specific page on load (S295). Useful when iterating on one app — you stop
+bouncing off Landing on every HMR reload:
+
+```bash
+# .env.local (dev only — ignored in production builds)
+VITE_DEFAULT_ROUTE=/local
+```
+
+Leave unset to land on `/` (Landing) as usual. Explicit URLs always win
+— pasting `/#/explore/cog?url=…` in the address bar overrides the default.
+
 ## Code-review checklist
 
 A PR that touches multiple pages, any `app/shared/*` file, or any

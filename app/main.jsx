@@ -29,6 +29,24 @@ const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '
 
 export { BUILD_SHA, APP_VERSION };
 
+/**
+ * Dev-only default route (S295). Set VITE_DEFAULT_ROUTE (e.g. "/local") in an
+ * `.env.local` to boot into a specific page on page load instead of Landing.
+ * Production builds (`import.meta.env.PROD`) ignore this. Skipped when a user
+ * already has a hash set, so a shared URL still wins.
+ */
+function useDevDefaultRoute() {
+  const [location, navigate] = useLocation();
+  useEffect(() => {
+    if (import.meta.env.PROD) return;
+    const defaultRoute = import.meta.env.VITE_DEFAULT_ROUTE;
+    if (!defaultRoute) return;
+    if (location !== '/') return;
+    if (window.location.hash && window.location.hash !== '#' && window.location.hash !== '#/') return;
+    navigate(defaultRoute, { replace: true });
+  }, [location, navigate]);
+}
+
 /** Visible on every route — satisfies S290 R8. */
 export function BuildChrome() {
   return (
@@ -113,6 +131,7 @@ function useLegacyRedirect() {
 
 function Routes() {
   useLegacyRedirect();
+  useDevDefaultRoute();
   return (
     <Switch>
       <Route path="/" component={Landing} />
