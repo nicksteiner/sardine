@@ -1353,6 +1353,365 @@ try {
   skip('lite report charts functional tests', `import failed: ${err.message}`);
 }
 
+// ─── 15. NISAR ATBD algorithms (D285) ───────────────────────────────────────
+
+suite('NISAR ATBD algorithms (source)');
+
+for (const f of [
+  'src/algorithms/index.js',
+  'src/algorithms/inundation.js',
+  'src/algorithms/crop-cv.js',
+  'src/algorithms/disturbance-cusum.js',
+]) {
+  check(`${f} exists`, () => {
+    if (!fileExists(f)) throw new Error('missing');
+  });
+}
+
+suite('NISAR ATBD algorithms (functional)');
+
+try {
+  const { inundation, cropCv, disturbance } =
+    await import(join(rootDir, 'src/algorithms/index.js'));
+
+  // ── Inundation ──────────────────────────────────────────────
+  check('inundation.computeStackMask flags zero/NaN pixels', () => {
+    const stack = [new Float32Array([1, 0, 3]), new Float32Array([2, 5, NaN])];
+    const mask = inundation.computeStackMask(stack);
+    if (Array.from(mask).join(',') !== '1,0,0') {
+      throw new Error(`expected 1,0,0 got ${Array.from(mask).join(',')}`);
+    }
+  });
+
+  check('inundation.meanStack averages across frames', () => {
+    const m = inundation.meanStack(
+      [new Float32Array([4, 2]), new Float32Array([6, 2])],
+      new Uint8Array([1, 0]),
+    );
+    if (m[0] !== 5) throw new Error(`mean[0]=${m[0]}, expected 5`);
+    if (!Number.isNaN(m[1])) throw new Error('masked pixel should be NaN');
+  });
+
+  check('inundation.rollingMeanStack returns Nout=N-Nave+1 frames', () => {
+    const roll = inundation.rollingMeanStack([
+      new Float32Array([2, 4]),
+      new Float32Array([4, 8]),
+      new Float32Array([6, 12]),
+    ], 2);
+    if (roll.length !== 2) throw new Error(`expected 2 frames, got ${roll.length}`);
+    if (roll[0][0] !== 3 || roll[0][1] !== 6) throw new Error('roll[0] wrong');
+    if (roll[1][0] !== 5 || roll[1][1] !== 10) throw new Error('roll[1] wrong');
+  });
+
+  check('inundation.correctionFactors = rollingMean/longTermMean', () => {
+    const f = inundation.correctionFactors(
+      [new Float32Array([2, 4]), new Float32Array([6, 8])], 4, new Uint8Array([1, 1]),
+    );
+    if (Math.abs(f[0] - 0.75) > 1e-6) throw new Error(`f[0]=${f[0]}`);
+    if (Math.abs(f[1] - 1.75) > 1e-6) throw new Error(`f[1]=${f[1]}`);
+  });
+
+  check('inundation.classifyPair assigns class 0 for ratio=2, HH=1', () => {
+    const out = inundation.classifyPair(
+      new Float32Array([1.0]), new Float32Array([0.5]), new Uint8Array([1]),
+    );
+    if (out[0] !== 0) throw new Error(`expected 0, got ${out[0]}`);
+  });
+
+  check('inundation.classifyPair returns masked for pixel matching no class', () => {
+    // ratio=1.0 fails every threshold (all use strict ratio > 1.0 except class5,
+    // and class5 requires hh <= 0.5 which also fails for hh=1.0).
+    const out = inundation.classifyPair(
+      new Float32Array([1.0]), new Float32Array([1.0]), new Uint8Array([0]),
+    );
+    if (out[0] !== inundation.INUNDATION_MASKED_VALUE) {
+      throw new Error(`expected masked value, got ${out[0]}`);
+    }
+  });
+
+  check('inundation.classifyPair ignores mask — classifies by thresholds only (D289)', () => {
+    // Matches the JPL notebook: classification is a threshold test on the
+    // corrected data; the stack-wide zero/NaN mask is NOT applied. Zero pixels
+    // stay at the masked sentinel because the thresholds use strict `>`.
+    const m0 = new Uint8Array([0]);
+    const m1 = new Uint8Array([1]);
+    const out0 = inundation.classifyPair(new Float32Array([1.0]), new Float32Array([0.5]), m0);
+    const out1 = inundation.classifyPair(new Float32Array([1.0]), new Float32Array([0.5]), m1);
+    if (out0[0] !== out1[0]) throw new Error(`mask=0 gave ${out0[0]}, mask=1 gave ${out1[0]}`);
+    if (out0[0] !== 0) throw new Error(`expected class 0, got ${out0[0]}`);
+  });
+
+  check('inundation.classifyPair masks zero HV (ratio=Inf, no class matches)', () => {
+    const out = inundation.classifyPair(
+      new Float32Array([1.0]), new Float32Array([0.0]), new Uint8Array([1]),
+    );
+    if (out[0] !== inundation.INUNDATION_MASKED_VALUE) {
+      throw new Error(`expected masked, got ${out[0]}`);
+    }
+  });
+
+  check('inundation.runInundationATBD end-to-end pipeline', () => {
+    const stackHH = [], stackHV = [];
+    for (let k = 0; k < 4; k++) {
+      stackHH.push(new Float32Array([1 + k * 0.1, 0.8, 1.5, 0.1]));
+      stackHV.push(new Float32Array([0.5, 0.4 + k * 0.05, 0.8, 0.2]));
+    }
+    const res = inundation.runInundationATBD(stackHH, stackHV, { Nave: 2 });
+    if (res.classifications.length !== 3) throw new Error('expected 3 classified frames');
+    if (res.classifications[0].length !== 4) throw new Error('frame width mismatch');
+  });
+
+  check('inundation default thresholds define 6 classes', () => {
+    const k = Object.keys(inundation.DEFAULT_INUNDATION_THRESHOLDS);
+    if (k.length !== 6) throw new Error(`expected 6, got ${k.length}`);
+  });
+
+  // ── Crop Area CV ────────────────────────────────────────────
+  check('crop-cv.meanStd matches numpy population std', () => {
+    const { mean, std } = cropCv.meanStd([
+      new Float32Array([1, 4]),
+      new Float32Array([3, 6]),
+      new Float32Array([5, 8]),
+    ]);
+    if (mean[0] !== 3 || mean[1] !== 6) throw new Error('mean wrong');
+    const expected = Math.sqrt(8 / 3);
+    if (Math.abs(std[0] - expected) > 1e-5) throw new Error(`std[0]=${std[0]}`);
+  });
+
+  check('crop-cv.coefficientOfVariation = std/mean', () => {
+    const { cv } = cropCv.coefficientOfVariation([
+      new Float32Array([1]), new Float32Array([3]), new Float32Array([5]),
+    ]);
+    const expected = Math.sqrt(8 / 3) / 3;
+    if (Math.abs(cv[0] - expected) > 1e-5) throw new Error(`cv=${cv[0]}`);
+  });
+
+  check('crop-cv.coefficientOfVariation is NaN for zero mean', () => {
+    const { cv } = cropCv.coefficientOfVariation([new Float32Array([0]), new Float32Array([0])]);
+    if (!Number.isNaN(cv[0])) throw new Error(`expected NaN, got ${cv[0]}`);
+  });
+
+  check('crop-cv.rocCurve picks Youden threshold on separable data', () => {
+    const cv = new Float32Array([0.01, 0.02, 0.03, 0.5, 0.6, 0.7]);
+    const truth = new Uint8Array([0, 0, 0, 1, 1, 1]);
+    const roc = cropCv.rocCurve(cv, truth, [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]);
+    if (roc.bestThreshold < 0.1 || roc.bestThreshold >= 0.5) {
+      throw new Error(`bestThreshold=${roc.bestThreshold}`);
+    }
+    if (roc.auc < 0.9) throw new Error(`auc=${roc.auc}`);
+  });
+
+  check('crop-cv.runCropCvATBD without truth returns CV only', () => {
+    const res = cropCv.runCropCvATBD([new Float32Array([1, 2]), new Float32Array([3, 4])]);
+    if (!(res.cv instanceof Float32Array)) throw new Error('cv missing');
+    if (res.roc != null) throw new Error('roc should be undefined');
+  });
+
+  // ── Disturbance CUMSUM ──────────────────────────────────────
+  check('disturbance.subtractMean residuals sum to ~0', () => {
+    const r = disturbance.subtractMean([
+      new Float32Array([1, 10]),
+      new Float32Array([2, 20]),
+      new Float32Array([3, 30]),
+    ]);
+    for (let i = 0; i < 2; i++) {
+      let s = 0;
+      for (let k = 0; k < r.length; k++) s += r[k][i];
+      if (Math.abs(s) > 1e-5) throw new Error(`residual sum pixel ${i}=${s}`);
+    }
+  });
+
+  check('disturbance.cumsumTime accumulates frames', () => {
+    const S = disturbance.cumsumTime([
+      new Float32Array([1, -1]),
+      new Float32Array([2, -2]),
+      new Float32Array([3, -3]),
+    ]);
+    if (S[2][0] !== 6 || S[2][1] !== -6) throw new Error('cumsum last frame wrong');
+  });
+
+  check('disturbance.sdiff = max(S) - min(S)', () => {
+    const d = disturbance.sdiff([
+      new Float32Array([1, 10]),
+      new Float32Array([5, 0]),
+      new Float32Array([-2, 7]),
+    ]);
+    if (d[0] !== 7) throw new Error(`d[0]=${d[0]}`);
+    if (d[1] !== 10) throw new Error(`d[1]=${d[1]}`);
+  });
+
+  check('disturbance.shuffledIndices returns a valid permutation', () => {
+    const p = disturbance.shuffledIndices(5, () => 0.5);
+    const sorted = Array.from(p).sort((a, b) => a - b);
+    if (sorted.join(',') !== '0,1,2,3,4') throw new Error(`not a permutation: ${sorted}`);
+  });
+
+  check('disturbance.runDisturbanceATBD flags step-change pixel', () => {
+    const stack = [];
+    for (let k = 0; k < 3; k++) stack.push(new Float32Array([1, 1]));
+    for (let k = 0; k < 3; k++) stack.push(new Float32Array([1, 5]));
+    const res = disturbance.runDisturbanceATBD(stack, { sdiffThresholdPercentile: 25 });
+    if (!(res.SDiff[1] > res.SDiff[0])) throw new Error('step-change pixel not larger');
+    if (res.disturbedMask[1] !== 1) throw new Error('expected disturbed[1]=1');
+  });
+
+  check('disturbance bootstrap confidence separates change from flat', () => {
+    // Seeded LCG for determinism. Stack: pixel 0 flat, pixel 1 step-change at
+    // the midpoint. The true ordering gives the maximum SDiff; most random
+    // permutations give smaller SDiff, so confidence on pixel 1 is high.
+    let s = 12345;
+    const rng = () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff;
+    };
+    const stack = [];
+    for (let k = 0; k < 5; k++) stack.push(new Float32Array([1, 1]));
+    for (let k = 0; k < 5; k++) stack.push(new Float32Array([1, 10]));
+    const res = disturbance.runDisturbanceATBD(stack, { alpha: 0.5, n_bootstraps: 50, rng });
+    if (res.confidence == null) throw new Error('confidence not computed');
+    // Flat pixel: true SDiff==0 so (true > random) is never true → confidence[0] = 0.
+    // Step pixel: true SDiff is maximal → confidence[1] should be well above flat.
+    if (!(res.confidence[1] > res.confidence[0])) {
+      throw new Error(`step=${res.confidence[1]}, flat=${res.confidence[0]}`);
+    }
+    if (res.confidence[1] < 0.5) throw new Error(`confidence[1]=${res.confidence[1]}`);
+  });
+
+} catch (err) {
+  skip('NISAR ATBD functional tests', `import failed: ${err.message}`);
+}
+
+// ─── 16. NISAR ATBD app integration (D288) ──────────────────────────────────
+
+suite('NISAR ATBD app integration (palettes + runner)');
+
+try {
+  const palettes = await import(join(rootDir, 'src/utils/atbd-palettes.js'));
+  const runner = await import(join(rootDir, 'src/utils/atbd-runner.js'));
+
+  check('atbd-palettes exports 3 palettes with matching labels', () => {
+    const specs = [
+      [palettes.INUNDATION_PALETTE, palettes.INUNDATION_CLASS_LABELS, 6],
+      [palettes.CROP_PALETTE, palettes.CROP_CLASS_LABELS, 2],
+      [palettes.DISTURBANCE_PALETTE, palettes.DISTURBANCE_CLASS_LABELS, 2],
+    ];
+    for (const [pal, labels, n] of specs) {
+      if (pal.length !== n) throw new Error(`palette size ${pal.length} != ${n}`);
+      if (labels.length !== n) throw new Error(`labels size ${labels.length} != ${n}`);
+      for (const entry of pal) {
+        if (entry.length !== 4) throw new Error('palette entry must be [r,g,b,a]');
+      }
+    }
+  });
+
+  check('classifiedToRGBA paints palette colors for in-range classes', () => {
+    const cm = new Uint8Array([0, 1, 2, 10]); // last is masked for inundation
+    const rgba = palettes.classifiedToRGBA(cm, 4, 1, palettes.INUNDATION_PALETTE);
+    if (rgba.length !== 16) throw new Error('rgba length wrong');
+    // cls 0 → first palette entry → [93, 63, 211, 220]
+    if (rgba[0] !== 93 || rgba[3] !== 220) throw new Error('cls 0 color wrong');
+    // cls 10 (masked) → transparent (alpha 0)
+    if (rgba[12] !== 0 || rgba[15] !== 0) throw new Error('masked class should be transparent');
+  });
+
+  check('classifiedToRGBA throws on length mismatch', () => {
+    let threw = false;
+    try {
+      palettes.classifiedToRGBA(new Uint8Array(3), 2, 2, palettes.CROP_PALETTE);
+    } catch { threw = true; }
+    if (!threw) throw new Error('expected throw on length mismatch');
+  });
+
+  check('paletteToClassRegions produces hex colors keyed by label', () => {
+    const regions = palettes.paletteToClassRegions(
+      palettes.CROP_PALETTE, palettes.CROP_CLASS_LABELS,
+    );
+    if (regions.length !== 2) throw new Error(`expected 2 regions, got ${regions.length}`);
+    if (!/^#[0-9a-f]{6}$/i.test(regions[0].color)) throw new Error(`bad hex: ${regions[0].color}`);
+    if (regions[1].name !== 'Cropland') throw new Error(`label wrong: ${regions[1].name}`);
+  });
+
+  check('ATBD_ALGORITHMS lists the three ported algorithms', () => {
+    const ids = runner.ATBD_ALGORITHMS.map(a => a.id).sort();
+    if (ids.join(',') !== 'crop,disturbance,inundation') {
+      throw new Error(`wrong algorithms: ${ids.join(',')}`);
+    }
+  });
+
+  // Synthetic single-pol frames factory
+  const makeSinglePolFrames = (n) => {
+    const frames = [];
+    for (let k = 0; k < n; k++) {
+      const arr = new Float32Array(16);
+      for (let i = 0; i < 16; i++) {
+        // Pixel 3 is a step-change halfway through the series.
+        arr[i] = i === 3 ? (k < n / 2 ? 0.2 : 2.0) : 0.5 + 0.05 * k + 0.01 * i;
+      }
+      frames.push({
+        requiredPols: ['HHHH'],
+        getTile: async () => ({ data: arr, width: 4, height: 4 }),
+      });
+    }
+    return frames;
+  };
+
+  check('runATBD (crop) flags pixel with large temporal variation', async () => {
+    const frames = makeSinglePolFrames(6);
+    const res = await runner.runATBD(frames, [0, 0, 10, 10], {
+      algorithm: 'crop', cvThreshold: 0.2,
+    });
+    if (res.width !== 4 || res.height !== 4) throw new Error('tile size wrong');
+    if (res.classMap[3] !== 1) throw new Error('step-change pixel should be flagged');
+    if (res.metadata.polarization !== 'HHHH') throw new Error('metadata.polarization wrong');
+  });
+
+  check('runATBD (disturbance) flags pixel with CUSUM step-change', async () => {
+    const frames = makeSinglePolFrames(6);
+    const res = await runner.runATBD(frames, [0, 0, 10, 10], {
+      algorithm: 'disturbance', sdiffThresholdPercentile: 80,
+    });
+    if (res.classMap[3] !== 1) throw new Error('step-change pixel should be disturbed');
+  });
+
+  check('runATBD (inundation) requires dual-pol frames, errors otherwise', async () => {
+    const frames = makeSinglePolFrames(4);
+    let threw = false;
+    try {
+      await runner.runATBD(frames, [0, 0, 10, 10], { algorithm: 'inundation' });
+    } catch { threw = true; }
+    if (!threw) throw new Error('expected throw for single-pol inundation');
+  });
+
+  check('runATBD (inundation) runs on dual-pol frames and returns a classMap', async () => {
+    const frames = [];
+    for (let k = 0; k < 5; k++) {
+      const hh = new Float32Array(16);
+      const hv = new Float32Array(16);
+      for (let i = 0; i < 16; i++) { hh[i] = 1.0 + 0.1 * k; hv[i] = 0.5 + 0.02 * k; }
+      frames.push({
+        requiredPols: ['HHHH', 'HVHV'],
+        isRGB: true,
+        getTile: async () => ({ bands: { HHHH: hh, HVHV: hv }, width: 4, height: 4 }),
+      });
+    }
+    const res = await runner.runATBD(frames, [0, 0, 10, 10], { algorithm: 'inundation' });
+    if (res.classMap.length !== 16) throw new Error('classMap length wrong');
+    if (res.metadata.numFrames !== 5) throw new Error('numFrames meta wrong');
+  });
+
+  check('runATBD rejects unknown algorithm', async () => {
+    const frames = makeSinglePolFrames(3);
+    let threw = false;
+    try {
+      await runner.runATBD(frames, [0, 0, 10, 10], { algorithm: 'nope' });
+    } catch { threw = true; }
+    if (!threw) throw new Error('expected throw for unknown algorithm');
+  });
+
+} catch (err) {
+  skip('NISAR ATBD app integration', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
