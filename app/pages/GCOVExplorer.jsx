@@ -1,45 +1,43 @@
-import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
-import { createRoot } from 'react-dom/client';
-import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '../src/index.js';
-import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
-import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
-import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
-import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
-import { validateWKT } from '../src/utils/wkt.js';
-import { computeSubsetBounds } from '../src/utils/roi-subset.js';
-import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
-import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
-import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
-import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
-import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
-import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
-import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
-import { probeGPU } from '../src/utils/gpu-detect.js';
-import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js';
-import { StatusWindow } from '../src/components/StatusWindow.jsx';
-import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
-import { OverviewMap } from '../src/components/OverviewMap.jsx';
-import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
-import { HistogramPanel } from '../src/components/Histogram.jsx';
-import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
-import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
-import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
-import { getColormap } from '../src/utils/colormap.js';
-import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84, wgs84ToProjectedPoint } from '../src/loaders/overture-loader.js';
-import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '@src/index.js';
+import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '@src/loaders/nisar-loader.js';
+import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '@src/loaders/nisar-gunw-loader.js';
+import { detectNISARProduct, openNISARReader } from '@src/loaders/nisar-product.js';
+import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '@src/loaders/h5chunk.js';
+import { validateWKT } from '@src/utils/wkt.js';
+import { computeSubsetBounds } from '@src/utils/roi-subset.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '@src/utils/sar-composites.js';
+import { DataDiscovery } from '@src/components/DataDiscovery.jsx';
+import { isNISARFile, isCOGFile } from '@src/utils/bucket-browser.js';
+import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '@src/utils/geotiff-writer.js';
+import { createRGBTexture, computeRGBBands } from '@src/utils/sar-composites.js';
+import { computeChannelStats, sampleViewportStats } from '@src/utils/stats.js';
+import { computeChannelStatsAuto } from '@src/gpu/gpu-stats.js';
+import { probeGPU } from '@src/utils/gpu-detect.js';
+import { applySpeckleFilter, getFilterTypes } from '@src/gpu/spatial-filter.js';
+import { StatusWindow } from '@src/components/StatusWindow.jsx';
+import { MetadataPanel } from '@src/components/MetadataPanel.jsx';
+import { OverviewMap } from '@src/components/OverviewMap.jsx';
+import { SatelliteMap } from '@src/components/SatelliteMap.jsx';
+import { HistogramPanel } from '@src/components/Histogram.jsx';
+import { HistogramOverlay } from '@src/components/HistogramOverlay.jsx';
+import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob } from '@src/utils/figure-export.js';
+import { STRETCH_MODES, createStretchFn } from '@src/utils/stretch.js';
+import { getColormap } from '@src/utils/colormap.js';
+import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84, wgs84ToProjectedPoint } from '@src/loaders/overture-loader.js';
+import { createOvertureLayers } from '@src/layers/OvertureLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
-import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
-import { NISARSearch } from '../src/components/NISARSearch.jsx';
-import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
-import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
-import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
-import { runATBD, ATBD_ALGORITHMS } from '../src/utils/atbd-runner.js';
-import { classifiedToRGBA, paletteToClassRegions } from '../src/utils/atbd-palettes.js';
-import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
-import { loadMetadataCube } from '../src/utils/metadata-cube.js';
-import { loadAllCorrections, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
-import { embedStateInPNG, extractStateFromPNG } from '../src/utils/png-state.js';
+import { SceneCatalog } from '@src/components/SceneCatalog.jsx';
+import { NISARSearch } from '@src/components/NISARSearch.jsx';
+import { ROIProfilePlot } from '@src/components/ROIProfilePlot.jsx';
+import ScatterClassifier from '@src/components/ScatterClassifier.jsx';
+import ClassificationOverlay from '@src/components/ClassificationOverlay.jsx';
+import { runATBD, ATBD_ALGORITHMS } from '@src/utils/atbd-runner.js';
+import { classifiedToRGBA, paletteToClassRegions } from '@src/utils/atbd-palettes.js';
+import { IncidenceScatter, sampleScatterData } from '@src/components/IncidenceScatter.jsx';
+import { loadMetadataCube } from '@src/utils/metadata-cube.js';
+import { loadAllCorrections, CORRECTION_TYPES } from '@src/utils/phase-corrections.js';
+import { embedStateInPNG, extractStateFromPNG } from '@src/utils/png-state.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -280,7 +278,7 @@ function computeLogNormalHist(mean, std, numBins = 128, syntheticCount = 100000)
  * SARdine - SAR Data INspection and Exploration
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
-function App() {
+export default function GCOVExplorer() {
   // GPU capability detection (cached, runs once)
   const gpuInfo = useMemo(() => probeGPU(), []);
 
@@ -6349,37 +6347,3 @@ function ThemeToggle() {
   );
 }
 
-class ErrorBoundary extends Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false, error: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { hasError: true, error };
-  }
-  componentDidCatch(error, info) {
-    console.error('[SARdine] Uncaught error:', error, info.componentStack);
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div style={{ padding: '2rem', color: '#e0e0e0', background: '#1a1a2e', height: '100vh', fontFamily: 'monospace' }}>
-          <h2>Something went wrong</h2>
-          <pre style={{ whiteSpace: 'pre-wrap', color: '#ff6b6b' }}>{this.state.error?.message}</pre>
-          <button onClick={() => this.setState({ hasError: false, error: null })}
-            style={{ padding: '0.5rem 1rem', marginTop: '1rem', cursor: 'pointer' }}>
-            Try Again
-          </button>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-// Mount the app (guard against Vite HMR re-execution)
-const container = document.getElementById('app');
-if (!container._reactRoot) {
-  container._reactRoot = createRoot(container);
-}
-container._reactRoot.render(<ErrorBoundary><App /></ErrorBoundary>);

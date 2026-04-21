@@ -59,6 +59,10 @@ test_sar_*.tif
 
 # Benchmark results (generated output)
 test/benchmarks/results/
+
+# Playwright artifacts
+test-results/
+playwright-report/
 docs/local/
 docs/local/**
 docs/local\ /

@@ -928,24 +928,24 @@ check('checks PNG signature bytes', () => {
   assertContains(pngStateSrc, '137, 80, 78, 71', 'PNG signature bytes');
 });
 
-check('main.jsx imports embedStateInPNG', () => {
-  const mainSrc = readFile('app/main.jsx');
-  assertContains(mainSrc, 'embedStateInPNG', 'embedStateInPNG import');
+check('GCOVExplorer imports embedStateInPNG', () => {
+  const src = readFile('app/pages/GCOVExplorer.jsx');
+  assertContains(src, 'embedStateInPNG', 'embedStateInPNG import');
 });
 
-check('main.jsx imports extractStateFromPNG', () => {
-  const mainSrc = readFile('app/main.jsx');
-  assertContains(mainSrc, 'extractStateFromPNG', 'extractStateFromPNG import');
+check('GCOVExplorer imports extractStateFromPNG', () => {
+  const src = readFile('app/pages/GCOVExplorer.jsx');
+  assertContains(src, 'extractStateFromPNG', 'extractStateFromPNG import');
 });
 
-check('main.jsx calls embedStateInPNG at export', () => {
-  const mainSrc = readFile('app/main.jsx');
-  assertContains(mainSrc, 'await embedStateInPNG(blob, serializeViewerState())', 'embed call at export');
+check('GCOVExplorer calls embedStateInPNG at export', () => {
+  const src = readFile('app/pages/GCOVExplorer.jsx');
+  assertContains(src, 'await embedStateInPNG(blob, serializeViewerState())', 'embed call at export');
 });
 
-check('main.jsx calls extractStateFromPNG on PNG drop', () => {
-  const mainSrc = readFile('app/main.jsx');
-  assertContains(mainSrc, 'extractStateFromPNG(file)', 'extract call on drop');
+check('GCOVExplorer calls extractStateFromPNG on PNG drop', () => {
+  const src = readFile('app/pages/GCOVExplorer.jsx');
+  assertContains(src, 'extractStateFromPNG(file)', 'extract call on drop');
 });
 
 try {

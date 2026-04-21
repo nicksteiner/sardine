@@ -1,0 +1,185 @@
+/**
+ * SARdine router shell.
+ *
+ * Per S291 / S290: a hash-routed SPA that dispatches to per-workflow pages.
+ * `/` → Landing chooser
+ * `/explore/gcov` → GCOVExplorer (the legacy explore-everything UI)
+ * `/explore/gunw` (S294), `/explore/cog` (S295), `/local` (S295),
+ * `/inundation` (S292), `/crop` (S293), `/disturbance` (S293)
+ *   → ComingSoon placeholders until the respective phase lands.
+ *
+ * Backward-compat redirects: legacy `?cog=URL` and `?url=URL` query params
+ * at the root land on the right `/explore/*` route so old shared links
+ * continue to resolve.
+ */
+import React, { Component, useEffect } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Router, Switch, Route, Link, useLocation } from 'wouter';
+import { useHashLocation } from 'wouter/use-hash-location';
+import './theme/sardine-theme.css';
+import Landing from './pages/Landing.jsx';
+import GCOVExplorer from './pages/GCOVExplorer.jsx';
+
+// Build metadata injected by Vite `define`. Fallbacks for environments where
+// the define isn't present (e.g. a bare `node --eval`).
+const BUILD_SHA = typeof __BUILD_SHA__ !== 'undefined' ? __BUILD_SHA__ : 'dev';
+const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
+
+export { BUILD_SHA, APP_VERSION };
+
+/** Visible on every route — satisfies S290 R8. */
+export function BuildChrome() {
+  return (
+    <div
+      className="sardine-build-chrome"
+      data-testid="build-chrome"
+      style={{
+        position: 'fixed',
+        bottom: '4px',
+        right: '8px',
+        fontSize: '10px',
+        color: 'var(--sardine-muted, #888)',
+        fontFamily: 'monospace',
+        zIndex: 999,
+        pointerEvents: 'none',
+        background: 'rgba(0, 0, 0, 0.3)',
+        padding: '2px 6px',
+        borderRadius: '3px',
+      }}
+    >
+      v{APP_VERSION} · {BUILD_SHA}
+    </div>
+  );
+}
+
+function ComingSoon({ route, directive }) {
+  return (
+    <div
+      data-testid="coming-soon"
+      style={{
+        minHeight: '100vh',
+        padding: '2rem',
+        color: 'var(--sardine-ink, #e0e0e0)',
+        fontFamily: 'monospace',
+        background: 'var(--sardine-bg, #0f1419)',
+      }}
+    >
+      <h2 style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>{route} — coming soon</h2>
+      <p>
+        Planned in directive <code>{directive}</code>.
+      </p>
+      <p>
+        <Link href="/">← Back to chooser</Link>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * One-shot redirect for legacy `?cog=` / `?url=` root-level links.
+ *
+ * If a user lands on `/` with a `?url=...` query param (from an old shared
+ * link), route them to the appropriate `/explore/*` page and keep the URL
+ * so the destination page can auto-load. Extension-based dispatch because
+ * we don't want to HEAD-fetch the URL just to classify it.
+ */
+function useLegacyRedirect() {
+  const [location, navigate] = useLocation();
+  useEffect(() => {
+    // Only redirect from the root. If a hash target is already present, the
+    // user's on a real route and legacy params aren't ours to interpret.
+    if (location !== '/') return;
+    const params = new URLSearchParams(window.location.search);
+    const cog = params.get('cog');
+    const url = params.get('url');
+    if (cog) {
+      navigate(`/explore/cog?url=${encodeURIComponent(cog)}`, { replace: true });
+      return;
+    }
+    if (url) {
+      const lower = url.toLowerCase().split('?')[0];
+      const route =
+        lower.endsWith('.h5') || lower.endsWith('.h5.xz')
+          ? '/explore/gcov'
+          : lower.endsWith('.tif') || lower.endsWith('.tiff')
+            ? '/explore/cog'
+            : '/explore/gcov';
+      navigate(`${route}?url=${encodeURIComponent(url)}`, { replace: true });
+    }
+  }, [location, navigate]);
+}
+
+function Routes() {
+  useLegacyRedirect();
+  return (
+    <Switch>
+      <Route path="/" component={Landing} />
+      <Route path="/explore/gcov" component={GCOVExplorer} />
+      <Route path="/explore/gunw">{() => <ComingSoon route="GUNW Explorer" directive="S294" />}</Route>
+      <Route path="/explore/cog">{() => <ComingSoon route="COG Explorer" directive="S295" />}</Route>
+      <Route path="/inundation">{() => <ComingSoon route="Inundation ATBD" directive="S292" />}</Route>
+      <Route path="/crop">{() => <ComingSoon route="Crop ATBD" directive="S293" />}</Route>
+      <Route path="/disturbance">{() => <ComingSoon route="Disturbance ATBD" directive="S293" />}</Route>
+      <Route path="/local">{() => <ComingSoon route="Local File Explorer" directive="S295" />}</Route>
+      <Route>{() => <ComingSoon route="Not found" directive="—" />}</Route>
+    </Switch>
+  );
+}
+
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[SARdine] Uncaught error:', error, info.componentStack);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          style={{
+            padding: '2rem',
+            color: '#e0e0e0',
+            background: '#1a1a2e',
+            height: '100vh',
+            fontFamily: 'monospace',
+          }}
+        >
+          <h2>Something went wrong</h2>
+          <pre style={{ whiteSpace: 'pre-wrap', color: '#ff6b6b' }}>{this.state.error?.message}</pre>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{ padding: '0.5rem 1rem', marginTop: '1rem', cursor: 'pointer' }}
+          >
+            Try Again
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function App() {
+  return (
+    <Router hook={useHashLocation}>
+      <Routes />
+      <BuildChrome />
+    </Router>
+  );
+}
+
+// Mount (guard against Vite HMR re-execution).
+const container = document.getElementById('app');
+if (!container._reactRoot) {
+  container._reactRoot = createRoot(container);
+}
+container._reactRoot.render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);

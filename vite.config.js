@@ -2,6 +2,36 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import https from 'node:https';
 import http from 'node:http';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Resolve build metadata once at config time. Fallbacks let the config
+// still load if git is unavailable (e.g. inside a bare Docker stage).
+function resolveBuildSha() {
+  try {
+    return execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
+function resolveVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf8'));
+    return pkg.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const BUILD_SHA = resolveBuildSha();
+const APP_VERSION = resolveVersion();
 
 /**
  * Vite plugin: CORS proxy for dev server.
@@ -166,10 +196,16 @@ export default defineConfig({
   plugins: [react(), corsProxyPlugin()],
   base: './',   // Relative paths for JupyterHub proxy
   root: 'app',
+  define: {
+    // Injected globals visible to app code (S290 R8 — build SHA + version
+    // rendered on every route).
+    __BUILD_SHA__: JSON.stringify(BUILD_SHA),
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   resolve: {
     alias: {
-      'sardine': '/src/index.js',
-      '@src': '/src',
+      'sardine': resolve(__dirname, 'src/index.js'),
+      '@src': resolve(__dirname, 'src'),
     },
   },
   server: {
