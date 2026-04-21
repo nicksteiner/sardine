@@ -1,8 +1,8 @@
-# D292: Phase 2 — InundationApp + ASF auto-stack streaming
+# S292: Phase 2 — InundationApp + ASF auto-stack streaming
 
-**Parent directive:** [D290](D290_APP_SEPARATION.md)
-**Depends on:** D291 merged (router shell in place, `app/shared/` set up).
-**Blocks:** D293 (Crop + Disturbance apps clone this scaffold).
+**Parent directive:** [S290](S290_APP_SEPARATION.md)
+**Depends on:** S291 merged (router shell in place, `app/shared/` set up).
+**Blocks:** S293 (Crop + Disturbance apps clone this scaffold).
 
 ## Scope
 
@@ -28,12 +28,12 @@ test gives us ground truth for the streaming-sourced classification.
    - **Step 4: Run.** Progress bar; calls existing `runATBD` from
      `src/utils/atbd-runner.js` with `algorithm: 'inundation'`.
    - **Step 5: View + Export.** Classification overlay is the primary
-     render (via `app/shared/ClassificationOverlay.jsx` from D291).
+     render (via `app/shared/ClassificationOverlay.jsx` from S291).
      "Show SAR underlay" toggle reveals the dual-pol composite behind
      the classification. Export GeoTIFF + Export Figure (PNG) buttons.
 
 2. **New `src/utils/atbd-auto-stack.js`.** Pure data-fetching module,
-   reusable by D293's Crop + Disturbance apps:
+   reusable by S293's Crop + Disturbance apps:
    - Input: `{ lon, lat, algorithm, startDate?, endDate?, maxFrames? }`.
    - Queries CMR (via existing `src/loaders/cmr-client.js`) for NISAR
      L2 GCOV granules covering `(lon, lat)`.
@@ -60,7 +60,7 @@ test gives us ground truth for the streaming-sourced classification.
    - Serial by default (ASF TEA redirect chains + Earthdata Login
      cookies don't parallelize well); optional concurrency knob later
      if measurements show it helps.
-   - **D290 R4 compliance:** this is a reusable loader in `src/`, not
+   - **S290 R4 compliance:** this is a reusable loader in `src/`, not
      a page-specific wrapper. Its existence is the reason the app
      doesn't need to duplicate frame-loading logic.
 
@@ -78,7 +78,7 @@ test gives us ground truth for the streaming-sourced classification.
    uses today (main.jsx:452). If token is missing/expired, a compact
    banner prompts for login before auto-stack runs. Reuses the existing
    token-entry UI component; if it's not yet in `app/shared/`, move it
-   there in this phase (it will now have ≥2 callers, satisfying D290 R2).
+   there in this phase (it will now have ≥2 callers, satisfying S290 R2).
 
 7. **Playwright smoke test.** `test/e2e/inundation.spec.js`:
    - `/` → click "Inundation ATBD" card → navigates to `/#/inundation`.
@@ -94,10 +94,10 @@ test gives us ground truth for the streaming-sourced classification.
 8. **Landing page update.** `/inundation` card becomes live
    (no longer "coming soon").
 
-## Out of scope for D292
+## Out of scope for S292
 
-- Crop / Disturbance apps (D293).
-- GUNW / COG / Local extraction (D294, D295).
+- Crop / Disturbance apps (S293).
+- GUNW / COG / Local extraction (S294, S295).
 - Geocoding / place-name search (possible D296).
 - Manual-browse granule override for users who don't want auto-stack
   (possible D297, once someone actually asks).
@@ -121,13 +121,13 @@ test gives us ground truth for the streaming-sourced classification.
 - [ ] No histogram / contrast / stretch / colormap UI visible on
       `/inundation`.
 - [ ] `npm test` + `npm run test:e2e` green.
-- [ ] D290 rules pass: `lint:shared`, ESLint, no forks, no page-specific
+- [ ] S290 rules pass: `lint:shared`, ESLint, no forks, no page-specific
       code in `src/`.
 
 ## Branch / PR
 
-- Branch: `d292-inundation-app` off `main` (after D291 merges).
-- PR title: `D292: /inundation ATBD app with ASF auto-stack streaming`.
+- Branch: `s292-inundation-app` off `main` (after S291 merges).
+- PR title: `S292: /inundation ATBD app with ASF auto-stack streaming`.
 
 ## Risks
 
@@ -146,4 +146,4 @@ test gives us ground truth for the streaming-sourced classification.
   actual response shape and adjust accordingly.
 - **Earthdata Login token UX.** If the prompt banner isn't polished,
   applications users will get stuck. Borrow the existing explore-mode
-  flow as-is for D292; revisit if usability feedback warrants.
+  flow as-is for S292; revisit if usability feedback warrants.

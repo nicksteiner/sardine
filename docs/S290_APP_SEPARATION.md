@@ -1,4 +1,4 @@
-# D290: Separate URL-Based Entry Points (App Separation)
+# S290: Separate URL-Based Entry Points (App Separation)
 
 **Short answer:** turn SARdine from a single explore-everything page into a
 family of URL-addressable apps. `/explore/gcov`, `/explore/gunw`, `/inundation`,
@@ -25,7 +25,7 @@ gap is **surface**:
   there is no way to hand a colleague a link that lands them in the right
   tool with the right data. URL params (`?cog=`, `?url=`) exist but only
   seed a single-file view.
-- ATBD-mode requires an auto-stack flow against ASF streaming (D290's
+- ATBD-mode requires an auto-stack flow against ASF streaming (S290's
   companion directive for auto-selection). That flow is fundamentally
   different from the explore flow — pick an algorithm, fetch data for it,
   classify, export — and does not belong in the same panel.
@@ -414,7 +414,7 @@ Pull those branches into their own file, remove the GUNW branches from
   file type and delegates to the appropriate route component rendered
   in-place (no redirect).
 
-## What we are explicitly NOT doing in D290
+## What we are explicitly NOT doing in S290
 
 - No new algorithms. ATBDs already merged on `d288-d289-combined` are the
   scope.
@@ -504,12 +504,12 @@ requests. Phase 1 is a pure refactor with high test coverage.
 ## Commit / branch convention
 
 One branch per phase, each a PR on top of the previous:
-- `d290-01-router-shell`
-- `d290-02-inundation-app`
-- `d290-03-crop-disturbance-apps`
-- `d290-04-gunw-extract`
-- `d290-05-cog-local`
+- `s290-01-router-shell`
+- `s290-02-inundation-app`
+- `s290-03-crop-disturbance-apps`
+- `s290-04-gunw-extract`
+- `s290-05-cog-local`
 
-Base `d290-01-router-shell` off `d288-d289-combined` so the ATBD algorithms
+Base `s290-01-router-shell` off `d288-d289-combined` so the ATBD algorithms
 and the UI panel are both present and can be migrated into the new route
 structure.

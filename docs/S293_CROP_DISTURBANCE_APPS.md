@@ -1,7 +1,7 @@
-# D293: Phase 3 — CropApp + DisturbanceApp
+# S293: Phase 3 — CropApp + DisturbanceApp
 
-**Parent directive:** [D290](D290_APP_SEPARATION.md)
-**Depends on:** D292 merged (InundationApp is the scaffold these clone).
+**Parent directive:** [S290](S290_APP_SEPARATION.md)
+**Depends on:** S292 merged (InundationApp is the scaffold these clone).
 **Blocks:** nothing.
 
 ## Scope
@@ -9,7 +9,7 @@
 Ship `/crop` and `/disturbance` by cloning the InundationApp scaffold and
 swapping the algorithm + the data-query shape. No new shared code should
 be required — if it is, it means the Inundation scaffold wasn't generic
-enough and needs extraction into `app/shared/` before D293 proceeds.
+enough and needs extraction into `app/shared/` before S293 proceeds.
 
 ## Work
 
@@ -43,7 +43,7 @@ enough and needs extraction into `app/shared/` before D293 proceeds.
    - `crop`: ≥6 frames spanning ≥60 days, any pol (dual preferred).
    - `disturbance`: ≥3 frames within user-picked window (default 90 d).
    Express as a single dispatch function in the same file, not separate
-   per-app wrappers (D290 R4).
+   per-app wrappers (S290 R4).
 
 4. **Landing page update.** `/crop` and `/disturbance` cards become
    live.
@@ -53,14 +53,14 @@ enough and needs extraction into `app/shared/` before D293 proceeds.
      location, assert overlay + export.
    - `test/e2e/disturbance.spec.js` — same.
 
-6. **Drift check (D290 R3).** Before merging, diff InundationApp vs
+6. **Drift check (S290 R3).** Before merging, diff InundationApp vs
    CropApp vs DisturbanceApp. If >70% of the page JSX is duplicated,
    extract `<AtbdAppShell>` into `app/shared/` (takes `algorithm`,
    `paramsUI`, `extraDataFilters` as props) and rewrite the three
    pages as thin wrappers. Otherwise leave them independent. The
    call is made at PR-review time, not up-front.
 
-## Out of scope for D293
+## Out of scope for S293
 
 - New algorithm params beyond what `runATBD` already accepts. If
   Crop or Disturbance needs a new tunable, that's a separate
@@ -78,16 +78,16 @@ enough and needs extraction into `app/shared/` before D293 proceeds.
 - [ ] Percentile slider on `/disturbance` same.
 - [ ] GeoTIFF export for each produces a valid classification raster.
 - [ ] Playwright smoke tests (crop, disturbance) pass.
-- [ ] D290 rules pass (no forks, no page-specific code in `src/`,
+- [ ] S290 rules pass (no forks, no page-specific code in `src/`,
       shared components still have ≥2 callers).
 - [ ] `runATBD` was not modified. If it was, the modification must
-      be backwards-compatible for Inundation (verify D292 tests still
+      be backwards-compatible for Inundation (verify S292 tests still
       pass).
 
 ## Branch / PR
 
-- Branch: `d293-crop-disturbance-apps` off `main` (after D292 merges).
-- PR title: `D293: /crop and /disturbance ATBD apps`.
+- Branch: `s293-crop-disturbance-apps` off `main` (after S292 merges).
+- PR title: `S293: /crop and /disturbance ATBD apps`.
 
 ## Risks
 
@@ -102,4 +102,4 @@ enough and needs extraction into `app/shared/` before D293 proceeds.
   dates or picking a different location."
 - **Over-extraction into `AtbdAppShell`.** Tempting to DRY early.
   Resist until the third page is written — that's when real commonality
-  becomes visible. Premature abstraction will make D294/D295 harder.
+  becomes visible. Premature abstraction will make S294/S295 harder.

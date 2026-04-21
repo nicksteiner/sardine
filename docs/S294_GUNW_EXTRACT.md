@@ -1,9 +1,9 @@
-# D294: Phase 4 — GUNWExplorer extraction
+# S294: Phase 4 — GUNWExplorer extraction
 
-**Parent directive:** [D290](D290_APP_SEPARATION.md)
-**Depends on:** D291 merged. (Independent of D292/D293; can be done in
+**Parent directive:** [S290](S290_APP_SEPARATION.md)
+**Depends on:** S291 merged. (Independent of S292/S293; can be done in
 parallel if a second developer is available.)
-**Blocks:** D295 (Local explorer uses the GUNW/GCOV/COG page components
+**Blocks:** S295 (Local explorer uses the GUNW/GCOV/COG page components
 as auto-detect targets).
 
 ## Scope
@@ -28,7 +28,7 @@ mostly a code-org refactor, not a logic change.
    coordinate overlays) are already in `app/shared/`.
 4. **Landing page update.** `/explore/gunw` card becomes live.
 5. **URL redirect.** `?url=<GUNW_URL>` on the root should route to
-   `/explore/gunw` — extend the D291 URL-sniff redirect. NISAR GUNW
+   `/explore/gunw` — extend the S291 URL-sniff redirect. NISAR GUNW
    filenames are distinguishable from GCOV by substring (`GUNW` vs
    `GCOV`); use that as the sniff heuristic.
 6. **Playwright smoke test.** `test/e2e/gunw-explorer.spec.js` —
@@ -50,12 +50,12 @@ mostly a code-org refactor, not a logic change.
       extraction.
 - [ ] GUNW-URL redirect from `?url=` works.
 - [ ] Playwright smoke test passes.
-- [ ] D290 rules pass.
+- [ ] S290 rules pass.
 
 ## Branch / PR
 
-- Branch: `d294-gunw-extract` off `main` (after D291).
-- PR title: `D294: /explore/gunw extraction from GCOVExplorer`.
+- Branch: `s294-gunw-extract` off `main` (after S291).
+- PR title: `S294: /explore/gunw extraction from GCOVExplorer`.
 
 ## Risks
 
@@ -67,5 +67,5 @@ mostly a code-org refactor, not a logic change.
   state fields are shared (e.g. frequency selector) — leave those
   in `GCOVExplorer.jsx` for GCOV use and re-introduce equivalents in
   `GUNWExplorer.jsx` where actually needed, rather than trying to
-  share state across pages (which would violate D290's no-global-store
+  share state across pages (which would violate S290's no-global-store
   principle).

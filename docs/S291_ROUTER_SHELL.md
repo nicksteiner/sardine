@@ -1,8 +1,8 @@
-# D291: Phase 1 — Router shell + Landing + GCOVExplorer extraction
+# S291: Phase 1 — Router shell + Landing + GCOVExplorer extraction
 
-**Parent directive:** [D290](D290_APP_SEPARATION.md)
-**Depends on:** main at or after the D290 design-doc commit.
-**Blocks:** D292, D293, D294, D295.
+**Parent directive:** [S290](S290_APP_SEPARATION.md)
+**Depends on:** main at or after the S290 design-doc commit.
+**Blocks:** S292, S293, S294, S295.
 
 ## Scope
 
@@ -21,7 +21,7 @@ same behavior as today.
    - Mount global theme + status-window host.
    - Inject build SHA via Vite `define` (`__BUILD_SHA__`) and render it
      plus `package.json.version` in a consistent corner on every page
-     (satisfies D290 R8).
+     (satisfies S290 R8).
 3. **Create `app/pages/GCOVExplorer.jsx`.** Move the entire current
    `app/main.jsx` body into it — component export, all hooks, all JSX.
    Rebasing imports: `../src/*` → `../../src/*`; components referenced
@@ -29,21 +29,21 @@ same behavior as today.
    to `app/shared/` (StatusWindow, Histogram, ClassificationOverlay,
    CoordinateGrid, ScaleBar, LoadingIndicator) — `app/shared/` is a
    drop-in replacement path for now, `src/components/` can be removed
-   in D295 once every importer is moved.
+   in S295 once every importer is moved.
 4. **Create `app/pages/Landing.jsx`:**
    - Header: SARdine wordmark + version/SHA.
    - Grid of cards, one per planned route. `/explore/gcov` is live;
      others render as "coming soon — D29X" with a link back to the
      design doc.
    - Minimal CSS; uses theme variables only, no overrides
-     (satisfies D290 R7).
+     (satisfies S290 R7).
 5. **Wire backward-compat query-param redirects** at the router root:
    - `?cog=URL` → `navigate('/#/explore/cog?url=URL')` (scaffolded;
-     /explore/cog page lands in D295 but the redirect is in place now
+     /explore/cog page lands in S295 but the redirect is in place now
      so existing shared links don't 404).
    - `?url=URL` → detect by extension (`.h5` → `/explore/gcov`, `.tif`
      → `/explore/cog`) and redirect.
-6. **ESLint rule (D290 R1).** Add to `.eslintrc.json`:
+6. **ESLint rule (S290 R1).** Add to `.eslintrc.json`:
    ```json
    {
      "overrides": [{
@@ -59,12 +59,12 @@ same behavior as today.
      }]
    }
    ```
-7. **Shared-usage checker (D290 R2, R3).** New script
+7. **Shared-usage checker (S290 R2, R3).** New script
    `scripts/check-shared-usage.mjs`:
    - Fails if any `app/shared/*.jsx` has <2 callers in `app/pages/`.
    - Fails if any filename matches `*For*.jsx` or `*.<pagename>.jsx`.
    - Wired into `npm run lint:shared`, called from `npm test`.
-8. **Playwright harness (D290 R5).** Add `@playwright/test` dev dep,
+8. **Playwright harness (S290 R5).** Add `@playwright/test` dev dep,
    minimal `playwright.config.js`, a `test/e2e/` dir, and two smoke
    tests:
    - `test/e2e/landing.spec.js` — `/` mounts, shows cards for every
@@ -74,15 +74,15 @@ same behavior as today.
      test fixture already in `test/fixtures/` — check availability.)
    - Wired into `npm run test:e2e`. Not in the default `npm test` yet
      (Playwright is slow); runs as a separate CI job.
-9. **CONTRIBUTING.md code-review checklist** from D290.
+9. **CONTRIBUTING.md code-review checklist** from S290.
 
-## Out of scope for D291
+## Out of scope for S291
 
-- Any ATBD page (deferred to D292/D293).
-- GUNW/COG/Local pages (deferred to D294/D295).
-- The auto-stack ASF streaming flow (D292).
+- Any ATBD page (deferred to S292/S293).
+- GUNW/COG/Local pages (deferred to S294/S295).
+- The auto-stack ASF streaming flow (S292).
 - Bundle analyzer / code-splitting. Code-splitting per route ships
-  when the second page lands (D292); for D291 everything stays in one
+  when the second page lands (S292); for S291 everything stays in one
   chunk, which is still smaller than today because Landing is tiny.
 
 ## Acceptance criteria
@@ -105,8 +105,8 @@ same behavior as today.
 
 ## Branch / PR
 
-- Branch: `d291-router-shell` off `main`.
-- PR title: `D291: hash-routed SPA shell + Landing + GCOVExplorer`.
+- Branch: `s291-router-shell` off `main`.
+- PR title: `S291: hash-routed SPA shell + Landing + GCOVExplorer`.
 - Squash-merge discouraged — keep the extraction commit atomic so
   `git log --follow` on `GCOVExplorer.jsx` reaches the original
   `main.jsx` history.

@@ -1,14 +1,14 @@
-# D295: Phase 5 — COGExplorer + LocalExplorer
+# S295: Phase 5 — COGExplorer + LocalExplorer
 
-**Parent directive:** [D290](D290_APP_SEPARATION.md)
-**Depends on:** D291 merged. (Independent of D292/D293/D294.)
+**Parent directive:** [S290](S290_APP_SEPARATION.md)
+**Depends on:** S291 merged. (Independent of S292/S293/S294.)
 **Blocks:** nothing — final phase.
 
 ## Scope
 
 Ship `/explore/cog` as a COG-only viewer (strip NISAR panels) and
-`/local` as the drop-file catch-all entry point. After D295, every
-route in the D290 target URL surface is live.
+`/local` as the drop-file catch-all entry point. After S295, every
+route in the S290 target URL surface is live.
 
 ## Work
 
@@ -19,7 +19,7 @@ route in the D290 target URL surface is live.
      product-type detection, no HDF5 metadata tree).
    - Reuses `src/loaders/cog-loader.js` + `app/shared/SARCanvas.jsx`.
    - URL: `/explore/cog?url=URL`.
-   - Backward-compat: the root `?cog=URL` redirect set up in D291
+   - Backward-compat: the root `?cog=URL` redirect set up in S291
      now points to a live page.
 
 2. **LocalExplorer (`app/pages/LocalExplorer.jsx`)**:
@@ -42,7 +42,7 @@ route in the D290 target URL surface is live.
 4. **Landing page updates.** `/explore/cog` and `/local` cards go
    live. Landing is now in its final form.
 
-5. **`src/components/` cleanup.** If D291 / D294 / D295 have moved
+5. **`src/components/` cleanup.** If S291 / S294 / S295 have moved
    every NISAR/SAR-specific component out of `src/components/` into
    `app/shared/`, delete `src/components/` and remove re-exports from
    `src/index.js`. Run the shared-usage checker to confirm no route
@@ -72,7 +72,7 @@ route in the D290 target URL surface is live.
       the current app shows for a COG-mode load, minus NISAR panels.
 - [ ] `/local` accepts a dropped `.h5` or `.tif` and renders the
       matching explorer in-place without navigating away.
-- [ ] Root `?cog=` redirect (from D291) lands on a functional
+- [ ] Root `?cog=` redirect (from S291) lands on a functional
       `/explore/cog` page.
 - [ ] Landing page lists every route as live (no "coming soon"
       placeholders).
@@ -80,14 +80,14 @@ route in the D290 target URL surface is live.
       imported by any page).
 - [ ] All Playwright smoke tests (landing, gcov, gunw, cog, local,
       inundation, crop, disturbance) pass.
-- [ ] D290 rules all pass: ESLint, `lint:shared`, no forks.
+- [ ] S290 rules all pass: ESLint, `lint:shared`, no forks.
 - [ ] `CLAUDE.md` + `docs/API.md` reflect the new routing.
 
 ## Branch / PR
 
-- Branch: `d295-cog-local-apps` off `main` (after D291; D292/D293/D294
+- Branch: `s295-cog-local-apps` off `main` (after S291; S292/S293/S294
   ordering irrelevant).
-- PR title: `D295: /explore/cog + /local final-phase extraction`.
+- PR title: `S295: /explore/cog + /local final-phase extraction`.
 
 ## Risks
 
