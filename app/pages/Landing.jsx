@@ -49,14 +49,14 @@ const ROUTES = [
     title: 'COG Explorer',
     blurb: 'Cloud Optimized GeoTIFF from any URL — single or time-series.',
     directive: 'S295',
-    live: false,
+    live: true,
   },
   {
     href: '/local',
     title: 'Local File Explorer',
     blurb: 'Drop a .h5 / .tif from your machine; delegates to the right explorer.',
     directive: 'S295',
-    live: false,
+    live: true,
   },
 ];
 
