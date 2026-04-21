@@ -19,6 +19,7 @@ import { useHashLocation } from 'wouter/use-hash-location';
 import './theme/sardine-theme.css';
 import Landing from './pages/Landing.jsx';
 import GCOVExplorer from './pages/GCOVExplorer.jsx';
+import InundationApp from './pages/InundationApp.jsx';
 
 // Build metadata injected by Vite `define`. Fallbacks for environments where
 // the define isn't present (e.g. a bare `node --eval`).
@@ -117,7 +118,7 @@ function Routes() {
       <Route path="/explore/gcov" component={GCOVExplorer} />
       <Route path="/explore/gunw">{() => <ComingSoon route="GUNW Explorer" directive="S294" />}</Route>
       <Route path="/explore/cog">{() => <ComingSoon route="COG Explorer" directive="S295" />}</Route>
-      <Route path="/inundation">{() => <ComingSoon route="Inundation ATBD" directive="S292" />}</Route>
+      <Route path="/inundation" component={InundationApp} />
       <Route path="/crop">{() => <ComingSoon route="Crop ATBD" directive="S293" />}</Route>
       <Route path="/disturbance">{() => <ComingSoon route="Disturbance ATBD" directive="S293" />}</Route>
       <Route path="/local">{() => <ComingSoon route="Local File Explorer" directive="S295" />}</Route>
