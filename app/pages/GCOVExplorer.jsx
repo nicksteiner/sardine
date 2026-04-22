@@ -279,7 +279,7 @@ function computeLogNormalHist(mean, std, numBins = 128, syntheticCount = 100000)
  * SARdine - SAR Data INspection and Exploration
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
-export default function GCOVExplorer() {
+export default function GCOVExplorer({ localFile = null } = {}) {
   // GPU capability detection (cached, runs once)
   const gpuInfo = useMemo(() => probeGPU(), []);
 
@@ -518,6 +518,9 @@ export default function GCOVExplorer() {
       setCogUrl(cogParam);
     }
   }, []);
+
+  // localFile prop support declared near the file-select handler below.
+  const localFileTriggered = useRef(false);
 
   // Auto-select classifier bands when datasets change
   useEffect(() => {
@@ -2204,6 +2207,16 @@ export default function GCOVExplorer() {
       addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .geojson, or a SARdine-exported .png');
     }
   }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
+
+  // S295: LocalExplorer delegation. When rendered with a pre-supplied File
+  // prop, kick the NISAR select path once on mount (ignore subsequent prop
+  // changes — LocalExplorer only passes one file per mount).
+  useEffect(() => {
+    if (!localFile || localFileTriggered.current) return;
+    localFileTriggered.current = true;
+    setFileType('nisar');
+    handleNISARFileSelect(localFile);
+  }, [localFile, handleNISARFileSelect]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {

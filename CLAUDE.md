@@ -42,11 +42,34 @@ Context for Claude Code (or any AI coding assistant) to understand the SARdine p
 
 ## Project Structure
 
+### Routes
+
+SARdine is a hash-routed SPA. Each app is URL-addressable:
+
+| Route | Page | Directive |
+|:------|:-----|:----------|
+| `/` | Landing chooser | S291 |
+| `/local` | Drop-file entry → delegates in-place | S295 |
+| `/explore/gcov` | NISAR GCOV viewer (legacy full UI) | S291 |
+| `/explore/gunw` | NISAR GUNW viewer | S294 |
+| `/explore/cog` | Minimal COG viewer (`?url=…`) | S295 |
+| `/inundation` | Inundation ATBD w/ ASF auto-stack | S292 |
+| `/crop` | Crop CV ATBD | S293 |
+| `/disturbance` | Disturbance (CUSUM) ATBD | S293 |
+
+S290 rules (R1–R8) enforced by `npm run lint`, `npm run lint:shared`, and
+per-route Playwright smoke tests under `test/e2e/`. See `CONTRIBUTING.md`.
+
 ```
 sardine/
 ├── app/
 │   ├── index.html              # Entry HTML
-│   └── main.jsx                # Main React application (~3000 lines)
+│   ├── main.jsx                # Router shell + legacy-URL redirect
+│   └── pages/
+│       ├── Landing.jsx         # Route chooser (S291)
+│       ├── LocalExplorer.jsx   # Drop-file catch-all (S295)
+│       ├── GCOVExplorer.jsx    # NISAR GCOV/GUNW viewer (S291)
+│       └── COGExplorer.jsx     # Minimal COG viewer (S295)
 ├── src/
 │   ├── index.js                # Library exports
 │   ├── loaders/

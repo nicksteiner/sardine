@@ -19,6 +19,8 @@ import { useHashLocation } from 'wouter/use-hash-location';
 import './theme/sardine-theme.css';
 import Landing from './pages/Landing.jsx';
 import GCOVExplorer from './pages/GCOVExplorer.jsx';
+import COGExplorer from './pages/COGExplorer.jsx';
+import LocalExplorer from './pages/LocalExplorer.jsx';
 import InundationApp from './pages/InundationApp.jsx';
 import CropApp from './pages/CropApp.jsx';
 import DisturbanceApp from './pages/DisturbanceApp.jsx';
@@ -29,6 +31,24 @@ const BUILD_SHA = typeof __BUILD_SHA__ !== 'undefined' ? __BUILD_SHA__ : 'dev';
 const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
 
 export { BUILD_SHA, APP_VERSION };
+
+/**
+ * Dev-only default route (S295). Set VITE_DEFAULT_ROUTE (e.g. "/local") in an
+ * `.env.local` to boot into a specific page on page load instead of Landing.
+ * Production builds (`import.meta.env.PROD`) ignore this. Skipped when a user
+ * already has a hash set, so a shared URL still wins.
+ */
+function useDevDefaultRoute() {
+  const [location, navigate] = useLocation();
+  useEffect(() => {
+    if (import.meta.env.PROD) return;
+    const defaultRoute = import.meta.env.VITE_DEFAULT_ROUTE;
+    if (!defaultRoute) return;
+    if (location !== '/') return;
+    if (window.location.hash && window.location.hash !== '#' && window.location.hash !== '#/') return;
+    navigate(defaultRoute, { replace: true });
+  }, [location, navigate]);
+}
 
 /** Visible on every route — satisfies S290 R8. */
 export function BuildChrome() {
@@ -114,16 +134,21 @@ function useLegacyRedirect() {
 
 function Routes() {
   useLegacyRedirect();
+  useDevDefaultRoute();
   return (
     <Switch>
       <Route path="/" component={Landing} />
       <Route path="/explore/gcov" component={GCOVExplorer} />
       <Route path="/explore/gunw">{() => <ComingSoon route="GUNW Explorer" directive="S294" />}</Route>
-      <Route path="/explore/cog">{() => <ComingSoon route="COG Explorer" directive="S295" />}</Route>
+      <Route path="/explore/cog" component={COGExplorer} />
       <Route path="/inundation" component={InundationApp} />
       <Route path="/crop" component={CropApp} />
       <Route path="/disturbance" component={DisturbanceApp} />
-      <Route path="/local">{() => <ComingSoon route="Local File Explorer" directive="S295" />}</Route>
+      <Route path="/local" component={LocalExplorer} />
+
+
+
+
       <Route>{() => <ComingSoon route="Not found" directive="—" />}</Route>
     </Switch>
   );
