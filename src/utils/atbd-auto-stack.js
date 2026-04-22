@@ -28,12 +28,32 @@ export const ALGORITHM_POL_REQUIREMENTS = Object.freeze({
   disturbance: ['HHHH'],
 });
 
-/** Minimum frames each algorithm needs to produce a classification. */
-export const ALGORITHM_MIN_FRAMES = Object.freeze({
-  inundation: 2,
-  crop: 2,
-  disturbance: 3,
+// ─── Algorithm → stack-selection policy (S293) ──────────────────────────────
+
+/**
+ * Per-algorithm policy for what counts as a viable stack.
+ *
+ * - `minFrames` — fewer frames than this → rejected (algorithm can't run).
+ * - `minSpanDays` — stack spans less time than this → rejected. Meaningful
+ *   for crop (temporal CV needs a phenological signal) but 0 for inundation
+ *   (event detection works on any recent pair).
+ * - `defaultMaxFrames` — UI default for the "Max frames" control.
+ */
+export const ALGORITHM_POLICIES = Object.freeze({
+  inundation:  Object.freeze({ minFrames: 2, minSpanDays:  0, defaultMaxFrames: 6 }),
+  crop:        Object.freeze({ minFrames: 6, minSpanDays: 60, defaultMaxFrames: 8 }),
+  disturbance: Object.freeze({ minFrames: 3, minSpanDays:  0, defaultMaxFrames: 10 }),
 });
+
+/**
+ * Back-compat: flat {algorithm: minFrames} derived from ALGORITHM_POLICIES.
+ * Prefer `ALGORITHM_POLICIES[algo].minFrames` for new code.
+ */
+export const ALGORITHM_MIN_FRAMES = Object.freeze(
+  Object.fromEntries(
+    Object.entries(ALGORITHM_POLICIES).map(([algo, p]) => [algo, p.minFrames]),
+  ),
+);
 
 // ─── Pure: polarization decoding from NISAR granule name ─────────────────────
 
@@ -200,15 +220,19 @@ export async function selectATBDStack(params) {
   const {
     lon, lat, algorithm,
     startDate, endDate,
-    maxFrames = 6, pageSize = 50,
+    maxFrames, pageSize = 50,
   } = params;
 
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
     throw new Error('selectATBDStack: valid lon/lat required');
   }
   const requiredPols = ALGORITHM_POL_REQUIREMENTS[algorithm];
-  if (!requiredPols) throw new Error(`selectATBDStack: unknown algorithm "${algorithm}"`);
-  const minFrames = ALGORITHM_MIN_FRAMES[algorithm];
+  const policy = ALGORITHM_POLICIES[algorithm];
+  if (!requiredPols || !policy) {
+    throw new Error(`selectATBDStack: unknown algorithm "${algorithm}"`);
+  }
+  const effMaxFrames = Number.isFinite(maxFrames) && maxFrames > 0
+    ? maxFrames : policy.defaultMaxFrames;
 
   // CMR bbox needs some width — a pure point returns nothing. Expand by
   // a small epsilon in each direction.
@@ -227,11 +251,13 @@ export async function selectATBDStack(params) {
   const matching = granules.filter((g) => granuleHasRequiredPols(g, requiredPols));
   const groups = groupByStackKey(matching);
   const ranked = rankGroups(groups);
-  const viable = ranked.filter((g) => g.numFrames >= minFrames);
+  const viable = ranked.filter(
+    (g) => g.numFrames >= policy.minFrames && g.spanDays >= policy.minSpanDays,
+  );
   if (viable.length === 0) {
-    return { winner: null, alternatives: ranked, requiredPols, hits };
+    return { winner: null, alternatives: ranked, requiredPols, hits, policy };
   }
-  const winner = trimToMostRecent(viable[0], maxFrames);
-  const alternatives = viable.slice(1).map((g) => trimToMostRecent(g, maxFrames));
-  return { winner, alternatives, requiredPols, hits };
+  const winner = trimToMostRecent(viable[0], effMaxFrames);
+  const alternatives = viable.slice(1).map((g) => trimToMostRecent(g, effMaxFrames));
+  return { winner, alternatives, requiredPols, hits, policy };
 }

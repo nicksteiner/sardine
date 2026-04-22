@@ -28,14 +28,14 @@ const ROUTES = [
     title: 'Crop Coefficient of Variation',
     blurb: 'Temporal backscatter CV → crop type + phenology signatures.',
     directive: 'S293',
-    live: false,
+    live: true,
   },
   {
     href: '/disturbance',
     title: 'Disturbance Detection',
     blurb: 'CUSUM step-change detection on NISAR time series.',
     directive: 'S293',
-    live: false,
+    live: true,
   },
   {
     href: '/explore/gunw',
