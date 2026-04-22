@@ -4,7 +4,8 @@
  * Per S291 / S290: a hash-routed SPA that dispatches to per-workflow pages.
  * `/` → Landing chooser
  * `/explore/gcov` → GCOVExplorer (the legacy explore-everything UI)
- * `/explore/gunw` (S294), `/explore/cog` (S295), `/local` (S295),
+ * `/explore/gunw` → GUNWExplorer (S294)
+ * `/explore/cog` (S295), `/local` (S295),
  * `/inundation` (S292), `/crop` (S293), `/disturbance` (S293)
  *   → ComingSoon placeholders until the respective phase lands.
  *
@@ -19,6 +20,7 @@ import { useHashLocation } from 'wouter/use-hash-location';
 import './theme/sardine-theme.css';
 import Landing from './pages/Landing.jsx';
 import GCOVExplorer from './pages/GCOVExplorer.jsx';
+import GUNWExplorer from './pages/GUNWExplorer.jsx';
 import COGExplorer from './pages/COGExplorer.jsx';
 import LocalExplorer from './pages/LocalExplorer.jsx';
 import InundationApp from './pages/InundationApp.jsx';
@@ -121,8 +123,13 @@ function useLegacyRedirect() {
     }
     if (url) {
       const lower = url.toLowerCase().split('?')[0];
-      const route =
-        lower.endsWith('.h5') || lower.endsWith('.h5.xz')
+      // S294: distinguish GUNW from GCOV by filename substring. NISAR L2
+      // filenames carry `_GUNW_` vs `_GCOV_` (and legacy `_unw_`).
+      const isH5 = lower.endsWith('.h5') || lower.endsWith('.h5.xz');
+      const isGunw = isH5 && (lower.includes('gunw') || lower.includes('_unw_'));
+      const route = isGunw
+        ? '/explore/gunw'
+        : isH5
           ? '/explore/gcov'
           : lower.endsWith('.tif') || lower.endsWith('.tiff')
             ? '/explore/cog'
@@ -139,16 +146,12 @@ function Routes() {
     <Switch>
       <Route path="/" component={Landing} />
       <Route path="/explore/gcov" component={GCOVExplorer} />
-      <Route path="/explore/gunw">{() => <ComingSoon route="GUNW Explorer" directive="S294" />}</Route>
+      <Route path="/explore/gunw" component={GUNWExplorer} />
       <Route path="/explore/cog" component={COGExplorer} />
       <Route path="/inundation" component={InundationApp} />
       <Route path="/crop" component={CropApp} />
       <Route path="/disturbance" component={DisturbanceApp} />
-      <Route path="/local" component={LocalExplorer} />
-
-
-
-
+      <Route path="/local" component={LocalExplorer
       <Route>{() => <ComingSoon route="Not found" directive="—" />}</Route>
     </Switch>
   );
