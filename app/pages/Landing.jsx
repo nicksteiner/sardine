@@ -21,21 +21,21 @@ const ROUTES = [
     title: 'Inundation ATBD',
     blurb: 'NISAR GCOV stack → open-water / flooded-vegetation / flooded-bare classification.',
     directive: 'S292',
-    live: false,
+    live: true,
   },
   {
     href: '/crop',
     title: 'Crop Coefficient of Variation',
     blurb: 'Temporal backscatter CV → crop type + phenology signatures.',
     directive: 'S293',
-    live: false,
+    live: true,
   },
   {
     href: '/disturbance',
     title: 'Disturbance Detection',
     blurb: 'CUSUM step-change detection on NISAR time series.',
     directive: 'S293',
-    live: false,
+    live: true,
   },
   {
     href: '/explore/gunw',
@@ -49,14 +49,14 @@ const ROUTES = [
     title: 'COG Explorer',
     blurb: 'Cloud Optimized GeoTIFF from any URL — single or time-series.',
     directive: 'S295',
-    live: false,
+    live: true,
   },
   {
     href: '/local',
     title: 'Local File Explorer',
     blurb: 'Drop a .h5 / .tif from your machine; delegates to the right explorer.',
     directive: 'S295',
-    live: false,
+    live: true,
   },
 ];
 

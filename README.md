@@ -69,6 +69,26 @@ npm run dev
 
 Open **http://localhost:5173** in Chrome, Edge, or Firefox (WebGL2 required).
 
+### Routes
+
+SARdine is a hash-routed SPA with a family of per-workflow pages. The root
+`/` shows a chooser; each card links to one app.
+
+| Route | Page | What it does |
+|:------|:-----|:-------------|
+| `/` | Landing | Chooser grid. |
+| `/local` | Local File Explorer | Drop `.h5` / `.tif` from your machine; delegates to the right explorer. |
+| `/explore/gcov` | GCOV Explorer | NISAR L2 GCOV HDF5 — polarimetric composites, histograms, ROI exports. |
+| `/explore/gunw` | GUNW Explorer | NISAR L2 GUNW — interferograms, coherence, unwrapped phase. |
+| `/explore/cog` | COG Explorer | Cloud Optimized GeoTIFF from any URL — minimal UI (`?url=…`). |
+| `/inundation` | Inundation ATBD | NISAR GCOV stack → open-water / flooded-vegetation / flooded-bare. |
+| `/crop` | Crop CV | Temporal backscatter CV → crop signatures. |
+| `/disturbance` | Disturbance | CUSUM step-change detection. |
+
+Shared links: every route is deep-linkable. `/#/explore/gcov` boots straight
+into the GCOV explorer; `/?cog=URL` or `/?url=URL` at the root redirects to
+the right explorer with the URL pre-filled.
+
 ### Installing Node.js
 
 **macOS:** `brew install node` or download from https://nodejs.org/
