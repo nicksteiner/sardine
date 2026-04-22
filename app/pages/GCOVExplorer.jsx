@@ -38,6 +38,7 @@ import { IncidenceScatter, sampleScatterData } from '@src/components/IncidenceSc
 import { loadMetadataCube } from '@src/utils/metadata-cube.js';
 import { loadAllCorrections, CORRECTION_TYPES } from '@src/utils/phase-corrections.js';
 import { embedStateInPNG, extractStateFromPNG } from '@src/utils/png-state.js';
+import { readSearchQuery } from '../shared/urlState.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -510,8 +511,7 @@ export default function GCOVExplorer() {
   // URL parameter support: ?cog=<url> auto-loads a COG on mount
   const urlCogTriggered = useRef(false);
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const cogParam = params.get('cog');
+    const cogParam = readSearchQuery().cog;
     if (cogParam) {
       urlCogTriggered.current = true;
       setFileType('cog');

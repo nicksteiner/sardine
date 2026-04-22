@@ -5603,4 +5603,85 @@ export async function loadNISARTimeSeriesROI(urls, wkt, opts = {}) {
   return results;
 }
 
+/**
+ * Load a NISAR GCOV dual-pol time-series from a list of ASF URLs.
+ *
+ * Reuses `loadNISARRGBComposite` with the `dual-pol-h` preset so every frame
+ * carries both HHHH and HVHV bands — matches the shape the ATBD runner
+ * consumes. Serial by default: ASF TEA redirect chains + Earthdata Login
+ * cookies don't parallelize well, and shipping a measured baseline first
+ * is cheaper than debugging a concurrent path that might not help.
+ *
+ * The returned frame objects mirror what `handleLoadRoiTimeSeries` builds
+ * in GCOVExplorer (bounds, label, date, getTile, requiredPols, isRGB=true)
+ * so the same downstream code paths (runATBD, ClassificationOverlay,
+ * geotiff-writer) work against a streaming-sourced stack.
+ *
+ * @param {string[]} urls - ASF HDF5 URLs in chronological order
+ * @param {Object} [opts]
+ * @param {string} [opts.compositeId='dual-pol-h'] - required pols derived from this
+ * @param {string} [opts.frequency='A']
+ * @param {function} [opts.onProgress] - (frameIdx, total, url) => void
+ * @param {Object} [opts.fetchHeaders] - e.g. { Authorization: 'Bearer <edl-token>' }
+ * @returns {Promise<{frames: Object[], errors: Object[]}>} frames are in input order
+ */
+export async function loadNISARTimeSeriesFromUrls(urls, opts = {}) {
+  const {
+    compositeId = 'dual-pol-h',
+    frequency = 'A',
+    onProgress,
+    fetchHeaders,
+  } = opts;
+
+  // Pols implied by the composite preset. Kept in sync with SAR_COMPOSITES
+  // `dual-pol-h` — any change there should be reflected here.
+  const DEFAULT_POLS = {
+    'dual-pol-h': ['HHHH', 'HVHV'],
+    'dual-pol-v': ['VVVV', 'VHVH'],
+    'hh-hv-vv': ['HHHH', 'HVHV', 'VVVV'],
+  };
+  const requiredPols = DEFAULT_POLS[compositeId] || ['HHHH', 'HVHV'];
+
+  const frames = [];
+  const errors = [];
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    if (onProgress) onProgress(i, urls.length, url);
+    try {
+      const data = await loadNISARRGBComposite(url, {
+        frequency,
+        compositeId,
+        requiredPols,
+        requiredComplexPols: [],
+        fetchHeaders,
+      });
+      const ident = data.identification || {};
+      const date = ident.zeroDopplerStartTime || ident.rangeBeginningDateTime || null;
+      const label = typeof date === 'string' && date.length >= 10
+        ? date.slice(0, 10)
+        : (url.split('/').pop() || `frame_${i}`).replace(/\.[^.]+$/, '');
+      frames.push({
+        getTile: data.getRGBTile,
+        getExportStripe: data.getExportStripe || null,
+        crs: data.crs || null,
+        requiredPols,
+        requiredComplexPols: [],
+        bounds: data.bounds,
+        worldBounds: data.worldBounds || data.bounds,
+        width: data.width,
+        height: data.height,
+        label,
+        date,
+        isRGB: true,
+        compositeId,
+        identification: ident,
+        url,
+      });
+    } catch (err) {
+      errors.push({ url, error: err.message || String(err) });
+    }
+  }
+  return { frames, errors };
+}
+
 export default loadNISARGCOV;

@@ -1712,6 +1712,124 @@ try {
   skip('NISAR ATBD app integration', `import failed: ${err.message}`);
 }
 
+// ─── S292: atbd-auto-stack grouping + ranking ────────────────────────────────
+
+suite('ATBD auto-stack (grouping + ranking)');
+
+try {
+  const auto = await import(join(rootDir, 'src/utils/atbd-auto-stack.js'));
+
+  check('decodePolarizationCode unpacks NISAR polarization letters', () => {
+    const dhdh = auto.decodePolarizationCode('DHDH');
+    if (!dhdh.includes('HHHH') || !dhdh.includes('HVHV')) {
+      throw new Error(`DHDH should contain HHHH + HVHV, got ${dhdh.join(',')}`);
+    }
+    const sv = auto.decodePolarizationCode('SVSV');
+    if (!sv.includes('VVVV')) throw new Error('SVSV missing VVVV');
+    const q = auto.decodePolarizationCode('QQQQ');
+    if (q.length !== 4) throw new Error('Q should produce 4 pols');
+    if (auto.decodePolarizationCode(undefined).length !== 0) {
+      throw new Error('undefined should produce empty list');
+    }
+  });
+
+  check('granuleHasRequiredPols filters by required pols', () => {
+    const g = { polarization: 'DHDH' };
+    if (!auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV'])) throw new Error('DHDH should satisfy HH+HV');
+    if (auto.granuleHasRequiredPols(g, ['VVVV'])) throw new Error('DHDH should not satisfy VV');
+  });
+
+  // Handcrafted fixture modeling a realistic CMR response: 3 groups, one
+  // clearly dominant (most frames), one middling, one single-frame filler.
+  const makeGranule = ({ id, track, direction, frame, datetime, polarization = 'DHDH', bbox, dataUrl }) => ({
+    id, track, direction, frame, datetime, polarization, bbox, dataUrl,
+    conceptId: id, geometry: null, collection: 'NISAR_L2_GCOV_BETA_V1', size: null,
+    productType: 'GCOV',
+  });
+  const fixtureGranules = [
+    // Group D/123/F456 — 4 frames
+    makeGranule({ id: 'g1', track: 123, direction: 'D', frame: 456, datetime: '2026-01-01T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g1.h5' }),
+    makeGranule({ id: 'g2', track: 123, direction: 'D', frame: 456, datetime: '2026-01-13T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g2.h5' }),
+    makeGranule({ id: 'g3', track: 123, direction: 'D', frame: 456, datetime: '2026-01-25T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g3.h5' }),
+    makeGranule({ id: 'g4', track: 123, direction: 'D', frame: 456, datetime: '2026-02-06T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g4.h5' }),
+    // Group A/45/F321 — 2 frames
+    makeGranule({ id: 'g5', track: 45, direction: 'A', frame: 321, datetime: '2026-01-05T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g5.h5' }),
+    makeGranule({ id: 'g6', track: 45, direction: 'A', frame: 321, datetime: '2026-01-17T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g6.h5' }),
+    // Group D/88/F12 — single-frame (below min for inundation, should be excluded from viable)
+    makeGranule({ id: 'g7', track: 88, direction: 'D', frame: 12, datetime: '2026-01-10T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g7.h5' }),
+    // Mismatched pol — single-pol H — should be filtered out before grouping
+    makeGranule({ id: 'g8', track: 55, direction: 'A', frame: 100, datetime: '2026-01-12T00:00:00Z', polarization: 'SHSH', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g8.h5' }),
+  ];
+
+  check('groupByStackKey splits granules by direction/track/frame', () => {
+    const filtered = fixtureGranules.filter((g) => auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV']));
+    const groups = auto.groupByStackKey(filtered);
+    if (groups.size !== 3) throw new Error(`expected 3 groups, got ${groups.size}`);
+    const winner = groups.get('D/123/456');
+    if (!winner || winner.length !== 4) throw new Error('D/123/456 should have 4 frames');
+  });
+
+  check('rankGroups orders by numFrames desc, then span asc', () => {
+    const filtered = fixtureGranules.filter((g) => auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV']));
+    const ranked = auto.rankGroups(auto.groupByStackKey(filtered));
+    if (ranked[0].key !== 'D/123/456') throw new Error(`rank[0] should be D/123/456, got ${ranked[0].key}`);
+    if (ranked[0].numFrames !== 4) throw new Error(`rank[0] frames should be 4, got ${ranked[0].numFrames}`);
+    // Group of 2 should come second; span is the same between the A/45 and D/88 by happenstance
+    // but A/45 has 2 frames vs D/88's 1.
+    if (ranked[1].numFrames !== 2) throw new Error('rank[1] should have 2 frames');
+  });
+
+  check('trimToMostRecent keeps the newest N granules', () => {
+    const filtered = fixtureGranules.filter((g) => auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV']));
+    const ranked = auto.rankGroups(auto.groupByStackKey(filtered));
+    const trimmed = auto.trimToMostRecent(ranked[0], 2);
+    if (trimmed.numFrames !== 2) throw new Error(`expected 2 frames after trim, got ${trimmed.numFrames}`);
+    if (trimmed.granules[0].id !== 'g3') throw new Error(`expected g3 first, got ${trimmed.granules[0].id}`);
+    if (trimmed.granules[1].id !== 'g4') throw new Error(`expected g4 last, got ${trimmed.granules[1].id}`);
+  });
+
+  check('unionBboxes computes the outer envelope', () => {
+    const u = auto.unionBboxes([[-1, -1, 1, 1], [-2, 0, 0, 2]]);
+    if (u.join(',') !== '-2,-1,1,2') throw new Error(`bad union: ${u.join(',')}`);
+  });
+
+  check('ALGORITHM_POL_REQUIREMENTS matches runner expectations', () => {
+    if (!auto.ALGORITHM_POL_REQUIREMENTS.inundation.includes('HHHH')) {
+      throw new Error('inundation must require HHHH');
+    }
+    if (!auto.ALGORITHM_POL_REQUIREMENTS.inundation.includes('HVHV')) {
+      throw new Error('inundation must require HVHV');
+    }
+  });
+
+} catch (err) {
+  skip('ATBD auto-stack', `import failed: ${err.message}`);
+}
+
+// ─── S292: urlState helpers ──────────────────────────────────────────────────
+
+suite('urlState helpers');
+
+try {
+  const urlState = await import(join(rootDir, 'app/shared/urlState.js'));
+
+  check('parseQuery handles leading ? and empty string', () => {
+    if (Object.keys(urlState.parseQuery('')).length !== 0) throw new Error('empty should be empty');
+    const p = urlState.parseQuery('?lon=-73.8&lat=-8.4');
+    if (p.lon !== '-73.8' || p.lat !== '-8.4') throw new Error('parse wrong');
+  });
+
+  check('stringifyQuery strips null/undefined/empty', () => {
+    const s = urlState.stringifyQuery({ a: 1, b: null, c: undefined, d: '', e: 'x' });
+    const parsed = urlState.parseQuery(s);
+    if (parsed.a !== '1' || parsed.e !== 'x') throw new Error('missing keys a/e');
+    if ('b' in parsed || 'c' in parsed || 'd' in parsed) throw new Error('should have stripped nullish');
+  });
+
+} catch (err) {
+  skip('urlState', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));

@@ -21,7 +21,7 @@ const ROUTES = [
     title: 'Inundation ATBD',
     blurb: 'NISAR GCOV stack → open-water / flooded-vegetation / flooded-bare classification.',
     directive: 'S292',
-    live: false,
+    live: true,
   },
   {
     href: '/crop',
