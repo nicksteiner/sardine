@@ -1712,6 +1712,208 @@ try {
   skip('NISAR ATBD app integration', `import failed: ${err.message}`);
 }
 
+// ─── S292: atbd-auto-stack grouping + ranking ────────────────────────────────
+
+suite('ATBD auto-stack (grouping + ranking)');
+
+try {
+  const auto = await import(join(rootDir, 'src/utils/atbd-auto-stack.js'));
+
+  check('decodePolarizationCode unpacks NISAR polarization letters', () => {
+    const dhdh = auto.decodePolarizationCode('DHDH');
+    if (!dhdh.includes('HHHH') || !dhdh.includes('HVHV')) {
+      throw new Error(`DHDH should contain HHHH + HVHV, got ${dhdh.join(',')}`);
+    }
+    const sv = auto.decodePolarizationCode('SVSV');
+    if (!sv.includes('VVVV')) throw new Error('SVSV missing VVVV');
+    const q = auto.decodePolarizationCode('QQQQ');
+    if (q.length !== 4) throw new Error('Q should produce 4 pols');
+    if (auto.decodePolarizationCode(undefined).length !== 0) {
+      throw new Error('undefined should produce empty list');
+    }
+  });
+
+  check('granuleHasRequiredPols filters by required pols', () => {
+    const g = { polarization: 'DHDH' };
+    if (!auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV'])) throw new Error('DHDH should satisfy HH+HV');
+    if (auto.granuleHasRequiredPols(g, ['VVVV'])) throw new Error('DHDH should not satisfy VV');
+  });
+
+  // Handcrafted fixture modeling a realistic CMR response: 3 groups, one
+  // clearly dominant (most frames), one middling, one single-frame filler.
+  const makeGranule = ({ id, track, direction, frame, datetime, polarization = 'DHDH', bbox, dataUrl }) => ({
+    id, track, direction, frame, datetime, polarization, bbox, dataUrl,
+    conceptId: id, geometry: null, collection: 'NISAR_L2_GCOV_BETA_V1', size: null,
+    productType: 'GCOV',
+  });
+  const fixtureGranules = [
+    // Group D/123/F456 — 4 frames
+    makeGranule({ id: 'g1', track: 123, direction: 'D', frame: 456, datetime: '2026-01-01T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g1.h5' }),
+    makeGranule({ id: 'g2', track: 123, direction: 'D', frame: 456, datetime: '2026-01-13T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g2.h5' }),
+    makeGranule({ id: 'g3', track: 123, direction: 'D', frame: 456, datetime: '2026-01-25T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g3.h5' }),
+    makeGranule({ id: 'g4', track: 123, direction: 'D', frame: 456, datetime: '2026-02-06T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g4.h5' }),
+    // Group A/45/F321 — 2 frames
+    makeGranule({ id: 'g5', track: 45, direction: 'A', frame: 321, datetime: '2026-01-05T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g5.h5' }),
+    makeGranule({ id: 'g6', track: 45, direction: 'A', frame: 321, datetime: '2026-01-17T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g6.h5' }),
+    // Group D/88/F12 — single-frame (below min for inundation, should be excluded from viable)
+    makeGranule({ id: 'g7', track: 88, direction: 'D', frame: 12, datetime: '2026-01-10T00:00:00Z', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g7.h5' }),
+    // Mismatched pol — single-pol H — should be filtered out before grouping
+    makeGranule({ id: 'g8', track: 55, direction: 'A', frame: 100, datetime: '2026-01-12T00:00:00Z', polarization: 'SHSH', bbox: [-74, -9, -73, -8], dataUrl: 'https://asf/g8.h5' }),
+  ];
+
+  check('groupByStackKey splits granules by direction/track/frame', () => {
+    const filtered = fixtureGranules.filter((g) => auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV']));
+    const groups = auto.groupByStackKey(filtered);
+    if (groups.size !== 3) throw new Error(`expected 3 groups, got ${groups.size}`);
+    const winner = groups.get('D/123/456');
+    if (!winner || winner.length !== 4) throw new Error('D/123/456 should have 4 frames');
+  });
+
+  check('rankGroups orders by numFrames desc, then span asc', () => {
+    const filtered = fixtureGranules.filter((g) => auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV']));
+    const ranked = auto.rankGroups(auto.groupByStackKey(filtered));
+    if (ranked[0].key !== 'D/123/456') throw new Error(`rank[0] should be D/123/456, got ${ranked[0].key}`);
+    if (ranked[0].numFrames !== 4) throw new Error(`rank[0] frames should be 4, got ${ranked[0].numFrames}`);
+    // Group of 2 should come second; span is the same between the A/45 and D/88 by happenstance
+    // but A/45 has 2 frames vs D/88's 1.
+    if (ranked[1].numFrames !== 2) throw new Error('rank[1] should have 2 frames');
+  });
+
+  check('trimToMostRecent keeps the newest N granules', () => {
+    const filtered = fixtureGranules.filter((g) => auto.granuleHasRequiredPols(g, ['HHHH', 'HVHV']));
+    const ranked = auto.rankGroups(auto.groupByStackKey(filtered));
+    const trimmed = auto.trimToMostRecent(ranked[0], 2);
+    if (trimmed.numFrames !== 2) throw new Error(`expected 2 frames after trim, got ${trimmed.numFrames}`);
+    if (trimmed.granules[0].id !== 'g3') throw new Error(`expected g3 first, got ${trimmed.granules[0].id}`);
+    if (trimmed.granules[1].id !== 'g4') throw new Error(`expected g4 last, got ${trimmed.granules[1].id}`);
+  });
+
+  check('unionBboxes computes the outer envelope', () => {
+    const u = auto.unionBboxes([[-1, -1, 1, 1], [-2, 0, 0, 2]]);
+    if (u.join(',') !== '-2,-1,1,2') throw new Error(`bad union: ${u.join(',')}`);
+  });
+
+  check('ALGORITHM_POL_REQUIREMENTS matches runner expectations', () => {
+    if (!auto.ALGORITHM_POL_REQUIREMENTS.inundation.includes('HHHH')) {
+      throw new Error('inundation must require HHHH');
+    }
+    if (!auto.ALGORITHM_POL_REQUIREMENTS.inundation.includes('HVHV')) {
+      throw new Error('inundation must require HVHV');
+    }
+  });
+
+  // ─── S293: per-algorithm stack policies ───────────────────────────────────
+  check('ALGORITHM_POLICIES sets crop min-frames=6, min-span=60d', () => {
+    const p = auto.ALGORITHM_POLICIES.crop;
+    if (!p) throw new Error('crop policy missing');
+    if (p.minFrames !== 6) throw new Error(`crop minFrames should be 6, got ${p.minFrames}`);
+    if (p.minSpanDays !== 60) throw new Error(`crop minSpanDays should be 60, got ${p.minSpanDays}`);
+  });
+
+  check('ALGORITHM_POLICIES sets disturbance min-frames=3, no span floor', () => {
+    const p = auto.ALGORITHM_POLICIES.disturbance;
+    if (p.minFrames !== 3) throw new Error(`disturbance minFrames should be 3, got ${p.minFrames}`);
+    if (p.minSpanDays !== 0) throw new Error(`disturbance minSpanDays should be 0, got ${p.minSpanDays}`);
+  });
+
+  check('ALGORITHM_POLICIES defaultMaxFrames sized per algorithm', () => {
+    if (auto.ALGORITHM_POLICIES.inundation.defaultMaxFrames !== 6) throw new Error('inundation default should be 6');
+    if (auto.ALGORITHM_POLICIES.crop.defaultMaxFrames !== 8) throw new Error('crop default should be 8');
+    if (auto.ALGORITHM_POLICIES.disturbance.defaultMaxFrames !== 10) throw new Error('disturbance default should be 10');
+  });
+
+  check('ALGORITHM_MIN_FRAMES stays in sync with ALGORITHM_POLICIES', () => {
+    for (const [algo, pol] of Object.entries(auto.ALGORITHM_POLICIES)) {
+      if (auto.ALGORITHM_MIN_FRAMES[algo] !== pol.minFrames) {
+        throw new Error(`ALGORITHM_MIN_FRAMES.${algo} out of sync with ALGORITHM_POLICIES.${algo}.minFrames`);
+      }
+    }
+  });
+
+  // Crop rejection — a 6-frame stack spanning only 30 days (< 60d floor) should
+  // be filtered out by the policy even though it has enough frames.
+  check('crop policy rejects 6 frames that span < 60 days', () => {
+    const short = [];
+    for (let i = 0; i < 6; i++) {
+      // 6 days apart → 30-day span
+      short.push(makeGranule({
+        id: `cg${i}`, track: 123, direction: 'D', frame: 456,
+        datetime: new Date(Date.UTC(2026, 0, 1 + i * 6)).toISOString(),
+        polarization: 'DHDH',
+        bbox: [-74, -9, -73, -8],
+        dataUrl: `https://asf/cg${i}.h5`,
+      }));
+    }
+    const ranked = auto.rankGroups(auto.groupByStackKey(short));
+    if (ranked.length !== 1) throw new Error(`expected 1 group, got ${ranked.length}`);
+    if (ranked[0].spanDays >= 60) throw new Error(`span too long: ${ranked[0].spanDays}`);
+    const p = auto.ALGORITHM_POLICIES.crop;
+    const viable = ranked.filter((g) => g.numFrames >= p.minFrames && g.spanDays >= p.minSpanDays);
+    if (viable.length !== 0) throw new Error('short-span stack should be rejected by crop policy');
+  });
+
+  // Crop acceptance — 6 frames over 75 days passes.
+  check('crop policy accepts 6 frames spanning >= 60 days', () => {
+    const ok = [];
+    for (let i = 0; i < 6; i++) {
+      // 15 days apart → 75-day span
+      ok.push(makeGranule({
+        id: `kg${i}`, track: 123, direction: 'D', frame: 456,
+        datetime: new Date(Date.UTC(2026, 0, 1 + i * 15)).toISOString(),
+        polarization: 'DHDH',
+        bbox: [-74, -9, -73, -8],
+        dataUrl: `https://asf/kg${i}.h5`,
+      }));
+    }
+    const ranked = auto.rankGroups(auto.groupByStackKey(ok));
+    if (ranked[0].spanDays < 60) throw new Error(`expected span >= 60, got ${ranked[0].spanDays}`);
+    const p = auto.ALGORITHM_POLICIES.crop;
+    const viable = ranked.filter((g) => g.numFrames >= p.minFrames && g.spanDays >= p.minSpanDays);
+    if (viable.length !== 1) throw new Error('long-span 6-frame stack should pass crop policy');
+  });
+
+  // Disturbance uses only minFrames — span floor is 0, so a 3-frame stack of
+  // any span passes.
+  check('disturbance policy accepts 3 frames of any span', () => {
+    const three = [
+      makeGranule({ id: 'd1', track: 7, direction: 'D', frame: 1, datetime: '2026-01-01T00:00:00Z', bbox: [-74,-9,-73,-8], dataUrl: 'x' }),
+      makeGranule({ id: 'd2', track: 7, direction: 'D', frame: 1, datetime: '2026-01-03T00:00:00Z', bbox: [-74,-9,-73,-8], dataUrl: 'x' }),
+      makeGranule({ id: 'd3', track: 7, direction: 'D', frame: 1, datetime: '2026-01-05T00:00:00Z', bbox: [-74,-9,-73,-8], dataUrl: 'x' }),
+    ];
+    const ranked = auto.rankGroups(auto.groupByStackKey(three));
+    const p = auto.ALGORITHM_POLICIES.disturbance;
+    const viable = ranked.filter((g) => g.numFrames >= p.minFrames && g.spanDays >= p.minSpanDays);
+    if (viable.length !== 1) throw new Error('3-frame stack should pass disturbance policy');
+  });
+
+} catch (err) {
+  skip('ATBD auto-stack', `import failed: ${err.message}`);
+}
+
+// ─── S292: urlState helpers ──────────────────────────────────────────────────
+
+suite('urlState helpers');
+
+try {
+  const urlState = await import(join(rootDir, 'app/shared/urlState.js'));
+
+  check('parseQuery handles leading ? and empty string', () => {
+    if (Object.keys(urlState.parseQuery('')).length !== 0) throw new Error('empty should be empty');
+    const p = urlState.parseQuery('?lon=-73.8&lat=-8.4');
+    if (p.lon !== '-73.8' || p.lat !== '-8.4') throw new Error('parse wrong');
+  });
+
+  check('stringifyQuery strips null/undefined/empty', () => {
+    const s = urlState.stringifyQuery({ a: 1, b: null, c: undefined, d: '', e: 'x' });
+    const parsed = urlState.parseQuery(s);
+    if (parsed.a !== '1' || parsed.e !== 'x') throw new Error('missing keys a/e');
+    if ('b' in parsed || 'c' in parsed || 'd' in parsed) throw new Error('should have stripped nullish');
+  });
+
+} catch (err) {
+  skip('urlState', `import failed: ${err.message}`);
+}
+
 // ─── Summary ─────────────────────────────────────────────────────────────────
 
 console.log('\n' + '═'.repeat(60));
