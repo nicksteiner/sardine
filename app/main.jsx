@@ -151,7 +151,7 @@ function Routes() {
       <Route path="/inundation" component={InundationApp} />
       <Route path="/crop" component={CropApp} />
       <Route path="/disturbance" component={DisturbanceApp} />
-      <Route path="/local" component={LocalExplorer
+      <Route path="/local" component={LocalExplorer} />
       <Route>{() => <ComingSoon route="Not found" directive="—" />}</Route>
     </Switch>
   );
