@@ -1063,6 +1063,140 @@ check('keyboard handler effect lists serialize/apply deps', () => {
     'serialize/apply in keydown deps');
 });
 
+// ─── 12b. Mosaic (TIF + GCOV) ────────────────────────────────────────────────
+
+suite('Mosaic (TIF + GCOV)');
+
+const mainSrcForMosaic = readFile('app/main.jsx');
+const viewerSrcForMosaic = readFile('src/viewers/SARViewer.jsx');
+const indexSrcForMosaic = readFile('src/index.js');
+
+check('imports loadLocalTIF for CRS pre-check', () => {
+  // appendMosaicTIFs validates each addition's CRS via a single-file
+  // probe before rebuilding the mosaic.
+  assertContains(mainSrcForMosaic, 'loadLocalTIF,', 'loadLocalTIF in import');
+  assertContains(indexSrcForMosaic, 'loadLocalTIF,', 'loadLocalTIF re-exported from src/index.js');
+});
+
+check('declares mosaicFiles state', () => {
+  assertContains(mainSrcForMosaic,
+    'const [mosaicFiles, setMosaicFiles] = useState([])',
+    'mosaicFiles useState');
+});
+
+check('declares gcovMosaicFiles + gcovMosaicLayers state', () => {
+  assertContains(mainSrcForMosaic,
+    'const [gcovMosaicFiles, setGcovMosaicFiles] = useState([])',
+    'gcovMosaicFiles useState');
+  assertContains(mainSrcForMosaic,
+    'const [gcovMosaicLayers, setGcovMosaicLayers] = useState([])',
+    'gcovMosaicLayers useState');
+});
+
+check('defines appendMosaicTIFs / clearMosaic callbacks', () => {
+  assertContains(mainSrcForMosaic, 'const appendMosaicTIFs = useCallback', 'appendMosaicTIFs');
+  assertContains(mainSrcForMosaic, 'const clearMosaic = useCallback', 'clearMosaic');
+});
+
+check('defines appendGcovMosaicFiles / clearGcovMosaic callbacks', () => {
+  assertContains(mainSrcForMosaic, 'const appendGcovMosaicFiles = useCallback', 'appendGcovMosaicFiles');
+  assertContains(mainSrcForMosaic, 'const clearGcovMosaic = useCallback', 'clearGcovMosaic');
+});
+
+check('TIF mosaic rejects CRS mismatches before rebuild', () => {
+  // Pre-check via loadLocalTIF probes each addition. Mismatches are filtered
+  // out with a status-log error rather than silently distorting the mosaic.
+  const idx = mainSrcForMosaic.indexOf('const appendMosaicTIFs = useCallback');
+  if (idx < 0) throw new Error('appendMosaicTIFs not found');
+  const block = mainSrcForMosaic.slice(idx, idx + 2400);
+  assertContains(block, 'loadLocalTIF(f)', 'per-file CRS probe');
+  assertContains(block, 'CRS mismatch', 'CRS mismatch status log');
+  assertContains(block, 'primaryCRS', 'primary CRS captured for comparison');
+});
+
+check('GCOV mosaic rejects CRS mismatches in loader effect', () => {
+  // Secondary loader compares each loaded GCOV's crs against the primary
+  // and skips the source on mismatch.
+  assertContains(mainSrcForMosaic,
+    'r.data.crs && primaryCRS && r.data.crs !== primaryCRS',
+    'GCOV CRS mismatch guard');
+  assertContains(mainSrcForMosaic, 'CRS mismatch — skipped', 'GCOV mismatch status log');
+});
+
+check('both mosaics dedupe by name+size', () => {
+  // Dropping the same file twice should not double-load it.
+  const tifIdx = mainSrcForMosaic.indexOf('const appendMosaicTIFs = useCallback');
+  const tifBlock = mainSrcForMosaic.slice(tifIdx, tifIdx + 2400);
+  assertContains(tifBlock, '${f.name}:${f.size}', 'TIF dedupe key');
+
+  const gcovIdx = mainSrcForMosaic.indexOf('const appendGcovMosaicFiles = useCallback');
+  const gcovBlock = mainSrcForMosaic.slice(gcovIdx, gcovIdx + 1200);
+  assertContains(gcovBlock, '${f.name}:${f.size}', 'GCOV dedupe key');
+});
+
+check('cleanup effects drop mosaic state on fileType change', () => {
+  // Stale mosaic files would render incorrectly if the user switched sources.
+  assertContains(mainSrcForMosaic,
+    "fileType !== 'local-tif' && mosaicFiles.length > 0",
+    'TIF mosaic cleanup guard');
+  assertContains(mainSrcForMosaic,
+    "fileType !== 'nisar' && (gcovMosaicFiles.length > 0",
+    'GCOV mosaic cleanup guard');
+});
+
+check('GCOV loader effect cancels stale runs via generation ref', () => {
+  // Without cancel, two rapid drops could race and leave the wrong
+  // gcovMosaicLayers committed.
+  assertContains(mainSrcForMosaic, 'gcovMosaicGenRef = useRef(0)', 'gen ref declared');
+  assertContains(mainSrcForMosaic, 'gen !== gcovMosaicGenRef.current', 'stale-run guard');
+});
+
+check('drag-drop buckets files by extension', () => {
+  // Mixed drops (h5 + tif + json + png) must route to the right pipeline,
+  // not just look at files[0].
+  assertContains(mainSrcForMosaic, 'const h5Files = files.filter', 'h5 bucket');
+  assertContains(mainSrcForMosaic, 'const tifFiles = files.filter', 'tif bucket');
+});
+
+check('drag-drop appends to active mosaic instead of replacing', () => {
+  // If a TIF mosaic is loaded, dropping more TIFs appends. If a GCOV
+  // primary is loaded, dropping more h5s appends as secondaries.
+  assertContains(mainSrcForMosaic,
+    "fileType === 'local-tif' && mosaicFiles.length > 0",
+    'TIF append condition');
+  assertContains(mainSrcForMosaic,
+    "appendGcovMosaicFiles(h5Files)",
+    'GCOV append call');
+});
+
+check('GUNW mosaic is rejected with a warning', () => {
+  // Multi-file GUNW would mosaic differently and is not supported yet.
+  assertContains(mainSrcForMosaic, 'GUNW mosaic not supported', 'GUNW reject message');
+});
+
+check('SARViewer accepts mosaicLayers prop', () => {
+  assertContains(viewerSrcForMosaic, 'mosaicLayers = []', 'mosaicLayers prop default');
+});
+
+check('SARViewer renders secondaries below primary', () => {
+  // Primary-anchored overlays (ROI, pixel explorer) only target the primary,
+  // so secondaries must render below the primary tile layer.
+  assertContains(viewerSrcForMosaic,
+    '[...secondaryMosaicLayers, ...baseLayers, ...extraLayers]',
+    'render order');
+});
+
+check('SARViewer keeps stable per-source tile fetchers', () => {
+  // Without stable identity, SARTileLayer's tile cache would invalidate on
+  // every render, causing re-fetch storms.
+  assertContains(viewerSrcForMosaic, 'mosaicTileFnsRef = useRef(new Map())', 'stable fn map');
+  assertContains(viewerSrcForMosaic, 'fnRef.current = src.getTile', 'fn ref update');
+});
+
+check('App passes gcovMosaicLayers through to SARViewer', () => {
+  assertContains(mainSrcForMosaic, 'mosaicLayers={gcovMosaicLayers}', 'wiring');
+});
+
 // ─── 13. Colorblind mode — source checks ────────────────────────────────────
 
 suite('Colorblind mode (source)');
