@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '../src/index.js';
+import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '../src/index.js';
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
@@ -353,6 +353,36 @@ function App() {
   // Multi-temporal RGB: same dataset from 3 separate NISAR files → R / G / B
   const [nisarFile2, setNisarFile2] = useState(null);
   const [nisarFile3, setNisarFile3] = useState(null);
+
+  // Mosaic: list of local TIF files currently in the active mosaic.
+  // When length > 1 these files are loaded together via loadLocalTIFs,
+  // which produces a single Float32 raster with union bounds. Adding /
+  // removing a file rebuilds the mosaic.
+  const [mosaicFiles, setMosaicFiles] = useState([]);
+
+  // GCOV mosaic: secondary NISAR GCOV files rendered alongside the primary.
+  // Each entry is a File. Render layers are derived from these by an effect
+  // that re-loads whenever the primary frequency/polarization changes.
+  const [gcovMosaicFiles, setGcovMosaicFiles] = useState([]);
+  // Render-ready handles: [{id, label, getTile, bounds, crs, width, height}]
+  const [gcovMosaicLayers, setGcovMosaicLayers] = useState([]);
+
+  // Drop the mosaic file list whenever the active source type leaves local-tif.
+  // imageData is reset by the relevant handlers; we just keep the file list
+  // consistent so the UI doesn't show a stale mosaic count.
+  useEffect(() => {
+    if (fileType !== 'local-tif' && mosaicFiles.length > 0) {
+      setMosaicFiles([]);
+    }
+  }, [fileType, mosaicFiles.length]);
+
+  // Drop the GCOV mosaic when the active source type leaves NISAR GCOV.
+  useEffect(() => {
+    if (fileType !== 'nisar' && (gcovMosaicFiles.length > 0 || gcovMosaicLayers.length > 0)) {
+      setGcovMosaicFiles([]);
+      setGcovMosaicLayers([]);
+    }
+  }, [fileType, gcovMosaicFiles.length, gcovMosaicLayers.length]);
 
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
@@ -2051,7 +2081,9 @@ function App() {
     }
   }, [addStatusLog, applyPendingPNGState]);
 
-  // Handle local TIF file selection (single or multi-select mosaic)
+  // Handle local TIF file selection (single or multi-select mosaic).
+  // Always replaces the active mosaic — drop the same files together
+  // to mosaic them, or use appendMosaicTIFs to add to an existing mosaic.
   const handleLocalTIFMultiSelect = useCallback(async (files) => {
     if (!files || files.length === 0) return;
 
@@ -2066,6 +2098,7 @@ function App() {
       const data = await loadLocalTIFs(files, (pct) => setLoadProgress(pct));
       if (gen !== loadGenRef.current) return;
 
+      setMosaicFiles(files);
       setImageData(data);
       const label = data.sliceCount > 1
         ? `Mosaic: ${data.sliceCount} slices, ${data.width}x${data.height} px`
@@ -2125,6 +2158,196 @@ function App() {
     }
   }, [addStatusLog, autoFitIfNewScene]);
 
+  // Append TIF files to the active mosaic. Validates CRS against the
+  // current mosaic and rejects mismatches. If no mosaic is loaded, falls
+  // back to handleLocalTIFMultiSelect (treats as a fresh mosaic load).
+  const appendMosaicTIFs = useCallback(async (newFiles) => {
+    if (!newFiles || newFiles.length === 0) return;
+
+    if (mosaicFiles.length === 0 || !imageData?.crs) {
+      // Nothing to append to — load as a fresh mosaic
+      handleLocalTIFMultiSelect(newFiles);
+      return;
+    }
+
+    // De-duplicate by name+size against existing files
+    const existingKeys = new Set(mosaicFiles.map(f => `${f.name}:${f.size}`));
+    const additions = newFiles.filter(f => !existingKeys.has(`${f.name}:${f.size}`));
+    if (additions.length === 0) {
+      addStatusLog('info', 'All dropped files are already in the mosaic');
+      return;
+    }
+
+    setLoading(true);
+    setLoadProgress(0);
+    setError(null);
+    const primaryCRS = imageData.crs;
+    addStatusLog('info', `Appending ${additions.length} file${additions.length > 1 ? 's' : ''} to mosaic (CRS: ${primaryCRS})`);
+
+    try {
+      // Quick CRS pre-check on additions before rebuilding the mosaic.
+      // loadLocalTIFs uses slices[0].crs as the output CRS, so a mismatched
+      // addition would silently distort the mosaic — reject early.
+      const checks = await Promise.all(additions.map(f => loadLocalTIF(f)));
+      const mismatched = checks.filter(s => s.crs && s.crs !== primaryCRS);
+      if (mismatched.length > 0) {
+        const names = additions
+          .filter((_, i) => checks[i].crs && checks[i].crs !== primaryCRS)
+          .map(f => f.name);
+        addStatusLog('error',
+          `CRS mismatch — rejected ${mismatched.length} file${mismatched.length > 1 ? 's' : ''}`,
+          `${names.join(', ')} not in ${primaryCRS}`);
+        const ok = additions.filter((_, i) => !checks[i].crs || checks[i].crs === primaryCRS);
+        if (ok.length === 0) {
+          setLoading(false);
+          return;
+        }
+        additions.length = 0;
+        additions.push(...ok);
+      }
+
+      const allFiles = [...mosaicFiles, ...additions];
+      const gen = ++loadGenRef.current;
+      const data = await loadLocalTIFs(allFiles, (pct) => setLoadProgress(pct));
+      if (gen !== loadGenRef.current) return;
+
+      setMosaicFiles(allFiles);
+      setImageData(data);
+      addStatusLog('success',
+        `Mosaic now ${allFiles.length} files: ${data.width}x${data.height} px`);
+
+      if (data.bounds) {
+        autoFitIfNewScene(data.bounds);
+      }
+      setLoadProgress(100);
+    } catch (e) {
+      setError(`Failed to append to mosaic: ${e.message}`);
+      addStatusLog('error', 'Failed to append to mosaic', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [mosaicFiles, imageData, addStatusLog, autoFitIfNewScene, handleLocalTIFMultiSelect]);
+
+  // Remove the mosaic and reset to single-source state
+  const clearMosaic = useCallback(() => {
+    if (mosaicFiles.length === 0) return;
+    addStatusLog('info', `Cleared mosaic (${mosaicFiles.length} files)`);
+    setMosaicFiles([]);
+    setImageData(null);
+  }, [mosaicFiles, addStatusLog]);
+
+  // Append NISAR GCOV files to the secondary mosaic. CRS is validated against
+  // the primary once the primary has loaded; if not yet loaded, the files are
+  // staged and validated when the secondary loader runs.
+  const appendGcovMosaicFiles = useCallback((newFiles) => {
+    if (!newFiles || newFiles.length === 0) return;
+    setGcovMosaicFiles(prev => {
+      const existingKeys = new Set(prev.map(f => `${f.name}:${f.size}`));
+      const additions = newFiles.filter(f => !existingKeys.has(`${f.name}:${f.size}`));
+      if (additions.length === 0) {
+        addStatusLog('info', 'All dropped HDF5 files are already in the mosaic');
+        return prev;
+      }
+      addStatusLog('info',
+        `Queued ${additions.length} GCOV file${additions.length > 1 ? 's' : ''} for mosaic`,
+        additions.map(f => f.name).join(', '));
+      return [...prev, ...additions];
+    });
+  }, [addStatusLog]);
+
+  const clearGcovMosaic = useCallback(() => {
+    if (gcovMosaicFiles.length === 0 && gcovMosaicLayers.length === 0) return;
+    addStatusLog('info', `Cleared GCOV mosaic (${gcovMosaicFiles.length} secondary files)`);
+    setGcovMosaicFiles([]);
+    setGcovMosaicLayers([]);
+  }, [gcovMosaicFiles, gcovMosaicLayers, addStatusLog]);
+
+  // Load secondary GCOV files in parallel whenever the file list, primary
+  // frequency, polarization, or display mode changes. Reject CRS-mismatched
+  // sources. Skipped while the primary's compositeId is set (RGB) or while
+  // displayMode is multi-temporal — secondaries always render single-band.
+  const gcovMosaicGenRef = useRef(0);
+  useEffect(() => {
+    if (fileType !== 'nisar') return;
+    if (nisarProductType !== 'GCOV') return;
+    if (gcovMosaicFiles.length === 0) {
+      if (gcovMosaicLayers.length > 0) setGcovMosaicLayers([]);
+      return;
+    }
+    // Need a primary established to validate CRS and to know the user has
+    // confirmed dataset selection. Skip until imageData is loaded.
+    if (!imageData?.crs) {
+      console.log('[GCOV mosaic] waiting for primary imageData.crs', {
+        hasImageData: !!imageData,
+        keys: imageData ? Object.keys(imageData) : null,
+        queued: gcovMosaicFiles.length,
+      });
+      return;
+    }
+    console.log('[GCOV mosaic] loading secondaries', {
+      count: gcovMosaicFiles.length,
+      primaryCRS: imageData.crs,
+      primaryBounds: imageData.bounds,
+      freq: selectedFrequency,
+      pol: selectedPolarization,
+    });
+
+    const gen = ++gcovMosaicGenRef.current;
+    const primaryCRS = imageData.crs;
+    let cancelled = false;
+
+    (async () => {
+      const results = await Promise.all(
+        gcovMosaicFiles.map(async (file) => {
+          try {
+            const data = await loadNISARGCOV(file, {
+              frequency: selectedFrequency,
+              polarization: selectedPolarization,
+            });
+            return { file, data };
+          } catch (e) {
+            return { file, error: e };
+          }
+        })
+      );
+      if (cancelled || gen !== gcovMosaicGenRef.current) return;
+
+      const ok = [];
+      for (const r of results) {
+        if (r.error) {
+          addStatusLog('error', `GCOV mosaic load failed: ${r.file.name}`, r.error.message);
+          continue;
+        }
+        if (r.data.crs && primaryCRS && r.data.crs !== primaryCRS) {
+          addStatusLog('error',
+            `CRS mismatch — skipped ${r.file.name}`,
+            `${r.data.crs} ≠ primary ${primaryCRS}`);
+          continue;
+        }
+        ok.push({
+          id: `${r.file.name}-${r.file.size}`,
+          label: r.file.name,
+          getTile: r.data.getTile,
+          bounds: r.data.bounds,
+          crs: r.data.crs,
+          width: r.data.width,
+          height: r.data.height,
+        });
+      }
+      console.log('[GCOV mosaic] secondaries loaded', ok.map(s => ({
+        id: s.id, bounds: s.bounds, crs: s.crs, w: s.width, h: s.height,
+      })));
+      setGcovMosaicLayers(ok);
+      if (ok.length > 0) {
+        addStatusLog('success',
+          `GCOV mosaic ready: ${ok.length} secondary layer${ok.length > 1 ? 's' : ''}`,
+          `${selectedFrequency}/${selectedPolarization}`);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, addStatusLog]);
+
   // Drag-and-drop handler — auto-detect file type from name/extension
   const handleFileDrop = useCallback((e) => {
     e.preventDefault();
@@ -2134,20 +2357,60 @@ function App() {
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length === 0) return;
 
-    const file = files[0];
-    const name = file.name.toLowerCase();
+    // Bucket the drop by file extension so a mixed drop is handled gracefully
+    // (e.g. a .h5 plus a sidecar .geojson, or several .tifs and a .png state file).
+    const h5Files = files.filter(f => /\.(h5|hdf5|he5)$/i.test(f.name));
+    const tifFiles = files.filter(f => /\.(tif|tiff)$/i.test(f.name));
+    const geojsonFiles = files.filter(f => /\.(geojson|json)$/i.test(f.name));
+    const pngFiles = files.filter(f => /\.png$/i.test(f.name));
+    const knownCount = h5Files.length + tifFiles.length + geojsonFiles.length + pngFiles.length;
+    if (knownCount < files.length) {
+      const unknown = files.filter(f =>
+        !/\.(h5|hdf5|he5|tif|tiff|geojson|json|png)$/i.test(f.name));
+      if (unknown.length > 0) {
+        addStatusLog('warning',
+          `Ignored ${unknown.length} unrecognized file${unknown.length > 1 ? 's' : ''}`,
+          unknown.map(f => f.name).join(', '));
+      }
+    }
 
-    if (name.endsWith('.h5') || name.endsWith('.hdf5') || name.endsWith('.he5')) {
-      // Auto-detect GCOV vs GUNW from filename
-      if (name.includes('gunw') || name.includes('_unw_')) {
+    // Handle HDF5 (highest precedence — it's the primary data type)
+    if (h5Files.length > 0) {
+      const firstH5 = h5Files[0];
+      const firstName = firstH5.name.toLowerCase();
+      const isGUNW = firstName.includes('gunw') || firstName.includes('_unw_');
+
+      if (isGUNW) {
         setFileType('nisar-gunw');
+        handleNISARFileSelect(firstH5);
+        if (h5Files.length > 1) {
+          addStatusLog('warning',
+            `GUNW mosaic not supported — loaded only ${firstH5.name}`,
+            `${h5Files.length - 1} additional GUNW file(s) ignored`);
+        }
+      } else if (fileType === 'nisar' && nisarProductType === 'GCOV' && nisarFile) {
+        appendGcovMosaicFiles(h5Files);
       } else {
         setFileType('nisar');
+        handleNISARFileSelect(firstH5);
+        if (h5Files.length > 1) {
+          appendGcovMosaicFiles(h5Files.slice(1));
+        }
       }
-      handleNISARFileSelect(file);
-    } else if (name.endsWith('.tif') || name.endsWith('.tiff')) {
-      setFileType('local-tif');
-      handleLocalTIFMultiSelect(files);
+      // TIF files dropped alongside HDF5 are ignored — different pipelines
+      if (tifFiles.length > 0) {
+        addStatusLog('warning',
+          `Cannot mix HDF5 and GeoTIFF in one drop — ignored ${tifFiles.length} TIF file(s)`,
+          tifFiles.map(f => f.name).join(', '));
+      }
+    } else if (tifFiles.length > 0) {
+      // If a TIF mosaic is already loaded, append; otherwise start fresh.
+      if (fileType === 'local-tif' && mosaicFiles.length > 0) {
+        appendMosaicTIFs(files);
+      } else {
+        setFileType('local-tif');
+        handleLocalTIFMultiSelect(files);
+      }
     } else if (name.endsWith('.geojson') || name.endsWith('.json')) {
       // Read GeoJSON and add as overlay
       const reader = new FileReader();
@@ -2196,7 +2459,7 @@ function App() {
     } else {
       addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
@@ -4225,7 +4488,11 @@ function App() {
             background: 'rgba(0, 0, 0, 0.7)', color: '#fff',
             fontSize: '1.2rem', fontWeight: 600,
           }}>
-            Drop HDF5, GeoTIFF, or GeoJSON file
+            {fileType === 'local-tif' && mosaicFiles.length > 0
+              ? `Drop GeoTIFFs to add to mosaic (${mosaicFiles.length} loaded)`
+              : (fileType === 'nisar' && nisarProductType === 'GCOV' && nisarFile)
+                ? `Drop GCOV files to add to mosaic (${gcovMosaicFiles.length} secondary)`
+                : 'Drop HDF5, GeoTIFF, or GeoJSON file'}
           </div>
         </div>
       )}
@@ -4340,11 +4607,46 @@ function App() {
               {imageData?.sliceCount > 1 && (
                 <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                   Mosaic: {imageData.sliceCount} slices, {imageData.width}x{imageData.height} px
+                  {imageData.crs && <span> · CRS: {imageData.crs}</span>}
                 </div>
               )}
               {imageData?.sliceNames && (
                 <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
                   {imageData.sliceNames.join(', ')}
+                </div>
+              )}
+              {mosaicFiles.length > 0 && (
+                <div className="control-group" style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+                  <input
+                    type="file"
+                    accept=".tif,.tiff"
+                    multiple
+                    id="local-tif-add-input"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || []);
+                      if (files.length > 0) appendMosaicTIFs(files);
+                      e.target.value = '';
+                    }}
+                  />
+                  <button
+                    className="btn-secondary"
+                    onClick={() => document.getElementById('local-tif-add-input').click()}
+                    style={{ flex: 1 }}
+                    title="Add more GeoTIFFs to the current mosaic (must share CRS)"
+                  >
+                    + Add to Mosaic
+                  </button>
+                  {mosaicFiles.length > 1 && (
+                    <button
+                      className="btn-secondary"
+                      onClick={clearMosaic}
+                      style={{ flex: 1 }}
+                      title="Remove all mosaicked files"
+                    >
+                      Clear Mosaic
+                    </button>
+                  )}
                 </div>
               )}
             </CollapsibleSection>
@@ -4380,6 +4682,53 @@ function App() {
                 <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
+              )}
+
+              {/* GCOV mosaic — visible only for GCOV (not GUNW) */}
+              {fileType === 'nisar' && nisarProductType === 'GCOV' && nisarFile && (
+                <>
+                  <div className="control-group" style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+                    <input
+                      type="file"
+                      accept=".h5,.hdf5,.he5"
+                      multiple
+                      id="gcov-mosaic-add-input"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || []);
+                        if (files.length > 0) appendGcovMosaicFiles(files);
+                        e.target.value = '';
+                      }}
+                    />
+                    <button
+                      className="btn-secondary"
+                      onClick={() => document.getElementById('gcov-mosaic-add-input').click()}
+                      style={{ flex: 1 }}
+                      title="Add NISAR GCOV files to mosaic alongside the primary (must share CRS)"
+                    >
+                      + Add GCOV to Mosaic
+                    </button>
+                    {(gcovMosaicFiles.length > 0 || gcovMosaicLayers.length > 0) && (
+                      <button
+                        className="btn-secondary"
+                        onClick={clearGcovMosaic}
+                        style={{ flex: 1 }}
+                        title="Remove all secondary GCOV layers"
+                      >
+                        Clear Mosaic
+                      </button>
+                    )}
+                  </div>
+                  {gcovMosaicFiles.length > 0 && (
+                    <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      Mosaic: {gcovMosaicLayers.length} of {gcovMosaicFiles.length} secondary
+                      {gcovMosaicFiles.length === 1 ? ' file' : ' files'} loaded
+                      <div style={{ fontSize: '0.65rem', wordBreak: 'break-all', marginTop: '4px' }}>
+                        {gcovMosaicFiles.map(f => f.name).join(', ')}
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </CollapsibleSection>
           )}
@@ -5963,6 +6312,7 @@ function App() {
                   classificationMap={classifierOpen ? classificationMap : null}
                   classRegions={classRegions}
                   classifierRoiDims={classifierRoiDims}
+                  mosaicLayers={gcovMosaicLayers}
                 />
               </div>
 

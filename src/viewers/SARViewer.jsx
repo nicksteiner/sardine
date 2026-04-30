@@ -70,6 +70,8 @@ export const SARViewer = forwardRef(function SARViewer({
   classificationMap = null, // Uint8Array per ROI pixel for feature space classifier
   classRegions = [],        // [{name, color, ...}] class definitions
   classifierRoiDims = null, // {w, h} grid dimensions of classification map
+  mosaicLayers = [],   // Secondary render-only sources: [{id, getTile, bounds}].
+                       // Share active visual props with the primary; render below it.
 }, ref) {
   const containerRef = useRef(null);
   const getTileRef = useRef(getTile);
@@ -90,6 +92,38 @@ export const SARViewer = forwardRef(function SARViewer({
     },
     [multiLook]
   );
+
+  // Mosaic: per-source stable getTileData wrappers keyed by source id.
+  // Keeps a stable fetcher identity per layer so SARTileLayer's tile cache
+  // is not invalidated as the mosaicLayers array re-creates between renders.
+  const mosaicTileFnsRef = useRef(new Map());
+  useEffect(() => {
+    const m = mosaicTileFnsRef.current;
+    const keep = new Set();
+    for (const src of mosaicLayers) {
+      keep.add(src.id);
+      const existing = m.get(src.id);
+      if (existing) {
+        existing.fnRef.current = src.getTile;
+      } else {
+        const fnRef = { current: src.getTile };
+        const stable = async (tile) => {
+          const { bbox } = tile;
+          return fnRef.current({
+            x: tile.index.x,
+            y: tile.index.y,
+            z: tile.index.z,
+            bbox,
+            multiLook,
+          });
+        };
+        m.set(src.id, { fnRef, stable });
+      }
+    }
+    for (const id of m.keys()) {
+      if (!keep.has(id)) m.delete(id);
+    }
+  }, [mosaicLayers, multiLook]);
 
   const [redrawTick, setRedrawTick] = useState(0);
 
@@ -319,11 +353,43 @@ export const SARViewer = forwardRef(function SARViewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- visualTick drives visual prop updates via RAF throttle; redrawTick forces recreation after canvas capture
   }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, multiLook, handleLoadingChange, redrawTick, visualTick]);
 
+  // Mosaic secondary layers — share the primary's visual props but each has
+  // its own bounds + getTile. Single-band only (no RGB composite per source).
+  const secondaryMosaicLayers = useMemo(() => {
+    if (!mosaicLayers || mosaicLayers.length === 0) return [];
+    const v = visualRef.current;
+    const m = mosaicTileFnsRef.current;
+    return mosaicLayers
+      .map((src) => {
+        const entry = m.get(src.id);
+        if (!entry) return null;
+        return new SARTileLayer({
+          id: `sar-mosaic-${src.id}-v${tileVersion}`,
+          getTileData: entry.stable,
+          bounds: src.bounds,
+          contrastLimits: v.contrastLimits,
+          useDecibels: v.useDecibels,
+          colormap: v.colormap,
+          gamma: v.gamma,
+          stretchMode: v.stretchMode,
+          opacity: v.opacity,
+          multiLook,
+          maskInvalid: v.maskInvalid,
+          maskLayoverShadow: v.maskLayoverShadow,
+          speckleFilterType: v.speckleFilterType,
+          speckleKernelSize: v.speckleKernelSize,
+        });
+      })
+      .filter(Boolean);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- visualTick drives visual updates via RAF throttle
+  }, [mosaicLayers, tileVersion, multiLook, visualTick, redrawTick]);
+
   const allLayers = useMemo(() => {
     const baseLayers = layers;
-    // Append any extra overlay layers (Overture, annotations, etc.)
-    return [...baseLayers, ...extraLayers];
-  }, [layers, extraLayers]);
+    // Mosaic secondaries render below the primary so primary-anchored
+    // overlays (ROI, pixel explorer) keep working as before.
+    return [...secondaryMosaicLayers, ...baseLayers, ...extraLayers];
+  }, [layers, secondaryMosaicLayers, extraLayers]);
 
   const views = useMemo(
     () =>
