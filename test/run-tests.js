@@ -999,6 +999,70 @@ try {
   skip('PNG state functional tests', `import failed: ${err.message}`);
 }
 
+// ─── 12b. Clipboard render-state (Ctrl+C / Ctrl+V) ──────────────────────────
+
+suite('Clipboard render state');
+
+const mainSrcForClipboard = readFile('app/main.jsx');
+
+check('defines serializeRenderState callback', () => {
+  assertContains(mainSrcForClipboard, 'const serializeRenderState = useCallback', 'serializeRenderState definition');
+});
+
+check('defines applyRenderState callback', () => {
+  assertContains(mainSrcForClipboard, 'const applyRenderState = useCallback', 'applyRenderState definition');
+});
+
+check('uses __sardine: render-state marker', () => {
+  assertContains(mainSrcForClipboard, "__sardine: 'render-state'", 'render-state marker emit');
+  assertContains(mainSrcForClipboard, "s.__sardine !== 'render-state'", 'render-state marker check');
+});
+
+check('serializes viewport (viewCenter, viewZoom)', () => {
+  // Serializer must explicitly emit both viewport fields.
+  const idx = mainSrcForClipboard.indexOf('const serializeRenderState = useCallback');
+  if (idx < 0) throw new Error('serializeRenderState not found');
+  const block = mainSrcForClipboard.slice(idx, idx + 2400);
+  assertContains(block, 'viewCenter', 'viewCenter in serializer');
+  assertContains(block, 'viewZoom', 'viewZoom in serializer');
+});
+
+check('serializes core scales (contrastMin/Max, gamma, stretchMode, colormap)', () => {
+  const idx = mainSrcForClipboard.indexOf('const serializeRenderState = useCallback');
+  const block = mainSrcForClipboard.slice(idx, idx + 2400);
+  assertContains(block, 'contrastMin', 'contrastMin');
+  assertContains(block, 'contrastMax', 'contrastMax');
+  assertContains(block, 'gamma', 'gamma');
+  assertContains(block, 'stretchMode', 'stretchMode');
+  assertContains(block, 'colormap', 'colormap');
+  assertContains(block, 'rgbContrastLimits', 'rgbContrastLimits');
+});
+
+check('Ctrl+C handler copies render state via clipboard', () => {
+  assertContains(mainSrcForClipboard, "(e.key === 'c' || e.key === 'C')", 'Ctrl+C key match');
+  assertContains(mainSrcForClipboard, 'navigator.clipboard.writeText', 'clipboard writeText call');
+  assertContains(mainSrcForClipboard, 'serializeRenderState()', 'serializeRenderState invocation');
+});
+
+check('Ctrl+C defers to native copy when text is selected', () => {
+  // Native copy fallback prevents stomping on user text selections.
+  assertContains(mainSrcForClipboard, 'window.getSelection', 'getSelection check');
+});
+
+check('Ctrl+V handler restores render state via clipboard', () => {
+  assertContains(mainSrcForClipboard, "(e.key === 'v' || e.key === 'V')", 'Ctrl+V key match');
+  assertContains(mainSrcForClipboard, 'navigator.clipboard.readText', 'clipboard readText call');
+  assertContains(mainSrcForClipboard, 'applyRenderState(parsed)', 'applyRenderState invocation');
+});
+
+check('keyboard handler effect lists serialize/apply deps', () => {
+  // Keep effect re-binding when callbacks change so stale closures do not
+  // capture old state values.
+  assertContains(mainSrcForClipboard,
+    'serializeRenderState, applyRenderState',
+    'serialize/apply in keydown deps');
+});
+
 // ─── 13. Colorblind mode — source checks ────────────────────────────────────
 
 suite('Colorblind mode (source)');

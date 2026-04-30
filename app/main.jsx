@@ -3562,6 +3562,119 @@ function App() {
     filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
   }), [colormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
 
+  // Serialize the full set of render options + viewport for clipboard copy.
+  // Marker `__sardine: 'render-state'` lets Ctrl+V detect a SARdine payload
+  // and ignore unrelated clipboard contents.
+  const serializeRenderState = useCallback(() => ({
+    __sardine: 'render-state',
+    version: 1,
+    // Viewport
+    viewCenter: Array.isArray(viewCenter) ? [viewCenter[0], viewCenter[1]] : viewCenter,
+    viewZoom,
+    // Display mode
+    displayMode,
+    compositeId,
+    // Single-band rendering
+    colormap,
+    useDecibels,
+    contrastMin,
+    contrastMax,
+    gamma,
+    stretchMode,
+    // RGB
+    rgbContrastLimits: rgbContrastLimits ? JSON.parse(JSON.stringify(rgbContrastLimits)) : null,
+    rgbSaturation,
+    colorblindMode,
+    // Resampling / masking
+    multiLook,
+    maskInvalid,
+    maskLayoverShadow,
+    useIncidenceAngleMask,
+    incAngleMin,
+    incAngleMax,
+    // Speckle
+    speckleFilterType,
+    speckleKernelSize,
+    // GUNW
+    useCoherenceMask,
+    coherenceThreshold,
+    losDisplacement,
+    verticalDisplacement,
+    // Overlays / UI
+    showGrid,
+    pixelExplorer,
+    pixelWindowSize,
+    showHistogramOverlay,
+    histogramScope,
+    // NISAR dataset selection
+    selectedFrequency,
+    selectedPolarization,
+  }), [
+    viewCenter, viewZoom,
+    displayMode, compositeId,
+    colormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode,
+    rgbContrastLimits, rgbSaturation, colorblindMode,
+    multiLook, maskInvalid, maskLayoverShadow, useIncidenceAngleMask, incAngleMin, incAngleMax,
+    speckleFilterType, speckleKernelSize,
+    useCoherenceMask, coherenceThreshold, losDisplacement, verticalDisplacement,
+    showGrid, pixelExplorer, pixelWindowSize, showHistogramOverlay, histogramScope,
+    selectedFrequency, selectedPolarization,
+  ]);
+
+  // Restore a render state previously produced by serializeRenderState.
+  // Each field is type-checked so partial / older payloads degrade gracefully.
+  const applyRenderState = useCallback((s) => {
+    if (!s || typeof s !== 'object' || s.__sardine !== 'render-state') return false;
+
+    if (Array.isArray(s.viewCenter) && s.viewCenter.length === 2 &&
+        Number.isFinite(s.viewCenter[0]) && Number.isFinite(s.viewCenter[1])) {
+      setViewCenter([s.viewCenter[0], s.viewCenter[1]]);
+    }
+    if (Number.isFinite(s.viewZoom)) setViewZoom(s.viewZoom);
+
+    if (typeof s.displayMode === 'string') setDisplayMode(s.displayMode);
+    if (s.compositeId === null || typeof s.compositeId === 'string') setCompositeId(s.compositeId);
+
+    if (typeof s.colormap === 'string') setColormap(s.colormap);
+    if (typeof s.useDecibels === 'boolean') setUseDecibels(s.useDecibels);
+    if (Number.isFinite(s.contrastMin)) setContrastMin(s.contrastMin);
+    if (Number.isFinite(s.contrastMax)) setContrastMax(s.contrastMax);
+    if (Number.isFinite(s.gamma)) setGamma(s.gamma);
+    if (typeof s.stretchMode === 'string') setStretchMode(s.stretchMode);
+
+    if (s.rgbContrastLimits === null || typeof s.rgbContrastLimits === 'object') {
+      setRgbContrastLimits(s.rgbContrastLimits);
+    }
+    if (Number.isFinite(s.rgbSaturation)) setRgbSaturation(s.rgbSaturation);
+    if (typeof s.colorblindMode === 'string') setColorblindMode(s.colorblindMode);
+
+    if (typeof s.multiLook === 'boolean') setMultiLook(s.multiLook);
+    if (typeof s.maskInvalid === 'boolean') setMaskInvalid(s.maskInvalid);
+    if (typeof s.maskLayoverShadow === 'boolean') setMaskLayoverShadow(s.maskLayoverShadow);
+    if (typeof s.useIncidenceAngleMask === 'boolean') setUseIncidenceAngleMask(s.useIncidenceAngleMask);
+    if (Number.isFinite(s.incAngleMin)) setIncAngleMin(s.incAngleMin);
+    if (Number.isFinite(s.incAngleMax)) setIncAngleMax(s.incAngleMax);
+
+    if (typeof s.speckleFilterType === 'string') setSpeckleFilterType(s.speckleFilterType);
+    if (Number.isFinite(s.speckleKernelSize)) setSpeckleKernelSize(s.speckleKernelSize);
+
+    if (typeof s.useCoherenceMask === 'boolean') setUseCoherenceMask(s.useCoherenceMask);
+    if (Number.isFinite(s.coherenceThreshold)) setCoherenceThreshold(s.coherenceThreshold);
+    if (typeof s.losDisplacement === 'boolean') setLosDisplacement(s.losDisplacement);
+    if (typeof s.verticalDisplacement === 'boolean') setVerticalDisplacement(s.verticalDisplacement);
+
+    if (typeof s.showGrid === 'boolean') setShowGrid(s.showGrid);
+    if (typeof s.pixelExplorer === 'boolean') setPixelExplorer(s.pixelExplorer);
+    if (Number.isFinite(s.pixelWindowSize)) setPixelWindowSize(s.pixelWindowSize);
+    if (typeof s.showHistogramOverlay === 'boolean') setShowHistogramOverlay(s.showHistogramOverlay);
+    if (typeof s.histogramScope === 'string') setHistogramScope(s.histogramScope);
+
+    if (typeof s.selectedFrequency === 'string') setSelectedFrequency(s.selectedFrequency);
+    if (typeof s.selectedPolarization === 'string') setSelectedPolarization(s.selectedPolarization);
+
+    return true;
+  }, []);
+
   // Save current view (or TS viewer) as a georeferenced GeoTIFF — screenshots the rendered canvas
   const handleSaveFigureGeoTIFF = useCallback(async () => {
     // Choose which viewer to capture: TS viewer when it's active, otherwise main viewer
@@ -3846,6 +3959,53 @@ function App() {
         return;
       }
 
+      // Ctrl+C / Cmd+C — Copy current render state (viewport + scales + options) as JSON.
+      // Defers to native copy when the user has a text selection.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+        const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null;
+        if (sel && sel.toString().length > 0) return;
+        e.preventDefault();
+        const state = serializeRenderState();
+        const json = JSON.stringify(state, null, 2);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(json).then(
+            () => addStatusLog('success', 'Render state copied to clipboard'),
+            (err) => addStatusLog('error', 'Failed to copy render state', err && err.message),
+          );
+        } else {
+          addStatusLog('error', 'Clipboard API unavailable');
+        }
+        return;
+      }
+
+      // Ctrl+V / Cmd+V — Restore render state from clipboard JSON.
+      // Silently no-op for clipboard contents that are not SARdine state.
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'v' || e.key === 'V')) {
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+          addStatusLog('error', 'Clipboard API unavailable');
+          return;
+        }
+        e.preventDefault();
+        navigator.clipboard.readText().then(
+          (text) => {
+            let parsed;
+            try {
+              parsed = JSON.parse(text);
+            } catch {
+              addStatusLog('warning', 'Clipboard does not contain SARdine render state');
+              return;
+            }
+            if (applyRenderState(parsed)) {
+              addStatusLog('success', 'Render state restored from clipboard');
+            } else {
+              addStatusLog('warning', 'Clipboard does not contain SARdine render state');
+            }
+          },
+          (err) => addStatusLog('error', 'Failed to read clipboard', err && err.message),
+        );
+        return;
+      }
+
       // Keyboard shortcuts (only when no modifier keys)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         if (e.key === 'h' || e.key === 'H') {
@@ -3861,7 +4021,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleSaveFigure, handleSaveFigureWithOverlays, roi]);
+  }, [handleSaveFigure, handleSaveFigureWithOverlays, roi, serializeRenderState, applyRenderState, addStatusLog, imageData]);
 
   const handleExportColorbar = useCallback(async () => {
     if (!isRGBDisplayMode || !compositeId) {
