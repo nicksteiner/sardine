@@ -1197,6 +1197,39 @@ check('App passes gcovMosaicLayers through to SARViewer', () => {
   assertContains(mainSrcForMosaic, 'mosaicLayers={gcovMosaicLayers}', 'wiring');
 });
 
+check('GCOV mosaic loads via loadNISARRGBComposite when primary is RGB', () => {
+  // Primary in RGB mode means the secondary must also load multi-band data
+  // so SARTileLayer auto-detects RGB ({bands, compositeId}) — otherwise the
+  // secondary renders grayscale next to a colored primary.
+  const idx = mainSrcForMosaic.indexOf('// Load secondary GCOV files');
+  if (idx < 0) throw new Error('GCOV mosaic effect block not found');
+  const block = mainSrcForMosaic.slice(idx, idx + 3500);
+  assertContains(block, "displayMode === 'rgb' && !!compositeId", 'RGB branch guard');
+  assertContains(block, 'loadNISARRGBComposite(file', 'RGB loader call');
+  assertContains(block, 'getRequiredDatasets(compositeId)', 'requiredPols computed');
+  assertContains(block, 'getRequiredComplexDatasets(compositeId)', 'requiredComplexPols computed');
+  assertContains(block, 'data.getRGBTile', 'getRGBTile used as secondary getTile');
+});
+
+check('GCOV mosaic effect deps include displayMode and compositeId', () => {
+  // Without these deps, switching display modes after secondaries are
+  // loaded would not trigger a re-load — secondaries would stay in the
+  // previous mode and not match the primary.
+  assertContains(mainSrcForMosaic,
+    'selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog',
+    'displayMode + compositeId in deps');
+});
+
+check('SARViewer secondary passes rgbSaturation + colorblindMode', () => {
+  // SARGPULayer's RGB path uses these uniforms — without them the secondary
+  // would render with stale defaults instead of the live primary settings.
+  const idx = viewerSrcForMosaic.indexOf('const secondaryMosaicLayers');
+  if (idx < 0) throw new Error('secondaryMosaicLayers not found');
+  const block = viewerSrcForMosaic.slice(idx, idx + 1600);
+  assertContains(block, 'rgbSaturation: v.rgbSaturation', 'rgbSaturation passed');
+  assertContains(block, 'colorblindMode: v.colorblindMode', 'colorblindMode passed');
+});
+
 // ─── 13. Colorblind mode — source checks ────────────────────────────────────
 
 suite('Colorblind mode (source)');

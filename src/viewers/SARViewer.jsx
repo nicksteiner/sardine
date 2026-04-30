@@ -354,7 +354,9 @@ export const SARViewer = forwardRef(function SARViewer({
   }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, multiLook, handleLoadingChange, redrawTick, visualTick]);
 
   // Mosaic secondary layers — share the primary's visual props but each has
-  // its own bounds + getTile. Single-band only (no RGB composite per source).
+  // its own bounds + getTile. SARTileLayer auto-detects RGB vs single-band
+  // from tile data shape ({bands, compositeId} → RGB), so no per-source mode
+  // flag is needed; the loader chooses which getTile to return.
   const secondaryMosaicLayers = useMemo(() => {
     if (!mosaicLayers || mosaicLayers.length === 0) return [];
     const v = visualRef.current;
@@ -378,6 +380,8 @@ export const SARViewer = forwardRef(function SARViewer({
           maskLayoverShadow: v.maskLayoverShadow,
           speckleFilterType: v.speckleFilterType,
           speckleKernelSize: v.speckleKernelSize,
+          rgbSaturation: v.rgbSaturation,
+          colorblindMode: v.colorblindMode,
         });
       })
       .filter(Boolean);

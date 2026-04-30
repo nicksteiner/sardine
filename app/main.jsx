@@ -2263,9 +2263,12 @@ function App() {
   }, [gcovMosaicFiles, gcovMosaicLayers, addStatusLog]);
 
   // Load secondary GCOV files in parallel whenever the file list, primary
-  // frequency, polarization, or display mode changes. Reject CRS-mismatched
-  // sources. Skipped while the primary's compositeId is set (RGB) or while
-  // displayMode is multi-temporal — secondaries always render single-band.
+  // frequency/polarization, displayMode, or compositeId changes. Branches on
+  // RGB mode: when the primary is in RGB display with a compositeId set,
+  // secondaries are loaded via loadNISARRGBComposite so getTile returns
+  // multi-band tile data ({bands, compositeId, ...}) — SARTileLayer then
+  // renders the secondary as RGB automatically. Otherwise loads single-band
+  // via loadNISARGCOV. CRS-mismatched sources are rejected.
   const gcovMosaicGenRef = useRef(0);
   useEffect(() => {
     if (fileType !== 'nisar') return;
@@ -2274,23 +2277,9 @@ function App() {
       if (gcovMosaicLayers.length > 0) setGcovMosaicLayers([]);
       return;
     }
-    // Need a primary established to validate CRS and to know the user has
-    // confirmed dataset selection. Skip until imageData is loaded.
-    if (!imageData?.crs) {
-      console.log('[GCOV mosaic] waiting for primary imageData.crs', {
-        hasImageData: !!imageData,
-        keys: imageData ? Object.keys(imageData) : null,
-        queued: gcovMosaicFiles.length,
-      });
-      return;
-    }
-    console.log('[GCOV mosaic] loading secondaries', {
-      count: gcovMosaicFiles.length,
-      primaryCRS: imageData.crs,
-      primaryBounds: imageData.bounds,
-      freq: selectedFrequency,
-      pol: selectedPolarization,
-    });
+    if (!imageData?.crs) return;
+
+    const isRGB = displayMode === 'rgb' && !!compositeId;
 
     const gen = ++gcovMosaicGenRef.current;
     const primaryCRS = imageData.crs;
@@ -2300,11 +2289,22 @@ function App() {
       const results = await Promise.all(
         gcovMosaicFiles.map(async (file) => {
           try {
+            if (isRGB) {
+              const requiredPols = getRequiredDatasets(compositeId);
+              const requiredComplexPols = getRequiredComplexDatasets(compositeId);
+              const data = await loadNISARRGBComposite(file, {
+                frequency: selectedFrequency,
+                compositeId,
+                requiredPols,
+                requiredComplexPols,
+              });
+              return { file, data, getTile: data.getRGBTile };
+            }
             const data = await loadNISARGCOV(file, {
               frequency: selectedFrequency,
               polarization: selectedPolarization,
             });
-            return { file, data };
+            return { file, data, getTile: data.getTile };
           } catch (e) {
             return { file, error: e };
           }
@@ -2327,26 +2327,23 @@ function App() {
         ok.push({
           id: `${r.file.name}-${r.file.size}`,
           label: r.file.name,
-          getTile: r.data.getTile,
+          getTile: r.getTile,
           bounds: r.data.bounds,
           crs: r.data.crs,
           width: r.data.width,
           height: r.data.height,
         });
       }
-      console.log('[GCOV mosaic] secondaries loaded', ok.map(s => ({
-        id: s.id, bounds: s.bounds, crs: s.crs, w: s.width, h: s.height,
-      })));
       setGcovMosaicLayers(ok);
       if (ok.length > 0) {
         addStatusLog('success',
           `GCOV mosaic ready: ${ok.length} secondary layer${ok.length > 1 ? 's' : ''}`,
-          `${selectedFrequency}/${selectedPolarization}`);
+          isRGB ? `RGB ${compositeId}` : `${selectedFrequency}/${selectedPolarization}`);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, addStatusLog]);
+  }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog]);
 
   // Drag-and-drop handler — auto-detect file type from name/extension
   const handleFileDrop = useCallback((e) => {
