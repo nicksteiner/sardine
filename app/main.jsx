@@ -2447,31 +2447,38 @@ function App() {
           `NITF mosaic not supported — loaded only ${nitfFiles[0].name}`,
           `${nitfFiles.length - 1} additional NITF file(s) ignored`);
       }
-    } else if (name.endsWith('.geojson') || name.endsWith('.json')) {
-      // Read GeoJSON and add as overlay
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        try {
-          const geojson = JSON.parse(evt.target.result);
-          if (!geojson.type || (geojson.type !== 'FeatureCollection' && geojson.type !== 'Feature' && geojson.type !== 'GeometryCollection')) {
-            addStatusLog('warning', `Not a valid GeoJSON: ${file.name}`);
-            return;
+    } else if (geojsonFiles.length > 0) {
+      // Add each GeoJSON file as an overlay
+      for (const gj of geojsonFiles) {
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          try {
+            const geojson = JSON.parse(evt.target.result);
+            if (!geojson.type || (geojson.type !== 'FeatureCollection' && geojson.type !== 'Feature' && geojson.type !== 'GeometryCollection')) {
+              addStatusLog('warning', `Not a valid GeoJSON: ${gj.name}`);
+              return;
+            }
+            const data = geojson.type === 'Feature'
+              ? { type: 'FeatureCollection', features: [geojson] }
+              : geojson;
+            const id = `geojson-${Date.now()}-${gj.name}`;
+            setDroppedGeoJSON(prev => [...prev, { id, name: gj.name, data }]);
+            addStatusLog('info', `GeoJSON loaded: ${gj.name}`,
+              `${(data.features?.length || 0)} features`);
+          } catch (parseErr) {
+            addStatusLog('error', `Failed to parse GeoJSON: ${gj.name}`, parseErr.message);
           }
-          // Wrap bare Feature in a FeatureCollection
-          const data = geojson.type === 'Feature'
-            ? { type: 'FeatureCollection', features: [geojson] }
-            : geojson;
-          const id = `geojson-${Date.now()}`;
-          setDroppedGeoJSON(prev => [...prev, { id, name: file.name, data }]);
-          addStatusLog('info', `GeoJSON loaded: ${file.name}`,
-            `${(data.features?.length || 0)} features`);
-        } catch (parseErr) {
-          addStatusLog('error', `Failed to parse GeoJSON: ${file.name}`, parseErr.message);
-        }
-      };
-      reader.readAsText(file);
-    } else if (name.endsWith('.png')) {
-      // Check for embedded SARdine state
+        };
+        reader.readAsText(gj);
+      }
+    } else if (pngFiles.length > 0) {
+      // Settings restore from a SARdine-exported PNG — only the first one makes sense
+      const file = pngFiles[0];
+      if (pngFiles.length > 1) {
+        addStatusLog('warning',
+          `Only one PNG state file can be applied at a time — using ${file.name}`,
+          `${pngFiles.length - 1} additional PNG file(s) ignored`);
+      }
       extractStateFromPNG(file).then((state) => {
         if (!state) {
           addStatusLog('warning', `No SARdine state found in: ${file.name}`, 'Only SARdine-exported PNGs carry embedded state');
@@ -2479,12 +2486,10 @@ function App() {
         }
         const restoredFile = state.filename || '(unknown)';
         if (nisarFile || cogUrl) {
-          // Data already loaded — apply settings immediately
           pendingPNGStateRef.current = state;
           applyPendingPNGState();
           addStatusLog('success', `Settings restored from: ${file.name}`, `Applied to current data`);
         } else {
-          // No data loaded yet — stash state to apply after data file is dropped
           pendingPNGStateRef.current = state;
           addStatusLog('success', `Settings staged from: ${file.name}`,
             `Now drop the original data file to render: ${restoredFile}`);
@@ -2492,8 +2497,9 @@ function App() {
       }).catch((err) => {
         addStatusLog('error', `Failed to read PNG state: ${file.name}`, err.message);
       });
-    } else {
-      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
+    } else if (knownCount === 0) {
+      addStatusLog('warning', `Unsupported file type: ${files[0].name}`,
+        'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
     }
   }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
 
