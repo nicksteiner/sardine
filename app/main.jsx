@@ -5,6 +5,7 @@ import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, auto
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
+import { loadNITF, isNITFFile } from '../src/loaders/nitf-loader.js';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds } from '../src/utils/roi-subset.js';
@@ -2345,6 +2346,35 @@ function App() {
     return () => { cancelled = true; };
   }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog]);
 
+  const handleNITFFileSelect = useCallback(async (file) => {
+    setLoading(true);
+    setLoadProgress(0);
+    setError(null);
+    addStatusLog('info', `Loading NITF: ${file.name} (${(file.size / 1e9).toFixed(2)} GB)`);
+
+    try {
+      const gen = ++loadGenRef.current;
+      const data = await loadNITF(file, (pct) => setLoadProgress(pct));
+      if (gen !== loadGenRef.current) return;
+
+      setImageData(data);
+      const info = data.nitfInfo || {};
+      const label = info.isComplex
+        ? `NITF SICD: ${data.width}×${data.height} complex (amplitude)`
+        : `NITF: ${data.width}×${data.height}`;
+      addStatusLog('success', label,
+        info.sicd ? `SICD ${info.sicd.modeType || ''} ${info.sicd.collector || ''}`.trim() : undefined);
+
+      if (data.bounds) autoFitIfNewScene(data.bounds);
+      setLoadProgress(100);
+    } catch (e) {
+      setError(`Failed to load NITF: ${e.message}`);
+      addStatusLog('error', 'Failed to load NITF', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [addStatusLog, autoFitIfNewScene]);
+
   // Drag-and-drop handler — auto-detect file type from name/extension
   const handleFileDrop = useCallback((e) => {
     e.preventDefault();
@@ -2358,12 +2388,13 @@ function App() {
     // (e.g. a .h5 plus a sidecar .geojson, or several .tifs and a .png state file).
     const h5Files = files.filter(f => /\.(h5|hdf5|he5)$/i.test(f.name));
     const tifFiles = files.filter(f => /\.(tif|tiff)$/i.test(f.name));
+    const nitfFiles = files.filter(f => /\.(nitf|ntf)$/i.test(f.name));
     const geojsonFiles = files.filter(f => /\.(geojson|json)$/i.test(f.name));
     const pngFiles = files.filter(f => /\.png$/i.test(f.name));
-    const knownCount = h5Files.length + tifFiles.length + geojsonFiles.length + pngFiles.length;
+    const knownCount = h5Files.length + tifFiles.length + nitfFiles.length + geojsonFiles.length + pngFiles.length;
     if (knownCount < files.length) {
       const unknown = files.filter(f =>
-        !/\.(h5|hdf5|he5|tif|tiff|geojson|json|png)$/i.test(f.name));
+        !/\.(h5|hdf5|he5|tif|tiff|nitf|ntf|geojson|json|png)$/i.test(f.name));
       if (unknown.length > 0) {
         addStatusLog('warning',
           `Ignored ${unknown.length} unrecognized file${unknown.length > 1 ? 's' : ''}`,
@@ -2407,6 +2438,14 @@ function App() {
       } else {
         setFileType('local-tif');
         handleLocalTIFMultiSelect(files);
+      }
+    } else if (nitfFiles.length > 0) {
+      setFileType('nitf');
+      handleNITFFileSelect(nitfFiles[0]);
+      if (nitfFiles.length > 1) {
+        addStatusLog('warning',
+          `NITF mosaic not supported — loaded only ${nitfFiles[0].name}`,
+          `${nitfFiles.length - 1} additional NITF file(s) ignored`);
       }
     } else if (name.endsWith('.geojson') || name.endsWith('.json')) {
       // Read GeoJSON and add as overlay
@@ -2454,9 +2493,9 @@ function App() {
         addStatusLog('error', `Failed to read PNG state: ${file.name}`, err.message);
       });
     } else {
-      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .geojson, or a SARdine-exported .png');
+      addStatusLog('warning', `Unsupported file type: ${file.name}`, 'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
