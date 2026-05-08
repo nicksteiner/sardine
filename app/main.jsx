@@ -283,6 +283,62 @@ function computeLogNormalHist(mean, std, numBins = 128, syntheticCount = 100000)
 }
 
 /**
+ * Banner shown only on the GitHub Pages deployment, pointing users at
+ * `npm run dev` for features that need the dev-server CORS proxy
+ * (Earthdata-authenticated NISAR streaming, some STAC endpoints).
+ * Dismissible; remembered in localStorage.
+ */
+function PagesBanner() {
+  const isPages = import.meta.env.VITE_DEPLOY_TARGET === 'github-pages';
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem('sardine.pages-banner.dismissed') === '1'; } catch { return false; }
+  });
+  if (!isPages || dismissed) return null;
+  const close = () => {
+    setDismissed(true);
+    try { localStorage.setItem('sardine.pages-banner.dismissed', '1'); } catch {}
+  };
+  return (
+    <div style={{
+      position: 'relative',
+      padding: '6px 36px 6px 12px',
+      background: 'var(--sardine-bg-panel, #122240)',
+      borderBottom: '1px solid var(--sardine-cyan, #4ec9d4)',
+      color: 'var(--sardine-text-primary, #e8edf5)',
+      fontSize: '0.75rem',
+      lineHeight: 1.4,
+      textAlign: 'center',
+    }}>
+      <strong style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>SARdine</strong>{' '}
+      runs entirely in your browser — drop a GeoTIFF, NISAR HDF5, or GeoJSON file to start.{' '}
+      Earthdata-authenticated streaming and the STAC catalog browser need the local dev server (
+      <a href="https://github.com/nicksteiner/sardine#getting-started" target="_blank" rel="noopener noreferrer"
+         style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>
+        npm run dev
+      </a>
+      ).
+      <button
+        onClick={close}
+        title="Dismiss"
+        aria-label="Dismiss"
+        style={{
+          position: 'absolute', top: 4, right: 8,
+          background: 'transparent',
+          border: 'none',
+          color: 'var(--sardine-text-secondary, #8fa4c4)',
+          cursor: 'pointer',
+          fontSize: '0.9rem',
+          lineHeight: 1,
+          padding: '2px 6px',
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+/**
  * SARdine - SAR Data INspection and Exploration
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
@@ -4749,6 +4805,7 @@ function App() {
       onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDragOver(false); }}
       onDrop={handleFileDrop}
     >
+      <PagesBanner />
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}

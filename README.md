@@ -24,6 +24,8 @@
 
 > **This project is under active development.** Some features are experimental or incomplete. Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
 
+> **Try it live:** [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/) — drop in a local GeoTIFF, NISAR `.h5`, or GeoJSON to explore. The hosted build does not include the dev-server CORS proxy, so Earthdata-authenticated NISAR streaming and the STAC catalog browser require running locally with `npm run dev`.
+
 ---
 
 ## What It Is
