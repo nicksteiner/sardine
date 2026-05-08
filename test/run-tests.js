@@ -898,6 +898,226 @@ try {
   skip('GeoTIFF writer tests', `import failed: ${err.message}`);
 }
 
+// ─── 11b. SICD projection (sarpy-equivalent) ─────────────────────────────────
+
+suite('SICD projection');
+
+try {
+  const { buildSICDProjection, groundToImage, groundToImageBulk, imageToGround } =
+    await import(join(rootDir, 'src/utils/sicd-projection.js'));
+
+  // Synthetic SICD at SCP (lat=0, lon=0, h=0) — SCP_ECF ≈ (a, 0, 0).
+  // Local ENU: East = +Y_ECEF, North = +Z_ECEF, Up = +X_ECEF.
+  // Pick rowU = North (ground-range), colU = East (azimuth), so an
+  // increase in lat moves down a row and an increase in lon moves
+  // along columns. 1 m/px sample spacing keeps numbers tidy.
+  const WGS84_A = 6378137.0;
+  const synthSicd = {
+    geometry: {
+      rowUVect: { x: 0, y: 0, z: 1 },
+      colUVect: { x: 0, y: 1, z: 0 },
+      rowSS: 1,
+      colSS: 1,
+    },
+    scp: { ecef: { x: WGS84_A, y: 0, z: 0 }, lat: 0, lon: 0, hae: 0 },
+    scpPixel: { row: 100, col: 200 },
+    firstRow: 0,
+    firstCol: 0,
+    nrows: 200,
+    ncols: 400,
+  };
+
+  check('buildSICDProjection populates expected fields', () => {
+    const p = buildSICDProjection(synthSicd);
+    if (p.scpRow !== 100) throw new Error(`scpRow ${p.scpRow}`);
+    if (p.scpCol !== 200) throw new Error(`scpCol ${p.scpCol}`);
+    if (p.nRows !== 200 || p.nCols !== 400) {
+      throw new Error(`dims ${p.nRows}x${p.nCols}`);
+    }
+    if (p.rowSS !== 1 || p.colSS !== 1) throw new Error('SS mismatch');
+  });
+
+  check('buildSICDProjection rejects missing fields', () => {
+    let threw = false;
+    try {
+      buildSICDProjection({ geometry: {}, scp: {}, scpPixel: {} });
+    } catch { threw = true; }
+    if (!threw) throw new Error('expected build to throw on missing fields');
+  });
+
+  check('groundToImage maps SCP to scpPixel exactly', () => {
+    const p = buildSICDProjection(synthSicd);
+    const { row, col } = groundToImage(0, 0, 0, p);
+    if (Math.abs(row - 100) > 1e-6) throw new Error(`row ${row}`);
+    if (Math.abs(col - 200) > 1e-6) throw new Error(`col ${col}`);
+  });
+
+  // 1 m north at the equator covers the meridional radius of curvature
+  // M = a(1-e²) ≈ 6,335,439 m, not the equatorial radius a. So 1 m of
+  // northing is ~1/M radians of latitude. With rowU = ECEF +Z and
+  // rowSS = 1 m/px that should land exactly one row above SCP.
+  const WGS84_F = 1 / 298.257223563;
+  const WGS84_E2 = WGS84_F * (2 - WGS84_F);
+  const M_EQUATOR = WGS84_A * (1 - WGS84_E2);
+
+  check('groundToImage: +1 m north → row+1', () => {
+    const p = buildSICDProjection(synthSicd);
+    const dlat = (1 / M_EQUATOR) * (180 / Math.PI);
+    const { row, col } = groundToImage(dlat, 0, 0, p);
+    if (Math.abs(row - 101) > 1e-3) throw new Error(`row ${row} (want ~101)`);
+    if (Math.abs(col - 200) > 1e-3) throw new Error(`col ${col} (want 200)`);
+  });
+
+  check('groundToImage: +1 m east → col+1', () => {
+    // 1 m east at lat=0 is exactly 1/a radians of longitude (equatorial).
+    const p = buildSICDProjection(synthSicd);
+    const dlon = (1 / WGS84_A) * (180 / Math.PI);
+    const { row, col } = groundToImage(0, dlon, 0, p);
+    if (Math.abs(row - 100) > 1e-3) throw new Error(`row ${row} (want 100)`);
+    if (Math.abs(col - 201) > 1e-3) throw new Error(`col ${col} (want ~201)`);
+  });
+
+  check('groundToImageBulk matches scalar groundToImage', () => {
+    const p = buildSICDProjection(synthSicd);
+    const lons = [0, 0.001, -0.0005, 0.0002];
+    const lats = [0, -0.0008, 0.0012, 0.0001];
+    const out = groundToImageBulk(lons, lats, 0, p);
+    for (let i = 0; i < lons.length; i++) {
+      const ref = groundToImage(lats[i], lons[i], 0, p);
+      const dr = out[2 * i] - ref.row;
+      const dc = out[2 * i + 1] - ref.col;
+      if (Math.abs(dr) > 1e-3 || Math.abs(dc) > 1e-3) {
+        throw new Error(`bulk[${i}] (${out[2*i]},${out[2*i+1]}) vs (${ref.row},${ref.col})`);
+      }
+    }
+  });
+
+  check('imageToGround at scpPixel returns SCP lat/lon', () => {
+    const p = buildSICDProjection(synthSicd);
+    const g = imageToGround(100, 200, p);
+    if (Math.abs(g.lat) > 1e-6) throw new Error(`lat ${g.lat}`);
+    if (Math.abs(g.lon) > 1e-6) throw new Error(`lon ${g.lon}`);
+  });
+
+  // Vector firstRow/firstCol shift: the chip starts at firstRow/firstCol
+  // in the full image, so chip-local row/col = full row/col − firstRow/Col.
+  check('groundToImage honours firstRow/firstCol chip offset', () => {
+    const chipped = {
+      ...synthSicd,
+      firstRow: 50,
+      firstCol: 75,
+    };
+    const p = buildSICDProjection(chipped);
+    const { row, col } = groundToImage(0, 0, 0, p);
+    if (Math.abs(row - (100 - 50)) > 1e-6) throw new Error(`row ${row}`);
+    if (Math.abs(col - (200 - 75)) > 1e-6) throw new Error(`col ${col}`);
+  });
+
+} catch (err) {
+  skip('SICD projection tests', `import failed: ${err.message}`);
+}
+
+// ─── 11c. Overture vector back-projection ────────────────────────────────────
+//
+// Tests the makeReproject helper directly. It lives in
+// src/utils/overture-projection.js (split out from OvertureLayer.js)
+// so Node tests don't have to load @deck.gl/layers.
+
+suite('Overture back-projection');
+
+try {
+  const { makeReproject, reprojectFeature } =
+    await import(join(rootDir, 'src/utils/overture-projection.js'));
+  const { buildSICDProjection } =
+    await import(join(rootDir, 'src/utils/sicd-projection.js'));
+
+  // Same synthetic SICD geometry as the projection suite.
+  const WGS84_A = 6378137.0;
+  const synthSicd = {
+    geometry: {
+      rowUVect: { x: 0, y: 0, z: 1 },
+      colUVect: { x: 0, y: 1, z: 0 },
+      rowSS: 1,
+      colSS: 1,
+    },
+    scp: { ecef: { x: WGS84_A, y: 0, z: 0 }, lat: 0, lon: 0, hae: 0 },
+    scpPixel: { row: 100, col: 200 },
+    firstRow: 0,
+    firstCol: 0,
+    nrows: 200,
+    ncols: 400,
+  };
+
+  check('makeReproject: returns null for EPSG:4326 (identity)', () => {
+    const fn = makeReproject({ crs: 'EPSG:4326' });
+    if (fn !== null) throw new Error('expected null for 4326');
+  });
+
+  check('makeReproject: returns null with no projection and no CRS', () => {
+    const fn = makeReproject({});
+    if (fn !== null) throw new Error('expected null');
+  });
+
+  check('makeReproject: SICD projection — SCP → (col, nRows-row)', () => {
+    const projection = buildSICDProjection(synthSicd);
+    const fn = makeReproject({ projection });
+    if (typeof fn !== 'function') throw new Error('expected function');
+    const [x, y] = fn([0, 0]);  // [lon, lat]
+    // SCP → row=100, col=200 → deck.gl (col, nRows-row) = (200, 100)
+    if (Math.abs(x - 200) > 1e-6) throw new Error(`x ${x} (want 200)`);
+    if (Math.abs(y - (200 - 100)) > 1e-6) throw new Error(`y ${y} (want 100)`);
+  });
+
+  check('makeReproject: SICD — +lat shift moves Y down (row up)', () => {
+    const projection = buildSICDProjection(synthSicd);
+    const fn = makeReproject({ projection });
+    const [, y0] = fn([0, 0]);
+    const [, y1] = fn([0, 0.0001]);  // +lat
+    // rowU = +Z, +lat → larger row → smaller deck.gl Y.
+    if (!(y1 < y0)) throw new Error(`expected y1 (${y1}) < y0 (${y0}) for +lat`);
+  });
+
+  check('makeReproject: SICD — +lon shift moves X right (col up)', () => {
+    const projection = buildSICDProjection(synthSicd);
+    const fn = makeReproject({ projection });
+    const [x0] = fn([0, 0]);
+    const [x1] = fn([0.0001, 0]);  // +lon
+    if (!(x1 > x0)) throw new Error(`expected x1 (${x1}) > x0 (${x0}) for +lon`);
+  });
+
+  check('makeReproject: projection takes precedence over crs', () => {
+    const projection = buildSICDProjection(synthSicd);
+    // Both set — SICD projection should win (UTM would emit ~500k-meter X).
+    const fn = makeReproject({ projection, crs: 'EPSG:32610' });
+    const [x, y] = fn([0, 0]);
+    if (Math.abs(x - 200) > 1) throw new Error(`projection didn't win: x=${x}`);
+    if (Math.abs(y - 100) > 1) throw new Error(`projection didn't win: y=${y}`);
+  });
+
+  check('makeReproject: SICD preserves Z when input has 3 components', () => {
+    // Even though SICD path doesn't currently use h, the contract is that
+    // a 2D input → 2D output (deck.gl pixel space). Confirm 3D input is
+    // accepted (h is consumed by groundToImage but the output stays 2D).
+    const projection = buildSICDProjection(synthSicd);
+    const fn = makeReproject({ projection });
+    const out = fn([0, 0, 50]);
+    if (out.length !== 2) throw new Error(`expected 2D out, got len ${out.length}`);
+  });
+
+  check('makeReproject: proj4 path used for non-4326 CRS without projection', () => {
+    // EPSG:32610 is UTM zone 10N. WGS84 (-122, 37) → roughly (560k, 4.1M).
+    const fn = makeReproject({ crs: 'EPSG:32610' });
+    if (typeof fn !== 'function') throw new Error('expected function');
+    const [x, y] = fn([-122, 37]);
+    // Loose sanity bounds rather than exact PROJ values.
+    if (x < 5e5 || x > 6e5) throw new Error(`UTM x out of range: ${x}`);
+    if (y < 4e6 || y > 4.2e6) throw new Error(`UTM y out of range: ${y}`);
+  });
+
+} catch (err) {
+  skip('Overture back-projection tests', `import failed: ${err.message}`);
+}
+
 // ─── 12. PNG state embed/extract ─────────────────────────────────────────────
 
 suite('PNG state');

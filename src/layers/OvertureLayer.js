@@ -12,30 +12,7 @@
 
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { OVERTURE_THEMES } from '../loaders/overture-loader.js';
-import { wgs84ToProjectedPoint } from '../loaders/overture-loader.js';
-
-/**
- * Reproject GeoJSON coordinates from WGS84 to the target CRS.
- */
-function reprojectCoords(coords, crs) {
-  if (!coords) return coords;
-  if (typeof coords[0] === 'number') {
-    const [x, y] = wgs84ToProjectedPoint(coords[0], coords[1], crs);
-    return coords.length > 2 ? [x, y, coords[2]] : [x, y];
-  }
-  return coords.map(c => reprojectCoords(c, crs));
-}
-
-function reprojectFeature(feature, crs) {
-  if (!feature?.geometry?.coordinates) return feature;
-  return {
-    ...feature,
-    geometry: {
-      ...feature.geometry,
-      coordinates: reprojectCoords(feature.geometry.coordinates, crs),
-    },
-  };
-}
+import { makeReproject, reprojectFeature } from '../utils/overture-projection.js';
 
 /**
  * Extract non-boundary edges from polygons as LineString features.
@@ -113,12 +90,13 @@ function extractCoastlineEdges(features, tileBounds) {
  * Create deck.gl layers for Overture data.
  */
 export function createOvertureLayers(overtureData, options = {}) {
-  const { opacity = 0.7, crs } = options;
+  const { opacity = 0.7, crs, projection } = options;
   const layers = [];
 
   if (!overtureData) return layers;
 
-  const needsReproject = crs && !crs.includes('4326');
+  const reprojectFn = makeReproject({ projection, crs });
+  const needsReproject = reprojectFn !== null;
 
   for (const [themeKey, featureCollection] of Object.entries(overtureData)) {
     if (!featureCollection?.features?.length) continue;
@@ -144,7 +122,7 @@ export function createOvertureLayers(overtureData, options = {}) {
         const edgeCollection = extractCoastlineEdges(group.features, group.bounds);
         for (const f of edgeCollection.features) {
           edgesAfter += f.geometry.coordinates.length - 1;
-          allLineFeatures.push(needsReproject ? reprojectFeature(f, crs) : f);
+          allLineFeatures.push(needsReproject ? reprojectFeature(f, reprojectFn) : f);
         }
       }
 
@@ -174,17 +152,21 @@ export function createOvertureLayers(overtureData, options = {}) {
     const data = needsReproject
       ? {
           type: 'FeatureCollection',
-          features: featureCollection.features.map(f => reprojectFeature(f, crs)),
+          features: featureCollection.features.map(f => reprojectFeature(f, reprojectFn)),
         }
       : featureCollection;
+
+    // coastlineStroke themes without tileGroups (e.g. legacy data, retry path):
+    // force stroke-only to avoid filling water polygons across whole tiles.
+    const forceStroke = themeDef.coastlineStroke;
 
     layers.push(
       new GeoJsonLayer({
         id: layerId,
         data,
         opacity,
-        filled: themeDef.fillOnly || !themeDef.strokeOnly,
-        stroked: !themeDef.fillOnly,
+        filled: forceStroke ? false : (themeDef.fillOnly || !themeDef.strokeOnly),
+        stroked: forceStroke ? true : !themeDef.fillOnly,
         getFillColor: themeDef.color || [200, 200, 200, 100],
         getLineColor: themeDef.lineColor || themeDef.color || [150, 150, 150, 200],
         getLineWidth: themeDef.lineWidth || 1,

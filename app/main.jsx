@@ -13,6 +13,7 @@ import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRe
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { makeReproject, reprojectFeature } from '../src/utils/overture-projection.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
 import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
@@ -27,7 +28,7 @@ import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
-import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84, wgs84ToProjectedPoint } from '../src/loaders/overture-loader.js';
+import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
@@ -478,7 +479,7 @@ function App() {
 
   // Overture Maps overlay state
   const [overtureEnabled, setOvertureEnabled] = useState(false);
-  const [overtureThemes, setOvertureThemes] = useState(['base_water', 'divisions_boundary']); // enabled themes
+  const [overtureThemes, setOvertureThemes] = useState(['transportation', 'buildings', 'base_water']); // enabled themes
   const [overtureData, setOvertureData] = useState(null);
   const [overtureLoading, setOvertureLoading] = useState(false);
   const [overtureOpacity, setOvertureOpacity] = useState(0.7);
@@ -4403,23 +4404,27 @@ function App() {
 
     if (overtureDebounceRef.current) clearTimeout(overtureDebounceRef.current);
 
+    // Generation token: if the effect re-runs (themes change, file loads) before
+    // the in-flight fetch resolves, the stale result is discarded instead of
+    // overwriting newer state.
+    let cancelled = false;
+
     overtureDebounceRef.current = setTimeout(async () => {
       try {
         setOvertureLoading(true);
         let wgs84Bbox;
 
         if (imageData) {
-          // Use full image extent — fetch once, no viewport tracking
           const globalBounds = imageData.worldBounds || imageData.bounds;
           const crs = imageData.crs || 'EPSG:4326';
           wgs84Bbox = projectedToWGS84(globalBounds, crs);
         } else {
-          // No image loaded — use a default global bbox
           wgs84Bbox = [-180, -85, 180, 85];
         }
 
         addStatusLog('info', `Fetching Overture for scene extent...`);
         const data = await fetchAllOvertureThemes(overtureThemes, wgs84Bbox);
+        if (cancelled) return;
         setOvertureData(data);
 
         const totalFeatures = Object.values(data).reduce(
@@ -4427,51 +4432,43 @@ function App() {
         );
         addStatusLog('success', `Overture: ${totalFeatures} features loaded`);
       } catch (e) {
+        if (cancelled) return;
         addStatusLog('warning', 'Overture fetch failed', e.message);
       } finally {
-        setOvertureLoading(false);
+        if (!cancelled) setOvertureLoading(false);
       }
     }, 300);
 
-    return () => { if (overtureDebounceRef.current) clearTimeout(overtureDebounceRef.current); };
+    return () => {
+      cancelled = true;
+      if (overtureDebounceRef.current) clearTimeout(overtureDebounceRef.current);
+    };
   }, [overtureEnabled, overtureThemes, imageData, addStatusLog]);
 
   // Build Overture overlay layers for deck.gl
   const overtureLayers = useMemo(() => {
     if (!overtureEnabled || !overtureData) return [];
     const crs = imageData?.crs || 'EPSG:4326';
-    return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs });
+    const projection = imageData?.projection || null;
+    return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs, projection });
   }, [overtureEnabled, overtureData, overtureOpacity, imageData]);
 
   // Build GeoJSON overlay layers from dropped files
   const geojsonOverlayLayers = useMemo(() => {
     if (droppedGeoJSON.length === 0) return [];
     const crs = imageData?.crs || 'EPSG:4326';
+    const projection = imageData?.projection || null;
 
-    // Reproject GeoJSON coordinates from WGS84 to image CRS
-    function reprojectCoords(coords) {
-      if (!coords) return coords;
-      if (typeof coords[0] === 'number') {
-        const [x, y] = wgs84ToProjectedPoint(coords[0], coords[1], crs);
-        return coords.length > 2 ? [x, y, coords[2]] : [x, y];
-      }
-      return coords.map(c => reprojectCoords(c));
-    }
-    function reprojectFeature(feature) {
-      if (!feature?.geometry?.coordinates) return feature;
-      return {
-        ...feature,
-        geometry: { ...feature.geometry, coordinates: reprojectCoords(feature.geometry.coordinates) },
-      };
-    }
+    // Shared SICD/proj4/identity reprojection — same path Overture uses.
+    const reprojectFn = makeReproject({ projection, crs });
     function reprojectData(data) {
       if (data.type === 'FeatureCollection') {
-        return { ...data, features: data.features.map(f => reprojectFeature(f)) };
+        return { ...data, features: data.features.map(f => reprojectFeature(f, reprojectFn)) };
       }
-      return reprojectFeature(data);
+      return reprojectFeature(data, reprojectFn);
     }
 
-    const needsReproject = crs && crs !== 'EPSG:4326';
+    const needsReproject = reprojectFn !== null;
     const colors = [
       [255, 200, 0],   // yellow
       [0, 200, 255],   // cyan
