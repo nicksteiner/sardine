@@ -72,12 +72,16 @@ export const OVERTURE_THEMES = {
     types: ['building'],
     color: [255, 140, 0, 180],      // orange
     lineColor: [255, 140, 0, 220],
+    // Buildings only populate the PMTiles archive at z≥10. Below that the
+    // tile is empty even over dense cities, so we override the viewport zoom.
+    minZoom: 10,
   },
   places: {
     label: 'Places',
     types: ['place'],
     color: [78, 201, 212, 200],      // sardine cyan
     pointRadius: 4,
+    minZoom: 8,
   },
   base_land_use: {
     label: 'Land Use',
@@ -274,35 +278,34 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
   const spanLon = maxLon - minLon;
   const spanLat = maxLat - minLat;
 
-  const zoom = getZoomForBbox(wgs84Bbox);
-  const tiles = bboxToTiles(wgs84Bbox, zoom);
-  const tileCount = (tiles.maxX - tiles.minX + 1) * (tiles.maxY - tiles.minY + 1);
-
-  // Skip if too many tiles even at low zoom
-  if (tileCount > maxTiles) {
-    console.warn(`[Overture] Too many tiles (${tileCount}) for bbox at zoom ${zoom}, skipping. Try zooming in.`);
-    enabledThemes.forEach(key => {
-      results[key] = { type: 'FeatureCollection', features: [] };
-    });
-    return results;
-  }
-
-  console.log(`[Overture] Fetching ${enabledThemes.length} themes at zoom ${zoom} (${tileCount} tiles, span ${spanLon.toFixed(1)}° x ${spanLat.toFixed(1)}°)`);
+  // Per-theme zoom: viewport zoom is the floor, but themes like buildings
+  // override it because their PMTiles archive is empty below z≥10.
+  const viewportZoom = getZoomForBbox(wgs84Bbox);
+  console.log(`[Overture] Fetching ${enabledThemes.length} themes, viewport zoom ${viewportZoom} (span ${spanLon.toFixed(1)}° x ${spanLat.toFixed(1)}°)`);
 
   const fetches = enabledThemes.map(async (themeKey) => {
     const themeDef = OVERTURE_THEMES[themeKey];
     if (!themeDef) return;
 
     const actualTheme = themeDef.theme || themeKey;
+    const themeZoom = Math.max(viewportZoom, themeDef.minZoom || 0);
+    const themeTiles = bboxToTiles(wgs84Bbox, themeZoom);
+    const themeTileCount = (themeTiles.maxX - themeTiles.minX + 1) * (themeTiles.maxY - themeTiles.minY + 1);
+    if (themeTileCount > maxTiles) {
+      console.warn(`[Overture] ${themeKey}: ${themeTileCount} tiles at z${themeZoom} exceeds cap (${maxTiles}), skipping.`);
+      results[themeKey] = { type: 'FeatureCollection', features: [] };
+      return;
+    }
+
     const features = [];
-    const tileGroups = []; // For tile-clipped rendering
+    const tileGroups = [];
 
     // Build the (capped) list of tile coords up front, then fetch in parallel.
     // The previous sequential await loop was the dominant cause of slow/missed
     // loads — with N themes × M tiles, latency stacked rather than overlapping.
     const tileCoords = [];
-    for (let x = tiles.minX; x <= tiles.maxX; x++) {
-      for (let y = tiles.minY; y <= tiles.maxY; y++) {
+    for (let x = themeTiles.minX; x <= themeTiles.maxX; x++) {
+      for (let y = themeTiles.minY; y <= themeTiles.maxY; y++) {
         tileCoords.push([x, y]);
         if (tileCoords.length >= maxTiles) break;
       }
@@ -311,10 +314,10 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
 
     const tileResults = await Promise.all(
       tileCoords.map(([x, y]) =>
-        fetchOvertureTile(actualTheme, zoom, x, y, release)
+        fetchOvertureTile(actualTheme, themeZoom, x, y, release)
           .then(tileData => ({ x, y, tileData }))
           .catch(e => {
-            console.warn(`[Overture] Failed to load tile ${actualTheme}/${zoom}/${x}/${y}:`, e.message);
+            console.warn(`[Overture] Failed to load tile ${actualTheme}/${themeZoom}/${x}/${y}:`, e.message);
             return null;
           })
       )
@@ -330,7 +333,7 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
         features.push(...layerFeatures);
       }
       if (tileFeatures.length > 0 && themeDef.coastlineStroke) {
-        const n = Math.pow(2, zoom);
+        const n = Math.pow(2, themeZoom);
         const tileMinLon = (x / n) * 360 - 180;
         const tileMaxLon = ((x + 1) / n) * 360 - 180;
         const tileMaxLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
@@ -343,7 +346,7 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
       tilesLoaded++;
     }
 
-    console.log(`[Overture] Got ${features.length} features for ${themeKey} from ${tilesLoaded} tiles`);
+    console.log(`[Overture] Got ${features.length} features for ${themeKey} from ${tilesLoaded} tiles at z${themeZoom}`);
 
     results[themeKey] = {
       type: 'FeatureCollection',

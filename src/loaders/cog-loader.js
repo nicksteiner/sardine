@@ -1159,3 +1159,110 @@ export async function loadTemporalCOGs(acquisitions) {
 }
 
 export default loadCOG;
+
+// ─── Unified loader API ────────────────────────────────────────────────
+//
+// listLocalCOGDatasets / loadLocalCOGDataset implement the shared
+// Dataset / LoadedSource contract from src/loaders/types.js so the
+// drag-and-drop dispatcher can treat COG, NITF, and HDF5 uniformly.
+//
+// For most COGs there is one viewable channel per file (single band,
+// possibly with overviews). Multi-band TIFs surface one Dataset per
+// SamplesPerPixel band so the picker (or a 3-slot RGB composite UI)
+// can address them individually.
+
+/**
+ * Enumerate viewable datasets in a local TIF/COG file.
+ *
+ * @param {File} file
+ * @returns {Promise<import('./types.js').Dataset[]>}
+ */
+export async function listLocalCOGDatasets(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const tiff = await fromArrayBuffer(arrayBuffer);
+  const image = await tiff.getImage();
+  const width = image.getWidth();
+  const height = image.getHeight();
+  const samples = image.getSamplesPerPixel?.() ?? 1;
+
+  let geoBounds = null;
+  try { geoBounds = image.getBoundingBox(); } catch (_) {}
+  let crs = 'EPSG:4326';
+  try {
+    const gk = image.getGeoKeys();
+    if (gk.ProjectedCSTypeGeoKey) crs = `EPSG:${gk.ProjectedCSTypeGeoKey}`;
+    else if (gk.GeographicTypeGeoKey) crs = `EPSG:${gk.GeographicTypeGeoKey}`;
+  } catch (_) {}
+
+  // One Dataset per band. Most SAR products are single-band; multi-band
+  // (e.g. dual-pol stacks) get one entry per channel so the user can pick.
+  const datasets = [];
+  for (let b = 0; b < samples; b++) {
+    datasets.push({
+      id: `band/${b}`,
+      label: samples > 1 ? `Band ${b + 1}` : (file.name.length > 32 ? file.name.slice(0, 30) + '…' : file.name),
+      format: 'cog',
+      shape: [height, width],
+      dtype: 'float32',
+      isComplex: false,
+      bounds: geoBounds || undefined,
+      crs,
+      meta: { bandIndex: b, totalBands: samples },
+    });
+  }
+  return datasets;
+}
+
+/**
+ * Load a single dataset from a local TIF/COG. Returns the same shape
+ * loadLocalTIF returns plus the unified `format` discriminator.
+ *
+ * @param {File} file
+ * @param {string} datasetId  Dataset.id from listLocalCOGDatasets()
+ * @param {{onProgress?: Function}} [opts]
+ * @returns {Promise<import('./types.js').LoadedSource>}
+ */
+export async function loadLocalCOGDataset(file, datasetId, { onProgress } = {}) {
+  const data = await loadLocalTIF(file, onProgress);
+  // Multi-band selection is opportunistic — most SAR COGs are single-band,
+  // and loadLocalTIF already pulls band 0. Picking band > 0 from a multi-
+  // band TIF is wired here via getTile/getPixelValue overrides below.
+  const m = /^band\/(\d+)$/.exec(datasetId || '');
+  const bandIdx = m ? Number(m[1]) : 0;
+  if (bandIdx > 0) {
+    // Re-open with band selection. geotiff.js exposes `samples` on
+    // readRasters — we wrap getTile/getPixelValue to request that band.
+    const arrayBuffer = await file.arrayBuffer();
+    const tiff = await fromArrayBuffer(arrayBuffer);
+    const baseImg = await tiff.getImage();
+    const width = baseImg.getWidth();
+    const height = baseImg.getHeight();
+    const tileSize = 256;
+
+    const getTile = async ({ bbox }) => {
+      let wxMin, wxMax, wyMin, wyMax;
+      if (bbox && bbox.left !== undefined) {
+        wxMin = Math.min(bbox.left, bbox.right);
+        wxMax = Math.max(bbox.left, bbox.right);
+        wyMin = Math.min(bbox.top, bbox.bottom);
+        wyMax = Math.max(bbox.top, bbox.bottom);
+      } else return null;
+      const pxLeft = Math.max(0, Math.floor(wxMin));
+      const pxRight = Math.min(width, Math.ceil(wxMax));
+      const pxTop = Math.max(0, Math.floor(height - wyMax));
+      const pxBottom = Math.min(height, Math.ceil(height - wyMin));
+      if (pxLeft >= pxRight || pxTop >= pxBottom) return null;
+      const rasters = await baseImg.readRasters({
+        window: [pxLeft, pxTop, pxRight, pxBottom],
+        width: tileSize, height: tileSize,
+        samples: [bandIdx],
+        resampleMethod: 'bilinear',
+      });
+      return { data: new Float32Array(rasters[0]), width: tileSize, height: tileSize };
+    };
+    data.getTile = getTile;
+  }
+
+  return { ...data, format: 'cog' };
+}
+

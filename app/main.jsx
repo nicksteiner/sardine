@@ -5,7 +5,10 @@ import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, auto
 import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
-import { loadNITF, isNITFFile } from '../src/loaders/nitf-loader.js';
+import { loadNITF, isNITFFile, listNITFDatasets, loadNITFDataset } from '../src/loaders/nitf-loader.js';
+import { listLocalCOGDatasets, loadLocalCOGDataset } from '../src/loaders/cog-loader.js';
+import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
+import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds } from '../src/utils/roi-subset.js';
@@ -25,12 +28,13 @@ import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
-import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob } from '../src/utils/figure-export.js';
+import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
+import { COORDINATE_SYSTEM } from '@deck.gl/core';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
@@ -332,6 +336,15 @@ function App() {
   const [enabledCorrections, setEnabledCorrections] = useState(new Set()); // Set of enabled correction keys
   // rampCoefficients state removed — planar ramp correction removed
 
+  // NITF state — multi-image NITF support via DatasetPicker
+  const [nitfFile, setNitfFile] = useState(null);
+  const [nitfDatasets, setNitfDatasets] = useState([]);
+  const [selectedNitfId, setSelectedNitfId] = useState(null);
+
+  // COG state — multi-band TIFs surface a band picker via DatasetPicker
+  const [cogDatasets, setCogDatasets] = useState([]);
+  const [selectedCogId, setSelectedCogId] = useState(null);
+
   // Drag-and-drop state
   const [dragOver, setDragOver] = useState(false);
 
@@ -394,7 +407,7 @@ function App() {
   const [useDecibels, setUseDecibels] = useState(true);
   // GUNW data is in radians/meters — dB conversion is never valid
   const effectiveUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
-  const [showGrid, setShowGrid] = useState(true);
+  const [showGrid, setShowGrid] = useState(false);
   const [pixelExplorer, setPixelExplorer] = useState(false);
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
   // Analytical / medical-imaging mode — black void, NEAREST filter, drag-to-W/L,
@@ -407,6 +420,20 @@ function App() {
   const [gamma, setGamma] = useState(1.0);
   const [rgbSaturation, setRgbSaturation] = useState(1.0);
   const [colorblindMode, setColorblindMode] = useState('off');
+  // Attribution stamp for PNG exports. Processor defaults to Nick Steiner but
+  // any user can override; both vendor and processor persist in localStorage.
+  const [attributionEnabled, setAttributionEnabled] = useState(false);
+  const [attributionVendor, setAttributionVendor] = useState(() => {
+    try { return localStorage.getItem('sardine.attribution.vendor') || ''; } catch { return ''; }
+  });
+  const [attributionProcessor, setAttributionProcessor] = useState(() => {
+    try { return localStorage.getItem('sardine.attribution.processor') || ''; } catch { return ''; }
+  });
+  // Annotations — arrows + text labels drawn over the viewer and into PNG exports
+  const [annotations, setAnnotations] = useState([]);
+  const [annotationMode, setAnnotationMode] = useState('off');     // 'off'|'arrow'|'text'
+  const [annotationColor, setAnnotationColor] = useState('cyan');  // cyan|orange|green|magenta
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
   const [maskInvalid, setMaskInvalid] = useState(false);
@@ -2100,8 +2127,23 @@ function App() {
     setLoading(true);
     setLoadProgress(0);
     setError(null);
+    setCogDatasets([]);
+    setSelectedCogId(null);
     const names = files.map(f => f.name);
     addStatusLog('info', `Loading ${files.length} local GeoTIFF${files.length > 1 ? 's' : ''}: ${names.join(', ')}`);
+
+    // Enumerate bands for the picker. Only meaningful for single-file
+    // drops; mosaics flatten to band 0 of each input.
+    if (files.length === 1) {
+      try {
+        const ds = await listLocalCOGDatasets(files[0]);
+        setCogDatasets(ds);
+        if (ds.length > 0) setSelectedCogId(ds[0].id);
+      } catch (e) {
+        // Non-fatal — picker just stays hidden
+        console.warn('[COG] listLocalCOGDatasets failed:', e.message);
+      }
+    }
 
     try {
       const gen = ++loadGenRef.current;
@@ -2167,6 +2209,31 @@ function App() {
       setLoading(false);
     }
   }, [addStatusLog, autoFitIfNewScene]);
+
+  // Switch to a different band in the currently-open multi-band TIF.
+  // Only meaningful for single-file loads; mosaic loads use band 0.
+  const handleSelectCogDataset = useCallback(async (datasetId) => {
+    if (!datasetId || datasetId === selectedCogId) return;
+    if (mosaicFiles.length !== 1) return;
+    setSelectedCogId(datasetId);
+    setLoading(true);
+    setLoadProgress(0);
+    try {
+      const gen = ++loadGenRef.current;
+      const data = await loadLocalCOGDataset(mosaicFiles[0], datasetId, { onProgress: setLoadProgress });
+      if (gen !== loadGenRef.current) return;
+      setImageData(data);
+      if (data.bounds) autoFitIfNewScene(data.bounds);
+      setLoadProgress(100);
+      const idx = cogDatasets.findIndex(d => d.id === datasetId);
+      addStatusLog('info', `Switched COG band → ${idx + 1}/${cogDatasets.length}`);
+    } catch (e) {
+      setError(`Failed to switch band: ${e.message}`);
+      addStatusLog('error', 'Failed to switch band', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [mosaicFiles, selectedCogId, cogDatasets, addStatusLog, autoFitIfNewScene]);
 
   // Append TIF files to the active mosaic. Validates CRS against the
   // current mosaic and rejects mismatches. If no mosaic is loaded, falls
@@ -2359,18 +2426,29 @@ function App() {
     setLoading(true);
     setLoadProgress(0);
     setError(null);
+    setNitfFile(file);
     addStatusLog('info', `Loading NITF: ${file.name} (${(file.size / 1e9).toFixed(2)} GB)`);
 
     try {
+      // Enumerate image segments. Most NITFs have one; SICD can have
+      // multiple chips. Single-image files skip the picker entirely.
+      const datasets = await listNITFDatasets(file);
+      setNitfDatasets(datasets);
+      if (datasets.length === 0) throw new Error('NITF file contains no image segments');
+
+      const firstId = datasets[0].id;
+      setSelectedNitfId(firstId);
+
       const gen = ++loadGenRef.current;
-      const data = await loadNITF(file, (pct) => setLoadProgress(pct));
+      const data = await loadNITFDataset(file, firstId, { onProgress: setLoadProgress });
       if (gen !== loadGenRef.current) return;
 
       setImageData(data);
       const info = data.nitfInfo || {};
+      const segLabel = datasets.length > 1 ? ` [seg ${1}/${datasets.length}]` : '';
       const label = info.isComplex
-        ? `NITF SICD: ${data.width}×${data.height} complex (amplitude)`
-        : `NITF: ${data.width}×${data.height}`;
+        ? `NITF SICD${segLabel}: ${data.width}×${data.height} complex (amplitude)`
+        : `NITF${segLabel}: ${data.width}×${data.height}`;
       addStatusLog('success', label,
         info.sicd ? `SICD ${info.sicd.modeType || ''} ${info.sicd.collector || ''}`.trim() : undefined);
 
@@ -2384,7 +2462,33 @@ function App() {
     }
   }, [addStatusLog, autoFitIfNewScene]);
 
-  // Drag-and-drop handler — auto-detect file type from name/extension
+  // Load a different NITF image segment from the currently-open file.
+  // Wired to the DatasetPicker for multi-image NITFs.
+  const handleSelectNitfDataset = useCallback(async (datasetId) => {
+    if (!nitfFile || !datasetId || datasetId === selectedNitfId) return;
+    setSelectedNitfId(datasetId);
+    setLoading(true);
+    setLoadProgress(0);
+    try {
+      const gen = ++loadGenRef.current;
+      const data = await loadNITFDataset(nitfFile, datasetId, { onProgress: setLoadProgress });
+      if (gen !== loadGenRef.current) return;
+      setImageData(data);
+      if (data.bounds) autoFitIfNewScene(data.bounds);
+      setLoadProgress(100);
+      const idx = nitfDatasets.findIndex(d => d.id === datasetId);
+      addStatusLog('info', `Switched NITF segment → ${idx + 1}/${nitfDatasets.length}`);
+    } catch (e) {
+      setError(`Failed to switch NITF segment: ${e.message}`);
+      addStatusLog('error', 'Failed to switch NITF segment', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [nitfFile, selectedNitfId, nitfDatasets, addStatusLog, autoFitIfNewScene]);
+
+  // Drag-and-drop handler — single dispatch table over file formats.
+  // Each entry handles its own bucket (mosaic vs single-shot, append vs
+  // replace) but the routing logic is uniform: bucketByFormat + handle.
   const handleFileDrop = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2393,25 +2497,24 @@ function App() {
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length === 0) return;
 
-    // Bucket the drop by file extension so a mixed drop is handled gracefully
-    // (e.g. a .h5 plus a sidecar .geojson, or several .tifs and a .png state file).
-    const h5Files = files.filter(f => /\.(h5|hdf5|he5)$/i.test(f.name));
-    const tifFiles = files.filter(f => /\.(tif|tiff)$/i.test(f.name));
-    const nitfFiles = files.filter(f => /\.(nitf|ntf)$/i.test(f.name));
-    const geojsonFiles = files.filter(f => /\.(geojson|json)$/i.test(f.name));
-    const pngFiles = files.filter(f => /\.png$/i.test(f.name));
-    const knownCount = h5Files.length + tifFiles.length + nitfFiles.length + geojsonFiles.length + pngFiles.length;
-    if (knownCount < files.length) {
-      const unknown = files.filter(f =>
-        !/\.(h5|hdf5|he5|tif|tiff|nitf|ntf|geojson|json|png)$/i.test(f.name));
-      if (unknown.length > 0) {
-        addStatusLog('warning',
-          `Ignored ${unknown.length} unrecognized file${unknown.length > 1 ? 's' : ''}`,
-          unknown.map(f => f.name).join(', '));
-      }
+    const buckets = bucketByFormat(files);
+    const geojsonFiles = buckets.unknown.filter(f => /\.(geojson|json)$/i.test(f.name));
+    const pngFiles = buckets.unknown.filter(f => /\.png$/i.test(f.name));
+    const trulyUnknown = buckets.unknown.filter(f =>
+      !/\.(geojson|json|png)$/i.test(f.name));
+    if (trulyUnknown.length > 0) {
+      addStatusLog('warning',
+        `Ignored ${trulyUnknown.length} unrecognized file${trulyUnknown.length > 1 ? 's' : ''}`,
+        trulyUnknown.map(f => f.name).join(', '));
     }
 
-    // Handle HDF5 (highest precedence — it's the primary data type)
+    // Format dispatch — primary raster format wins, sidecars (geojson/png)
+    // are layered on after.
+    const h5Files = buckets.h5;
+    const tifFiles = buckets.cog;
+    const nitfFiles = buckets.nitf;
+
+    // HDF5 (highest precedence — primary data type)
     if (h5Files.length > 0) {
       const firstH5 = h5Files[0];
       const firstName = firstH5.name.toLowerCase();
@@ -2434,24 +2537,34 @@ function App() {
           appendGcovMosaicFiles(h5Files.slice(1));
         }
       }
-      // TIF files dropped alongside HDF5 are ignored — different pipelines
       if (tifFiles.length > 0) {
         addStatusLog('warning',
           `Cannot mix HDF5 and GeoTIFF in one drop — ignored ${tifFiles.length} TIF file(s)`,
           tifFiles.map(f => f.name).join(', '));
       }
+      if (nitfFiles.length > 0) {
+        addStatusLog('warning',
+          `Cannot mix HDF5 and NITF in one drop — ignored ${nitfFiles.length} NITF file(s)`,
+          nitfFiles.map(f => f.name).join(', '));
+      }
     } else if (tifFiles.length > 0) {
-      // If a TIF mosaic is already loaded, append; otherwise start fresh.
       if (fileType === 'local-tif' && mosaicFiles.length > 0) {
-        appendMosaicTIFs(files);
+        appendMosaicTIFs(tifFiles);
       } else {
         setFileType('local-tif');
-        handleLocalTIFMultiSelect(files);
+        handleLocalTIFMultiSelect(tifFiles);
+      }
+      if (nitfFiles.length > 0) {
+        addStatusLog('warning',
+          `Cannot mix GeoTIFF and NITF in one drop — ignored ${nitfFiles.length} NITF file(s)`,
+          nitfFiles.map(f => f.name).join(', '));
       }
     } else if (nitfFiles.length > 0) {
       setFileType('nitf');
       handleNITFFileSelect(nitfFiles[0]);
       if (nitfFiles.length > 1) {
+        // Multi-image NITF: future work — list segments via listNITFDatasets()
+        // and let the user pick. For now, only segment 0 of file 0 loads.
         addStatusLog('warning',
           `NITF mosaic not supported — loaded only ${nitfFiles[0].name}`,
           `${nitfFiles.length - 1} additional NITF file(s) ignored`);
@@ -4071,6 +4184,13 @@ function App() {
 
     try {
       const vs = viewerRef.current.getViewState();
+      const sourceName = (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl;
+      const attribution = attributionEnabled
+        ? buildAttribution({
+            vendor: attributionVendor || detectVendor(sourceName),
+            processor: attributionProcessor || undefined,
+          })
+        : null;
       const mainOpts = {
         colormap,
         contrastLimits: effectiveContrastLimits,
@@ -4078,12 +4198,14 @@ function App() {
         compositeId: isRGBDisplayMode ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
-        filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
+        filename: sourceName,
         crs: imageData?.crs || '',
         histogramData: showHistogramOverlay ? histogramData : null,
         polarization: selectedPolarization,
         identification: imageData?.identification || null,
         colorblindMode,
+        attribution,
+        annotations,
       };
 
       const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
@@ -4104,6 +4226,7 @@ function App() {
           crs: imageData?.crs || '',
           identification: imageData?.identification || null,
           colorblindMode,
+          attribution,
         } : {
           colormap,
           contrastLimits: roiRGBContrastLimits,
@@ -4111,11 +4234,12 @@ function App() {
           compositeId: roiCompositeId,
           viewState: secondaryVS,
           bounds: roiRGBBounds,
-          filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
+          filename: sourceName,
           crs: imageData?.crs || '',
           histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
           identification: imageData?.identification || null,
           colorblindMode,
+          attribution,
         };
         blob = await exportFigureSideBySide(
           { canvas: glCanvas, options: mainOpts },
@@ -4139,7 +4263,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async () => {
@@ -4158,6 +4282,13 @@ function App() {
 
     try {
       const vs = viewerRef.current.getViewState();
+      const sourceName = (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl;
+      const attribution = attributionEnabled
+        ? buildAttribution({
+            vendor: attributionVendor || detectVendor(sourceName),
+            processor: attributionProcessor || undefined,
+          })
+        : null;
       const mainOpts = {
         colormap,
         contrastLimits: effectiveContrastLimits,
@@ -4165,7 +4296,7 @@ function App() {
         compositeId: isRGBDisplayMode ? compositeId : null,
         viewState: vs,
         bounds: imageData?.bounds,
-        filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
+        filename: sourceName,
         crs: imageData?.crs || '',
         roi,
         profileData: null,
@@ -4179,6 +4310,8 @@ function App() {
         classRegions,
         classifierRoiDims,
         colorblindMode,
+        attribution,
+        annotations,
       };
 
       const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
@@ -4199,6 +4332,7 @@ function App() {
           crs: imageData?.crs || '',
           identification: imageData?.identification || null,
           colorblindMode,
+          attribution,
         } : {
           colormap,
           contrastLimits: roiRGBContrastLimits,
@@ -4206,11 +4340,12 @@ function App() {
           compositeId: roiCompositeId,
           viewState: secondaryVS,
           bounds: roiRGBBounds,
-          filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl,
+          filename: sourceName,
           crs: imageData?.crs || '',
           histogramData: showHistogramOverlay && roiRGBHistogramData ? roiRGBHistogramData : null,
           identification: imageData?.identification || null,
           colorblindMode,
+          attribution,
         };
         // For the main panel, use exportFigureWithOverlays to capture ROI/profile overlays;
         // for the secondary panel use plain exportFigure (no ROI drawn there).
@@ -4255,7 +4390,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -4482,7 +4617,9 @@ function App() {
     if (!overtureEnabled || !overtureData) return [];
     const crs = imageData?.crs || 'EPSG:4326';
     const projection = imageData?.projection || null;
-    return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs, projection });
+    const bounds = imageData?.bounds || null;
+    const worldBounds = imageData?.worldBounds || null;
+    return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs, projection, bounds, worldBounds });
   }, [overtureEnabled, overtureData, overtureOpacity, imageData]);
 
   // Build GeoJSON overlay layers from dropped files
@@ -4490,9 +4627,11 @@ function App() {
     if (droppedGeoJSON.length === 0) return [];
     const crs = imageData?.crs || 'EPSG:4326';
     const projection = imageData?.projection || null;
+    const bounds = imageData?.bounds || null;
+    const worldBounds = imageData?.worldBounds || null;
 
     // Shared SICD/proj4/identity reprojection — same path Overture uses.
-    const reprojectFn = makeReproject({ projection, crs });
+    const reprojectFn = makeReproject({ projection, crs, worldBounds, pixelBounds: bounds });
     function reprojectData(data) {
       if (data.type === 'FeatureCollection') {
         return { ...data, features: data.features.map(f => reprojectFeature(f, reprojectFn)) };
@@ -4508,12 +4647,14 @@ function App() {
       [100, 255, 100], // green
       [255, 140, 0],   // orange
     ];
+    const coordSys = needsReproject ? COORDINATE_SYSTEM.CARTESIAN : COORDINATE_SYSTEM.LNGLAT;
     return droppedGeoJSON.map((entry, i) => {
       const color = colors[i % colors.length];
       const data = needsReproject ? reprojectData(entry.data) : entry.data;
       return new GeoJsonLayer({
         id: entry.id,
         data,
+        coordinateSystem: coordSys,
         pickable: true,
         stroked: true,
         filled: true,
@@ -5300,6 +5441,38 @@ function App() {
             </CollapsibleSection>
           )}
 
+          {/* Multi-band COG picker — unified with NITF/NISAR via DatasetPicker.
+              Auto-hides for single-band TIFs (the typical SAR case). */}
+          {fileType === 'local-tif' && cogDatasets.length > 1 && (
+            <CollapsibleSection title="COG Bands" defaultOpen={true}>
+              <DatasetPicker
+                datasets={cogDatasets}
+                mode="single"
+                selectedId={selectedCogId}
+                onSelect={handleSelectCogDataset}
+                showRGBToggle={false}
+              />
+            </CollapsibleSection>
+          )}
+
+          {/* NITF dataset picker — unified across single + multi-image NITF.
+              Auto-hides when there's only one image segment (typical case). */}
+          {fileType === 'nitf' && nitfDatasets.length > 1 && (
+            <CollapsibleSection title="NITF Image Segments" defaultOpen={true}>
+              <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+                {nitfFile?.name}
+                {nitfFile && ` (${(nitfFile.size / 1e9).toFixed(2)} GB)`}
+              </div>
+              <DatasetPicker
+                datasets={nitfDatasets}
+                mode="single"
+                selectedId={selectedNitfId}
+                onSelect={handleSelectNitfDataset}
+                showRGBToggle={false}
+              />
+            </CollapsibleSection>
+          )}
+
           {/* Current Session Status */}
           {imageData && (
             <div style={{
@@ -5493,6 +5666,7 @@ function App() {
                 <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
                   <optgroup label="Sequential (perceptually uniform)">
                     <option value="grayscale">Grayscale</option>
+                    <option value="sardine">SARdine (cubehelix, SAR-tuned)</option>
                     <option value="viridis">Viridis</option>
                     <option value="inferno">Inferno</option>
                     <option value="plasma">Plasma</option>
@@ -5502,7 +5676,6 @@ function App() {
                   </optgroup>
                   <optgroup label="Sequential (high-contrast / domain)">
                     <option value="turbo">Turbo (jet replacement)</option>
-                    <option value="sardine">SARdine</option>
                     <option value="coherence">Coherence</option>
                     <option value="flood">Flood Alert</option>
                   </optgroup>
@@ -5854,6 +6027,152 @@ function App() {
                     <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
                   </div>
                 )}
+                <div className="control-group" style={{ marginTop: '6px' }}>
+                  <div className="control-row">
+                    <input
+                      type="checkbox"
+                      id="attributionEnabled"
+                      checked={attributionEnabled}
+                      onChange={(e) => setAttributionEnabled(e.target.checked)}
+                    />
+                    <label htmlFor="attributionEnabled" title="Stamp vendor copyright + CSDA + 'Processed by Nick Steiner' onto the PNG">
+                      Add attribution to PNG
+                    </label>
+                  </div>
+                  {attributionEnabled && (() => {
+                    const src = (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl;
+                    const detected = detectVendor(src);
+                    const effective = attributionVendor || detected || '';
+                    return (
+                      <select
+                        value={attributionVendor}
+                        onChange={(e) => {
+                          setAttributionVendor(e.target.value);
+                          try { localStorage.setItem('sardine.attribution.vendor', e.target.value); } catch {}
+                        }}
+                        title={detected ? `Auto-detected from filename: ${detected}` : 'Pick the sensor that acquired this scene'}
+                        style={{
+                          width: '100%',
+                          marginTop: '4px',
+                          padding: '4px 6px',
+                          fontSize: '0.7rem',
+                          background: 'var(--sardine-bg-panel)',
+                          border: `1px solid ${effective ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
+                          color: 'var(--sardine-text-primary, #e8edf5)',
+                          borderRadius: '2px',
+                        }}
+                      >
+                        <option value="">
+                          {detected ? `Auto: ${detected}` : 'Sensor (none / generic)'}
+                        </option>
+                        {VENDOR_OPTIONS.map(({ key, label }) => (
+                          <option key={key} value={key}>{label}</option>
+                        ))}
+                      </select>
+                    );
+                  })()}
+                  {attributionEnabled && (
+                    <input
+                      type="text"
+                      placeholder={`Processed by… (default: ${DEFAULT_PROCESSOR})`}
+                      value={attributionProcessor}
+                      onChange={(e) => {
+                        setAttributionProcessor(e.target.value);
+                        try { localStorage.setItem('sardine.attribution.processor', e.target.value); } catch {}
+                      }}
+                      title="Override the 'Processed by' name. Persists across sessions; leave blank to use default."
+                      style={{
+                        width: '100%',
+                        marginTop: '4px',
+                        padding: '4px 6px',
+                        fontSize: '0.7rem',
+                        background: 'var(--sardine-bg-panel)',
+                        border: '1px solid var(--sardine-border)',
+                        color: 'var(--sardine-text-primary, #e8edf5)',
+                        borderRadius: '2px',
+                      }}
+                    />
+                  )}
+                </div>
+                {/* Annotation toolbar — arrows + text labels baked into PNG export */}
+                <div className="control-group" style={{ marginTop: '6px' }}>
+                  <label style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)' }}>
+                    Annotate
+                    {annotations.length > 0 && (
+                      <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>· {annotations.length}</span>
+                    )}
+                  </label>
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                    {[
+                      { key: 'off',   label: 'Off' },
+                      { key: 'arrow', label: 'Arrow' },
+                      { key: 'text',  label: 'Text' },
+                    ].map(({ key, label }) => (
+                      <button
+                        key={key}
+                        onClick={() => setAnnotationMode(key)}
+                        title={
+                          key === 'arrow' ? 'Click tail, click head, type caption (Esc cancels)'
+                          : key === 'text' ? 'Click to place a text label'
+                          : 'Disable annotation tool (selection still works)'
+                        }
+                        style={{
+                          flex: 1,
+                          padding: '4px 6px',
+                          fontSize: '0.7rem',
+                          background: annotationMode === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
+                          color: annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                          border: `1px solid ${annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
+                          borderRadius: '2px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', alignItems: 'center' }}>
+                    {[
+                      { key: 'cyan',    hex: '#4ec9d4' },
+                      { key: 'orange',  hex: '#e8833a' },
+                      { key: 'green',   hex: '#3ddc84' },
+                      { key: 'magenta', hex: '#d45cff' },
+                    ].map(({ key, hex }) => (
+                      <button
+                        key={key}
+                        onClick={() => setAnnotationColor(key)}
+                        title={`Color: ${key}`}
+                        style={{
+                          width: 18, height: 18,
+                          padding: 0,
+                          background: hex,
+                          border: annotationColor === key
+                            ? `2px solid var(--sardine-text-primary, #e8edf5)`
+                            : `1px solid var(--sardine-border, #1e3a5f)`,
+                          borderRadius: '50%',
+                          cursor: 'pointer',
+                        }}
+                      />
+                    ))}
+                    <button
+                      onClick={() => { setAnnotations([]); setSelectedAnnotationId(null); }}
+                      disabled={annotations.length === 0}
+                      title="Remove all annotations"
+                      style={{
+                        marginLeft: 'auto',
+                        padding: '2px 8px',
+                        fontSize: '0.65rem',
+                        background: 'transparent',
+                        color: annotations.length === 0 ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: annotations.length === 0 ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
             {isRGBDisplayMode && compositeId && (
@@ -6517,6 +6836,12 @@ function App() {
                   histogramData={histogramData}
                   inverted={medicalInverted}
                   setInverted={setMedicalInverted}
+                  annotations={annotations}
+                  annotationMode={annotationMode}
+                  annotationColor={annotationColor}
+                  onAnnotationsChange={setAnnotations}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onSelectAnnotation={setSelectedAnnotationId}
                 />
               </div>
 

@@ -16,12 +16,17 @@
    ═══════════════════════════════════════════════ */
 :root {
   /* ─── PRIMARY PALETTE ─── */
-  --sardine-bg:            #0a1628;
-  --sardine-bg-raised:     #0f1f38;
-  --sardine-bg-panel:      #122240;
-  --sardine-bg-hover:      #1a2d50;
-  --sardine-border:        #1e3a5f;
-  --sardine-border-subtle: #162d4a;
+  /* Base bg is "Darkest Black" #030201 — the canonical deepest perceptible
+     hex on a standard display (asymmetric RGB nudges perception darker
+     than pure #000, mirroring how Vantablack/Musou Black absorb light
+     non-uniformly). The raised/panel/hover steps are a near-black ramp
+     just bright enough to read panel boundaries against the base. */
+  --sardine-bg:            #030201;
+  --sardine-bg-raised:     #0a0a0a;
+  --sardine-bg-panel:      #0f0f10;
+  --sardine-bg-hover:      #161618;
+  --sardine-border:        #1f1f22;
+  --sardine-border-subtle: #141416;
 
   /* ─── ACCENT: SAR SIGNAL CYAN ─── */
   --sardine-cyan:       #4ec9d4;

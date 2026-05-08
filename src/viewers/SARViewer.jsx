@@ -15,6 +15,7 @@ import { PixelExplorer } from '../components/PixelExplorer.jsx';
 import { ROIProfilePlot } from '../components/ROIProfilePlot.jsx';
 import { MedicalModeOverlay } from '../components/MedicalModeOverlay.jsx';
 import { TransectProbe } from '../components/TransectProbe.jsx';
+import { AnnotationOverlay } from '../components/AnnotationOverlay.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -81,6 +82,13 @@ export const SARViewer = forwardRef(function SARViewer({
   histogramData = null,       // From parent — used for σ/percentile presets
   inverted = false,           // Inverted grayscale (medical convention)
   setInverted = null,         // (bool) => void
+  // ── Annotations (arrows + text labels, world-coord persistent) ────
+  annotations = [],
+  annotationMode = 'off',     // 'off' | 'arrow' | 'text'
+  annotationColor = 'cyan',
+  onAnnotationsChange = null,
+  selectedAnnotationId = null,
+  onSelectAnnotation = null,
 }, ref) {
   const containerRef = useRef(null);
   const getTileRef = useRef(getTile);
@@ -426,7 +434,7 @@ export const SARViewer = forwardRef(function SARViewer({
       width,
       height,
       // Medical mode: pure black void, no theme color competing with data
-      backgroundColor: medicalMode ? '#000000' : 'var(--sardine-bg, #0a1628)',
+      backgroundColor: medicalMode ? '#000000' : 'var(--sardine-bg, #030201)',
       ...style,
     }),
     [width, height, style, medicalMode]
@@ -447,7 +455,7 @@ export const SARViewer = forwardRef(function SARViewer({
           layers={allLayers}
           controller={true}
           glOptions={{ preserveDrawingBuffer: true }}
-          parameters={{ clearColor: medicalMode ? [0, 0, 0, 1] : [0.039, 0.086, 0.157, 1] }}
+          parameters={{ clearColor: medicalMode ? [0, 0, 0, 1] : [0.0118, 0.00784, 0.00392, 1] }}
         />
       </div>
       <ROIOverlay
@@ -493,6 +501,16 @@ export const SARViewer = forwardRef(function SARViewer({
         show={profileShow}
       />
       {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} />}
+      <AnnotationOverlay
+        viewState={viewState}
+        bounds={bounds}
+        mode={annotationMode}
+        color={annotationColor}
+        annotations={annotations}
+        onAnnotationsChange={onAnnotationsChange}
+        selectedId={selectedAnnotationId}
+        onSelectAnnotation={onSelectAnnotation}
+      />
       <LoadingIndicator
         tilesLoading={loadingStatus.tilesLoading}
         tilesLoaded={loadingStatus.tilesLoaded}

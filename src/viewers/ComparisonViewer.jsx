@@ -75,7 +75,7 @@ export function ComparisonViewer({
       width,
       height,
       display: 'flex',
-      backgroundColor: 'var(--sardine-bg, #0a1628)',
+      backgroundColor: 'var(--sardine-bg, #030201)',
       ...style,
     }),
     [width, height, style]
@@ -325,7 +325,7 @@ export function SwipeComparisonViewer({
       position: 'relative',
       width,
       height,
-      backgroundColor: 'var(--sardine-bg, #0a1628)',
+      backgroundColor: 'var(--sardine-bg, #030201)',
       overflow: 'hidden',
       ...style,
     }),

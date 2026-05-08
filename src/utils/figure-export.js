@@ -17,6 +17,7 @@ import { getColormap } from './colormap.js';
 import { createStretchFn } from './stretch.js';
 import { SAR_COMPOSITES, COLORBLIND_MATRICES } from './sar-composites.js';
 import { drawHistogramCanvas } from '../components/HistogramOverlay.jsx';
+import { drawArrow as drawAnnArrow, drawTextLabel as drawAnnText } from './annotation-render.js';
 import {
   THEME,
   CHANNEL_COLORS,
@@ -36,6 +37,56 @@ import { FONTS } from './theme-tokens.js';
 
 const FONT_MONO  = FONTS.mono;
 const FONT_SERIF = FONTS.serif;
+
+// ── Attribution (CSDA + vendor copyright) ───────────────────────────────────
+
+const VENDORS = {
+  iceye:      { label: 'ICEYE',         holder: 'ICEYE US, Inc.',            csda: true,  patterns: [/iceye/i] },
+  capella:    { label: 'Capella',       holder: 'Capella Space Corporation', csda: true,  patterns: [/capella/i, /^cap[a-z0-9_-]*\.tif/i] },
+  umbra:      { label: 'Umbra',         holder: 'Umbra Lab Inc.',            csda: true,  patterns: [/umbra/i] },
+  nisar:      { label: 'NISAR',         holder: 'NASA / ISRO NISAR Mission', csda: false, patterns: [/nisar/i, /\bgcov\b/i, /\bgunw\b/i] },
+  sentinel1:  { label: 'Sentinel-1',    holder: 'Contains modified Copernicus Sentinel-1 data', csda: false, patterns: [/^s1[ab]_/i, /sentinel[-_ ]?1/i] },
+  alos:       { label: 'ALOS PALSAR',   holder: 'JAXA ALOS PALSAR',          csda: false, patterns: [/\balos\b/i, /palsar/i] },
+};
+
+export const VENDOR_OPTIONS = Object.freeze(
+  Object.entries(VENDORS).map(([key, v]) => ({ key, label: v.label }))
+);
+
+const CSDA_ACK = 'Data via NASA Commercial Smallsat Data Acquisition (CSDA) program';
+export const DEFAULT_PROCESSOR = 'Nick Steiner (CCNY/CUNY)';
+
+/**
+ * Detect vendor from a filename or URL. Returns key in VENDORS, or null.
+ */
+export function detectVendor(filenameOrUrl) {
+  if (!filenameOrUrl) return null;
+  const name = String(filenameOrUrl).split('/').pop() || '';
+  for (const [key, { patterns }] of Object.entries(VENDORS)) {
+    if (patterns.some((re) => re.test(name))) return key;
+  }
+  return null;
+}
+
+/**
+ * Build the standardized attribution string.
+ *
+ * Format: "© {Vendor}, {YYYY}. All Rights Reserved · {CSDA ack if applicable} · Processed by {name}"
+ *
+ * Processor always defaults to Nick Steiner if not provided. If vendor is unknown,
+ * the vendor copyright clause is omitted but processor is still stamped.
+ */
+export function buildAttribution({ vendor, year, processor } = {}) {
+  const yr = year || new Date().getUTCFullYear();
+  const v = VENDORS[vendor];
+  const parts = [];
+  if (v) {
+    parts.push(`© ${v.holder}, ${yr}. All Rights Reserved`);
+    if (v.csda) parts.push(CSDA_ACK);
+  }
+  parts.push(`Processed by ${processor || DEFAULT_PROCESSOR}`);
+  return parts.join(' · ');
+}
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -71,6 +122,8 @@ export async function exportFigure(glCanvas, options = {}) {
     identification = null,
     colorblindMode = 'off',
     wgs84Bounds = null,
+    attribution = null,
+    annotations = [],
   } = options;
 
   const W = glCanvas.width;
@@ -87,6 +140,9 @@ export async function exportFigure(glCanvas, options = {}) {
   // DPR-aware sizing
   const dpr = window.devicePixelRatio || 1;
   const s = (v) => Math.round(v * dpr);
+
+  // 0. User annotations (drawn on top of SAR pixels, below chrome)
+  drawAnnotations(ctx, W, H, annotations, viewState, dpr);
 
   const projected = isProjectedBounds(bounds);
 
@@ -126,6 +182,9 @@ export async function exportFigure(glCanvas, options = {}) {
 
   // 9. Location inset — Bing VirtualEarth satellite thumbnail (bottom-left)
   await drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr);
+
+  // 10. Attribution strip (bottom edge, drawn last to sit on top)
+  drawAttributionStrip(ctx, W, H, attribution, s);
 
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');
@@ -169,6 +228,8 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     classifierRoiDims = null,
     colorblindMode = 'off',
     wgs84Bounds = null,
+    attribution = null,
+    annotations = [],
   } = options;
 
   const W = glCanvas.width;
@@ -182,6 +243,9 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
 
   // 1. Draw the WebGL canvas content (base layer)
   ctx.drawImage(glCanvas, 0, 0);
+
+  // 1.5 User annotations (above SAR pixels, below ROI/profile/chrome)
+  drawAnnotations(ctx, W, H, annotations, viewState, dpr);
 
   // 2. Draw data overlays directly on canvas
   if (classificationMap && classifierRoiDims && classRegions?.length && roi && bounds && imageWidth && imageHeight && viewState) {
@@ -225,6 +289,9 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
 
   // Location inset — Bing VirtualEarth satellite thumbnail (bottom-left)
   await drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr);
+
+  // Attribution strip (bottom edge, drawn last)
+  drawAttributionStrip(ctx, W, H, attribution, s);
 
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');
@@ -900,13 +967,13 @@ function drawMetadata(ctx, W, H, meta, s) {
 // ── 7. Branding ─────────────────────────────────────────────────────────────
 
 function drawBranding(ctx, W, H, s) {
-  const fontSize = s(12);
+  const fontSize = s(20);
   ctx.font = `bold ${fontSize}px ${FONT_MONO}`;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
 
-  const x = s(12);
-  const y = s(10);
+  const x = s(14);
+  const y = s(12);
 
   // "SAR" in cyan
   ctx.fillStyle = THEME.cyan;
@@ -916,6 +983,70 @@ function drawBranding(ctx, W, H, s) {
   // "dine" in primary
   ctx.fillStyle = THEME.textPrimary;
   ctx.fillText('dine', x + sarW, y);
+}
+
+/**
+ * Draw all annotations (arrows + text labels) on the export canvas.
+ * Annotations are stored in world coordinates and projected via worldToPixel.
+ */
+function drawAnnotations(ctx, W, H, annotations, viewState, dpr) {
+  if (!Array.isArray(annotations) || annotations.length === 0 || !viewState) return;
+  // worldToPixel uses logical canvas size; export canvas is in physical pixels,
+  // so we pass W/H directly (already DPR-scaled by glCanvas.width/height).
+  for (const a of annotations) {
+    if (a.type === 'arrow') {
+      const [x1, y1] = worldToPixel(a.worldX,  a.worldY,  viewState, W, H);
+      const [x2, y2] = worldToPixel(a.worldX2, a.worldY2, viewState, W, H);
+      drawAnnArrow(ctx, x1, y1, x2, y2, {
+        colorKey: a.color, caption: a.text || '', dpr, fontSize: a.fontSize || 12,
+      });
+    } else if (a.type === 'text') {
+      const [x, y] = worldToPixel(a.worldX, a.worldY, viewState, W, H);
+      drawAnnText(ctx, x, y, a.text || '', {
+        colorKey: a.color, dpr, fontSize: a.fontSize || 13,
+      });
+    }
+  }
+}
+
+/**
+ * Draw a full-width attribution strip along the bottom edge of the figure.
+ * Auto-shrinks font if the text is too long for the canvas width.
+ */
+function drawAttributionStrip(ctx, W, H, text, s) {
+  if (!text) return;
+
+  const padX = s(14);
+  const padY = s(7);
+  const margin = s(12);
+  let fontSize = s(11);
+  ctx.font = `${fontSize}px ${FONT_MONO}`;
+  let textW = ctx.measureText(text).width;
+  const maxTextW = W - margin * 2 - padX * 2;
+  if (textW > maxTextW) {
+    const shrunk = Math.max(s(8), Math.floor(fontSize * (maxTextW / textW)));
+    fontSize = shrunk;
+    ctx.font = `${fontSize}px ${FONT_MONO}`;
+    textW = ctx.measureText(text).width;
+  }
+
+  const pillW = Math.min(W - margin * 2, textW + padX * 2);
+  const pillH = fontSize + padY * 2;
+  const x0 = Math.round((W - pillW) / 2);
+  const y0 = H - pillH - margin;
+
+  // Pill background (matches SARdine panel style)
+  ctx.fillStyle = 'rgba(10, 22, 40, 0.92)';
+  ctx.strokeStyle = THEME.cyan;
+  ctx.lineWidth = s(1);
+  roundRect(ctx, x0, y0, pillW, pillH, s(4));
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = THEME.textPrimary;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x0 + pillW / 2, y0 + pillH / 2 + s(1));
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -949,7 +1080,7 @@ function drawHistogramInset(ctx, W, H, opts, dpr) {
   const insetH = Math.min(s(240), Math.round(H * 0.3));
   const pad = s(12);
   const ix = pad;
-  const iy = s(28); // below SARdine branding badge
+  const iy = s(44); // below SARdine branding badge
 
   ctx.save();
 

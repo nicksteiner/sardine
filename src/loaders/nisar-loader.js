@@ -5604,3 +5604,54 @@ export async function loadNISARTimeSeriesROI(urls, wkt, opts = {}) {
 }
 
 export default loadNISARGCOV;
+
+// ─── Unified loader API ────────────────────────────────────────────────
+//
+// Adapter that re-shapes listNISARDatasets() output to the shared
+// Dataset contract from src/loaders/types.js, and dispatches load
+// requests to loadNISARGCOV() with the right options.
+//
+// GUNW files are not handled here — main.jsx routes those through
+// nisar-gunw-loader.js because the descriptor adds layer + dataset
+// dimensions on top of (frequency, polarization).
+
+/**
+ * Wrap listNISARDatasets() output as unified Dataset descriptors.
+ *
+ * @param {File} file
+ * @returns {Promise<import('./types.js').Dataset[]>}
+ */
+export async function listNISARDatasetsUnified(file) {
+  const raw = await listNISARDatasets(file);
+  const fileLabel = file.name.length > 32 ? file.name.slice(0, 30) + '…' : file.name;
+  return raw.map(d => ({
+    id: `${d.frequency}/${d.polarization}`,
+    label: `Freq ${d.frequency} · ${d.polarization}`,
+    format: 'h5',
+    shape: [0, 0],
+    dtype: 'float32',
+    isComplex: false,
+    polarization: d.polarization,
+    frequency: d.frequency,
+    band: d.band,
+    crs: 'EPSG:4326',
+    stats: d.stats || undefined,
+    meta: { fileLabel, raw: d },
+  }));
+}
+
+/**
+ * Load one NISAR GCOV dataset by unified id ("A/HHHH").
+ *
+ * @param {File} file
+ * @param {string} datasetId
+ * @param {Object} [opts]
+ * @returns {Promise<import('./types.js').LoadedSource>}
+ */
+export async function loadNISARDataset(file, datasetId, opts = {}) {
+  const m = /^([AB])\/(.+)$/.exec(datasetId || '');
+  if (!m) throw new Error(`Invalid NISAR dataset id: ${datasetId}`);
+  const [, frequency, polarization] = m;
+  const data = await loadNISARGCOV(file, { ...opts, frequency, polarization });
+  return { ...data, format: 'h5' };
+}

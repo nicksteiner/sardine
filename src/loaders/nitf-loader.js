@@ -1027,3 +1027,241 @@ export function isNITFFile(filename) {
   const lower = filename.toLowerCase();
   return lower.endsWith('.nitf') || lower.endsWith('.ntf');
 }
+
+// ─── Unified loader API ────────────────────────────────────────────────
+//
+// listNITFDatasets / loadNITFDataset implement the shared Dataset /
+// LoadedSource contract from src/loaders/types.js. NITF files can carry
+// multiple image segments (numi > 1); this exposes one Dataset per
+// segment so the picker UI can choose between them. Single-image files
+// (the common case) return a one-element list and the caller skips the
+// picker.
+
+function imageSegmentOffset(fh, imageIndex) {
+  // Byte offset of the IMAGE SUBHEADER for segment `imageIndex`.
+  // Layout: file header → image_subheader[0] → image_data[0] → image_subheader[1] → …
+  let off = fh.hl;
+  for (let i = 0; i < imageIndex; i++) {
+    off += fh.images[i].subheaderLen + fh.images[i].dataLen;
+  }
+  return off;
+}
+
+/**
+ * Enumerate viewable image segments in a NITF file.
+ *
+ * Reads only the file header + each image subheader (typically a few KB
+ * total). SICD XML in the DES is read once for image 0 to enrich the
+ * label.
+ *
+ * @param {File} file
+ * @returns {Promise<import('./types.js').Dataset[]>}
+ */
+export async function listNITFDatasets(file) {
+  const headerBuf = await file.slice(0, 1024).arrayBuffer();
+  const fh = parseFileHeader(headerBuf);
+  if (fh.numi === 0) return [];
+
+  const datasets = [];
+  for (let i = 0; i < fh.numi; i++) {
+    const imgSubStart = imageSegmentOffset(fh, i);
+    const imgSubLen = fh.images[i].subheaderLen;
+    const imgSubBuf = await file.slice(imgSubStart, imgSubStart + imgSubLen).arrayBuffer();
+    const img = parseImageSubheader(imgSubBuf);
+
+    const isComplex = img.totalBands === 2 &&
+      img.bands[0]?.isubcat === 'I' && img.bands[1]?.isubcat === 'Q';
+
+    // Try IGEOLO for a cheap geographic bbox; SICD XML is only consulted
+    // by loadNITFDataset since parsing it is non-trivial.
+    let geoBounds;
+    const corners = parseIGEOLO(img.icords, img.igeolo);
+    if (corners) geoBounds = cornersToBbox(corners);
+
+    const fileLabel = file.name.length > 32 ? file.name.slice(0, 30) + '…' : file.name;
+    const label = fh.numi === 1
+      ? (isComplex ? `${fileLabel} (SICD)` : fileLabel)
+      : `Image ${i + 1}/${fh.numi}${img.iid1 ? ` — ${img.iid1}` : ''}${isComplex ? ' (SICD)' : ''}`;
+
+    datasets.push({
+      id: `image/${i}`,
+      label,
+      format: 'nitf',
+      shape: [img.nrows, img.ncols],
+      dtype: isComplex ? 'complex' : (img.pvtype === 'R' ? 'float32' : 'int16'),
+      isComplex,
+      bounds: geoBounds || undefined,
+      crs: 'EPSG:4326',
+      meta: {
+        imageIndex: i,
+        irep: img.irep,
+        icat: img.icat,
+        compression: img.ic,
+        pvtype: img.pvtype,
+        nbpp: img.nbpp,
+      },
+    });
+  }
+  return datasets;
+}
+
+/**
+ * Load a single image segment from a NITF file. For datasetId
+ * 'image/0' this is identical to loadNITF(); for higher indices the
+ * loader seeks past prior segments and decodes that segment instead.
+ *
+ * @param {File} file
+ * @param {string} datasetId  Dataset.id from listNITFDatasets()
+ * @param {{onProgress?: Function}} [opts]
+ * @returns {Promise<import('./types.js').LoadedSource>}
+ */
+export async function loadNITFDataset(file, datasetId, { onProgress } = {}) {
+  const m = /^image\/(\d+)$/.exec(datasetId || '');
+  const imageIndex = m ? Number(m[1]) : 0;
+  if (imageIndex === 0) {
+    const data = await loadNITF(file, onProgress);
+    return { ...data, format: 'nitf' };
+  }
+  const data = await loadNITFAtIndex(file, imageIndex, onProgress);
+  return { ...data, format: 'nitf' };
+}
+
+/**
+ * Internal: load image segment N (N > 0) from a multi-image NITF.
+ * Mirrors loadNITF() but with adjusted byte offsets.
+ */
+async function loadNITFAtIndex(file, imageIndex, onProgress) {
+  const progress = onProgress || (() => {});
+  progress(5);
+
+  const headerBuf = await file.slice(0, 1024).arrayBuffer();
+  const fh = parseFileHeader(headerBuf);
+  if (imageIndex >= fh.numi) {
+    throw new Error(`NITF image index ${imageIndex} out of range (numi=${fh.numi})`);
+  }
+
+  const imgSubStart = imageSegmentOffset(fh, imageIndex);
+  const imgSubLen = fh.images[imageIndex].subheaderLen;
+  const imgSubBuf = await file.slice(imgSubStart, imgSubStart + imgSubLen).arrayBuffer();
+  const img = parseImageSubheader(imgSubBuf);
+
+  if (img.ic !== 'NC' && img.ic !== 'NM') {
+    throw new Error(`Compressed NITF segment not supported (IC=${img.ic})`);
+  }
+
+  const dataOffset = imgSubStart + imgSubLen;
+  const dataLen = fh.images[imageIndex].dataLen;
+
+  // SICD DES (if any) lives after the last image segment — re-read it so
+  // multi-image SICDs (rare) still get pixel-type dispatch.
+  let sicd = null;
+  let geoBounds = null;
+  let corners = parseIGEOLO(img.icords, img.igeolo);
+
+  if (fh.numdes > 0) {
+    let desOffset = imageSegmentOffset(fh, fh.numi - 1)
+      + fh.images[fh.numi - 1].subheaderLen
+      + fh.images[fh.numi - 1].dataLen;
+    for (let i = 0; i < fh.numdes; i++) {
+      const desSubLen = fh.des[i].subheaderLen;
+      const desDataLen = fh.des[i].dataLen;
+      const desSubBuf = await file.slice(desOffset, desOffset + desSubLen).arrayBuffer();
+      const desSubStr = readStr(new DataView(desSubBuf), 0, Math.min(25, desSubLen));
+      if (desSubStr.includes('XML_DATA_CONTENT')) {
+        const desDataBuf = await file.slice(
+          desOffset + desSubLen,
+          desOffset + desSubLen + desDataLen
+        ).arrayBuffer();
+        const xmlStr = new TextDecoder('utf-8').decode(desDataBuf);
+        if (xmlStr.includes('<SICD')) {
+          sicd = parseSICDXml(xmlStr);
+          if (sicd.corners) corners = sicd.corners;
+        }
+      }
+      desOffset += desSubLen + desDataLen;
+    }
+  }
+
+  if (corners) geoBounds = cornersToBbox(corners);
+
+  progress(25);
+
+  const isComplex = img.totalBands === 2 &&
+    img.bands[0]?.isubcat === 'I' && img.bands[1]?.isubcat === 'Q';
+  const calSF = sicd?.sigmaZeroSF || 1.0;
+  const { nrows, ncols } = img;
+  const { bytesPerPixel: pixelBytes, decode } = resolvePixelLayout(img, sicd);
+  const rowBytes = ncols * pixelBytes;
+
+  // Same getTile / getExportStripe / getPixelValue body as loadNITF, but
+  // bound to this segment's dataOffset. Re-using the inline definitions
+  // would require a large refactor — duplicate the small inner functions.
+  async function getTile({ x, y, z, bbox }) {
+    try {
+      const tileSize = 256;
+      let wxMin, wxMax, wyMin, wyMax;
+      if (bbox && bbox.left !== undefined) {
+        wxMin = Math.min(bbox.left, bbox.right);
+        wxMax = Math.max(bbox.left, bbox.right);
+        wyMin = Math.min(bbox.top, bbox.bottom);
+        wyMax = Math.max(bbox.top, bbox.bottom);
+      } else {
+        const worldSize = tileSize / Math.pow(2, z);
+        wxMin = x * worldSize; wxMax = wxMin + worldSize;
+        wyMin = y * worldSize; wyMax = wyMin + worldSize;
+      }
+      const pxLeft = Math.max(0, Math.floor(wxMin));
+      const pxRight = Math.min(ncols, Math.ceil(wxMax));
+      const pxTop = Math.max(0, Math.floor(nrows - wyMax));
+      const pxBottom = Math.min(nrows, Math.ceil(nrows - wyMin));
+      if (pxLeft >= pxRight || pxTop >= pxBottom) return null;
+      const srcW = pxRight - pxLeft;
+      const srcH = pxBottom - pxTop;
+      const stride = Math.max(1, Math.floor(Math.max(srcW, srcH) / tileSize));
+      const outW = Math.min(tileSize, Math.ceil(srcW / stride));
+      const outH = Math.min(tileSize, Math.ceil(srcH / stride));
+      const out = new Float32Array(outW * outH);
+      if (stride <= 8) {
+        const byteStart = dataOffset + pxTop * rowBytes;
+        const readRowCount = Math.min(srcH, nrows - pxTop);
+        const byteEnd = dataOffset + (pxTop + readRowCount) * rowBytes;
+        const buf = await file.slice(byteStart, byteEnd).arrayBuffer();
+        decode(new DataView(buf), out, outW, outH, ncols, pxLeft, stride, stride, readRowCount, calSF);
+      } else {
+        for (let r = 0; r < outH; r++) {
+          const srcRow = pxTop + r * stride;
+          if (srcRow >= nrows) break;
+          const rowStart = dataOffset + srcRow * rowBytes;
+          const buf = await file.slice(rowStart, rowStart + rowBytes).arrayBuffer();
+          decode(new DataView(buf), out.subarray(r * outW), outW, 1, ncols, pxLeft, stride, 1, 1, calSF);
+        }
+      }
+      return { data: out, width: outW, height: outH };
+    } catch (e) {
+      console.error(`[NITF Loader] Tile error (image ${imageIndex}):`, e);
+      return null;
+    }
+  }
+
+  progress(100);
+  return {
+    getTile,
+    bounds: [0, 0, ncols, nrows],
+    geoBounds,
+    worldBounds: geoBounds,
+    crs: 'EPSG:4326',
+    width: ncols, height: nrows,
+    sourceWidth: ncols, sourceHeight: nrows,
+    tileWidth: 256, tileHeight: 256,
+    isCOG: false, imageCount: 1,
+    nitfInfo: {
+      imageIndex,
+      title: fh.ftitle,
+      compression: img.ic,
+      isComplex,
+      pvtype: img.pvtype, irep: img.irep, icat: img.icat,
+      nbpp: img.nbpp, bands: img.bands, imode: img.imode,
+      sicd,
+    },
+  };
+}

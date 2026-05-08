@@ -119,21 +119,26 @@ vec3 twilightMap(float t) {
   return c;
 }
 
-// SARdine brand colormap — navy → teal → cyan → near-white
+// SARdine colormap — cubehelix (Green 2011) tuned for SAR.
+// Perceptually-uniform black→white with a subtle hue rotation through
+// the midtones. Floor anchored at #030201 (deepest displayable black)
+// so the ramp's bottom blends into the canvas background.
 vec3 sardineMap(float t) {
   t = clamp(t, 0.0, 1.0);
-  vec3 c;
-  if (t < 0.33) {
-    float s = t / 0.33;
-    c = mix(vec3(0.039, 0.086, 0.157), vec3(0.165, 0.541, 0.576), s);
-  } else if (t < 0.67) {
-    float s = (t - 0.33) / 0.34;
-    c = mix(vec3(0.165, 0.541, 0.576), vec3(0.306, 0.788, 0.824), s);
-  } else {
-    float s = (t - 0.67) / 0.33;
-    c = mix(vec3(0.306, 0.788, 0.824), vec3(0.910, 0.929, 0.961), s);
-  }
-  return c;
+  const float start = 0.5;
+  const float rotations = -1.5;
+  const float hue = 1.0;
+  float fract = t;
+  float angle = 6.28318530718 * (start / 3.0 + rotations * fract);
+  float amp = hue * fract * (1.0 - fract) / 2.0;
+  float cosA = cos(angle);
+  float sinA = sin(angle);
+  float r = fract + amp * (-0.14861 * cosA + 1.78277 * sinA);
+  float g = fract + amp * (-0.29227 * cosA - 0.90649 * sinA);
+  float b = fract + amp * ( 1.97294 * cosA);
+  vec3 c = clamp(vec3(r, g, b), 0.0, 1.0);
+  vec3 floorC = vec3(3.0 / 255.0, 2.0 / 255.0, 1.0 / 255.0);
+  return floorC + (vec3(1.0) - floorC) * c;
 }
 
 // Flood alert colormap — navy → deep orange → bright orange → red

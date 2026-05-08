@@ -1373,9 +1373,12 @@ check('GCOV loader effect cancels stale runs via generation ref', () => {
 
 check('drag-drop buckets files by extension', () => {
   // Mixed drops (h5 + tif + json + png) must route to the right pipeline,
-  // not just look at files[0].
-  assertContains(mainSrcForMosaic, 'const h5Files = files.filter', 'h5 bucket');
-  assertContains(mainSrcForMosaic, 'const tifFiles = files.filter', 'tif bucket');
+  // not just look at files[0]. Bucketing lives in src/loaders/types.js
+  // (bucketByFormat) so handleFileDrop only needs to consume the buckets.
+  assertContains(mainSrcForMosaic, 'bucketByFormat(files)', 'unified bucketing call');
+  assertContains(mainSrcForMosaic, 'const h5Files = buckets.h5', 'h5 bucket');
+  assertContains(mainSrcForMosaic, 'const tifFiles = buckets.cog', 'tif bucket');
+  assertContains(mainSrcForMosaic, 'const nitfFiles = buckets.nitf', 'nitf bucket');
 });
 
 check('drag-drop appends to active mosaic instead of replacing', () => {

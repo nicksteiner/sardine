@@ -7,9 +7,9 @@
  * Available colormap names
  */
 export const COLORMAP_NAMES = [
-  'grayscale', 'viridis', 'inferno', 'plasma', 'magma', 'cividis',
+  'grayscale', 'sardine', 'viridis', 'inferno', 'plasma', 'magma', 'cividis',
   'turbo', 'batlow', 'coherence', 'phase', 'twilight',
-  'sardine', 'flood', 'diverging', 'polarimetric', 'label',
+  'flood', 'diverging', 'polarimetric', 'label',
   'rdbu', 'romaO',
 ];
 
@@ -270,32 +270,44 @@ export function twilight(t) {
 // ── SARdine brand colorramps ─────────────────────────────────────────────────
 
 /**
- * SARdine colormap — navy → teal → cyan → near-white.
- * Default single-band dB ramp using the SARdine accent palette.
+ * SARdine colormap — cubehelix variant (Green 2011) tuned for SAR.
+ *
+ * Perceptually-uniform black→white ramp with a subtle hue rotation
+ * through the midtones. Built for astronomy where data characteristics
+ * (log-distributed intensity, multiplicative speckle-like noise,
+ * texture-dominated interpretation) closely match SAR.
+ *
+ * The slight chroma helps the eye discriminate fine intensity
+ * differences without overwhelming texture, and the lightness curve
+ * is monotonic so the ramp prints correctly in B&W.
+ *
+ * The floor is anchored at #030201 — the deepest displayable black —
+ * so the bottom of the ramp blends seamlessly into the SARdine
+ * canvas background.
+ *
+ * Defaults: start=0.5, rotations=-1.5, hue=1.0, gamma=1.0
+ *
  * @param {number} t - Value between 0 and 1
  * @returns {number[]} [r, g, b] values 0-255
  */
 export function sardine(t) {
   t = Math.max(0, Math.min(1, t));
-  // 4-stop gradient: #0a1628 → #2a8a93 → #4ec9d4 → #e8edf5
-  let r, g, b;
-  if (t < 0.33) {
-    const s = t / 0.33;
-    r = 10  + s * (42 - 10);
-    g = 22  + s * (138 - 22);
-    b = 40  + s * (147 - 40);
-  } else if (t < 0.67) {
-    const s = (t - 0.33) / 0.34;
-    r = 42  + s * (78 - 42);
-    g = 138 + s * (201 - 138);
-    b = 147 + s * (212 - 147);
-  } else {
-    const s = (t - 0.67) / 0.33;
-    r = 78  + s * (232 - 78);
-    g = 201 + s * (237 - 201);
-    b = 212 + s * (245 - 212);
-  }
-  return [Math.round(r), Math.round(g), Math.round(b)];
+  const start = 0.5, rotations = -1.5, hue = 1.0, gamma = 1.0;
+  const fract = Math.pow(t, gamma);
+  const angle = 2 * Math.PI * (start / 3 + rotations * fract);
+  const amp = hue * fract * (1 - fract) / 2;
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  let r = fract + amp * (-0.14861 * cosA + 1.78277 * sinA);
+  let g = fract + amp * (-0.29227 * cosA - 0.90649 * sinA);
+  let b = fract + amp * ( 1.97294 * cosA);
+  r = Math.max(0, Math.min(1, r));
+  g = Math.max(0, Math.min(1, g));
+  b = Math.max(0, Math.min(1, b));
+  const FLOOR_R = 3 / 255, FLOOR_G = 2 / 255, FLOOR_B = 1 / 255;
+  r = FLOOR_R + (1 - FLOOR_R) * r;
+  g = FLOOR_G + (1 - FLOOR_G) * g;
+  b = FLOOR_B + (1 - FLOOR_B) * b;
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
 
 /**

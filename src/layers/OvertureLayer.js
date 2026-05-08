@@ -11,6 +11,7 @@
  */
 
 import { GeoJsonLayer } from '@deck.gl/layers';
+import { COORDINATE_SYSTEM } from '@deck.gl/core';
 import { OVERTURE_THEMES } from '../loaders/overture-loader.js';
 import { makeReproject, reprojectFeature } from '../utils/overture-projection.js';
 
@@ -90,13 +91,25 @@ function extractCoastlineEdges(features, tileBounds) {
  * Create deck.gl layers for Overture data.
  */
 export function createOvertureLayers(overtureData, options = {}) {
-  const { opacity = 0.7, crs, projection } = options;
+  const { opacity = 0.7, crs, projection, bounds, worldBounds } = options;
   const layers = [];
 
   if (!overtureData) return layers;
 
-  const reprojectFn = makeReproject({ projection, crs });
+  const reprojectFn = makeReproject({
+    projection,
+    crs,
+    worldBounds,
+    pixelBounds: bounds,
+  });
   const needsReproject = reprojectFn !== null;
+  // After reprojection coords are in projected (UTM/SICD) space, not lon/lat.
+  // GeoJsonLayer defaults to LNGLAT, which would wrap meters into the [-180,180]
+  // domain and render the overlay nowhere on screen. Force CARTESIAN whenever
+  // we've reprojected — that's the actual fix for "overlay loads but doesn't show."
+  const coordSys = needsReproject ? COORDINATE_SYSTEM.CARTESIAN : COORDINATE_SYSTEM.LNGLAT;
+
+  console.log(`[OvertureLayer] crs=${crs} projection=${!!projection} reproject=${needsReproject} coordSys=${needsReproject ? 'CARTESIAN' : 'LNGLAT'} imageBounds=${bounds ? `[${bounds.map(n => n.toFixed(0)).join(', ')}]` : 'unknown'} worldBounds=${worldBounds ? `[${worldBounds.map(n => n.toFixed(3)).join(', ')}]` : 'unknown'}`);
 
   for (const [themeKey, featureCollection] of Object.entries(overtureData)) {
     if (!featureCollection?.features?.length) continue;
@@ -128,12 +141,18 @@ export function createOvertureLayers(overtureData, options = {}) {
 
       console.log(`[OvertureLayer] ${themeKey}: ${featureCollection.tileGroups.length} tiles, ${edgesBefore} polygon edges → ${edgesAfter} coastline edges (${edgesBefore - edgesAfter} boundary edges removed), ${allLineFeatures.length} line features`);
 
+      if (allLineFeatures.length > 0) {
+        const sample = allLineFeatures[0]?.geometry?.coordinates?.[0];
+        console.log(`[OvertureLayer] ${themeKey} sample coord:`, sample);
+      }
+
       if (allLineFeatures.length === 0) continue;
 
       layers.push(
         new GeoJsonLayer({
           id: layerId,
           data: { type: 'FeatureCollection', features: allLineFeatures },
+          coordinateSystem: coordSys,
           opacity,
           filled: false,
           stroked: true,
@@ -156,6 +175,19 @@ export function createOvertureLayers(overtureData, options = {}) {
         }
       : featureCollection;
 
+    {
+      const f0 = data.features?.[0];
+      let sample = null;
+      const c = f0?.geometry?.coordinates;
+      if (c) {
+        sample = typeof c[0] === 'number' ? c
+              : typeof c[0]?.[0] === 'number' ? c[0]
+              : typeof c[0]?.[0]?.[0] === 'number' ? c[0][0]
+              : null;
+      }
+      console.log(`[OvertureLayer] ${themeKey}: ${data.features?.length || 0} features, sample coord:`, sample);
+    }
+
     // coastlineStroke themes without tileGroups (e.g. legacy data, retry path):
     // force stroke-only to avoid filling water polygons across whole tiles.
     const forceStroke = themeDef.coastlineStroke;
@@ -164,6 +196,7 @@ export function createOvertureLayers(overtureData, options = {}) {
       new GeoJsonLayer({
         id: layerId,
         data,
+        coordinateSystem: coordSys,
         opacity,
         filled: forceStroke ? false : (themeDef.fillOnly || !themeDef.strokeOnly),
         stroked: forceStroke ? true : !themeDef.fillOnly,
