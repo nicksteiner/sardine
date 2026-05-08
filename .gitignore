@@ -48,6 +48,9 @@ test_sar_*.tif
 *tif
 *h5
 
+# Playwright test output
+test-results/
+
 # Backup files
 *.bak
 

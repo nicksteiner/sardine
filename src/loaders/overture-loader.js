@@ -297,34 +297,50 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
     const features = [];
     const tileGroups = []; // For tile-clipped rendering
 
-    let tilesLoaded = 0;
-    // Fetch all tiles that cover the bbox
-    for (let x = tiles.minX; x <= tiles.maxX && tilesLoaded < maxTiles; x++) {
-      for (let y = tiles.minY; y <= tiles.maxY && tilesLoaded < maxTiles; y++) {
-        try {
-          const tileData = await fetchOvertureTile(actualTheme, zoom, x, y, release);
-          const tileFeatures = [];
-          for (const layerFeatures of Object.values(tileData.layers || {})) {
-            tileFeatures.push(...layerFeatures);
-            features.push(...layerFeatures);
-          }
-          // Compute tile WGS84 bounds for scissor clipping
-          if (tileFeatures.length > 0 && themeDef.coastlineStroke) {
-            const n = Math.pow(2, zoom);
-            const tileMinLon = (x / n) * 360 - 180;
-            const tileMaxLon = ((x + 1) / n) * 360 - 180;
-            const tileMaxLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
-            const tileMinLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180 / Math.PI;
-            tileGroups.push({
-              features: tileFeatures,
-              bounds: [tileMinLon, tileMinLat, tileMaxLon, tileMaxLat],
-            });
-          }
-          tilesLoaded++;
-        } catch (e) {
-          console.warn(`[Overture] Failed to load tile ${actualTheme}/${zoom}/${x}/${y}:`, e.message);
-        }
+    // Build the (capped) list of tile coords up front, then fetch in parallel.
+    // The previous sequential await loop was the dominant cause of slow/missed
+    // loads — with N themes × M tiles, latency stacked rather than overlapping.
+    const tileCoords = [];
+    for (let x = tiles.minX; x <= tiles.maxX; x++) {
+      for (let y = tiles.minY; y <= tiles.maxY; y++) {
+        tileCoords.push([x, y]);
+        if (tileCoords.length >= maxTiles) break;
       }
+      if (tileCoords.length >= maxTiles) break;
+    }
+
+    const tileResults = await Promise.all(
+      tileCoords.map(([x, y]) =>
+        fetchOvertureTile(actualTheme, zoom, x, y, release)
+          .then(tileData => ({ x, y, tileData }))
+          .catch(e => {
+            console.warn(`[Overture] Failed to load tile ${actualTheme}/${zoom}/${x}/${y}:`, e.message);
+            return null;
+          })
+      )
+    );
+
+    let tilesLoaded = 0;
+    for (const r of tileResults) {
+      if (!r) continue;
+      const { x, y, tileData } = r;
+      const tileFeatures = [];
+      for (const layerFeatures of Object.values(tileData.layers || {})) {
+        tileFeatures.push(...layerFeatures);
+        features.push(...layerFeatures);
+      }
+      if (tileFeatures.length > 0 && themeDef.coastlineStroke) {
+        const n = Math.pow(2, zoom);
+        const tileMinLon = (x / n) * 360 - 180;
+        const tileMaxLon = ((x + 1) / n) * 360 - 180;
+        const tileMaxLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) * 180 / Math.PI;
+        const tileMinLat = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n))) * 180 / Math.PI;
+        tileGroups.push({
+          features: tileFeatures,
+          bounds: [tileMinLon, tileMinLat, tileMaxLon, tileMaxLat],
+        });
+      }
+      tilesLoaded++;
     }
 
     console.log(`[Overture] Got ${features.length} features for ${themeKey} from ${tilesLoaded} tiles`);
@@ -595,10 +611,13 @@ function decodeMVT(buffer, tileX, tileY, tileZ) {
       commands.push(v.value);
     }
 
+    // Collect rings as raw tile-local integer coords first; classify polygon
+    // rings by signed-area sign before converting to WGS84 (tile Y is
+    // top-down, so the sign of shoelace area is well-defined and stable).
     let cx = 0, cy = 0;
     let i = 0;
-    const rings = [];
-    let ring = [];
+    const ringsLocal = [];
+    let ringLocal = [];
 
     while (i < commands.length) {
       const cmdId = commands[i] & 0x7;
@@ -612,8 +631,8 @@ function decodeMVT(buffer, tileX, tileY, tileZ) {
           const dy = (commands[i] >> 1) ^ -(commands[i] & 1); i++;
           cx += dx;
           cy += dy;
-          if (ring.length > 0) rings.push(ring);
-          ring = [toWGS84(cx * extent / ext, cy * extent / ext)];
+          if (ringLocal.length > 0) ringsLocal.push(ringLocal);
+          ringLocal = [[cx, cy]];
         }
       } else if (cmdId === 2) {
         // LineTo
@@ -622,37 +641,57 @@ function decodeMVT(buffer, tileX, tileY, tileZ) {
           const dy = (commands[i] >> 1) ^ -(commands[i] & 1); i++;
           cx += dx;
           cy += dy;
-          ring.push(toWGS84(cx * extent / ext, cy * extent / ext));
+          ringLocal.push([cx, cy]);
         }
       } else if (cmdId === 7) {
         // ClosePath
-        if (ring.length > 0) {
-          ring.push(ring[0]);
-          rings.push(ring);
-          ring = [];
+        if (ringLocal.length > 0) {
+          ringLocal.push(ringLocal[0]);
+          ringsLocal.push(ringLocal);
+          ringLocal = [];
         }
       }
     }
-    if (ring.length > 0) rings.push(ring);
+    if (ringLocal.length > 0) ringsLocal.push(ringLocal);
 
-    if (rings.length === 0) return null;
+    if (ringsLocal.length === 0) return null;
+
+    const toWGS84Ring = (r) => r.map(([x, y]) => toWGS84(x * extent / ext, y * extent / ext));
 
     if (geomType === 1) {
-      // Point
-      return rings.length === 1 && rings[0].length === 1
-        ? { type: 'Point', coordinates: rings[0][0] }
-        : { type: 'MultiPoint', coordinates: rings.map(r => r[0]) };
+      // Point / MultiPoint
+      const pts = ringsLocal.flatMap(r => r.map(([x, y]) => toWGS84(x * extent / ext, y * extent / ext)));
+      return pts.length === 1
+        ? { type: 'Point', coordinates: pts[0] }
+        : { type: 'MultiPoint', coordinates: pts };
     } else if (geomType === 2) {
-      // LineString
-      return rings.length === 1
-        ? { type: 'LineString', coordinates: rings[0] }
-        : { type: 'MultiLineString', coordinates: rings };
+      // LineString / MultiLineString
+      const lines = ringsLocal.map(toWGS84Ring);
+      return lines.length === 1
+        ? { type: 'LineString', coordinates: lines[0] }
+        : { type: 'MultiLineString', coordinates: lines };
     } else if (geomType === 3) {
-      // Polygon / MultiPolygon
-      // Each ring is a polygon ring; outer rings are CW, inner CCW in MVT
-      return rings.length === 1
-        ? { type: 'Polygon', coordinates: [rings[0]] }
-        : { type: 'MultiPolygon', coordinates: rings.map(r => [r]) };
+      // Polygon / MultiPolygon — group rings by signed-area sign per MVT spec.
+      // Outer rings have positive area (CW in tile-Y-down coords); inner rings
+      // have negative area and belong to the most recent outer ring.
+      const polygons = [];
+      let current = null;
+      for (const r of ringsLocal) {
+        let area2 = 0;
+        for (let k = 0; k < r.length - 1; k++) {
+          area2 += r[k][0] * r[k + 1][1] - r[k + 1][0] * r[k][1];
+        }
+        const ringWGS = toWGS84Ring(r);
+        if (area2 > 0 || current === null) {
+          current = [ringWGS];
+          polygons.push(current);
+        } else {
+          current.push(ringWGS);
+        }
+      }
+      return polygons.length === 1
+        ? { type: 'Polygon', coordinates: polygons[0] }
+        : { type: 'MultiPolygon', coordinates: polygons };
     }
     return null;
   }
@@ -752,8 +791,12 @@ export async function fetchOvertureTile(theme, z, x, y, release = DEFAULT_TILES_
     pmtilesGeoJSONCache.set(cacheKey, decoded);
     return decoded;
   } catch (e) {
+    // Drop the PMTiles instance so its (possibly poisoned) directory cache is
+    // rebuilt on retry — without this, one transient network/CORS failure can
+    // leave the overlay permanently broken until a full page reload.
+    pmtilesInstances.delete(`${release}/${theme}`);
     console.error(`[Overture PMTiles] Failed to read ${theme}/${z}/${x}/${y}:`, e);
-    return { layers: {} };
+    throw e;
   }
 }
 
