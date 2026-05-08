@@ -13,6 +13,8 @@ import { ROIOverlay } from '../components/ROIOverlay.jsx';
 import ClassificationOverlay from '../components/ClassificationOverlay.jsx';
 import { PixelExplorer } from '../components/PixelExplorer.jsx';
 import { ROIProfilePlot } from '../components/ROIProfilePlot.jsx';
+import { MedicalModeOverlay } from '../components/MedicalModeOverlay.jsx';
+import { TransectProbe } from '../components/TransectProbe.jsx';
 
 /**
  * SARViewer - Basic SAR image viewer component
@@ -29,6 +31,7 @@ export const SARViewer = forwardRef(function SARViewer({
   contrastLimits = [-25, 0],
   useDecibels = true,
   colormap = 'grayscale',
+  reverseColormap = false,
   gamma = 1.0,
   stretchMode = 'linear',
   compositeId = null, // SAR RGB composite ID (null = single band)
@@ -72,6 +75,12 @@ export const SARViewer = forwardRef(function SARViewer({
   classifierRoiDims = null, // {w, h} grid dimensions of classification map
   mosaicLayers = [],   // Secondary render-only sources: [{id, getTile, bounds}].
                        // Share active visual props with the primary; render below it.
+  // ── Analytical / medical-imaging mode ────────────────────────────
+  medicalMode = false,        // Master toggle: black bg, no chrome, NEAREST filter, drag-W/L, readout
+  setContrastLimits = null,   // (limits) => void — required for drag-to-W/L and σ presets
+  histogramData = null,       // From parent — used for σ/percentile presets
+  inverted = false,           // Inverted grayscale (medical convention)
+  setInverted = null,         // (bool) => void
 }, ref) {
   const containerRef = useRef(null);
   const getTileRef = useRef(getTile);
@@ -225,7 +234,7 @@ export const SARViewer = forwardRef(function SARViewer({
   // RAF-throttled tick drives re-renders only when visual props change,
   // preventing redundant layer recreations during rapid slider drags.
   const visualRef = useRef({
-    contrastLimits, useDecibels, colormap, gamma, stretchMode,
+    contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
     opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
     incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
   });
@@ -238,6 +247,7 @@ export const SARViewer = forwardRef(function SARViewer({
       contrastLimits !== prev.contrastLimits ||
       useDecibels !== prev.useDecibels ||
       colormap !== prev.colormap ||
+      reverseColormap !== prev.reverseColormap ||
       gamma !== prev.gamma ||
       stretchMode !== prev.stretchMode ||
       opacity !== prev.opacity ||
@@ -258,7 +268,7 @@ export const SARViewer = forwardRef(function SARViewer({
       toneMapping !== prev.toneMapping
     );
     visualRef.current = {
-      contrastLimits, useDecibels, colormap, gamma, stretchMode,
+      contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
       opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
       incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
     };
@@ -268,7 +278,7 @@ export const SARViewer = forwardRef(function SARViewer({
         setVisualTick(t => t + 1);
       });
     }
-  }, [contrastLimits, useDecibels, colormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping]);
+  }, [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping]);
 
   // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
@@ -284,6 +294,7 @@ export const SARViewer = forwardRef(function SARViewer({
           contrastLimits: v.contrastLimits,
           useDecibels: v.useDecibels,
           colormap: v.colormap,
+          reverseColormap: v.reverseColormap,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -308,6 +319,7 @@ export const SARViewer = forwardRef(function SARViewer({
           contrastLimits: v.contrastLimits,
           useDecibels: v.useDecibels,
           colormap: v.colormap,
+          reverseColormap: v.reverseColormap,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -327,6 +339,7 @@ export const SARViewer = forwardRef(function SARViewer({
           contrastLimits: v.contrastLimits,
           useDecibels: v.useDecibels,
           colormap: v.colormap,
+          reverseColormap: v.reverseColormap,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -345,13 +358,14 @@ export const SARViewer = forwardRef(function SARViewer({
           speckleKernelSize: v.speckleKernelSize,
           rgbSaturation: v.rgbSaturation,
           colorblindMode: v.colorblindMode,
+          pixelMode: medicalMode,
         }),
       ];
     }
 
     return [];
   // eslint-disable-next-line react-hooks/exhaustive-deps -- visualTick drives visual prop updates via RAF throttle; redrawTick forces recreation after canvas capture
-  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, multiLook, handleLoadingChange, redrawTick, visualTick]);
+  }, [cogUrl, stableGetTileData, tileVersion, imageData, bounds, multiLook, handleLoadingChange, redrawTick, visualTick, medicalMode]);
 
   // Mosaic secondary layers — share the primary's visual props but each has
   // its own bounds + getTile. SARTileLayer auto-detects RGB vs single-band
@@ -372,6 +386,7 @@ export const SARViewer = forwardRef(function SARViewer({
           contrastLimits: v.contrastLimits,
           useDecibels: v.useDecibels,
           colormap: v.colormap,
+          reverseColormap: v.reverseColormap,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -382,11 +397,12 @@ export const SARViewer = forwardRef(function SARViewer({
           speckleKernelSize: v.speckleKernelSize,
           rgbSaturation: v.rgbSaturation,
           colorblindMode: v.colorblindMode,
+          pixelMode: medicalMode,
         });
       })
       .filter(Boolean);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- visualTick drives visual updates via RAF throttle
-  }, [mosaicLayers, tileVersion, multiLook, visualTick, redrawTick]);
+  }, [mosaicLayers, tileVersion, multiLook, visualTick, redrawTick, medicalMode]);
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;
@@ -409,24 +425,31 @@ export const SARViewer = forwardRef(function SARViewer({
       position: 'relative',
       width,
       height,
-      backgroundColor: 'var(--sardine-bg, #0a1628)',
+      // Medical mode: pure black void, no theme color competing with data
+      backgroundColor: medicalMode ? '#000000' : 'var(--sardine-bg, #0a1628)',
       ...style,
     }),
-    [width, height, style]
+    [width, height, style, medicalMode]
   );
+
+  // Invert filter for medical-mode grayscale convention.
+  // CSS filter: applied to the entire deck.gl canvas. Only meaningful in medical mode.
+  const canvasFilter = (medicalMode && inverted) ? 'invert(1)' : 'none';
 
 
   return (
     <div ref={containerRef} style={containerStyle}>
-      <DeckGL
-        views={views}
-        viewState={viewState}
-        onViewStateChange={handleViewStateChange}
-        layers={allLayers}
-        controller={true}
-        glOptions={{ preserveDrawingBuffer: true }}
-        parameters={{ clearColor: [0.039, 0.086, 0.157, 1] }}
-      />
+      <div style={{ position: 'absolute', inset: 0, filter: canvasFilter }}>
+        <DeckGL
+          views={views}
+          viewState={viewState}
+          onViewStateChange={handleViewStateChange}
+          layers={allLayers}
+          controller={true}
+          glOptions={{ preserveDrawingBuffer: true }}
+          parameters={{ clearColor: medicalMode ? [0, 0, 0, 1] : [0.039, 0.086, 0.157, 1] }}
+        />
+      </div>
       <ROIOverlay
         viewState={viewState}
         bounds={bounds}
@@ -512,29 +535,69 @@ export const SARViewer = forwardRef(function SARViewer({
           </svg>
         </button>
       )}
-      <ColorbarOverlay
-        colormap={colormap}
-        contrastLimits={contrastLimits}
-        useDecibels={useDecibels}
-        compositeId={compositeId}
-      />
-      {/* SARdine branding badge */}
-      <div style={{
-        position: 'absolute',
-        top: 8,
-        left: '50%',
-        transform: 'translateX(-50%)',
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: '0.7rem',
-        fontWeight: 700,
-        letterSpacing: '1px',
-        pointerEvents: 'none',
-        zIndex: 10,
-        opacity: 0.6,
-      }}>
-        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>SAR</span>
-        <span style={{ color: 'var(--text-primary, #e8edf5)' }}>dine</span>
-      </div>
+      {!medicalMode && (
+        <ColorbarOverlay
+          colormap={colormap}
+          reverseColormap={reverseColormap}
+          contrastLimits={contrastLimits}
+          useDecibels={useDecibels}
+          compositeId={compositeId}
+        />
+      )}
+      {/* SARdine branding badge — hidden in medical mode (no chrome) */}
+      {!medicalMode && (
+        <div style={{
+          position: 'absolute',
+          top: 8,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          fontFamily: "'JetBrains Mono', monospace",
+          fontSize: '0.7rem',
+          fontWeight: 700,
+          letterSpacing: '1px',
+          pointerEvents: 'none',
+          zIndex: 10,
+          opacity: 0.6,
+        }}>
+          <span style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>SAR</span>
+          <span style={{ color: 'var(--text-primary, #e8edf5)' }}>dine</span>
+        </div>
+      )}
+      {medicalMode && (
+        <MedicalModeOverlay
+          enabled={medicalMode}
+          viewState={viewState}
+          setViewState={(vs) => {
+            setViewState(vs);
+            if (debouncedParentCb.current) debouncedParentCb.current({ viewState: vs });
+          }}
+          bounds={bounds}
+          imageWidth={imageWidth}
+          imageHeight={imageHeight}
+          contrastLimits={contrastLimits}
+          setContrastLimits={setContrastLimits}
+          useDecibels={useDecibels}
+          histogramData={histogramData}
+          inverted={inverted}
+          setInverted={setInverted}
+          getPixelValue={getPixelValue}
+          xCoords={xCoords}
+          yCoords={yCoords}
+        />
+      )}
+      {medicalMode && (
+        <TransectProbe
+          enabled={medicalMode}
+          viewState={viewState}
+          bounds={bounds}
+          imageWidth={imageWidth}
+          imageHeight={imageHeight}
+          getPixelValue={getPixelValue}
+          useDecibels={useDecibels}
+          contrastLimits={Array.isArray(contrastLimits) ? contrastLimits : null}
+          containerRef={containerRef}
+        />
+      )}
     </div>
   );
 });
@@ -543,7 +606,7 @@ export const SARViewer = forwardRef(function SARViewer({
  * ColorbarOverlay - Displays a colorbar legend
  * Shows RGB channel legend when compositeId is set, otherwise shows colormap gradient.
  */
-function ColorbarOverlay({ colormap, contrastLimits, useDecibels, compositeId }) {
+function ColorbarOverlay({ colormap, reverseColormap = false, contrastLimits, useDecibels, compositeId }) {
   const unit = useDecibels ? 'dB' : '';
 
   const colorbarStyle = {
@@ -613,7 +676,7 @@ function ColorbarOverlay({ colormap, contrastLimits, useDecibels, compositeId })
   const gradientStyle = {
     width: '20px',
     height: '150px',
-    background: getGradientCSS(colormap),
+    background: getGradientCSS(colormap, reverseColormap),
     borderRadius: 'var(--radius-sm)',
     marginBottom: 'var(--space-xs)',
   };
@@ -636,14 +699,17 @@ function ColorbarOverlay({ colormap, contrastLimits, useDecibels, compositeId })
 /**
  * Generate CSS gradient for colorbar
  */
-function getGradientCSS(colormapName) {
+function getGradientCSS(colormapName, reversed = false) {
   const stops = [];
   const numStops = 10;
   const colormapFunc = getColormap(colormapName);
+  const invert = reversed && colormapName !== 'label';
 
   for (let i = 0; i < numStops; i++) {
     const t = i / (numStops - 1);
-    const color = colormapFunc(1 - t);
+    // Top of colorbar = max value (1); bottom = min (0). Reverse swaps the mapping.
+    const sample = invert ? t : 1 - t;
+    const color = colormapFunc(sample);
     stops.push(`rgb(${color.join(',')}) ${t * 100}%`);
   }
 

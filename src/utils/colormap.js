@@ -7,7 +7,8 @@
  * Available colormap names
  */
 export const COLORMAP_NAMES = [
-  'grayscale', 'viridis', 'inferno', 'plasma', 'phase', 'twilight',
+  'grayscale', 'viridis', 'inferno', 'plasma', 'magma', 'cividis',
+  'turbo', 'batlow', 'coherence', 'phase', 'twilight',
   'sardine', 'flood', 'diverging', 'polarimetric', 'label',
   'rdbu', 'romaO',
 ];
@@ -103,6 +104,121 @@ export function plasma(t) {
   }
 
   return rgb;
+}
+
+/**
+ * Magma colormap - perceptually uniform, black→purple→magenta→orange→pale yellow.
+ * Sampled from Matplotlib magma at 9 stops (every 0.125).
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function magma(t) {
+  t = Math.max(0, Math.min(1, t));
+  const stops = [
+    [0.001, 0.000, 0.014],  // 0.000 - near-black
+    [0.116, 0.063, 0.296],  // 0.125 - dark purple
+    [0.317, 0.072, 0.485],  // 0.250 - violet
+    [0.522, 0.139, 0.510],  // 0.375 - magenta
+    [0.716, 0.215, 0.476],  // 0.500 - pink
+    [0.890, 0.314, 0.395],  // 0.625 - coral
+    [0.987, 0.510, 0.350],  // 0.750 - salmon
+    [0.996, 0.745, 0.439],  // 0.875 - peach
+    [0.987, 0.991, 0.749],  // 1.000 - pale yellow
+  ];
+  const seg = t * 8;
+  const i = Math.min(Math.floor(seg), 7);
+  const s = seg - i;
+  const a = stops[i], b = stops[i + 1];
+  return [
+    Math.round((a[0] + s * (b[0] - a[0])) * 255),
+    Math.round((a[1] + s * (b[1] - a[1])) * 255),
+    Math.round((a[2] + s * (b[2] - a[2])) * 255),
+  ];
+}
+
+/**
+ * Cividis colormap - perceptually uniform AND optimized for the most common
+ * forms of color-vision deficiency (deuteranomaly/protanomaly).
+ * Sampled from Matplotlib cividis at 9 stops.
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function cividis(t) {
+  t = Math.max(0, Math.min(1, t));
+  const stops = [
+    [0.000, 0.135, 0.305],  // 0.000 - dark blue
+    [0.099, 0.210, 0.420],  // 0.125
+    [0.176, 0.286, 0.478],  // 0.250
+    [0.275, 0.357, 0.490],  // 0.375
+    [0.376, 0.431, 0.490],  // 0.500 - desaturated mid
+    [0.486, 0.510, 0.471],  // 0.625
+    [0.616, 0.604, 0.435],  // 0.750
+    [0.761, 0.706, 0.376],  // 0.875
+    [1.000, 0.835, 0.310],  // 1.000 - bright yellow
+  ];
+  const seg = t * 8;
+  const i = Math.min(Math.floor(seg), 7);
+  const s = seg - i;
+  const a = stops[i], b = stops[i + 1];
+  return [
+    Math.round((a[0] + s * (b[0] - a[0])) * 255),
+    Math.round((a[1] + s * (b[1] - a[1])) * 255),
+    Math.round((a[2] + s * (b[2] - a[2])) * 255),
+  ];
+}
+
+/**
+ * Turbo colormap - Google's improved jet replacement.
+ * High-contrast rainbow without the perceptual artifacts of jet; widely used
+ * for SAR/coherence/velocity visualization where strong feature separation
+ * matters more than perceptual uniformity.
+ * Polynomial coefficients from Anton Mikhailov (2019, Google AI Blog).
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function turbo(t) {
+  t = Math.max(0, Math.min(1, t));
+  const r = 0.13572138 + t * (4.61539260 + t * (-42.66032258 + t * (132.13108234 + t * (-152.94239396 + t * 59.28637943))));
+  const g = 0.09140261 + t * (2.19418839 + t * (4.84296658   + t * (-14.18503333 + t * (4.27729857    + t * 2.82956604))));
+  const b = 0.10667330 + t * (12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973))));
+  return [
+    Math.round(Math.max(0, Math.min(1, r)) * 255),
+    Math.round(Math.max(0, Math.min(1, g)) * 255),
+    Math.round(Math.max(0, Math.min(1, b)) * 255),
+  ];
+}
+
+/**
+ * Batlow colormap - perceptually uniform sequential ramp from Crameri's
+ * Scientific Colour Maps. The de-facto standard for SAR/geo sequential data
+ * in modern publications. Colorblind-safe; print-safe in grayscale.
+ * Goes: dark blue → green → yellow → tan → light pink.
+ * 9-stop sample of Crameri batlow v8.0.
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function batlow(t) {
+  t = Math.max(0, Math.min(1, t));
+  const stops = [
+    [0.0051, 0.0980, 0.3490],  // 0.000 - dark blue
+    [0.0863, 0.2235, 0.3686],  // 0.125
+    [0.1804, 0.3373, 0.3490],  // 0.250
+    [0.3137, 0.4275, 0.2902],  // 0.375
+    [0.5020, 0.4980, 0.2196],  // 0.500
+    [0.7059, 0.5333, 0.2196],  // 0.625
+    [0.8902, 0.5569, 0.3294],  // 0.750
+    [0.9804, 0.6275, 0.5333],  // 0.875
+    [0.9843, 0.7961, 0.7725],  // 1.000 - light pink
+  ];
+  const seg = t * 8;
+  const i = Math.min(Math.floor(seg), 7);
+  const s = seg - i;
+  const a = stops[i], b = stops[i + 1];
+  return [
+    Math.round((a[0] + s * (b[0] - a[0])) * 255),
+    Math.round((a[1] + s * (b[1] - a[1])) * 255),
+    Math.round((a[2] + s * (b[2] - a[2])) * 255),
+  ];
 }
 
 /**
@@ -299,6 +415,36 @@ export function label(t) {
 }
 
 /**
+ * Coherence colormap — black → deep red → orange → yellow → white.
+ * Sequential ramp purpose-built for InSAR coherence values in [0, 1]:
+ * decorrelated regions stay near-black, fully coherent regions read as bright
+ * yellow/white. Avoids the cool-tone confusion of viridis for binary "is the
+ * pixel coherent?" interpretation.
+ * @param {number} t - Value between 0 and 1
+ * @returns {number[]} [r, g, b] values 0-255
+ */
+export function coherence(t) {
+  t = Math.max(0, Math.min(1, t));
+  const stops = [
+    [0.000, 0.000, 0.000],  // 0.00 - black (no coherence)
+    [0.180, 0.030, 0.040],  // 0.20 - deep maroon
+    [0.500, 0.110, 0.040],  // 0.40 - dark red
+    [0.820, 0.310, 0.050],  // 0.60 - deep orange
+    [0.980, 0.620, 0.110],  // 0.80 - amber
+    [1.000, 1.000, 0.880],  // 1.00 - near-white (full coherence)
+  ];
+  const seg = t * 5;
+  const i = Math.min(Math.floor(seg), 4);
+  const s = seg - i;
+  const a = stops[i], b = stops[i + 1];
+  return [
+    Math.round((a[0] + s * (b[0] - a[0])) * 255),
+    Math.round((a[1] + s * (b[1] - a[1])) * 255),
+    Math.round((a[2] + s * (b[2] - a[2])) * 255),
+  ];
+}
+
+/**
  * RdBu (Red-Blue) diverging colormap — the InSAR community standard for
  * displacement visualization. White center with saturated red/blue endpoints.
  * Blue = range decrease (toward satellite), Red = range increase (away).
@@ -337,24 +483,24 @@ export function rdbu(t) {
 /**
  * romaO — cyclic perceptually uniform colormap from Crameri's Scientific
  * Colour Maps. The standard for wrapped interferometric phase display.
- * Bright, saturated, uniform luminance around the cycle, colorblind-safe.
- * Goes: teal → yellow → red/magenta → blue → teal (cyclic).
+ * Bright, saturated, near-uniform luminance around the cycle, colorblind-safe.
+ * Goes: red → orange → yellow → green → cyan → blue → magenta → red (cyclic).
+ * Sampled from Crameri Scientific Colour Maps v8.0, romaO at every 1/8 cycle.
  * @param {number} t - Value between 0 and 1 (wraps at boundaries)
  * @returns {number[]} [r, g, b] values 0-255
  */
 export function romaO(t) {
   t = Math.max(0, Math.min(1, t));
-  // 9 key stops sampled from Crameri romaO (batlow-cyclic variant)
   const stops = [
-    [0.110, 0.498, 0.420],  // 0.000 - dark teal
-    [0.337, 0.620, 0.310],  // 0.125 - olive green
-    [0.671, 0.718, 0.251],  // 0.250 - yellow-green
-    [0.922, 0.718, 0.353],  // 0.375 - warm yellow
-    [0.906, 0.514, 0.443],  // 0.500 - salmon/coral
-    [0.718, 0.333, 0.518],  // 0.625 - purple-pink
-    [0.443, 0.275, 0.584],  // 0.750 - medium purple
-    [0.200, 0.341, 0.561],  // 0.875 - steel blue
-    [0.110, 0.498, 0.420],  // 1.000 - dark teal (cyclic)
+    [0.451, 0.165, 0.075],  // 0.000 - deep red-brown
+    [0.682, 0.357, 0.090],  // 0.125 - burnt orange
+    [0.835, 0.620, 0.247],  // 0.250 - warm yellow
+    [0.769, 0.831, 0.518],  // 0.375 - pale yellow-green
+    [0.475, 0.733, 0.616],  // 0.500 - teal-green
+    [0.247, 0.514, 0.616],  // 0.625 - steel blue
+    [0.227, 0.302, 0.518],  // 0.750 - deep blue
+    [0.298, 0.157, 0.369],  // 0.875 - dark purple
+    [0.451, 0.165, 0.075],  // 1.000 - deep red-brown (cyclic seam)
   ];
   const seg = t * 8;
   const i = Math.min(Math.floor(seg), 7);
@@ -378,6 +524,11 @@ export function getColormap(name) {
     viridis,
     inferno,
     plasma,
+    magma,
+    cividis,
+    turbo,
+    batlow,
+    coherence,
     phase,
     twilight,
     sardine,
@@ -454,24 +605,27 @@ const _lutCache = new Map();
 
 /**
  * Build a 256-entry RGBA lookup table for a colormap.
- * Results are cached — repeated calls with the same name return the same LUT.
+ * Results are cached — repeated calls with the same key return the same LUT.
  * @param {string} colormapName - Name of the colormap
+ * @param {boolean} [reversed=false] - If true, reverse the ramp (entry i ← colormap((255-i)/255))
  * @returns {Uint8Array} 256×4 = 1024-byte LUT (RGBA per entry)
  */
-export function buildColormapLUT(colormapName) {
-  const cached = _lutCache.get(colormapName);
+export function buildColormapLUT(colormapName, reversed = false) {
+  const cacheKey = reversed ? `${colormapName}__r` : colormapName;
+  const cached = _lutCache.get(cacheKey);
   if (cached) return cached;
   const colormap = getColormap(colormapName);
   const lut = new Uint8Array(256 * 4);
   for (let i = 0; i < 256; i++) {
-    const [r, g, b] = colormap(i / 255);
+    const t = reversed ? (255 - i) / 255 : i / 255;
+    const [r, g, b] = colormap(t);
     const off = i * 4;
     lut[off] = r;
     lut[off + 1] = g;
     lut[off + 2] = b;
     lut[off + 3] = 255;
   }
-  _lutCache.set(colormapName, lut);
+  _lutCache.set(cacheKey, lut);
   return lut;
 }
 
@@ -480,10 +634,11 @@ export function buildColormapLUT(colormapName) {
  * Uses a 256-entry LUT for ~3-5× speedup over per-pixel function calls.
  * @param {number[]|Float32Array} values - Array of values between 0 and 1
  * @param {string} colormapName - Name of the colormap
+ * @param {boolean} [reversed=false] - If true, invert the ramp
  * @returns {Uint8ClampedArray} RGBA array
  */
-export function applyColormap(values, colormapName) {
-  const lut = buildColormapLUT(colormapName);
+export function applyColormap(values, colormapName, reversed = false) {
+  const lut = buildColormapLUT(colormapName, reversed);
   const rgba = new Uint8ClampedArray(values.length * 4);
 
   for (let i = 0; i < values.length; i++) {
@@ -506,6 +661,11 @@ export default {
   viridis,
   inferno,
   plasma,
+  magma,
+  cividis,
+  turbo,
+  batlow,
+  coherence,
   phase,
   twilight,
   sardine,

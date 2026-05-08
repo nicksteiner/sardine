@@ -18,6 +18,7 @@ export function MapViewer({
   contrastLimits = [-25, 0],
   useDecibels = true,
   colormap = 'grayscale',
+  reverseColormap = false,
   opacity = 0.8,
   width = '100%',
   height = '100%',
@@ -121,10 +122,11 @@ export function MapViewer({
         contrastLimits,
         useDecibels,
         colormap,
+        reverseColormap,
         opacity,
       }),
     ];
-  }, [getTile, bounds, contrastLimits, useDecibels, colormap, opacity]);
+  }, [getTile, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity]);
 
   const containerStyle = useMemo(
     () => ({
@@ -165,6 +167,7 @@ export function MapViewer({
           contrastLimits={contrastLimits}
           useDecibels={useDecibels}
           colormap={colormap}
+          reverseColormap={reverseColormap}
         />
       )}
     </div>
@@ -174,7 +177,7 @@ export function MapViewer({
 /**
  * ControlsOverlay - Map controls and legend
  */
-function ControlsOverlay({ contrastLimits, useDecibels, colormap }) {
+function ControlsOverlay({ contrastLimits, useDecibels, colormap, reverseColormap = false }) {
   const [min, max] = contrastLimits;
   const unit = useDecibels ? 'dB' : '';
 
@@ -196,7 +199,7 @@ function ControlsOverlay({ contrastLimits, useDecibels, colormap }) {
   const gradientStyle = {
     width: '20px',
     height: '100px',
-    background: getGradientCSS(colormap),
+    background: getGradientCSS(colormap, reverseColormap),
     marginBottom: '5px',
     display: 'inline-block',
     verticalAlign: 'top',
@@ -231,14 +234,16 @@ function ControlsOverlay({ contrastLimits, useDecibels, colormap }) {
 /**
  * Generate CSS gradient for colorbar
  */
-function getGradientCSS(colormapName) {
+function getGradientCSS(colormapName, reversed = false) {
   const stops = [];
   const numStops = 10;
   const colormapFunc = getColormap(colormapName);
+  const invert = reversed && colormapName !== 'label';
 
   for (let i = 0; i < numStops; i++) {
     const t = i / (numStops - 1);
-    const color = colormapFunc(1 - t);
+    const sample = invert ? t : 1 - t;
+    const color = colormapFunc(sample);
     stops.push(`rgb(${color.join(',')}) ${t * 100}%`);
   }
 

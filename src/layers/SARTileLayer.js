@@ -25,6 +25,7 @@ export class SARTileLayer extends TileLayer {
       contrastLimits = [-25, 0],
       useDecibels = true,
       colormap = 'grayscale',
+      reverseColormap = false,
       gamma = 1.0,
       stretchMode = 'linear',
       rgbSaturation = 1.0,
@@ -43,6 +44,7 @@ export class SARTileLayer extends TileLayer {
       enabledCorrections = null, // Set of enabled correction keys
       speckleFilterType = 'none',
       speckleKernelSize = 7,
+      pixelMode = false,
       minZoom,
       maxZoom = 20,
       tileSize = 256,
@@ -93,7 +95,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode],
       },
 
       renderSubLayers: (subProps) => {
@@ -112,6 +114,7 @@ export class SARTileLayer extends TileLayer {
         const filterProps = {
           speckleFilterType,
           speckleKernelSize,
+          pixelMode,
         };
 
         // RGB composite mode - GPU accelerated (3x R32F textures)
@@ -141,6 +144,7 @@ export class SARTileLayer extends TileLayer {
             contrastLimits,
             useDecibels,
             colormap,
+            reverseColormap,
             gamma,
             stretchMode,
             rgbSaturation,
@@ -256,6 +260,7 @@ export class SARTileLayer extends TileLayer {
             contrastLimits,
             useDecibels,
             colormap,
+            reverseColormap,
             gamma,
             stretchMode,
             opacity: subProps.opacity,

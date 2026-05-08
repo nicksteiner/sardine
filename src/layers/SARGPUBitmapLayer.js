@@ -28,6 +28,7 @@ export class SARGPUBitmapLayer extends BitmapLayer {
           uniform float uMax;
           uniform float uUseDecibels;
           uniform float uColormap;
+          uniform float uReverseColormap;
           uniform float uGamma;
           uniform float uStretchMode;
 
@@ -72,28 +73,45 @@ export class SARGPUBitmapLayer extends BitmapLayer {
           // Apply colormap
           vec3 rgb;
           int colormapId = int(uColormap + 0.5);
+          float cmapInput = (uReverseColormap > 0.5 && colormapId != 10) ? (1.0 - value) : value;
           if (colormapId == 0) {
-            rgb = grayscale(value);
+            rgb = grayscale(cmapInput);
           } else if (colormapId == 1) {
-            rgb = viridis(value);
+            rgb = viridis(cmapInput);
           } else if (colormapId == 2) {
-            rgb = inferno(value);
+            rgb = inferno(cmapInput);
           } else if (colormapId == 3) {
-            rgb = plasma(value);
+            rgb = plasma(cmapInput);
           } else if (colormapId == 4) {
-            rgb = phaseColormap(value);
+            rgb = phaseColormap(cmapInput);
           } else if (colormapId == 5) {
-            rgb = twilightMap(value);
+            rgb = twilightMap(cmapInput);
           } else if (colormapId == 6) {
-            rgb = sardineMap(value);
+            rgb = sardineMap(cmapInput);
           } else if (colormapId == 7) {
-            rgb = floodMap(value);
+            rgb = floodMap(cmapInput);
           } else if (colormapId == 8) {
-            rgb = divergingMap(value);
+            rgb = divergingMap(cmapInput);
           } else if (colormapId == 9) {
-            rgb = polarimetricMap(value);
+            rgb = polarimetricMap(cmapInput);
+          } else if (colormapId == 10) {
+            rgb = labelMap(value);
+          } else if (colormapId == 11) {
+            rgb = rdbuMap(cmapInput);
+          } else if (colormapId == 12) {
+            rgb = romaOMap(cmapInput);
+          } else if (colormapId == 13) {
+            rgb = magma(cmapInput);
+          } else if (colormapId == 14) {
+            rgb = cividisMap(cmapInput);
+          } else if (colormapId == 15) {
+            rgb = turboMap(cmapInput);
+          } else if (colormapId == 16) {
+            rgb = batlowMap(cmapInput);
+          } else if (colormapId == 17) {
+            rgb = coherenceMap(cmapInput);
           } else {
-            rgb = grayscale(value);
+            rgb = grayscale(cmapInput);
           }
 
           // Handle no-data
@@ -111,6 +129,7 @@ export class SARGPUBitmapLayer extends BitmapLayer {
       contrastLimits = [-25, 0],
       useDecibels = true,
       colormap = 'grayscale',
+      reverseColormap = false,
       gamma = 1.0,
       stretchMode = 'linear'
     } = this.props;
@@ -122,6 +141,7 @@ export class SARGPUBitmapLayer extends BitmapLayer {
       uMax: contrastLimits[1],
       uUseDecibels: useDecibels ? 1.0 : 0.0,
       uColormap: getColormapId(colormap),
+      uReverseColormap: reverseColormap ? 1.0 : 0.0,
       uGamma: gamma,
       uStretchMode: getStretchModeId(stretchMode),
     };
@@ -195,6 +215,7 @@ SARGPUBitmapLayer.defaultProps = {
   contrastLimits: { type: 'array', value: [-25, 0], compare: true },
   useDecibels: { type: 'boolean', value: true, compare: true },
   colormap: { type: 'string', value: 'grayscale', compare: true },
+  reverseColormap: { type: 'boolean', value: false, compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true },
 };

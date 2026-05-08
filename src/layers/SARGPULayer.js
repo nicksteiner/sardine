@@ -72,6 +72,7 @@ uniform float uMin;
 uniform float uMax;
 uniform float uUseDecibels;
 uniform float uColormap;
+uniform float uReverseColormap;  // > 0.5 = invert ramp input (label cmap excluded)
 uniform float uGamma;
 uniform float uStretchMode;
 uniform float uMode;  // 0 = single-band + colormap, 1 = RGB composite
@@ -273,34 +274,46 @@ void main() {
 
     vec3 rgb;
     int colormapId = int(uColormap + 0.5);
+    // Reverse-ramp toggle (label cmap is hash-keyed — leave value untouched)
+    float cmapInput = (uReverseColormap > 0.5 && colormapId != 10) ? (1.0 - value) : value;
     if (colormapId == 0) {
-      rgb = grayscale(value);
+      rgb = grayscale(cmapInput);
     } else if (colormapId == 1) {
-      rgb = viridis(value);
+      rgb = viridis(cmapInput);
     } else if (colormapId == 2) {
-      rgb = inferno(value);
+      rgb = inferno(cmapInput);
     } else if (colormapId == 3) {
-      rgb = plasma(value);
+      rgb = plasma(cmapInput);
     } else if (colormapId == 4) {
-      rgb = phaseColormap(value);
+      rgb = phaseColormap(cmapInput);
     } else if (colormapId == 5) {
-      rgb = twilightMap(value);
+      rgb = twilightMap(cmapInput);
     } else if (colormapId == 6) {
-      rgb = sardineMap(value);
+      rgb = sardineMap(cmapInput);
     } else if (colormapId == 7) {
-      rgb = floodMap(value);
+      rgb = floodMap(cmapInput);
     } else if (colormapId == 8) {
-      rgb = divergingMap(value);
+      rgb = divergingMap(cmapInput);
     } else if (colormapId == 9) {
-      rgb = polarimetricMap(value);
+      rgb = polarimetricMap(cmapInput);
     } else if (colormapId == 10) {
       rgb = labelMap(value);
     } else if (colormapId == 11) {
-      rgb = rdbuMap(value);
+      rgb = rdbuMap(cmapInput);
     } else if (colormapId == 12) {
-      rgb = romaOMap(value);
+      rgb = romaOMap(cmapInput);
+    } else if (colormapId == 13) {
+      rgb = magma(cmapInput);
+    } else if (colormapId == 14) {
+      rgb = cividisMap(cmapInput);
+    } else if (colormapId == 15) {
+      rgb = turboMap(cmapInput);
+    } else if (colormapId == 16) {
+      rgb = batlowMap(cmapInput);
+    } else if (colormapId == 17) {
+      rgb = coherenceMap(cmapInput);
     } else {
-      rgb = grayscale(value);
+      rgb = grayscale(cmapInput);
     }
 
     float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
@@ -603,6 +616,23 @@ export class SARGPULayer extends Layer {
         this.setState({ [slot.state]: null });
       }
     }
+
+    // pixelMode toggle: re-set min/mag filters on existing amplitude textures
+    // without re-uploading. Mask stays NEAREST always.
+    if (props.pixelMode !== oldProps.pixelMode) {
+      const filter = props.pixelMode ? gl.NEAREST : gl.LINEAR;
+      const ampTextures = [
+        this.state.texture, this.state.textureG, this.state.textureB,
+        this.state.filteredTexture, this.state.filteredTextureG, this.state.filteredTextureB,
+      ];
+      for (const tex of ampTextures) {
+        if (!tex) continue;
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+      }
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
   }
 
   _createR32FTexture(data, width, height, nearest = false) {
@@ -636,8 +666,12 @@ export class SARGPULayer extends Layer {
         texData         // Float32Array
       );
 
-      // Set texture filtering parameters
-      const filter = nearest ? gl.NEAREST : gl.LINEAR;
+      // Set texture filtering parameters.
+      // pixelMode=true forces NEAREST on amplitude textures (medical-imaging look:
+      // crisp pixels, no bilinear haze). nearest=true is the always-NEAREST path
+      // for categorical data (mask).
+      const useNearest = nearest || this.props.pixelMode;
+      const filter = useNearest ? gl.NEAREST : gl.LINEAR;
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -676,6 +710,7 @@ export class SARGPULayer extends Layer {
       contrastLimits = [-25, 0],
       useDecibels = true,
       colormap = 'grayscale',
+      reverseColormap = false,
       gamma = 1.0,
       stretchMode = 'linear',
       rgbSaturation = 1.0,
@@ -739,6 +774,7 @@ export class SARGPULayer extends Layer {
         uColorblindMode: COLORBLIND_MODE_IDS[colorblindMode] || 0,
         uUseDecibels: useDecibels ? 1.0 : 0.0,
         uColormap: getColormapId(colormap),
+        uReverseColormap: reverseColormap ? 1.0 : 0.0,
         uGamma: gamma,
         uStretchMode: getStretchModeId(stretchMode),
         uMode: isRGB ? 1.0 : 0.0,
@@ -920,6 +956,7 @@ SARGPULayer.defaultProps = {
   contrastLimits: { type: 'object', value: [-25, 0], compare: true },
   useDecibels: { type: 'boolean', value: true, compare: true },
   colormap: { type: 'string', value: 'grayscale', compare: true },
+  reverseColormap: { type: 'boolean', value: false, compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true },
   rgbSaturation: { type: 'number', value: 1.0, min: 0.0, max: 5.0, compare: true },
@@ -929,5 +966,8 @@ SARGPULayer.defaultProps = {
   speckleKernelSize: { type: 'number', value: 7, min: 3, max: 15, compare: true },
   speckleENL: { type: 'number', value: 4, min: 1, compare: true },
   speckleDamping: { type: 'number', value: 1.0, min: 0, compare: true },
+  // pixelMode: when true, amplitude textures use NEAREST filter (no bilinear blur).
+  // Medical-imaging / ENVI look — every screen pixel reflects exactly one data pixel.
+  pixelMode: { type: 'boolean', value: false, compare: true },
   // Note: coordinateSystem is NOT defined here - it will inherit from parent layer
 };

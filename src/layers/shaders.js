@@ -240,15 +240,15 @@ vec3 rdbuMap(float t) {
 // romaO cyclic — Crameri scientific colour map for wrapped interferograms
 vec3 romaOMap(float t) {
   t = clamp(t, 0.0, 1.0);
-  const vec3 r0 = vec3(0.110, 0.498, 0.420);
-  const vec3 r1 = vec3(0.337, 0.620, 0.310);
-  const vec3 r2 = vec3(0.671, 0.718, 0.251);
-  const vec3 r3 = vec3(0.922, 0.718, 0.353);
-  const vec3 r4 = vec3(0.906, 0.514, 0.443);
-  const vec3 r5 = vec3(0.718, 0.333, 0.518);
-  const vec3 r6 = vec3(0.443, 0.275, 0.584);
-  const vec3 r7 = vec3(0.200, 0.341, 0.561);
-  const vec3 r8 = vec3(0.110, 0.498, 0.420);
+  const vec3 r0 = vec3(0.451, 0.165, 0.075);
+  const vec3 r1 = vec3(0.682, 0.357, 0.090);
+  const vec3 r2 = vec3(0.835, 0.620, 0.247);
+  const vec3 r3 = vec3(0.769, 0.831, 0.518);
+  const vec3 r4 = vec3(0.475, 0.733, 0.616);
+  const vec3 r5 = vec3(0.247, 0.514, 0.616);
+  const vec3 r6 = vec3(0.227, 0.302, 0.518);
+  const vec3 r7 = vec3(0.298, 0.157, 0.369);
+  const vec3 r8 = vec3(0.451, 0.165, 0.075);
   float seg = t * 8.0;
   float i = floor(seg);
   float s = seg - i;
@@ -261,6 +261,117 @@ vec3 romaOMap(float t) {
   else if (i < 6.0)  c = mix(r5, r6, s);
   else if (i < 7.0)  c = mix(r6, r7, s);
   else               c = mix(r7, r8, s);
+  return c;
+}
+
+// Magma — perceptually uniform (Matplotlib magma, 9-stop sample)
+vec3 magma(float t) {
+  t = clamp(t, 0.0, 1.0);
+  const vec3 m0 = vec3(0.001, 0.000, 0.014);
+  const vec3 m1 = vec3(0.116, 0.063, 0.296);
+  const vec3 m2 = vec3(0.317, 0.072, 0.485);
+  const vec3 m3 = vec3(0.522, 0.139, 0.510);
+  const vec3 m4 = vec3(0.716, 0.215, 0.476);
+  const vec3 m5 = vec3(0.890, 0.314, 0.395);
+  const vec3 m6 = vec3(0.987, 0.510, 0.350);
+  const vec3 m7 = vec3(0.996, 0.745, 0.439);
+  const vec3 m8 = vec3(0.987, 0.991, 0.749);
+  float seg = t * 8.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)       c = mix(m0, m1, s);
+  else if (i < 2.0)  c = mix(m1, m2, s);
+  else if (i < 3.0)  c = mix(m2, m3, s);
+  else if (i < 4.0)  c = mix(m3, m4, s);
+  else if (i < 5.0)  c = mix(m4, m5, s);
+  else if (i < 6.0)  c = mix(m5, m6, s);
+  else if (i < 7.0)  c = mix(m6, m7, s);
+  else               c = mix(m7, m8, s);
+  return c;
+}
+
+// Cividis — perceptually uniform AND colorblind-optimized (8-stop sample)
+vec3 cividisMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  const vec3 v0 = vec3(0.000, 0.135, 0.305);
+  const vec3 v1 = vec3(0.099, 0.210, 0.420);
+  const vec3 v2 = vec3(0.176, 0.286, 0.478);
+  const vec3 v3 = vec3(0.275, 0.357, 0.490);
+  const vec3 v4 = vec3(0.376, 0.431, 0.490);
+  const vec3 v5 = vec3(0.486, 0.510, 0.471);
+  const vec3 v6 = vec3(0.616, 0.604, 0.435);
+  const vec3 v7 = vec3(0.761, 0.706, 0.376);
+  const vec3 v8 = vec3(1.000, 0.835, 0.310);
+  float seg = t * 8.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)       c = mix(v0, v1, s);
+  else if (i < 2.0)  c = mix(v1, v2, s);
+  else if (i < 3.0)  c = mix(v2, v3, s);
+  else if (i < 4.0)  c = mix(v3, v4, s);
+  else if (i < 5.0)  c = mix(v4, v5, s);
+  else if (i < 6.0)  c = mix(v5, v6, s);
+  else if (i < 7.0)  c = mix(v6, v7, s);
+  else               c = mix(v7, v8, s);
+  return c;
+}
+
+// Turbo — Google's improved jet (Mikhailov 2019), high-contrast non-uniform
+vec3 turboMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  float r = 0.13572138 + t * (4.61539260 + t * (-42.66032258 + t * (132.13108234 + t * (-152.94239396 + t * 59.28637943))));
+  float g = 0.09140261 + t * (2.19418839 + t * (4.84296658   + t * (-14.18503333 + t * (4.27729857    + t * 2.82956604))));
+  float b = 0.10667330 + t * (12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973))));
+  return clamp(vec3(r, g, b), 0.0, 1.0);
+}
+
+// Batlow — Crameri sequential perceptually uniform (9-stop sample)
+vec3 batlowMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  const vec3 b0 = vec3(0.0051, 0.0980, 0.3490);
+  const vec3 b1 = vec3(0.0863, 0.2235, 0.3686);
+  const vec3 b2 = vec3(0.1804, 0.3373, 0.3490);
+  const vec3 b3 = vec3(0.3137, 0.4275, 0.2902);
+  const vec3 b4 = vec3(0.5020, 0.4980, 0.2196);
+  const vec3 b5 = vec3(0.7059, 0.5333, 0.2196);
+  const vec3 b6 = vec3(0.8902, 0.5569, 0.3294);
+  const vec3 b7 = vec3(0.9804, 0.6275, 0.5333);
+  const vec3 b8 = vec3(0.9843, 0.7961, 0.7725);
+  float seg = t * 8.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)       c = mix(b0, b1, s);
+  else if (i < 2.0)  c = mix(b1, b2, s);
+  else if (i < 3.0)  c = mix(b2, b3, s);
+  else if (i < 4.0)  c = mix(b3, b4, s);
+  else if (i < 5.0)  c = mix(b4, b5, s);
+  else if (i < 6.0)  c = mix(b5, b6, s);
+  else if (i < 7.0)  c = mix(b6, b7, s);
+  else               c = mix(b7, b8, s);
+  return c;
+}
+
+// Coherence — black → red → orange → yellow → white (InSAR coherence-specific)
+vec3 coherenceMap(float t) {
+  t = clamp(t, 0.0, 1.0);
+  const vec3 h0 = vec3(0.000, 0.000, 0.000);
+  const vec3 h1 = vec3(0.180, 0.030, 0.040);
+  const vec3 h2 = vec3(0.500, 0.110, 0.040);
+  const vec3 h3 = vec3(0.820, 0.310, 0.050);
+  const vec3 h4 = vec3(0.980, 0.620, 0.110);
+  const vec3 h5 = vec3(1.000, 1.000, 0.880);
+  float seg = t * 5.0;
+  float i = floor(seg);
+  float s = seg - i;
+  vec3 c;
+  if (i < 1.0)       c = mix(h0, h1, s);
+  else if (i < 2.0)  c = mix(h1, h2, s);
+  else if (i < 3.0)  c = mix(h2, h3, s);
+  else if (i < 4.0)  c = mix(h3, h4, s);
+  else               c = mix(h4, h5, s);
   return c;
 }
 `;
@@ -282,6 +393,7 @@ uniform bool uUseDecibels;
 uniform int uColormap;
 uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=cbrt, 3=log, 4=gamma, 5=sigmoid
 uniform float uGamma;
+uniform bool uReverseColormap;
 
 in vec2 vTexCoord;
 out vec4 fragColor;
@@ -321,35 +433,48 @@ void main(void) {
     value = denom > 0.0 ? clamp((raw - lo) / denom, 0.0, 1.0) : value;
   }
 
+  // Reverse-ramp toggle (skipped for label colormap, which has no meaningful inverse)
+  float cmapInput = (uReverseColormap && uColormap != 10) ? (1.0 - value) : value;
+
   vec3 color;
   if (uColormap == 0) {
-    color = grayscale(value);
+    color = grayscale(cmapInput);
   } else if (uColormap == 1) {
-    color = viridis(value);
+    color = viridis(cmapInput);
   } else if (uColormap == 2) {
-    color = inferno(value);
+    color = inferno(cmapInput);
   } else if (uColormap == 3) {
-    color = plasma(value);
+    color = plasma(cmapInput);
   } else if (uColormap == 4) {
-    color = phaseColormap(value);
+    color = phaseColormap(cmapInput);
   } else if (uColormap == 5) {
-    color = twilightMap(value);
+    color = twilightMap(cmapInput);
   } else if (uColormap == 6) {
-    color = sardineMap(value);
+    color = sardineMap(cmapInput);
   } else if (uColormap == 7) {
-    color = floodMap(value);
+    color = floodMap(cmapInput);
   } else if (uColormap == 8) {
-    color = divergingMap(value);
+    color = divergingMap(cmapInput);
   } else if (uColormap == 9) {
-    color = polarimetricMap(value);
+    color = polarimetricMap(cmapInput);
   } else if (uColormap == 10) {
     color = labelMap(value);
   } else if (uColormap == 11) {
-    color = rdbuMap(value);
+    color = rdbuMap(cmapInput);
   } else if (uColormap == 12) {
-    color = romaOMap(value);
+    color = romaOMap(cmapInput);
+  } else if (uColormap == 13) {
+    color = magma(cmapInput);
+  } else if (uColormap == 14) {
+    color = cividisMap(cmapInput);
+  } else if (uColormap == 15) {
+    color = turboMap(cmapInput);
+  } else if (uColormap == 16) {
+    color = batlowMap(cmapInput);
+  } else if (uColormap == 17) {
+    color = coherenceMap(cmapInput);
   } else {
-    color = grayscale(value);
+    color = grayscale(cmapInput);
   }
 
   float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
@@ -377,6 +502,11 @@ export const COLORMAP_IDS = {
   label: 10,
   rdbu: 11,
   romaO: 12,
+  magma: 13,
+  cividis: 14,
+  turbo: 15,
+  batlow: 16,
+  coherence: 17,
 };
 
 /**

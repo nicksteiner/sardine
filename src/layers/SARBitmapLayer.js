@@ -31,6 +31,7 @@ export class SARBitmapLayer extends BitmapLayer {
       contrastLimits = [-25, 0],
       useDecibels = true,
       colormap = 'grayscale',
+      reverseColormap = false,
       gamma = 1.0,
       stretchMode = 'linear',
       opacity = 1,
@@ -41,7 +42,7 @@ export class SARBitmapLayer extends BitmapLayer {
     } = props;
 
     // Create RGBA texture from SAR data
-    const imageData = createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma, stretchMode, dataMask, maskInvalid, maskLayoverShadow);
+    const imageData = createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma, stretchMode, dataMask, maskInvalid, maskLayoverShadow, reverseColormap);
 
     super({
       id: props.id || 'sar-bitmap-layer',
@@ -93,9 +94,10 @@ export class SARBitmapLayer extends BitmapLayer {
  * @param {boolean} maskLayoverShadow - Hide layover/shadow pixels (mask < 100)
  * @returns {ImageData} RGBA image data for texture
  */
-function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear', dataMask = null, maskInvalid = false, maskLayoverShadow = false) {
+function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear', dataMask = null, maskInvalid = false, maskLayoverShadow = false, reverseColormap = false) {
   const [min, max] = contrastLimits;
   const colormapFunc = getColormap(colormap);
+  const invertRamp = reverseColormap && colormap !== 'label';
   const expectedSize = width * height;
   const rgba = new Uint8ClampedArray(expectedSize * 4);
   const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
@@ -118,7 +120,7 @@ function createSARTexture(data, width, height, contrastLimits, useDecibels, colo
     value = Math.max(0, Math.min(1, value));
     if (stretchFn !== null) value = stretchFn(value);
 
-    const [r, g, b] = colormapFunc(value);
+    const [r, g, b] = colormapFunc(invertRamp ? 1 - value : value);
     const idx = i * 4;
     rgba[idx] = r;
     rgba[idx + 1] = g;

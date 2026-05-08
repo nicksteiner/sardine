@@ -34,6 +34,8 @@ import { GeoJsonLayer } from '@deck.gl/layers';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
+import { CommandPalette } from '../src/components/CommandPalette.jsx';
+import { ScrubNumber } from '../src/components/ScrubNumber.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
 import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
@@ -388,12 +390,18 @@ function App() {
 
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
+  const [reverseColormap, setReverseColormap] = useState(false);
   const [useDecibels, setUseDecibels] = useState(true);
   // GUNW data is in radians/meters — dB conversion is never valid
   const effectiveUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
   const [showGrid, setShowGrid] = useState(true);
   const [pixelExplorer, setPixelExplorer] = useState(false);
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
+  // Analytical / medical-imaging mode — black void, NEAREST filter, drag-to-W/L,
+  // persistent readout, σ-stretch presets, integer zoom snaps. Toggled with 'M'.
+  const [medicalMode, setMedicalMode] = useState(false);
+  const [medicalInverted, setMedicalInverted] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [contrastMin, setContrastMin] = useState(-25);
   const [contrastMax, setContrastMax] = useState(0);
   const [gamma, setGamma] = useState(1.0);
@@ -3578,8 +3586,9 @@ function App() {
           filename = `sardine_${bandNames.join('-')}_${compositeId}_ml${effectiveMl}_${exportWidth}x${exportHeight}.tif`;
         } else {
           // Single-band: apply colormap
-          addStatusLog('info', `Applying ${effectiveUseDecibels ? 'dB' : 'linear'} + ${colormap} colormap...`);
+          addStatusLog('info', `Applying ${effectiveUseDecibels ? 'dB' : 'linear'} + ${colormap}${reverseColormap && colormap !== 'label' ? ' (reversed)' : ''} colormap...`);
           const colormapFunc = getColormap(colormap);
+          const invertRamp = reverseColormap && colormap !== 'label';
           const cMin = contrastMin;
           const cMax = contrastMax;
           const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
@@ -3598,7 +3607,7 @@ function App() {
             }
             value = Math.max(0, Math.min(1, value));
             if (stretchFn !== null) value = stretchFn(value);
-            const [r, g, b] = colormapFunc(value);
+            const [r, g, b] = colormapFunc(invertRamp ? 1 - value : value);
             rgbaData[i * 4] = r;
             rgbaData[i * 4 + 1] = g;
             rgbaData[i * 4 + 2] = b;
@@ -3798,6 +3807,7 @@ function App() {
           const tsUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
           const [cMin, cMax] = Array.isArray(roiTSContrastLimits) ? roiTSContrastLimits : [-25, 0];
           const colormapFunc = getColormap(colormap);
+          const invertRamp = reverseColormap && colormap !== 'label';
           const numPixels = exportWidth * exportHeight;
           const rgbaData = new Uint8ClampedArray(numPixels * 4);
           const bandData = bands[bandNames[0]];
@@ -3811,7 +3821,7 @@ function App() {
               : (amp - cMin) / (cMax - cMin);
             v = Math.max(0, Math.min(1, v));
             if (tsStretchFn !== null) v = tsStretchFn(v);
-            const [r, g, b] = colormapFunc(v);
+            const [r, g, b] = colormapFunc(invertRamp ? 1 - v : v);
             rgbaData[i * 4] = r; rgbaData[i * 4 + 1] = g; rgbaData[i * 4 + 2] = b;
             rgbaData[i * 4 + 3] = (amp === 0 || isNaN(amp)) ? 0 : 255;
           }
@@ -3849,6 +3859,7 @@ function App() {
   // Serialize current visualization state for embedding in exported PNGs
   const serializeViewerState = useCallback(() => ({
     colormap,
+    reverseColormap,
     useDecibels,
     contrastMin,
     contrastMax,
@@ -3866,7 +3877,7 @@ function App() {
     viewCenter,
     viewZoom,
     filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
-  }), [colormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
+  }), [colormap, reverseColormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
 
   // Serialize the full set of render options + viewport for clipboard copy.
   // Marker `__sardine: 'render-state'` lets Ctrl+V detect a SARdine payload
@@ -4249,6 +4260,13 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e) => {
+      // Ctrl+Shift+{ — open command palette (works even from inputs).
+      if (e.ctrlKey && e.shiftKey && !e.altKey && (e.key === '{' || e.key === '[')) {
+        e.preventDefault();
+        setCommandPaletteOpen(prev => !prev);
+        return;
+      }
+
       // Skip when typing in inputs
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
@@ -4320,6 +4338,20 @@ function App() {
         }
         if (e.key === 'c' || e.key === 'C') {
           if (imageData) setClassifierOpen(prev => !prev);
+          return;
+        }
+        if (e.key === 'm' || e.key === 'M') {
+          setMedicalMode(prev => {
+            const next = !prev;
+            addStatusLog('info', `Analytical/medical mode ${next ? 'enabled' : 'disabled'}`);
+            return next;
+          });
+          return;
+        }
+        if (e.key === 'i' || e.key === 'I') {
+          // Invert grayscale — only meaningful in medical mode but
+          // we let the toggle work always, gated by the overlay.
+          setMedicalInverted(prev => !prev);
           return;
         }
       }
@@ -4506,6 +4538,69 @@ function App() {
     });
   }, [droppedGeoJSON, imageData]);
 
+  // ── Command palette actions ───────────────────────────────────────
+  // Self-contained registry of every meaningful operation, surfaced via Cmd-K.
+  // Actions are gated by `when` so unavailable ones are filtered out automatically.
+  const paletteActions = useMemo(() => {
+    const hasData = !!imageData;
+    const hasHist = !!histogramData?.single;
+    const setSigma = (n) => () => {
+      const s = histogramData?.single;
+      if (!s || !Number.isFinite(s.mean) || !Number.isFinite(s.std)) return;
+      setContrastMin(s.mean - n * s.std);
+      setContrastMax(s.mean + n * s.std);
+      addStatusLog('info', `Stretch: ±${n}σ`);
+    };
+    const setPctile = () => {
+      const s = histogramData?.single;
+      if (!s || !Number.isFinite(s.p2) || !Number.isFinite(s.p98)) return;
+      setContrastMin(s.p2);
+      setContrastMax(s.p98);
+      addStatusLog('info', 'Stretch: 2–98%');
+    };
+    return [
+      // Mode toggles
+      { id: 'mode.medical', group: 'mode', label: 'Toggle analytical / medical mode', shortcut: 'M', run: () => setMedicalMode(v => !v) },
+      { id: 'mode.invert', group: 'mode', label: 'Toggle inverted grayscale', shortcut: 'I', run: () => setMedicalInverted(v => !v) },
+      { id: 'mode.histogram', group: 'mode', label: 'Toggle histogram overlay', shortcut: 'H', run: () => setShowHistogramOverlay(v => !v) },
+      { id: 'mode.grid', group: 'mode', label: 'Toggle coordinate grid', run: () => setShowGrid(v => !v) },
+      { id: 'mode.db', group: 'mode', label: 'Toggle dB / linear', run: () => setUseDecibels(v => !v) },
+      { id: 'mode.classifier', group: 'mode', label: 'Toggle classifier', shortcut: 'C', when: () => hasData, run: () => setClassifierOpen(v => !v) },
+
+      // Stretch presets
+      { id: 'stretch.1sigma', group: 'stretch', label: 'Stretch ±1σ', when: () => hasHist, run: setSigma(1) },
+      { id: 'stretch.2sigma', group: 'stretch', label: 'Stretch ±2σ', when: () => hasHist, run: setSigma(2) },
+      { id: 'stretch.3sigma', group: 'stretch', label: 'Stretch ±3σ', when: () => hasHist, run: setSigma(3) },
+      { id: 'stretch.pct', group: 'stretch', label: 'Stretch 2–98 percentile', when: () => hasHist, run: setPctile },
+
+      // Stretch modes
+      { id: 'stretchmode.linear', group: 'stretch mode', label: 'Linear', run: () => setStretchMode('linear') },
+      { id: 'stretchmode.sqrt', group: 'stretch mode', label: 'Square root', run: () => setStretchMode('sqrt') },
+      { id: 'stretchmode.cbrt', group: 'stretch mode', label: 'Cube root', run: () => setStretchMode('cbrt') },
+      { id: 'stretchmode.log', group: 'stretch mode', label: 'Logarithmic', run: () => setStretchMode('log') },
+      { id: 'stretchmode.gamma', group: 'stretch mode', label: 'Gamma', run: () => setStretchMode('gamma') },
+      { id: 'stretchmode.sigmoid', group: 'stretch mode', label: 'Sigmoid', run: () => setStretchMode('sigmoid') },
+
+      // Colormaps
+      { id: 'cmap.gray', group: 'colormap', label: 'Grayscale', run: () => setColormap('grayscale') },
+      { id: 'cmap.viridis', group: 'colormap', label: 'Viridis', run: () => setColormap('viridis') },
+      { id: 'cmap.inferno', group: 'colormap', label: 'Inferno', run: () => setColormap('inferno') },
+      { id: 'cmap.plasma', group: 'colormap', label: 'Plasma', run: () => setColormap('plasma') },
+      { id: 'cmap.rdbu', group: 'colormap', label: 'RdBu (diverging)', run: () => setColormap('rdbu') },
+      { id: 'cmap.romaO', group: 'colormap', label: 'romaO (cyclic)', run: () => setColormap('romaO') },
+      { id: 'cmap.phase', group: 'colormap', label: 'Phase (cyclic HSV)', run: () => setColormap('phase') },
+
+      // Actions
+      { id: 'act.reload', group: 'action', label: 'Reload current view', when: () => hasData, run: handleReload },
+      { id: 'act.figure', group: 'action', label: 'Save figure (PNG)', shortcut: 'Ctrl+S', when: () => hasData, run: handleSaveFigure },
+      { id: 'act.figureOverlays', group: 'action', label: 'Save figure with overlays', shortcut: 'Ctrl+Shift+S', when: () => hasData, run: handleSaveFigureWithOverlays },
+      { id: 'act.colorbar', group: 'action', label: 'Export RGB colorbar', when: () => isRGBDisplayMode, run: handleExportColorbar },
+    ];
+  }, [
+    imageData, histogramData, isRGBDisplayMode,
+    handleReload, handleSaveFigure, handleSaveFigureWithOverlays, handleExportColorbar, addStatusLog,
+  ]);
+
   // NOTE: Duplicate block removed — all handlers defined above
   return (
     <div id="app"
@@ -4513,6 +4608,11 @@ function App() {
       onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDragOver(false); }}
       onDrop={handleFileDrop}
     >
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        actions={paletteActions}
+      />
       {/* Drag-and-drop overlay */}
       {dragOver && (
         <div style={{
@@ -5391,20 +5491,45 @@ function App() {
               <div className="control-group">
                 <label>Colormap</label>
                 <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
-                  <option value="grayscale">Grayscale</option>
-                  <option value="sardine">SARdine</option>
-                  <option value="viridis">Viridis</option>
-                  <option value="inferno">Inferno</option>
-                  <option value="plasma">Plasma</option>
-                  <option value="phase">Phase</option>
-                  <option value="flood">Flood Alert</option>
-                  <option value="diverging">Diverging</option>
-                  <option value="twilight">Twilight</option>
-                  <option value="rdbu">RdBu (InSAR)</option>
-                  <option value="romaO">romaO (Phase)</option>
-                  <option value="polarimetric">Polarimetric</option>
-                  <option value="label">Label</option>
+                  <optgroup label="Sequential (perceptually uniform)">
+                    <option value="grayscale">Grayscale</option>
+                    <option value="viridis">Viridis</option>
+                    <option value="inferno">Inferno</option>
+                    <option value="plasma">Plasma</option>
+                    <option value="magma">Magma</option>
+                    <option value="cividis">Cividis (CVD-safe)</option>
+                    <option value="batlow">Batlow (Crameri)</option>
+                  </optgroup>
+                  <optgroup label="Sequential (high-contrast / domain)">
+                    <option value="turbo">Turbo (jet replacement)</option>
+                    <option value="sardine">SARdine</option>
+                    <option value="coherence">Coherence</option>
+                    <option value="flood">Flood Alert</option>
+                  </optgroup>
+                  <optgroup label="Diverging">
+                    <option value="rdbu">RdBu (InSAR displacement)</option>
+                    <option value="diverging">Diverging</option>
+                    <option value="polarimetric">Polarimetric</option>
+                  </optgroup>
+                  <optgroup label="Cyclic (wrapped phase)">
+                    <option value="romaO">romaO (Crameri)</option>
+                    <option value="twilight">Twilight</option>
+                    <option value="phase">Phase (HSV)</option>
+                  </optgroup>
+                  <optgroup label="Categorical">
+                    <option value="label">Label</option>
+                  </optgroup>
                 </select>
+                <div className="control-row" style={{ marginTop: 4 }}>
+                  <input
+                    type="checkbox"
+                    id="reverseColormap"
+                    checked={reverseColormap}
+                    disabled={colormap === 'label'}
+                    onChange={(e) => setReverseColormap(e.target.checked)}
+                  />
+                  <label htmlFor="reverseColormap">Reverse</label>
+                </div>
               </div>
             )}
 
@@ -6031,11 +6156,22 @@ function App() {
             {/* Brightness (Window/Level) slider — shifts window center (single-band only) */}
             {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <label>Brightness</label>
-                  <span className="value-display">
-                    {Math.round((contrastMin + contrastMax) / 2)}{effectiveUseDecibels ? ' dB' : ''}
-                  </span>
+                  <ScrubNumber
+                    value={(contrastMin + contrastMax) / 2}
+                    onChange={(newCenter) => {
+                      const halfWidth = (contrastMax - contrastMin) / 2;
+                      setContrastMin(newCenter - halfWidth);
+                      setContrastMax(newCenter + halfWidth);
+                    }}
+                    min={effectiveUseDecibels ? -50 : 0}
+                    max={effectiveUseDecibels ? 10 : 200}
+                    step={effectiveUseDecibels ? 0.5 : 1}
+                    precision={1}
+                    suffix={effectiveUseDecibels ? 'dB' : ''}
+                    width={64}
+                  />
                 </div>
                 <input
                   type="range"
@@ -6050,6 +6186,25 @@ function App() {
                     setContrastMax(Math.round(newCenter + halfWidth));
                   }}
                 />
+                {/* Direct min/max scrubbers — Figma-style numeric editing */}
+                <div style={{ display: 'flex', gap: 6, marginTop: 4, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <ScrubNumber
+                    value={contrastMin}
+                    onChange={setContrastMin}
+                    step={effectiveUseDecibels ? 0.5 : 0.05}
+                    precision={effectiveUseDecibels ? 1 : 3}
+                    label="min"
+                    width={64}
+                  />
+                  <ScrubNumber
+                    value={contrastMax}
+                    onChange={setContrastMax}
+                    step={effectiveUseDecibels ? 0.5 : 0.05}
+                    precision={effectiveUseDecibels ? 1 : 3}
+                    label="max"
+                    width={64}
+                  />
+                </div>
               </div>
             )}
 
@@ -6065,9 +6220,9 @@ function App() {
 
             {(stretchMode === 'gamma' || stretchMode === 'sigmoid') && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <label>Gamma</label>
-                  <span className="value-display">{gamma.toFixed(2)}</span>
+                  <ScrubNumber value={gamma} onChange={setGamma} min={0.1} max={5.0} step={0.02} precision={2} width={56} />
                 </div>
                 <input
                   type="range"
@@ -6083,9 +6238,9 @@ function App() {
             {/* Saturation — only shown in RGB display modes */}
             {isRGBDisplayMode && imageData?.getRGBTile && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <label>Saturation</label>
-                  <span className="value-display">{rgbSaturation.toFixed(2)}</span>
+                  <ScrubNumber value={rgbSaturation} onChange={setRgbSaturation} min={0} max={3} step={0.02} precision={2} width={56} />
                 </div>
                 <input
                   type="range"
@@ -6312,6 +6467,7 @@ function App() {
                   contrastLimits={effectiveContrastLimits}
                   useDecibels={effectiveUseDecibels}
                   colormap={colormap}
+                  reverseColormap={reverseColormap}
                   gamma={gamma}
                   stretchMode={stretchMode}
                   compositeId={isRGBDisplayMode ? compositeId : null}
@@ -6352,6 +6508,15 @@ function App() {
                   classRegions={classRegions}
                   classifierRoiDims={classifierRoiDims}
                   mosaicLayers={gcovMosaicLayers}
+                  medicalMode={medicalMode}
+                  setContrastLimits={(lim) => {
+                    if (!Array.isArray(lim) || lim.length !== 2) return;
+                    setContrastMin(lim[0]);
+                    setContrastMax(lim[1]);
+                  }}
+                  histogramData={histogramData}
+                  inverted={medicalInverted}
+                  setInverted={setMedicalInverted}
                 />
               </div>
 
@@ -6395,6 +6560,7 @@ function App() {
                       contrastLimits={roiRGBContrastLimits}
                       useDecibels={false}
                       colormap={colormap}
+                      reverseColormap={reverseColormap}
                       gamma={gamma}
                       stretchMode={stretchMode}
                       compositeId={roiCompositeId}
@@ -6496,6 +6662,7 @@ function App() {
                       useDecibels={roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels)}
                       compositeId={roiTSFrames[roiTSIndex]?.compositeId || null}
                       colormap={colormap}
+                      reverseColormap={reverseColormap}
                       gamma={gamma}
                       stretchMode={stretchMode}
                       showGrid={showGrid}
