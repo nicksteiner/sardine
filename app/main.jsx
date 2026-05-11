@@ -29,6 +29,15 @@ import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
+import {
+  proxyUrl as proxyUrlShared,
+  isHostedBuild,
+  getProxyUrl,
+  setProxyUrl,
+  getEDLToken,
+  setEDLToken,
+  validateEDLToken,
+} from '../src/utils/proxy.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
@@ -485,6 +494,14 @@ function App() {
   const [attributionProcessor, setAttributionProcessor] = useState(() => {
     try { return localStorage.getItem('sardine.attribution.processor') || ''; } catch { return ''; }
   });
+  // Earthdata Login proxy settings — required on the hosted Pages build for
+  // streaming NASA DAAC data (NISAR, Sentinel-1 via ASF, OPERA via PO.DAAC).
+  // No-op in dev (the Vite dev plugin handles CORS without auth).
+  const [edlProxyUrl, setEdlProxyUrl] = useState(() => getProxyUrl());
+  const [edlToken, setEdlTokenState] = useState(() => getEDLToken());
+  const [edlValidation, setEdlValidation] = useState(null); // {ok, username}|{ok:false,error}|null
+  const [edlValidating, setEdlValidating] = useState(false);
+
   // Annotations — arrows + text labels drawn over the viewer and into PNG exports
   const [annotations, setAnnotations] = useState([]);
   const [annotationMode, setAnnotationMode] = useState('off');     // 'off'|'arrow'|'text'
@@ -2696,15 +2713,11 @@ function App() {
       addStatusLog('warning', 'No Earthdata token — DAAC data URLs require authentication');
     }
 
-    // Route external URLs through the Vite CORS proxy (dev only).
-    // h5chunk makes Range requests directly to this.url, so we rewrite once here.
-    let resolvedUrl = url;
-    try {
-      const u = new URL(url);
-      if (u.origin !== window.location.origin) {
-        resolvedUrl = `${window.location.origin}/stac-proxy/${encodeURIComponent(url)}`;
-      }
-    } catch { /* keep original if URL parsing fails */ }
+    // Route external URLs through the appropriate CORS proxy
+    // (Vite dev plugin in development, Cloudflare Worker on the hosted Pages
+    // build). h5chunk makes Range requests directly to this.url, so we
+    // rewrite once here.
+    const resolvedUrl = proxyUrlShared(url);
 
     if (type === 'cog') {
       // Load as COG directly
@@ -4902,6 +4915,90 @@ function App() {
                 <option value="remote">Remote URL / S3</option>
                 <option value="cmr">NISAR Search (CMR)</option>
               </select>
+            </div>
+          </CollapsibleSection>
+
+          {/* Earthdata Login — only relevant for hosted builds, but always
+              shown so users can configure even in dev. */}
+          <CollapsibleSection title="Earthdata Login" defaultOpen={isHostedBuild() && !edlToken}>
+            <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+              {isHostedBuild()
+                ? 'Required for streaming NISAR / Sentinel-1 / OPERA from NASA DAACs. Your token is stored only in this browser.'
+                : 'Optional in dev (the Vite proxy bypasses auth). Useful for testing the hosted flow.'}
+            </div>
+            <div className="control-group">
+              <label style={{ fontSize: '0.7rem' }}>EDL token</label>
+              <input
+                type="password"
+                placeholder="Paste your Earthdata Login token"
+                value={edlToken}
+                onChange={(e) => {
+                  setEdlTokenState(e.target.value);
+                  setEDLToken(e.target.value);
+                  setEdlValidation(null);
+                }}
+                style={{
+                  width: '100%', padding: '4px 6px', fontSize: '0.7rem',
+                  background: 'var(--sardine-bg-panel)',
+                  border: '1px solid var(--sardine-border)',
+                  color: 'var(--sardine-text-primary, #e8edf5)',
+                  borderRadius: '2px',
+                }}
+              />
+              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '2px' }}>
+                <a href="https://urs.earthdata.nasa.gov/users/me/user_tokens" target="_blank" rel="noopener noreferrer"
+                   style={{ color: 'var(--sardine-cyan)' }}>
+                  Generate a token →
+                </a>
+              </div>
+            </div>
+            {isHostedBuild() && (
+              <div className="control-group">
+                <label style={{ fontSize: '0.7rem' }}>Proxy URL</label>
+                <input
+                  type="text"
+                  value={edlProxyUrl}
+                  onChange={(e) => {
+                    setEdlProxyUrl(e.target.value);
+                    setProxyUrl(e.target.value);
+                    setEdlValidation(null);
+                  }}
+                  style={{
+                    width: '100%', padding: '4px 6px', fontSize: '0.7rem',
+                    background: 'var(--sardine-bg-panel)',
+                    border: '1px solid var(--sardine-border)',
+                    color: 'var(--sardine-text-primary, #e8edf5)',
+                    borderRadius: '2px',
+                  }}
+                />
+              </div>
+            )}
+            <div className="control-group" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <button
+                onClick={async () => {
+                  setEdlValidating(true);
+                  setEdlValidation(null);
+                  const result = await validateEDLToken(edlToken, edlProxyUrl);
+                  setEdlValidation(result);
+                  setEdlValidating(false);
+                  if (result.ok) addStatusLog('success', `Earthdata token valid — ${result.username}`);
+                  else addStatusLog('error', `Earthdata token check failed: ${result.error}`);
+                }}
+                disabled={!edlToken || edlValidating}
+                style={{ flex: 1, fontSize: '0.7rem' }}
+              >
+                {edlValidating ? 'Checking…' : 'Test token'}
+              </button>
+              {edlValidation?.ok && (
+                <span style={{ fontSize: '0.7rem', color: 'var(--sardine-cyan)' }}>
+                  ✓ {edlValidation.username}
+                </span>
+              )}
+              {edlValidation && !edlValidation.ok && (
+                <span style={{ fontSize: '0.65rem', color: '#e8833a' }} title={edlValidation.error}>
+                  ✗ failed
+                </span>
+              )}
             </div>
           </CollapsibleSection>
 

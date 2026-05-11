@@ -1,0 +1,10 @@
+name = "sardine-edl-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+# No KV, no Durable Objects, no secrets — this Worker is intentionally
+# stateless. The user's EDL token rides on each request.
+
+[observability]
+enabled = true

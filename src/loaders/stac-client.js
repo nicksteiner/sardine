@@ -7,6 +7,8 @@
  * STAC spec: https://github.com/radiantearth/stac-spec
  */
 
+import { proxyUrl as proxyUrlShared } from '../utils/proxy.js';
+
 // ─── Local catalog discovery ─────────────────────────────────────────────────
 
 /**
@@ -376,12 +378,11 @@ function needsProxy(url) {
 }
 
 /**
- * Route an external URL through the Vite dev server CORS proxy.
- * In production (with sardine-launch), requests go direct or through the backend proxy.
+ * Route an external URL through the appropriate CORS proxy
+ * (dev plugin / hosted Worker / direct fetch). See utils/proxy.js.
  */
 function proxyUrl(url) {
-  if (!needsProxy(url)) return url;
-  return `${window.location.origin}/stac-proxy/${encodeURIComponent(url)}`;
+  return proxyUrlShared(url);
 }
 
 /**

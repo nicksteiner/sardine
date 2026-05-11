@@ -13,7 +13,8 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.0--beta.4-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-0.1.1-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
 [![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
@@ -24,7 +25,17 @@
 
 > **This project is under active development.** Some features are experimental or incomplete. Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
 
-> **Try it live:** [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/) — drop in a local GeoTIFF, NISAR `.h5`, or GeoJSON to explore. The hosted build does not include the dev-server CORS proxy, so Earthdata-authenticated NISAR streaming and the STAC catalog browser require running locally with `npm run dev`.
+## 🚀 Try it now — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
+
+The hosted build runs entirely in your browser. **Three ways in:**
+
+| | What you do | What you need |
+|---|---|---|
+| **Drag-and-drop** | Drop a `.tif`, NISAR `.h5`, NITF/SICD, or `.geojson` onto the page | A local file |
+| **Public URL** | Paste a public COG URL into "Direct URL" — Capella Open Data, Umbra Open Data, Sentinel-2 cogs, etc. | A CORS-friendly URL |
+| **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov/users/me/user_tokens), and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
+
+Your token is stored only in your browser's localStorage. NASA data requests are routed through a small Cloudflare Worker ([`sardine-edl-proxy/`](sardine-edl-proxy/)) that adds CORS headers and forwards your token to the DAAC; nothing is logged or persisted server-side.
 
 ---
 
