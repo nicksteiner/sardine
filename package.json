@@ -1,6 +1,6 @@
 {
   "name": "sardine",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "SARdine - SAR Data INspection and Exploration",
   "main": "src/index.js",

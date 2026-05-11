@@ -33,7 +33,7 @@ The hosted build runs entirely in your browser. **Three ways in:**
 |---|---|---|
 | **Drag-and-drop** | Drop a `.tif`, NISAR `.h5`, NITF/SICD, or `.geojson` onto the page | A local file |
 | **Public URL** | Paste a public COG URL into "Direct URL" — Capella Open Data, Umbra Open Data, Sentinel-2 cogs, etc. | A CORS-friendly URL |
-| **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov/users/me/user_tokens), and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
+| **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov/profile](https://urs.earthdata.nasa.gov/profile) → *Generate Token*, and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
 
 Your token is stored only in your browser's localStorage. NASA data requests are routed through a small Cloudflare Worker ([`sardine-edl-proxy/`](sardine-edl-proxy/)) that adds CORS headers and forwards your token to the DAAC; nothing is logged or persisted server-side.
 

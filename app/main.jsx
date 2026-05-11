@@ -38,6 +38,7 @@ import {
   setEDLToken,
   validateEDLToken,
 } from '../src/utils/proxy.js';
+import { parseShareLink, buildShareLink, clearShareLinkParams } from '../src/utils/share-link.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
@@ -371,10 +372,18 @@ function App() {
   // Load generation counter — incremented on each new load to discard stale results
   const loadGenRef = useRef(0);
 
+  // Forward-ref to handleRemoteFileSelect so the share-link effect (which runs
+  // before that handler is defined) can call it after mount.
+  const handleRemoteFileSelectRef = useRef(null);
+
   // Remote source state
   const [remoteUrl, setRemoteUrl] = useState(null);
   const [remoteName, setRemoteName] = useState(null);
   const [directUrl, setDirectUrl] = useState('');
+  // Raw (un-proxied) URL of the currently-loaded remote source. Kept separately
+  // so the "Copy share link" button hands out the original DAAC URL rather
+  // than a proxy-rewritten one that would only work with this user's token.
+  const [sharedRawUrl, setSharedRawUrl] = useState(null);
 
   // NISAR-specific state
   const [nisarFile, setNisarFile] = useState(null);
@@ -640,17 +649,64 @@ function App() {
     setActiveViewer('main');
   }, [imageData]);
 
-  // URL parameter support: ?cog=<url> auto-loads a COG on mount
+  // Share-link support: ?cog=<url> or ?nisar=<url> auto-loads on mount, plus
+  // optional view-state params (cmap, min, max, db, stretch, gamma, pol, freq,
+  // comp, mode, c, z). See src/utils/share-link.js for the full schema.
+  //
+  // The recipient still needs to paste their own EDL token if the link points
+  // at a DAAC URL — tokens never travel in share links.
   const urlCogTriggered = useRef(false);
+  const [shareLinkPending, setShareLinkPending] = useState(false);
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const cogParam = params.get('cog');
-    if (cogParam) {
+    const { dataUrl, dataType, view } = parseShareLink();
+    if (!dataUrl) return;
+
+    // Apply view-state synchronously so the auto-loaded data renders with the
+    // sharer's settings the first time the layer mounts.
+    if (view.colormap) setColormap(view.colormap);
+    if (view.reverseColormap != null) setReverseColormap(view.reverseColormap);
+    if (view.useDecibels != null) setUseDecibels(view.useDecibels);
+    if (Number.isFinite(view.contrastMin)) setContrastMin(view.contrastMin);
+    if (Number.isFinite(view.contrastMax)) setContrastMax(view.contrastMax);
+    if (view.stretchMode) setStretchMode(view.stretchMode);
+    if (Number.isFinite(view.gamma)) setGamma(view.gamma);
+    if (view.selectedPolarization) setSelectedPolarization(view.selectedPolarization);
+    if (view.selectedFrequency) setSelectedFrequency(view.selectedFrequency);
+    if (Number.isFinite(view.multiLook)) setMultiLook(view.multiLook);
+    if (view.compositeId) setCompositeId(view.compositeId);
+    if (view.displayMode) setDisplayMode(view.displayMode);
+    if (Array.isArray(view.viewCenter)) setViewCenter(view.viewCenter);
+    if (Number.isFinite(view.viewZoom)) setViewZoom(view.viewZoom);
+
+    if (dataType === 'cog') {
       urlCogTriggered.current = true;
       setFileType('cog');
-      setCogUrl(cogParam);
+      // Pre-proxy if needed (share links carry raw URLs; loaders need proxy).
+      setSharedRawUrl(dataUrl);
+      setCogUrl(proxyUrlShared(dataUrl));
+    } else if (dataType === 'nisar') {
+      // DAAC URLs need an EDL token on hosted builds. If we have one already,
+      // route through the same handler used by the discovery UI. If not, park
+      // the URL in state and open the EDL panel so the user can paste a token.
+      const pathOnly = dataUrl.split('?')[0];
+      const name = pathOnly.split('/').pop() || 'shared-nisar';
+      if (isHostedBuild() && !getEDLToken()) {
+        setShareLinkPending(true);
+        addStatusLog?.('warning', 'Share link requires Earthdata Login — paste your token below to continue');
+        // Stash the pending URL on a ref so we can fire after the token is set.
+        urlCogTriggered.current = { pendingNisar: { url: dataUrl, name } };
+      } else {
+        // Defer to the next tick so handleRemoteFileSelect is bound.
+        setTimeout(() => {
+          handleRemoteFileSelectRef.current?.({ url: dataUrl, name, size: 0, type: 'nisar' });
+        }, 0);
+      }
     }
-  }, []);
+
+    // Don't clear the params yet — keep them in the URL until the data has
+    // loaded so the user can refresh. We strip them after a successful load
+    // (see effect tied to imageData below).
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-select classifier bands when datasets change
   useEffect(() => {
@@ -2718,6 +2774,7 @@ function App() {
     // build). h5chunk makes Range requests directly to this.url, so we
     // rewrite once here.
     const resolvedUrl = proxyUrlShared(url);
+    setSharedRawUrl(url);
 
     if (type === 'cog') {
       // Load as COG directly
@@ -2785,6 +2842,24 @@ function App() {
       setLoading(false);
     }
   }, [addStatusLog]);
+
+  // Keep the forward-ref pointed at the latest handleRemoteFileSelect so the
+  // share-link effect can invoke it after mount (and after a token is pasted).
+  useEffect(() => {
+    handleRemoteFileSelectRef.current = handleRemoteFileSelect;
+  }, [handleRemoteFileSelect]);
+
+  // If the share link points at a NISAR URL and the user just pasted a token,
+  // fire the deferred load. urlCogTriggered.current holds {pendingNisar:{url,name}}.
+  useEffect(() => {
+    if (!shareLinkPending) return;
+    if (!edlToken) return;
+    const pending = urlCogTriggered.current?.pendingNisar;
+    if (!pending) return;
+    setShareLinkPending(false);
+    urlCogTriggered.current = true;
+    handleRemoteFileSelectRef.current?.({ url: pending.url, name: pending.name, size: 0, type: 'nisar' });
+  }, [shareLinkPending, edlToken]);
 
   // Handle a manually pasted direct URL (pre-signed S3, public HTTPS, etc.)
   const handleDirectUrlSubmit = useCallback(() => {
@@ -4945,11 +5020,13 @@ function App() {
                   borderRadius: '2px',
                 }}
               />
-              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '2px' }}>
-                <a href="https://urs.earthdata.nasa.gov/users/me/user_tokens" target="_blank" rel="noopener noreferrer"
+              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '2px', lineHeight: 1.4 }}>
+                <a href="https://urs.earthdata.nasa.gov/profile" target="_blank" rel="noopener noreferrer"
                    style={{ color: 'var(--sardine-cyan)' }}>
-                  Generate a token →
+                  Open Earthdata profile →
                 </a>
+                <br/>
+                Then click <strong>Generate Token</strong> in the left sidebar.
               </div>
             </div>
             {isHostedBuild() && (
@@ -5001,6 +5078,42 @@ function App() {
               )}
             </div>
           </CollapsibleSection>
+
+          {/* Share link — only meaningful for remote sources (COG URL or
+              DAAC NISAR URL). Local files can't be shared via link. */}
+          {sharedRawUrl && (fileType === 'cog' || fileType === 'nisar' || fileType === 'nisar-gunw') && (
+            <CollapsibleSection title="Share Link" defaultOpen={false}>
+              <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+                Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.
+              </div>
+              <div className="control-group" style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  onClick={async () => {
+                    try {
+                      const link = buildShareLink({
+                        dataUrl: sharedRawUrl,
+                        dataType: fileType === 'cog' ? 'cog' : 'nisar',
+                        view: {
+                          colormap, reverseColormap, useDecibels,
+                          contrastMin, contrastMax, stretchMode, gamma,
+                          selectedPolarization, selectedFrequency,
+                          multiLook, compositeId, displayMode,
+                          viewCenter, viewZoom,
+                        },
+                      });
+                      await navigator.clipboard.writeText(link);
+                      addStatusLog('success', 'Share link copied to clipboard', link);
+                    } catch (e) {
+                      addStatusLog('error', `Failed to copy share link: ${e.message}`);
+                    }
+                  }}
+                  style={{ flex: 1, fontSize: '0.7rem' }}
+                >
+                  Copy share link
+                </button>
+              </div>
+            </CollapsibleSection>
+          )}
 
           {/* Local GeoTIFF Input */}
           {fileType === 'local-tif' && (
