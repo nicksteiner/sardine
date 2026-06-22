@@ -82,27 +82,57 @@ export class URLFile {
   }
 
   /**
-   * Open a URL as a File-like adapter. Issues a HEAD request to learn the
-   * total size and confirm the server supports Range requests.
+   * Open a URL as a File-like adapter and learn the total size.
+   *
+   * Tries HEAD first. Many real-world hosts (CloudFront, some S3 presigned
+   * URLs, dev CORS proxies) reject HEAD or omit Content-Length on it while
+   * still serving Range GETs — so we fall back to a single-byte
+   * `Range: bytes=0-0` GET and parse the total length out of the
+   * `Content-Range: bytes 0-0/<total>` response header. This is the same
+   * trick geotiff.js uses to size remote COGs.
    */
   static async open(url, { fetchHeaders } = {}) {
-    const resp = await fetch(url, { method: 'HEAD', headers: fetchHeaders || {} });
-    if (!resp.ok) {
-      throw new Error(`URLFile.open HEAD failed: ${resp.status} ${resp.statusText} for ${url}`);
+    const headers = fetchHeaders || {};
+
+    // 1. HEAD — cheapest path when the host cooperates.
+    let acceptRangesNone = false;
+    try {
+      const head = await fetch(url, { method: 'HEAD', headers });
+      if (head.ok) {
+        const ar = head.headers.get('accept-ranges');
+        if (ar && ar.toLowerCase() === 'none') acceptRangesNone = true;
+        const cl = head.headers.get('content-length');
+        const size = cl == null ? NaN : parseInt(cl, 10);
+        if (!acceptRangesNone && Number.isFinite(size) && size > 0) {
+          return new URLFile(url, size, { fetchHeaders });
+        }
+      }
+    } catch (_) {
+      // HEAD blocked by CORS or network — fall through to the Range probe.
     }
-    const acceptRanges = resp.headers.get('accept-ranges');
-    if (acceptRanges && acceptRanges.toLowerCase() === 'none') {
+    if (acceptRangesNone) {
       throw new Error(`URLFile.open: server does not support Range requests (${url})`);
     }
-    const cl = resp.headers.get('content-length');
-    if (!cl) {
-      throw new Error(`URLFile.open: no Content-Length on HEAD response (${url})`);
+
+    // 2. Range probe — GET one byte and read the total from Content-Range.
+    const probe = await fetch(url, { headers: { ...headers, Range: 'bytes=0-0' } });
+    if (!probe.ok && probe.status !== 206) {
+      throw new Error(`URLFile.open: HEAD gave no size and Range probe failed: ${probe.status} ${probe.statusText} for ${url}`);
     }
-    const size = parseInt(cl, 10);
-    if (!Number.isFinite(size) || size <= 0) {
-      throw new Error(`URLFile.open: invalid Content-Length ${cl} for ${url}`);
+    const contentRange = probe.headers.get('content-range'); // "bytes 0-0/12345"
+    if (contentRange) {
+      const m = /\/(\d+)\s*$/.exec(contentRange);
+      const size = m ? parseInt(m[1], 10) : NaN;
+      if (Number.isFinite(size) && size > 0) {
+        return new URLFile(url, size, { fetchHeaders });
+      }
     }
-    return new URLFile(url, size, { fetchHeaders });
+    // A 200 (not 206) to a Range request means the server ignored Range and
+    // would stream the whole body — unusable for chunked reads.
+    if (probe.status === 200) {
+      throw new Error(`URLFile.open: server ignored Range request (returned 200, not 206) for ${url}`);
+    }
+    throw new Error(`URLFile.open: could not determine size (no Content-Length, no Content-Range) for ${url}`);
   }
 
   slice(start, end) {

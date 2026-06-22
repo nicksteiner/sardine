@@ -1817,7 +1817,7 @@ try {
 
   // Build a fetch mock. `headSpec` controls the HEAD response; `onRange`
   // records each Range request and returns the bytes for it.
-  function installFetchMock({ headSpec = {}, onRange = null } = {}) {
+  function installFetchMock({ headSpec = {}, onRange = null, probe = null } = {}) {
     const calls = { head: [], range: [] };
     const makeResp = (status, headers, body) => ({
       ok: status >= 200 && status < 300,
@@ -1829,6 +1829,7 @@ try {
     globalThis.fetch = async (url, opts = {}) => {
       if ((opts.method || 'GET').toUpperCase() === 'HEAD') {
         calls.head.push({ url, opts });
+        if (headSpec.headThrows) throw new Error('HEAD blocked by CORS');
         const h = {
           'accept-ranges': headSpec.acceptRanges ?? 'bytes',
           'content-length': headSpec.contentLength ?? '1000',
@@ -1837,8 +1838,14 @@ try {
         if (headSpec.noContentLength) delete h['content-length'];
         return makeResp(headSpec.status ?? 200, h, null);
       }
-      // Range GET
+      // GET. The single-byte size probe (bytes=0-0) is special-cased so
+      // tests can exercise the HEAD-less Content-Range fallback path.
       const range = (opts.headers || {}).Range || (opts.headers || {}).range;
+      if (probe && range === 'bytes=0-0') {
+        return makeResp(probe.status ?? 206, {
+          ...(probe.contentRange ? { 'content-range': probe.contentRange } : {}),
+        }, new ArrayBuffer(1));
+      }
       calls.range.push(range);
       const body = onRange ? onRange(range) : new ArrayBuffer(0);
       return makeResp(206, { 'content-type': 'application/octet-stream' }, body);
@@ -1878,6 +1885,38 @@ try {
     try { await URLFile.open('https://example.com/x.ntf'); } catch { threw = true; }
     restore();
     if (!threw) throw new Error('expected throw on 403 HEAD');
+  });
+
+  await asyncCheck('URLFile.open falls back to Content-Range when HEAD lacks Content-Length', async () => {
+    installFetchMock({
+      headSpec: { noContentLength: true },
+      probe: { status: 206, contentRange: 'bytes 0-0/987654' },
+    });
+    const f = await URLFile.open('https://cdn.example.com/scene.ntf');
+    restore();
+    if (f.size !== 987654) throw new Error(`size ${f.size} != 987654 from Content-Range fallback`);
+  });
+
+  await asyncCheck('URLFile.open uses Range probe when HEAD throws (CORS-blocked)', async () => {
+    installFetchMock({
+      headSpec: { headThrows: true },
+      probe: { status: 206, contentRange: 'bytes 0-0/4096' },
+    });
+    const f = await URLFile.open('https://cloudfront.example.com/scene.ntf');
+    restore();
+    if (f.size !== 4096) throw new Error(`size ${f.size} != 4096 after HEAD throw`);
+  });
+
+  await asyncCheck('URLFile.open throws when server ignores Range (200, not 206)', async () => {
+    installFetchMock({
+      headSpec: { noContentLength: true },
+      probe: { status: 200 }, // no content-range, full-body response
+    });
+    let threw = false, msg = '';
+    try { await URLFile.open('https://example.com/x.ntf'); } catch (e) { threw = true; msg = e.message; }
+    restore();
+    if (!threw) throw new Error('expected throw when server ignores Range');
+    if (!/ignored Range|200/.test(msg)) throw new Error(`unexpected message: ${msg}`);
   });
 
   check('URLFile.slice clamps to [0, size]', () => {
