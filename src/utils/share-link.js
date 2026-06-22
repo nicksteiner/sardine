@@ -13,6 +13,7 @@
 const KEYS = {
   cog: 'cog',
   nisar: 'nisar',
+  nitf: 'nitf',       // also matches ?sicd= (SICD-in-NITF is the common case)
   // Rendering
   cmap: 'cmap',
   rev: 'rev',         // reverse colormap (0/1)
@@ -60,6 +61,9 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
   } else if (p.has(KEYS.cog)) {
     dataUrl = p.get(KEYS.cog);
     dataType = 'cog';
+  } else if (p.has(KEYS.nitf) || p.has('sicd')) {
+    dataUrl = p.get(KEYS.nitf) || p.get('sicd');
+    dataType = 'nitf';
   }
 
   const view = {};

@@ -54,6 +54,7 @@ function needsProxy(url) {
     // Known CORS-friendly public hosts — direct fetch works
     const directOK = [
       'capella-open-data.s3.us-west-2.amazonaws.com',
+      'capella-open-data.s3.amazonaws.com',
       'sentinel-cogs.s3.us-west-2.amazonaws.com',
       'overturemaps-us-west-2.s3.us-west-2.amazonaws.com',
     ];

@@ -6,6 +6,7 @@ import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, 
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
 import { loadNITF, isNITFFile, listNITFDatasets, loadNITFDataset } from '../src/loaders/nitf-loader.js';
+import { URLFile } from '../src/loaders/url-file.js';
 import { listLocalCOGDatasets, loadLocalCOGDataset } from '../src/loaders/cog-loader.js';
 import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
@@ -43,6 +44,7 @@ import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+import { OpticalPeekLayer } from '../src/layers/OpticalPeekLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { COORDINATE_SYSTEM } from '@deck.gl/core';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
@@ -375,6 +377,9 @@ function App() {
   // Forward-ref to handleRemoteFileSelect so the share-link effect (which runs
   // before that handler is defined) can call it after mount.
   const handleRemoteFileSelectRef = useRef(null);
+  // Same idea for the NITF handler, so ?nitf=<url> can dispatch into it after
+  // mount via a URLFile adapter.
+  const handleNITFFileSelectRef = useRef(null);
 
   // Remote source state
   const [remoteUrl, setRemoteUrl] = useState(null);
@@ -602,6 +607,11 @@ function App() {
   const [overtureOpacity, setOvertureOpacity] = useState(0.7);
   const overtureDebounceRef = useRef(null);
 
+  // Optical Peek overlay state — uses the warp-grid GPU pathway in OpticalPeekLayer
+  const [opticalPeekEnabled, setOpticalPeekEnabled] = useState(false);
+  const [opticalPeekProvider, setOpticalPeekProvider] = useState('esri');
+  const [opticalPeekOpacity, setOpticalPeekOpacity] = useState(0.7);
+
   // Memoize initialViewState to prevent infinite re-renders
   const initialViewState = useMemo(
     () => ({
@@ -684,6 +694,24 @@ function App() {
       // Pre-proxy if needed (share links carry raw URLs; loaders need proxy).
       setSharedRawUrl(dataUrl);
       setCogUrl(proxyUrlShared(dataUrl));
+    } else if (dataType === 'nitf') {
+      // NITF/SICD via HTTP Range. Build a URLFile and hand it to the existing
+      // local-file handler so the rest of the load flow (datasets, picker,
+      // render) stays identical to drag-drop.
+      setSharedRawUrl(dataUrl);
+      setFileType('nitf');
+      const resolved = proxyUrlShared(dataUrl);
+      const pathOnly = dataUrl.split('?')[0];
+      const name = pathOnly.split('/').pop() || 'shared.ntf';
+      setTimeout(async () => {
+        try {
+          const urlFile = await URLFile.open(resolved);
+          urlFile.name = name;
+          handleNITFFileSelectRef.current?.(urlFile);
+        } catch (e) {
+          addStatusLog?.('error', `Failed to open shared NITF: ${e.message}`);
+        }
+      }, 0);
     } else if (dataType === 'nisar') {
       // DAAC URLs need an EDL token on hosted builds. If we have one already,
       // route through the same handler used by the discovery UI. If not, park
@@ -2849,6 +2877,10 @@ function App() {
     handleRemoteFileSelectRef.current = handleRemoteFileSelect;
   }, [handleRemoteFileSelect]);
 
+  useEffect(() => {
+    handleNITFFileSelectRef.current = handleNITFFileSelect;
+  }, [handleNITFFileSelect]);
+
   // If the share link points at a NISAR URL and the user just pasted a token,
   // fire the deferred load. urlCogTriggered.current holds {pendingNisar:{url,name}}.
   useEffect(() => {
@@ -3640,10 +3672,15 @@ function App() {
           ...(roiActive ? { startCol: roiStartCol, numCols: exportWidth } : {}),
         });
 
-        // Copy stripe data into output arrays (power + complex bands)
+        // Copy stripe data into output arrays (power + complex bands).
+        // Single-band loaders (COG, plain TIF) emit `band0` rather than a
+        // polarization-named key — alias it to the single requested band so
+        // the export gets real data instead of zeros.
         for (const name of allBandNames) {
-          if (stripe.bands[name]) {
-            bands[name].set(stripe.bands[name], startRow * exportWidth);
+          const src = stripe.bands[name]
+            || (allBandNames.length === 1 ? stripe.bands.band0 : null);
+          if (src) {
+            bands[name].set(src, startRow * exportWidth);
           }
         }
       }
@@ -3852,6 +3889,12 @@ function App() {
           const stretchFn = needsStretch ? createStretchFn(stretchMode, gamma) : null;
           const rgbaData = new Uint8ClampedArray(numPixels * 4);
           const bandData = bands[bandNames[0]];
+          // GDAL_NODATA sentinel from COG loader (e.g. -FLT_MAX, -9999).
+          // Without this, sentinel pixels passed through getExportStripe with
+          // ml=1 land here as finite non-zero numbers, evade the alpha mask,
+          // and paint the entire export with the colormap's clamped-low color.
+          const nodataSentinel = (imageData?.nodata !== undefined && imageData?.nodata !== null)
+            ? imageData.nodata : null;
 
           for (let i = 0; i < numPixels; i++) {
             const amplitude = bandData[i];
@@ -3868,7 +3911,9 @@ function App() {
             rgbaData[i * 4] = r;
             rgbaData[i * 4 + 1] = g;
             rgbaData[i * 4 + 2] = b;
-            rgbaData[i * 4 + 3] = (amplitude === 0 || isNaN(amplitude)) ? 0 : 255;
+            const isNodata = amplitude === 0 || isNaN(amplitude)
+              || (nodataSentinel !== null && amplitude === nodataSentinel);
+            rgbaData[i * 4 + 3] = isNodata ? 0 : 255;
           }
 
           // Free band data before GeoTIFF encoding
@@ -4766,6 +4811,35 @@ function App() {
     return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs, projection, bounds, worldBounds });
   }, [overtureEnabled, overtureData, overtureOpacity, imageData]);
 
+  // Optical peek raster overlay. Only supports CRSes that OpticalPeekLayer's
+  // inline proj4DefFor recognises (EPSG:4326, UTM north/south, polar stereo).
+  // SICD slant-plane chips have a `projection` object instead of a CRS string
+  // and aren't supported yet — the layer just no-ops.
+  const opticalPeekLayers = useMemo(() => {
+    if (!opticalPeekEnabled || !imageData?.bounds) return [];
+    const PROVIDERS = {
+      esri: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      osm: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    };
+    // Two-bounds split for the OrthographicView pipeline:
+    //   • `bounds` drives the quad geometry — must match the SAR layer's
+    //     coord space, which is pixel-space [0, 0, W, H] for COG/NITF
+    //     local loads and the geographic extent for NISAR GCOV.
+    //   • `geoBounds` drives the projection math (proj4 inverse to lon/lat
+    //     → atlas warp) — always the geographic extent.
+    // For local TIFs loadLocalTIF puts pixel-space in bounds and the UTM
+    // extent in worldBounds. For NISAR/COG-URL bounds == worldBounds and
+    // the dispatch is a no-op.
+    return [new OpticalPeekLayer({
+      id: 'optical-peek',
+      bounds: imageData.bounds,
+      geoBounds: imageData.worldBounds || imageData.bounds,
+      crs: imageData.crs || 'EPSG:4326',
+      tileUrlTemplate: PROVIDERS[opticalPeekProvider] || PROVIDERS.esri,
+      opacity: opticalPeekOpacity,
+    })];
+  }, [opticalPeekEnabled, opticalPeekProvider, opticalPeekOpacity, imageData?.bounds, imageData?.worldBounds, imageData?.crs]);
+
   // Build GeoJSON overlay layers from dropped files
   const geojsonOverlayLayers = useMemo(() => {
     if (droppedGeoJSON.length === 0) return [];
@@ -5081,7 +5155,7 @@ function App() {
 
           {/* Share link — only meaningful for remote sources (COG URL or
               DAAC NISAR URL). Local files can't be shared via link. */}
-          {sharedRawUrl && (fileType === 'cog' || fileType === 'nisar' || fileType === 'nisar-gunw') && (
+          {sharedRawUrl && (fileType === 'cog' || fileType === 'nisar' || fileType === 'nisar-gunw' || fileType === 'nitf') && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
               <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
                 Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.
@@ -5092,7 +5166,9 @@ function App() {
                     try {
                       const link = buildShareLink({
                         dataUrl: sharedRawUrl,
-                        dataType: fileType === 'cog' ? 'cog' : 'nisar',
+                        dataType: fileType === 'cog' ? 'cog'
+                          : fileType === 'nitf' ? 'nitf'
+                          : 'nisar',
                         view: {
                           colormap, reverseColormap, useDecibels,
                           contrastMin, contrastMax, stretchMode, gamma,
@@ -5919,6 +5995,49 @@ function App() {
                     ))}
                   </div>
                 )}
+              </>
+            )}
+          </CollapsibleSection>
+
+          {/* Optical Peek — WMTS raster reprojected into image CRS via GPU warp grid */}
+          <CollapsibleSection title="Optical Peek" defaultOpen={false}>
+            <div className="control-group">
+              <div className="control-row">
+                <input
+                  type="checkbox"
+                  id="opticalPeekEnabled"
+                  checked={opticalPeekEnabled}
+                  onChange={(e) => {
+                    setOpticalPeekEnabled(e.target.checked);
+                    addStatusLog('info', e.target.checked
+                      ? `Optical peek enabled (${opticalPeekProvider})`
+                      : 'Optical peek disabled');
+                  }}
+                />
+                <label htmlFor="opticalPeekEnabled">Enable Overlay</label>
+              </div>
+            </div>
+
+            {opticalPeekEnabled && (
+              <>
+                <div className="control-group">
+                  <label>Source</label>
+                  <select
+                    value={opticalPeekProvider}
+                    onChange={(e) => setOpticalPeekProvider(e.target.value)}
+                  >
+                    <option value="esri">Esri World Imagery</option>
+                    <option value="osm">OpenStreetMap</option>
+                  </select>
+                </div>
+                <div className="control-group">
+                  <label>Opacity: {opticalPeekOpacity.toFixed(2)}</label>
+                  <input
+                    type="range" min="0" max="1" step="0.05"
+                    value={opticalPeekOpacity}
+                    onChange={(e) => setOpticalPeekOpacity(parseFloat(e.target.value))}
+                  />
+                </div>
               </>
             )}
           </CollapsibleSection>
@@ -7078,7 +7197,7 @@ function App() {
                   height="100%"
                   onViewStateChange={handleViewStateChange}
                   initialViewState={initialViewState}
-                  extraLayers={[...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
+                  extraLayers={[...opticalPeekLayers, ...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
                   roi={roi}
                   onROIChange={setROI}
                   imageWidth={imageData?.sourceWidth || imageData?.width}

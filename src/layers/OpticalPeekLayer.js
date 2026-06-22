@@ -145,8 +145,11 @@ async function buildPeek({ bounds, crs, tileUrlTemplate, gridSize, opticalZoom, 
   }
 
   // 2. Pick optical zoom from approximate pixels-per-degree if not provided.
-  // Defaults aim for ~1 atlas pixel per ~SAR pixel at typical viewport sizes.
-  const z = opticalZoom ?? Math.min(18, Math.max(1, Math.floor(Math.log2(360 / Math.max(lonMax - lonMin, 0.0001)) + 1)));
+  // The +3 boost takes the coarse "one tile covers the scene" pick and
+  // makes it 64× finer — about z=14 for a 0.27°-span SAR chip, which
+  // reveals roads and parcels at typical SAR resolutions.
+  const ZOOM_BOOST = 3;
+  const z = opticalZoom ?? Math.min(18, Math.max(1, Math.floor(Math.log2(360 / Math.max(lonMax - lonMin, 0.0001)) + 1) + ZOOM_BOOST));
 
   // 3. Determine the tile range and fetch all tiles into an atlas canvas.
   const tlNW = lonLatToTilePx(lonMin, latMax, z);
@@ -161,8 +164,10 @@ async function buildPeek({ bounds, crs, tileUrlTemplate, gridSize, opticalZoom, 
   const atlasW = cols * TILE_PX;
   const atlasH = rows * TILE_PX;
 
-  // Bail if the atlas would be absurdly large. Caller should pick a coarser zoom.
-  if (cols * rows > 256) {
+  // Bail if the atlas would be absurdly large. 1024 tiles × 256² × 4 B =
+  // 256 MB GPU. The ZOOM_BOOST above sets us up for ~64 tiles on a typical
+  // 0.3° SAR chip — plenty of headroom before the cap matters.
+  if (cols * rows > 1024) {
     throw new Error(`OpticalPeek: too many tiles (${cols}x${rows}) at z=${z}; lower opticalZoom`);
   }
 
@@ -265,6 +270,7 @@ export class OpticalPeekLayer extends Layer {
     // Rebuild atlas + warp when bounds/CRS/url/grid/zoom change.
     const triggersChanged =
       bounds !== oldProps.bounds ||
+      props.geoBounds !== oldProps.geoBounds ||
       crs !== oldProps.crs ||
       tileUrlTemplate !== oldProps.tileUrlTemplate ||
       gridSize !== oldProps.gridSize ||
@@ -277,7 +283,14 @@ export class OpticalPeekLayer extends Layer {
 
   async _rebuild() {
     const { gl } = this.context;
-    const { bounds, crs, tileUrlTemplate, gridSize = GRID_SIZE_DEFAULT, opticalZoom } = this.props;
+    const { bounds, geoBounds, crs, tileUrlTemplate, gridSize = GRID_SIZE_DEFAULT, opticalZoom } = this.props;
+    // `bounds` is the quad-geometry input (must match the SAR layer's coord
+    // space — pixel-space for COG/NITF, geographic for NISAR GCOV).
+    // `geoBounds` is the projection-math input — always the geographic
+    // extent. They diverge for COG/NITF (loadLocalTIF puts pixel-space in
+    // bounds, UTM in worldBounds); for NISAR they coincide and the caller
+    // can omit geoBounds.
+    const projBounds = geoBounds || bounds;
 
     // Cancel any in-flight build by bumping a token. Stale results check
     // their token against state.buildToken before committing.
@@ -289,7 +302,7 @@ export class OpticalPeekLayer extends Layer {
 
     try {
       const result = await buildPeek({
-        bounds, crs, tileUrlTemplate, gridSize, opticalZoom,
+        bounds: projBounds, crs, tileUrlTemplate, gridSize, opticalZoom,
         signal: abortCtrl.signal,
       });
       if (token !== this.state.buildToken) return; // stale
@@ -370,6 +383,7 @@ export class OpticalPeekLayer extends Layer {
 OpticalPeekLayer.layerName = 'OpticalPeekLayer';
 OpticalPeekLayer.defaultProps = {
   bounds: { type: 'array', value: null, compare: true },
+  geoBounds: { type: 'array', value: null, compare: true },
   crs: { type: 'string', value: 'EPSG:4326', compare: true },
   tileUrlTemplate: { type: 'string', value: '', compare: true },
   gridSize: { type: 'number', value: GRID_SIZE_DEFAULT, min: 8, max: 256, compare: true },

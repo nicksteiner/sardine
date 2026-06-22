@@ -49,7 +49,7 @@ export const OVERTURE_THEMES = {
     types: ['water'],
     theme: 'base',
     lineColor: [100, 180, 220, 200],
-    lineWidth: 1.5,
+    lineWidth: 3,
     coastlineStroke: true,             // extract polygon edges, filter tile-clip artifacts
   },
   divisions_boundary: {
@@ -58,20 +58,21 @@ export const OVERTURE_THEMES = {
     theme: 'divisions',
     color: [200, 200, 200, 0],
     lineColor: [255, 220, 100, 200],
-    lineWidth: 2,
+    lineWidth: 4,
   },
   transportation: {
     label: 'Roads',
     types: ['segment'],
     color: [100, 100, 100, 150],
     lineColor: [200, 200, 200, 200],
-    lineWidth: 1,
+    lineWidth: 2.5,
   },
   buildings: {
     label: 'Buildings',
     types: ['building'],
     color: [255, 140, 0, 180],      // orange
     lineColor: [255, 140, 0, 220],
+    lineWidth: 2,
     // Buildings only populate the PMTiles archive at z≥10. Below that the
     // tile is empty even over dense cities, so we override the viewport zoom.
     minZoom: 10,

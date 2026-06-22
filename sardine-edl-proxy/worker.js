@@ -239,6 +239,20 @@ async function handleWhoami(request, url) {
   });
 
   const text = await upstream.text();
+
+  // Wrap non-2xx responses so SARdine sees a structured error with the
+  // upstream body, instead of a bare 401 that hides what EDL actually said.
+  if (!upstream.ok) {
+    return jsonResponse(request, upstream.status, {
+      error: 'Earthdata Login rejected the token',
+      upstreamStatus: upstream.status,
+      upstreamBody: text.slice(0, 500),
+      hint: 'Token may be expired, revoked, or the wrong type. ' +
+            'Make sure you generated a regular user token at ' +
+            'https://urs.earthdata.nasa.gov/profile (not an app/ops token).',
+    });
+  }
+
   return new Response(text, {
     status: upstream.status,
     headers: corsHeaders(request, { 'Content-Type': upstream.headers.get('content-type') || 'application/json' }),

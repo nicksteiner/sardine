@@ -1265,3 +1265,41 @@ async function loadNITFAtIndex(file, imageIndex, onProgress) {
     },
   };
 }
+
+// ─── URL-backed variants ─────────────────────────────────────────────────────
+// The underlying loaders only need .name / .size / .slice(a,b).arrayBuffer(),
+// so we wrap an HTTP-Range adapter (URLFile) and dispatch to the existing
+// File-backed code paths.
+
+import { URLFile } from './url-file.js';
+
+/**
+ * Stream a NITF file from an HTTP URL via Range requests. Pass-through to
+ * loadNITF() with a URLFile adapter.
+ *
+ * @param {string} url      Pre-proxied URL (caller is responsible for routing
+ *                          through the CORS proxy if needed).
+ * @param {{ onProgress?: Function, fetchHeaders?: Object }} [opts]
+ */
+export async function loadNITFFromUrl(url, { onProgress, fetchHeaders } = {}) {
+  const urlFile = await URLFile.open(url, { fetchHeaders });
+  const data = await loadNITF(urlFile, onProgress);
+  return { ...data, format: 'nitf' };
+}
+
+/**
+ * List datasets (image segments) in a remote NITF file. Mirrors
+ * listNITFDatasets() but reads via HTTP Range.
+ */
+export async function listNITFDatasetsFromUrl(url, { fetchHeaders } = {}) {
+  const urlFile = await URLFile.open(url, { fetchHeaders });
+  return { datasets: await listNITFDatasets(urlFile), _urlFile: urlFile };
+}
+
+/**
+ * Load a specific dataset (image segment) from a remote NITF file.
+ */
+export async function loadNITFDatasetFromUrl(url, datasetId, { onProgress, fetchHeaders } = {}) {
+  const urlFile = await URLFile.open(url, { fetchHeaders });
+  return loadNITFDataset(urlFile, datasetId, { onProgress });
+}

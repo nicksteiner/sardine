@@ -601,6 +601,17 @@ export async function loadLocalTIF(file, onProgress) {
   let resolution = null;
   try { resolution = image.getResolution(); } catch (_) {}
 
+  // GDAL_NODATA tag (e.g. -3.4028234663852886e+38 for float rasters). geotiff.js
+  // does not mask these for us — we have to honour them ourselves or the
+  // multilook accumulator averages sentinel values in with real data and
+  // the rendered-export alpha mask leaves the sentinel pixels opaque.
+  let nodata = null;
+  try {
+    const nd = image.getGDALNoData();
+    if (nd !== null && Number.isFinite(nd)) nodata = nd;
+  } catch (_) {}
+  if (nodata !== null) console.log(`[COG Loader] GDAL_NODATA = ${nodata}`);
+
   // --- Data loading: COGs skip full read, plain TIFs read everything ---
   let fullData = null;
 
@@ -688,7 +699,10 @@ export async function loadLocalTIF(file, onProgress) {
 
   async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
     const outCols = numCols || exportWidth;
-    const srcData = fullData || (await image.readRasters()).then(r => new Float32Array(r[0]));
+    // await returns the rasters array directly — earlier code chained .then
+    // on the resolved value, which threw "(intermediate value).then is not a function".
+    const srcData = fullData || new Float32Array((await image.readRasters())[0]);
+    const nd = nodata;
     const out = new Float32Array(outCols * numRows);
     for (let r = 0; r < numRows; r++) {
       for (let c = 0; c < outCols; c++) {
@@ -698,7 +712,7 @@ export async function loadLocalTIF(file, onProgress) {
         for (let dr = 0; dr < ml && r0 + dr < height; dr++) {
           for (let dc = 0; dc < ml && c0 + dc < width; dc++) {
             const v = srcData[(r0 + dr) * width + (c0 + dc)];
-            if (!isNaN(v) && v !== 0) { sum += v; cnt++; }
+            if (!isNaN(v) && v !== 0 && (nd === null || v !== nd)) { sum += v; cnt++; }
           }
         }
         out[r * outCols + c] = cnt > 0 ? sum / cnt : NaN;
@@ -750,6 +764,7 @@ export async function loadLocalTIF(file, onProgress) {
     resolution,
     isCOG,
     imageCount,
+    nodata,
   };
 }
 
