@@ -138,6 +138,9 @@ const requiredExports = [
   'applyStretch',
   'computeRGBBands',
   'createRGBTexture',
+  'loadNITFFromUrl',
+  'loadNITFDatasetFromUrl',
+  'URLFile',
 ];
 
 for (const name of requiredExports) {
@@ -1805,6 +1808,163 @@ try {
 
 } catch (err) {
   skip('lite report charts functional tests', `import failed: ${err.message}`);
+}
+
+// ─── 15. URLFile HTTP-Range adapter ──────────────────────────────────────────
+suite('URLFile (HTTP Range adapter)');
+try {
+  const { URLFile } = await import(join(rootDir, 'src/loaders/url-file.js'));
+
+  // Build a fetch mock. `headSpec` controls the HEAD response; `onRange`
+  // records each Range request and returns the bytes for it.
+  function installFetchMock({ headSpec = {}, onRange = null } = {}) {
+    const calls = { head: [], range: [] };
+    const makeResp = (status, headers, body) => ({
+      ok: status >= 200 && status < 300,
+      status,
+      statusText: `S${status}`,
+      headers: { get: (k) => headers[k.toLowerCase()] ?? null },
+      arrayBuffer: async () => body || new ArrayBuffer(0),
+    });
+    globalThis.fetch = async (url, opts = {}) => {
+      if ((opts.method || 'GET').toUpperCase() === 'HEAD') {
+        calls.head.push({ url, opts });
+        const h = {
+          'accept-ranges': headSpec.acceptRanges ?? 'bytes',
+          'content-length': headSpec.contentLength ?? '1000',
+          ...(headSpec.extraHeaders || {}),
+        };
+        if (headSpec.noContentLength) delete h['content-length'];
+        return makeResp(headSpec.status ?? 200, h, null);
+      }
+      // Range GET
+      const range = (opts.headers || {}).Range || (opts.headers || {}).range;
+      calls.range.push(range);
+      const body = onRange ? onRange(range) : new ArrayBuffer(0);
+      return makeResp(206, { 'content-type': 'application/octet-stream' }, body);
+    };
+    return calls;
+  }
+  const savedFetch = globalThis.fetch;
+  const restore = () => { globalThis.fetch = savedFetch; };
+
+  await asyncCheck('URLFile.open parses Content-Length and name from URL', async () => {
+    installFetchMock({ headSpec: { contentLength: '4242' } });
+    const f = await URLFile.open('https://example.com/data/scene.ntf');
+    if (f.size !== 4242) throw new Error(`size ${f.size} != 4242`);
+    if (f.name !== 'scene.ntf') throw new Error(`name ${f.name} != scene.ntf`);
+    restore();
+  });
+
+  await asyncCheck('URLFile.open rejects accept-ranges: none', async () => {
+    installFetchMock({ headSpec: { acceptRanges: 'none' } });
+    let threw = false;
+    try { await URLFile.open('https://example.com/x.ntf'); } catch { threw = true; }
+    restore();
+    if (!threw) throw new Error('expected throw when server forbids ranges');
+  });
+
+  await asyncCheck('URLFile.open rejects missing Content-Length', async () => {
+    installFetchMock({ headSpec: { noContentLength: true } });
+    let threw = false;
+    try { await URLFile.open('https://example.com/x.ntf'); } catch { threw = true; }
+    restore();
+    if (!threw) throw new Error('expected throw on missing Content-Length');
+  });
+
+  await asyncCheck('URLFile.open throws on non-ok HEAD', async () => {
+    installFetchMock({ headSpec: { status: 403 } });
+    let threw = false;
+    try { await URLFile.open('https://example.com/x.ntf'); } catch { threw = true; }
+    restore();
+    if (!threw) throw new Error('expected throw on 403 HEAD');
+  });
+
+  check('URLFile.slice clamps to [0, size]', () => {
+    const f = new URLFile('https://example.com/x', 1000);
+    const a = f.slice(-50, 200);   // start clamps to 0
+    if (a.size !== 200) throw new Error(`negative start: size ${a.size} != 200`);
+    const b = f.slice(900, 5000);  // end clamps to size
+    if (b.size !== 100) throw new Error(`over-end: size ${b.size} != 100`);
+    const c = f.slice(800);        // end omitted → size
+    if (c.size !== 200) throw new Error(`omitted end: size ${c.size} != 200`);
+    const d = f.slice(500, 400);   // end < start → empty
+    if (d.size !== 0) throw new Error(`inverted: size ${d.size} != 0`);
+  });
+
+  check('URLFile.slice preserves byte offsets past 2 GB (no |0 truncation)', () => {
+    const GB = 1024 * 1024 * 1024;
+    const f = new URLFile('https://example.com/big', 5 * GB);
+    // 3 GB start exceeds 2^31-1; a `| 0` would wrap it negative → clamp to 0
+    // and the slice would balloon to 4 GB. Math.floor keeps it exact.
+    const s = f.slice(3 * GB, 4 * GB);
+    if (s.size !== GB) throw new Error(`>2GB slice size ${s.size} != ${GB} (1 GB) — 32-bit truncation regression`);
+  });
+
+  await asyncCheck('URLBlob.arrayBuffer issues inclusive Range header', async () => {
+    const calls = installFetchMock({ onRange: () => new Uint8Array([1, 2, 3, 4]).buffer });
+    const f = new URLFile('https://example.com/x', 1000);
+    const buf = await f.slice(100, 110).arrayBuffer();  // 10 bytes → bytes=100-109
+    restore();
+    if (calls.range[0] !== 'bytes=100-109') throw new Error(`Range header ${calls.range[0]} != bytes=100-109`);
+    if (!(buf instanceof ArrayBuffer)) throw new Error('arrayBuffer did not return ArrayBuffer');
+  });
+
+  await asyncCheck('URLBlob.arrayBuffer returns empty buffer for zero-length slice', async () => {
+    const calls = installFetchMock({ onRange: () => new ArrayBuffer(0) });
+    const f = new URLFile('https://example.com/x', 1000);
+    const buf = await f.slice(500, 500).arrayBuffer();
+    restore();
+    if (buf.byteLength !== 0) throw new Error(`zero slice byteLength ${buf.byteLength} != 0`);
+    if (calls.range.length !== 0) throw new Error('zero-length slice should issue no fetch');
+  });
+
+  await asyncCheck('URLBlob.arrayBuffer splits reads > 64 MB into sequential ranges', async () => {
+    const CHUNK = 64 * 1024 * 1024;
+    const total = CHUNK + 1024; // forces exactly 2 chunks
+    const calls = installFetchMock({
+      onRange: (range) => {
+        const m = /bytes=(\d+)-(\d+)/.exec(range);
+        const start = +m[1], end = +m[2];
+        return new Uint8Array(end - start + 1).buffer; // exact-length body
+      },
+    });
+    const f = new URLFile('https://example.com/big', total + 1000);
+    const buf = await f.slice(0, total).arrayBuffer();
+    restore();
+    if (calls.range.length !== 2) throw new Error(`expected 2 range requests, got ${calls.range.length}`);
+    if (calls.range[0] !== `bytes=0-${CHUNK - 1}`) throw new Error(`chunk0 header ${calls.range[0]}`);
+    if (calls.range[1] !== `bytes=${CHUNK}-${total - 1}`) throw new Error(`chunk1 header ${calls.range[1]}`);
+    if (buf.byteLength !== total) throw new Error(`reassembled byteLength ${buf.byteLength} != ${total}`);
+  });
+
+  await asyncCheck('URLBlob.arrayBuffer throws on short read during chunked fetch', async () => {
+    const CHUNK = 64 * 1024 * 1024;
+    const total = CHUNK + 1024;
+    installFetchMock({ onRange: () => new ArrayBuffer(8) }); // always short
+    const f = new URLFile('https://example.com/big', total + 1000);
+    let threw = false;
+    try { await f.slice(0, total).arrayBuffer(); } catch { threw = true; }
+    restore();
+    if (!threw) throw new Error('expected throw on short chunked read');
+  });
+
+  await asyncCheck('URLBlob.arrayBuffer throws on failed range fetch', async () => {
+    const savedF = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: false, status: 500, statusText: 'err',
+      headers: { get: () => null }, arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    const f = new URLFile('https://example.com/x', 1000);
+    let threw = false;
+    try { await f.slice(0, 10).arrayBuffer(); } catch { threw = true; }
+    globalThis.fetch = savedF;
+    if (!threw) throw new Error('expected throw on 500 range fetch');
+  });
+
+  restore();
+} catch (err) {
+  skip('URLFile adapter tests', `import failed: ${err.message}`);
 }
 
 // ─── Summary ─────────────────────────────────────────────────────────────────
