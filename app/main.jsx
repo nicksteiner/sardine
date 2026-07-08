@@ -17,6 +17,7 @@ import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRe
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { buildExportSidecar, downloadSidecar } from '../src/utils/export-sidecar.js';
 import { makeReproject, reprojectFeature } from '../src/utils/overture-projection.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
@@ -1214,6 +1215,8 @@ function App() {
             bounds: data.bounds,
             label,
             date,
+            fileName: file.name,
+            identification: data.identification || null,
             width: data.width,
             height: data.height,
             renderMode: data.renderMode || null,
@@ -3959,6 +3962,31 @@ function App() {
       const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
 
       downloadBuffer(geotiff, filename);
+
+      // W005: provenance sidecar — {output}.tif.json (identification passed through opaquely)
+      try {
+        downloadSidecar(buildExportSidecar({
+          scene: {
+            file: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
+            productType: imageData?.identification?.productType || nisarProductType || null,
+            identification: imageData?.identification || null,
+          },
+          renderState: isRendered ? {
+            mode: 'rendered',
+            useDecibels: effectiveUseDecibels,
+            contrastLimits: (displayMode === 'rgb' && compositeId) ? effectiveContrastLimits : [contrastMin, contrastMax],
+            colormap,
+            stretchMode,
+            gamma,
+            compositeId: compositeId || null,
+          } : { mode: 'raw' },
+          exportParams: { crs: epsgCode, bounds: exportBounds, width: exportWidth, height: exportHeight, multilook: effectiveMl },
+        }), filename);
+        addStatusLog('info', `Sidecar: ${filename}.json`);
+      } catch (sidecarErr) {
+        addStatusLog('warning', `Sidecar write failed: ${sidecarErr.message}`);
+      }
+
       addStatusLog('success', `Exported: ${filename}`);
       addStatusLog('success', `File size: ${sizeMB} MB, Time: ${elapsed}s`);
       addStatusLog('info', '--- GeoTIFF Export Complete ---');
@@ -3969,7 +3997,7 @@ function App() {
       setExporting(false);
       setExportProgress(0);
     }
-  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, addStatusLog]);
+  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, fileType, nisarFile, cogUrl, nisarProductType, effectiveUseDecibels, addStatusLog]);
 
   // Export the current time-series frame as a georeferenced GeoTIFF with multilooking
   const handleExportTSFrame = useCallback(async () => {
@@ -4146,6 +4174,31 @@ function App() {
       }
 
       downloadBuffer(geotiff, filename);
+
+      // W005: provenance sidecar — {output}.tif.json (identification passed through opaquely)
+      try {
+        downloadSidecar(buildExportSidecar({
+          scene: {
+            file: frame.fileName || null,
+            productType: frame.identification?.productType || nisarProductType || null,
+            identification: frame.identification || null,
+          },
+          renderState: isRendered ? {
+            mode: 'rendered',
+            useDecibels: nisarProductType === 'GUNW' ? false : useDecibels,
+            contrastLimits: roiTSContrastLimits,
+            colormap,
+            stretchMode,
+            gamma,
+            compositeId: frame.compositeId || null,
+          } : { mode: 'raw' },
+          exportParams: { crs: epsgCode, bounds: exportBounds, width: exportWidth, height: exportHeight, multilook: effectiveMl },
+        }), filename);
+        addStatusLog('info', `Sidecar: ${filename}.json`);
+      } catch (sidecarErr) {
+        addStatusLog('warning', `Sidecar write failed: ${sidecarErr.message}`);
+      }
+
       const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
       addStatusLog('success', `Exported: ${filename} (${(geotiff.byteLength / 1e6).toFixed(1)} MB, ${elapsed}s)`);
     } catch (e) {
