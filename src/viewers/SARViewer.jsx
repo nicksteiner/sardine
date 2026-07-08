@@ -98,13 +98,16 @@ export const SARViewer = forwardRef(function SARViewer({
   // so SARTileLayer won't re-fetch tiles when visual props (colormap, contrast, etc.) change.
   const stableGetTileData = useCallback(
     async (tile) => {
-      const { bbox } = tile;
+      const { bbox, signal } = tile;
+      // W003: `signal` is used by getTile only as a post-read CPU skip — it is
+      // never forwarded into chunk fetches (those must complete to warm caches).
       return getTileRef.current({
         x: tile.index.x,
         y: tile.index.y,
         z: tile.index.z,
         bbox,
         multiLook,
+        signal,
       });
     },
     [multiLook]
@@ -125,13 +128,14 @@ export const SARViewer = forwardRef(function SARViewer({
       } else {
         const fnRef = { current: src.getTile };
         const stable = async (tile) => {
-          const { bbox } = tile;
+          const { bbox, signal } = tile;
           return fnRef.current({
             x: tile.index.x,
             y: tile.index.y,
             z: tile.index.z,
             bbox,
             multiLook,
+            signal,
           });
         };
         m.set(src.id, { fnRef, stable });
