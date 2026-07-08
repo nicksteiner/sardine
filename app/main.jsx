@@ -17,6 +17,7 @@ import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRe
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { annotationsToGeoJSON, geoJSONToAnnotations, downloadMarkupGeoJSON, isSardineMarkup } from '../src/utils/annotation-io.js';
 import { makeReproject, reprojectFeature } from '../src/utils/overture-projection.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
@@ -2643,6 +2644,53 @@ function App() {
     }
   }, [nitfFile, selectedNitfId, nitfDatasets, addStatusLog, autoFitIfNewScene]);
 
+  // ─── Markup GeoJSON save/load (W004) — logic lives in src/utils/annotation-io.js ───
+  const markupFileInputRef = useRef(null);
+
+  const handleSaveMarkup = useCallback(() => {
+    try {
+      const scene = {
+        file: fileType === 'cog' ? cogUrl : (nisarFile?.name || nitfFile?.name || ''),
+        crs: imageData?.crs || null,
+        bounds: imageData?.worldBounds || imageData?.bounds || null,
+        width: imageData?.width,
+        height: imageData?.height,
+      };
+      const fc = annotationsToGeoJSON({ annotations, roi, classRegions, scene, roiProfile });
+      downloadMarkupGeoJSON(fc, 'sardine-markup.geojson');
+      addStatusLog('success', `Markup saved: ${fc.features.length} feature(s)`, 'sardine-markup.geojson');
+    } catch (e) {
+      addStatusLog('error', 'Markup save failed', e.message);
+    }
+  }, [annotations, roi, classRegions, roiProfile, fileType, cogUrl, nisarFile, nitfFile, imageData, addStatusLog]);
+
+  const applyMarkupGeoJSON = useCallback((fc, name) => {
+    try {
+      const scene = {
+        crs: imageData?.crs || null,
+        bounds: imageData?.worldBounds || imageData?.bounds || null,
+        width: imageData?.width,
+        height: imageData?.height,
+      };
+      const res = geoJSONToAnnotations(fc, scene);
+      if (res.annotations.length > 0) setAnnotations(prev => [...prev, ...res.annotations]);
+      if (res.roi) setROI(res.roi);
+      if (res.classRegions.length > 0) setClassRegions(prev => [...prev, ...res.classRegions]);
+      // res.transectLine: no transect state at HEAD — wired when the transect-line WIP lands
+      for (const w of res.warnings) addStatusLog('warning', 'Markup import', w);
+      addStatusLog('success', `Markup loaded: ${name}`,
+        `${res.annotations.length} annotation(s)${res.roi ? ', ROI' : ''}${res.classRegions.length > 0 ? `, ${res.classRegions.length} class region(s)` : ''}`);
+    } catch (e) {
+      addStatusLog('error', `Markup load failed: ${name}`, e.message);
+    }
+  }, [imageData, addStatusLog]);
+
+  const handleLoadMarkupFile = useCallback((file) => {
+    file.text()
+      .then(t => applyMarkupGeoJSON(JSON.parse(t), file.name))
+      .catch(e => addStatusLog('error', `Markup load failed: ${file.name}`, e.message));
+  }, [applyMarkupGeoJSON, addStatusLog]);
+
   // Drag-and-drop handler — single dispatch table over file formats.
   // Each entry handles its own bucket (mosaic vs single-shot, append vs
   // replace) but the routing logic is uniform: bucketByFormat + handle.
@@ -2740,6 +2788,10 @@ function App() {
             const data = geojson.type === 'Feature'
               ? { type: 'FeatureCollection', features: [geojson] }
               : geojson;
+            if (isSardineMarkup(data)) {
+              applyMarkupGeoJSON(data, gj.name);
+              return;
+            }
             const id = `geojson-${Date.now()}-${gj.name}`;
             setDroppedGeoJSON(prev => [...prev, { id, name: gj.name, data }]);
             addStatusLog('info', `GeoJSON loaded: ${gj.name}`,
@@ -2780,7 +2832,7 @@ function App() {
       addStatusLog('warning', `Unsupported file type: ${files[0].name}`,
         'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
@@ -6557,6 +6609,54 @@ function App() {
                     >
                       Clear
                     </button>
+                  </div>
+                  {/* Markup GeoJSON I/O (W004) — annotations + ROI + class regions */}
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                    <button
+                      onClick={handleSaveMarkup}
+                      disabled={annotations.length === 0 && !roi && classRegions.length === 0}
+                      title="Download annotations, ROI, and class regions as GeoJSON"
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: '0.7rem',
+                        background: 'transparent',
+                        color: (annotations.length === 0 && !roi && classRegions.length === 0)
+                          ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: (annotations.length === 0 && !roi && classRegions.length === 0) ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      Save Markup
+                    </button>
+                    <button
+                      onClick={() => markupFileInputRef.current?.click()}
+                      title="Load markup GeoJSON (annotations, ROI, class regions)"
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: '0.7rem',
+                        background: 'transparent',
+                        color: 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Load Markup
+                    </button>
+                    <input
+                      ref={markupFileInputRef}
+                      type="file"
+                      accept=".geojson,.json"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleLoadMarkupFile(f);
+                        e.target.value = '';
+                      }}
+                    />
                   </div>
                 </div>
               </div>
