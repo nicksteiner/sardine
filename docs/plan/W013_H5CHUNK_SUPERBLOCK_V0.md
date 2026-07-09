@@ -1,7 +1,7 @@
 # W013 — h5chunk superblock v0/v1 root-group address bug
 
 wave: 1
-status: launched
+status: branch-ready
 blocked_by: [W001]
 branch: w013-superblock-v0
 
@@ -37,3 +37,18 @@ exactly what casual/first-time users will try. Cheap fix, real funnel impact.
 - `npm test` and `npm run test:unit` pass; the new v0 fixture round-trips
   (discovery, readChunk, readRegion values match the generator's known pattern).
 - Existing v2 fixture tests unchanged.
+
+## Findings (from implementation)
+
+- Fix as scoped: the v0/v1 path now skips the root STE's first offset-sized field
+  (`linkNameOffset`, always 0 for root) and reads the SECOND (`objectHeaderAddress`)
+  as `rootGroupAddress`. Two-line change in `parseSuperblock`.
+- Failure mode at HEAD was verified against the new fixture: in lazy mode the
+  misparse is SILENT — `openH5ChunkFile` succeeds with 0 datasets (the "Unknown
+  object header version" error at offset 0 is swallowed), so users see an empty
+  dataset list, not an error. Post-fix: 1 dataset, all 3,072 pixels exact.
+- Fixture: `test/unit/fixtures/synthetic-chunked-v0.h5` (8,060 bytes, h5py 3.16
+  defaults → superblock v0, v1 group symbol tables, same /science/grids/data
+  float32 (64,48)/(16,16) gzip+shuffle pattern). Generator extended to emit both
+  fixtures; regenerated v2 fixture was byte-identical to the committed one.
+- `.gitignore` negation added for the new fixture (blanket `*h5` rule).

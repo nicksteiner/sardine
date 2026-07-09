@@ -178,7 +178,11 @@ function parseSuperblock(reader) {
     superblock.endOfFileAddress = reader.readOffset(superblock.offsetSize);
     superblock.driverInfoAddress = reader.readOffset(superblock.offsetSize);
 
-    // Root group symbol table entry
+    // Root group symbol table entry:
+    //   linkNameOffset(O) → objectHeaderAddress(O) → cacheType(4) → reserved(4) → scratch(16)
+    // The object header address is the SECOND offset-sized field; the first
+    // (linkNameOffset) is always 0 for the root group and must be skipped.
+    reader.readOffset(superblock.offsetSize); // link name offset (into local heap)
     superblock.rootGroupAddress = reader.readOffset(superblock.offsetSize);
 
   } else if (version === 2 || version === 3) {

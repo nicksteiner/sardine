@@ -47,8 +47,9 @@ test_sar_*.tif
 *.tif.aux.xml
 *tif
 *h5
-# ...but keep the tiny committed unit-test fixture (~12 KB)
+# ...but keep the tiny committed unit-test fixtures (~12 KB + ~8 KB)
 !test/unit/fixtures/synthetic-chunked.h5
+!test/unit/fixtures/synthetic-chunked-v0.h5
 
 # Playwright test output
 test-results/
