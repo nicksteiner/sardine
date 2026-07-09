@@ -656,9 +656,17 @@ function writeIFD(view, bytes, offset, ifd, nextIFDOffset) {
     const byteSize = getEntryByteSize(entry);
 
     if (byteSize <= 4) {
-      // Value fits inline
-      writeEntryValue(view, pos, entry);
-      pos += 4;
+      if (entry.tag === TAG_TILE_OFFSETS) {
+        // Single tile: the buildIFD placeholder is 0 — write the real tile
+        // data offset inline (mirrors the writeFloat32GeoTIFF single-tile path).
+        view.setUint32(pos, tileDataPos, true);
+        tileDataPos += ifd.tiles[0].byteCount;
+        pos += 4;
+      } else {
+        // Value fits inline
+        writeEntryValue(view, pos, entry);
+        pos += 4;
+      }
     } else {
       // Special handling for TileOffsets
       if (entry.tag === TAG_TILE_OFFSETS) {
