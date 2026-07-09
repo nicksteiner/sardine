@@ -12,14 +12,57 @@ import { FONTS } from './theme-tokens.js';
 
 const FONT_MONO = FONTS.mono;
 
+/**
+ * Markup / annotation palette.
+ *
+ * A professional, publication-oriented accent set chosen to stay legible on
+ * both dark SAR imagery and light figure-export backgrounds. Slightly
+ * desaturated relative to the UI theme accents so lines/labels read as
+ * deliberate markup rather than glowing screen colors.
+ *
+ * Legacy keys (cyan / magenta) are kept as aliases so previously-saved
+ * annotations still resolve to a sensible color.
+ */
 export const ANNOTATION_COLORS = Object.freeze({
+  red:    '#e5484d',
+  amber:  '#f5a524',
+  yellow: '#f2d94e',
+  green:  '#30a46c',
+  blue:   '#4593e8',
+  white:  '#f0f2f5',
+  // ── legacy aliases (older annotations reference these) ──
   cyan:    THEME.cyan,
-  orange:  THEME.orange,
-  green:   THEME.green,
-  magenta: THEME.magenta,
+  orange:  '#f5a524',   // → amber
+  magenta: '#d45cff',
 });
 
-export const ANNOTATION_COLOR_KEYS = Object.freeze(['cyan', 'orange', 'green', 'magenta']);
+/** Order shown in the color picker (professional set only). */
+export const ANNOTATION_COLOR_KEYS = Object.freeze(['red', 'amber', 'yellow', 'green', 'blue', 'white']);
+
+/**
+ * Standardized size presets — a small, fixed menu (medical-imaging style)
+ * rather than free-form sliders. Each preset scales line weight, arrowhead,
+ * and font together so annotations stay legible at figure/publication scale.
+ *
+ *   lineW    — arrow shaft / label border stroke width (screen px @ dpr 1)
+ *   headLen  — arrowhead length
+ *   headW    — arrowhead half-width
+ *   fontSize — caption / label text size
+ */
+export const ANNOTATION_SIZES = Object.freeze({
+  small:  { lineW: 2,   headLen: 12, headW: 7,  fontSize: 13 },
+  medium: { lineW: 3.5, headLen: 18, headW: 11, fontSize: 18 },
+  large:  { lineW: 5,   headLen: 26, headW: 16, fontSize: 26 },
+});
+
+export const ANNOTATION_SIZE_KEYS = Object.freeze(['small', 'medium', 'large']);
+
+/** Default preset for new annotations — errs large so lines/text read clearly. */
+export const DEFAULT_ANNOTATION_SIZE = 'medium';
+
+export function resolveSize(key) {
+  return ANNOTATION_SIZES[key] || ANNOTATION_SIZES[DEFAULT_ANNOTATION_SIZE];
+}
 
 export function resolveColor(key) {
   return ANNOTATION_COLORS[key] || ANNOTATION_COLORS.cyan;
@@ -30,17 +73,20 @@ export function resolveColor(key) {
  * Tail at (x1,y1), head at (x2,y2).
  */
 export function drawArrow(ctx, x1, y1, x2, y2, opts = {}) {
-  const { colorKey = 'cyan', caption = '', dpr = 1, fontSize = 12, selected = false } = opts;
+  const { colorKey = 'cyan', caption = '', dpr = 1, size = DEFAULT_ANNOTATION_SIZE, selected = false } = opts;
   const color = resolveColor(colorKey);
+  const sz = resolveSize(size);
+  // fontSize may be overridden explicitly (legacy annotations), else from preset
+  const fontSize = opts.fontSize || sz.fontSize;
 
   const dx = x2 - x1;
   const dy = y2 - y1;
   const len = Math.hypot(dx, dy);
   if (len < 1) return;
 
-  const lineW = Math.max(1.5, 2 * dpr);
-  const headLen = Math.max(10, 12 * dpr);
-  const headW = Math.max(6, 7 * dpr);
+  const lineW = Math.max(1.5, sz.lineW * dpr);
+  const headLen = Math.max(10, sz.headLen * dpr);
+  const headW = Math.max(6, sz.headW * dpr);
 
   // Shorten the line so the stroked end doesn't poke past the filled triangle
   const ux = dx / len;
@@ -97,7 +143,7 @@ export function drawArrow(ctx, x1, y1, x2, y2, opts = {}) {
 
     ctx.fillStyle = 'rgba(10, 22, 40, 0.85)';
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1 * dpr;
+    ctx.lineWidth = Math.max(1, sz.lineW * 0.5) * dpr;
     roundRect(ctx, ax, ay, w, h, 3 * dpr);
     ctx.fill();
     ctx.stroke();
@@ -115,9 +161,11 @@ export function drawArrow(ctx, x1, y1, x2, y2, opts = {}) {
  * Draw a free-text label pill anchored at (x,y) (top-left of the pill).
  */
 export function drawTextLabel(ctx, x, y, text, opts = {}) {
-  const { colorKey = 'cyan', dpr = 1, fontSize = 13, selected = false } = opts;
+  const { colorKey = 'cyan', dpr = 1, size = DEFAULT_ANNOTATION_SIZE, selected = false } = opts;
   if (!text) return;
   const color = resolveColor(colorKey);
+  const sz = resolveSize(size);
+  const fontSize = opts.fontSize || sz.fontSize;
 
   const fs = Math.round(fontSize * dpr);
   ctx.save();
@@ -135,7 +183,7 @@ export function drawTextLabel(ctx, x, y, text, opts = {}) {
 
   ctx.fillStyle = 'rgba(10, 22, 40, 0.88)';
   ctx.strokeStyle = color;
-  ctx.lineWidth = 1.25 * dpr;
+  ctx.lineWidth = Math.max(1.25, sz.lineW * 0.6) * dpr;
   roundRect(ctx, x, y, w, h, 4 * dpr);
   ctx.fill();
   ctx.stroke();
@@ -149,7 +197,7 @@ export function drawTextLabel(ctx, x, y, text, opts = {}) {
 
 /** Bounding box for a text label in screen pixels (for hit testing). */
 export function measureTextLabel(ctx, text, fontSize, dpr = 1) {
-  const fs = Math.round(fontSize * dpr);
+  const fs = Math.round((fontSize || resolveSize(DEFAULT_ANNOTATION_SIZE).fontSize) * dpr);
   ctx.save();
   ctx.font = `${fs}px ${FONT_MONO}`;
   const padX = 8 * dpr;

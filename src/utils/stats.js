@@ -133,6 +133,52 @@ export function autoContrastLimits(
 }
 
 /**
+ * Auto-contrast for a raw GeoTIFF/COG band that ALSO decides whether dB
+ * scaling should be on. Mirrors the inline logic in app/main.jsx's
+ * handleLocalTIFMultiSelect so per-panel compare-grid viewers match the
+ * main viewer's defaults exactly.
+ *
+ * @param {Float32Array|number[]} data - Raw band samples (power or scaled)
+ * @returns {{ useDecibels: boolean, contrastLimits: [number, number] }}
+ */
+export function autoContrastWithDbDetect(data) {
+  if (!data || data.length === 0) {
+    return { useDecibels: true, contrastLimits: [-30, 0] };
+  }
+
+  // Subsample to ~10k valid values (skip NaN and exact-zero nodata)
+  const vals = [];
+  const stride = Math.max(1, Math.floor(data.length / 10000));
+  for (let i = 0; i < data.length; i += stride) {
+    const v = data[i];
+    if (!isNaN(v) && v !== 0) vals.push(v);
+  }
+  if (vals.length === 0) {
+    return { useDecibels: true, contrastLimits: [-30, 0] };
+  }
+  vals.sort((a, b) => a - b);
+
+  const p02 = vals[Math.floor(vals.length * 0.02)] || 0;
+  const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
+
+  // Raw SAR power → dB useful; values with negatives or already small → linear.
+  const hasNegatives = p02 < 0;
+  const useDecibels = !hasNegatives && p98 > 1;
+
+  const displayVals = useDecibels
+    ? vals.map((v) => 10 * Math.log10(Math.max(v, 1e-10)))
+    : vals;
+  const lowIdx = Math.floor(0.02 * displayVals.length);
+  const highIdx = Math.floor(0.98 * displayVals.length);
+  const contrastLimits = [
+    displayVals[lowIdx] ?? (useDecibels ? -30 : 0),
+    displayVals[Math.min(highIdx, displayVals.length - 1)] ?? (useDecibels ? 0 : 1),
+  ];
+
+  return { useDecibels, contrastLimits };
+}
+
+/**
  * Compute histogram of SAR data
  * @param {Float32Array|number[]} data - Raw SAR data
  * @param {boolean} useDecibels - Whether to compute histogram in dB

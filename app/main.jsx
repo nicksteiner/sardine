@@ -1,8 +1,8 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '../src/index.js';
-import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
+import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
+import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
 import { loadNITF, isNITFFile, listNITFDatasets, loadNITFDataset } from '../src/loaders/nitf-loader.js';
@@ -14,6 +14,7 @@ import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds } from '../src/utils/roi-subset.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
+import { getAvailableIndices, SAR_INDICES } from '../src/utils/sar-indices.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
@@ -29,7 +30,7 @@ import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
-import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
+import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportFigureGrid, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
 import {
   proxyUrl as proxyUrlShared,
   isHostedBuild,
@@ -50,6 +51,9 @@ import { COORDINATE_SYSTEM } from '@deck.gl/core';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
+import { ROIProfilePanel } from '../src/components/ROIProfilePanel.jsx';
+import { TransectProfilePanel } from '../src/components/TransectProfilePanel.jsx';
+import { ANNOTATION_COLORS, ANNOTATION_COLOR_KEYS } from '../src/utils/annotation-render.js';
 import { CommandPalette } from '../src/components/CommandPalette.jsx';
 import { ScrubNumber } from '../src/components/ScrubNumber.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
@@ -209,6 +213,8 @@ function generateMarkdownState(state) {
   if (state.source === 'nisar') {
     if (state.displayMode === 'rgb' && state.composite) {
       lines.push(`- **Composite:** ${state.composite}`);
+    } else if (state.displayMode === 'index' && state.indexId) {
+      lines.push(`- **Index:** ${state.indexId.toUpperCase()} (${state.indexForm}-pol)`);
     } else if (state.dataset) {
       lines.push(`- **Dataset:** ${state.dataset.frequency}/${state.dataset.polarization}`);
     }
@@ -355,6 +361,19 @@ function PagesBanner() {
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
+  // UI theme: '' (dark, default) | 'sardine' (navy) | 'light'
+  const [uiTheme, setUiTheme] = useState(() => {
+    try {
+      const t = localStorage.getItem('sardine.theme');
+      return t === 'sardine' || t === 'light' ? t : '';
+    } catch { return ''; }
+  });
+  useEffect(() => {
+    if (uiTheme) document.documentElement.dataset.theme = uiTheme;
+    else delete document.documentElement.dataset.theme;
+    try { localStorage.setItem('sardine.theme', uiTheme); } catch {}
+  }, [uiTheme]);
+
   // GPU capability detection (cached, runs once)
   const gpuInfo = useMemo(() => probeGPU(), []);
 
@@ -410,6 +429,11 @@ function App() {
   const [gunwIncidenceAngleGrid, setGunwIncidenceAngleGrid] = useState(null); // {data, width, height}
   const [gunwPairedView, setGunwPairedView] = useState(null); // {left, right} image configs for ComparisonViewer
 
+  // Compare grid — up to 4 GeoTIFFs in an adaptive grid, synced pan/zoom.
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareInitialFiles, setCompareInitialFiles] = useState(null); // files to seed the grid on open
+  const compareGridRef = useRef(null);
+
   // GUNW phase corrections — individual layers uploaded to GPU as separate textures
   const [correctionLayers, setCorrectionLayers] = useState(null); // {ionosphere, troposphereWet, ...}
   const [enabledCorrections, setEnabledCorrections] = useState(new Set()); // Set of enabled correction keys
@@ -431,6 +455,11 @@ function App() {
   const [displayMode, setDisplayMode] = useState('single'); // 'single' | 'rgb' | 'multi-temporal'
   const [compositeId, setCompositeId] = useState(null);
   const [availableComposites, setAvailableComposites] = useState([]);
+
+  // Scalar-index state (RVI, etc.) — displayMode === 'index'
+  const [availableIndices, setAvailableIndices] = useState([]);
+  const [indexId, setIndexId] = useState('rvi');
+  const [indexForm, setIndexForm] = useState('dual');
 
   // True for any RGB-flavoured display mode (standard composite or multi-temporal)
   const isRGBDisplayMode = displayMode === 'rgb' || displayMode === 'multi-temporal';
@@ -484,8 +513,9 @@ function App() {
   const [colormap, setColormap] = useState('grayscale');
   const [reverseColormap, setReverseColormap] = useState(false);
   const [useDecibels, setUseDecibels] = useState(true);
-  // GUNW data is in radians/meters — dB conversion is never valid
-  const effectiveUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
+  // GUNW data is in radians/meters — dB conversion is never valid.
+  // Scalar indices (RVI, etc.) are linear ratios — dB is never valid either.
+  const effectiveUseDecibels = (nisarProductType === 'GUNW' || displayMode === 'index') ? false : useDecibels;
   const [showGrid, setShowGrid] = useState(false);
   const [pixelExplorer, setPixelExplorer] = useState(false);
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
@@ -519,7 +549,8 @@ function App() {
   // Annotations — arrows + text labels drawn over the viewer and into PNG exports
   const [annotations, setAnnotations] = useState([]);
   const [annotationMode, setAnnotationMode] = useState('off');     // 'off'|'arrow'|'text'
-  const [annotationColor, setAnnotationColor] = useState('cyan');  // cyan|orange|green|magenta
+  const [annotationColor, setAnnotationColor] = useState('red');  // see ANNOTATION_COLOR_KEYS
+  const [annotationSize, setAnnotationSize] = useState('medium');  // small|medium|large
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
@@ -556,6 +587,10 @@ function App() {
   const [wktInput, setWktInput] = useState('');       // WKT text input value
   const [wktError, setWktError] = useState(null);     // WKT validation error message
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
+  const [transectEnabled, setTransectEnabled] = useState(false); // Free profile-line tool armed
+  const [transectLine, setTransectLine] = useState(null);        // { x0, y0, x1, y1 } image px
+  const [transectData, setTransectData] = useState(null);        // { dist, values, lenPx, angleDeg }
+  const [transectWidth, setTransectWidth] = useState(0);         // perpendicular half-width (px); 0 = centerline
 
   // Feature space classifier state
   const [classifierOpen, setClassifierOpen] = useState(false);
@@ -628,6 +663,8 @@ function App() {
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
   const [statusCollapsed, setStatusCollapsed] = useState(true);
+  const [bottomTab, setBottomTab] = useState('status'); // active tab in the lower dock
+  useEffect(() => { if (!transectEnabled && bottomTab === 'transect') setBottomTab('status'); }, [transectEnabled, bottomTab]);
 
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
@@ -849,6 +886,118 @@ function App() {
     run();
     return () => { cancelled = true; };
   }, [roi, imageData, useDecibels]);
+
+  // Sample pixel values along the free transect line whenever it moves/rotates.
+  // Evenly spaced samples (capped) along the segment via bilinear-ish nearest
+  // getPixelValue reads. Values converted to dB when the display is in dB.
+  useEffect(() => {
+    if (!transectEnabled || !transectLine || !imageData?.getPixelValue) {
+      setTransectData(null);
+      return;
+    }
+    let cancelled = false;
+    const { x0, y0, x1, y1 } = transectLine;
+    const lenPx = Math.hypot(x1 - x0, y1 - y0);
+    let angleDeg = Math.atan2(-(y1 - y0), x1 - x0) * 180 / Math.PI;
+    if (angleDeg < 0) angleDeg += 360;
+    if (lenPx < 1) { setTransectData(null); return; }
+
+    const getPixelValue = imageData.getPixelValue;
+    const db = effectiveUseDecibels;
+
+    // Perpendicular unit vector (image px) for cross-line averaging.
+    // Line dir = (x1-x0, y1-y0); perpendicular = (-dy, dx) normalized.
+    const perpX = -(y1 - y0) / lenPx;
+    const perpY = (x1 - x0) / lenPx;
+    const w = Math.max(0, Math.round(transectWidth)); // half-width in px; 0 = centerline only
+    const offsets = [];
+    for (let k = -w; k <= w; k++) offsets.push(k);
+
+    // Bound total getPixelValue reads to a fixed budget so wide strips on long
+    // lines don't stall the UI. Each read can decompress an HDF5 chunk.
+    const MAX_READS = 768;
+    const maxN = Math.max(2, Math.floor(MAX_READS / offsets.length));
+    const N = Math.max(2, Math.min(256, maxN, Math.round(lenPx)));
+
+    const pickScalar = (v) => {
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'number') return v;
+      if (typeof v === 'object') {
+        if (typeof v[selectedPolarization] === 'number') return v[selectedPolarization];
+        if (typeof v.value === 'number') return v.value;
+        if (typeof v.mean === 'number') return v.mean;
+        for (const k in v) { if (typeof v[k] === 'number') return v[k]; }
+      }
+      return null;
+    };
+
+    const run = async () => {
+      const dist = new Float32Array(N);
+      const M = offsets.length;
+      const nums = new Array(N).fill(NaN);
+      let sawNegative = false;
+
+      // Sample with BOUNDED concurrency, processed in small batches with an
+      // abort check between them. Firing all N×M reads via one Promise.all
+      // fans out hundreds of concurrent decompress jobs — which, stacked on
+      // top of RGB tile loading, exhausts workers/memory and crashes the tab.
+      const BATCH = 24;
+
+      const flushBatch = async (fromI, toI) => {
+        const reqs = [];
+        for (let i = fromI; i < toI; i++) {
+          const t = i / (N - 1);
+          dist[i] = t * lenPx;
+          const cx = x0 + t * (x1 - x0);
+          const cy = y0 + t * (y1 - y0);
+          const strip = [];
+          for (const k of offsets) {
+            const col = Math.round(cx + k * perpX);
+            const row = Math.round(cy + k * perpY);
+            strip.push(getPixelValue(row, col, 1).catch(() => null));
+          }
+          reqs.push(Promise.all(strip).then(vals => {
+            let sum = 0, cnt = 0;
+            for (const raw of vals) {
+              const s = pickScalar(raw);
+              if (s === null || !Number.isFinite(s)) continue;
+              sum += s; cnt++;
+            }
+            const v = cnt > 0 ? sum / cnt : NaN;
+            nums[i] = v;
+            if (Number.isFinite(v) && v < 0) sawNegative = true;
+          }));
+        }
+        await Promise.all(reqs);
+      };
+
+      for (let batchStart = 0; batchStart < N; batchStart += BATCH) {
+        if (cancelled) return;
+        await flushBatch(batchStart, Math.min(N, batchStart + BATCH));
+      }
+      if (cancelled) return;
+
+      // If any sampled value is negative, the source already holds dB/signed
+      // data — pass through untouched. Otherwise it's linear power: mask
+      // nodata (0 / NaN) and apply 10·log10 when the display is in dB.
+      const isAlreadyDb = sawNegative;
+      const values = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        const v = nums[i];
+        if (!Number.isFinite(v)) { values[i] = NaN; continue; }
+        if (isAlreadyDb) { values[i] = v; continue; }
+        if (v === 0) { values[i] = NaN; continue; } // power nodata
+        values[i] = db ? 10 * Math.log10(v) : v;
+      }
+      setTransectData({ dist, values, lenPx, angleDeg });
+    };
+
+    // Debounce: sampling issues up to N×(2w+1) getPixelValue reads, each of
+    // which can pull/decompress whole HDF5 chunks. Firing that on every drag
+    // frame freezes the UI, so wait until the line settles (~140 ms idle).
+    const timer = setTimeout(run, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [transectEnabled, transectLine, imageData, effectiveUseDecibels, selectedPolarization, transectWidth]);
 
   // Fetch multi-band ROI data for feature space classifier
   useEffect(() => {
@@ -2255,6 +2404,13 @@ function App() {
         const composites = getAvailableComposites(datasets);
         setAvailableComposites(composites);
 
+        const indices = getAvailableIndices(datasets);
+        setAvailableIndices(indices);
+        if (indices.length > 0) {
+          setIndexId(indices[0].id);
+          setIndexForm(indices[0].form);
+        }
+
         const autoComposite = autoSelectComposite(datasets);
         setCompositeId(autoComposite);
         setDisplayMode('single');
@@ -2534,6 +2690,14 @@ function App() {
               });
               return { file, data, getTile: data.getRGBTile };
             }
+            if (displayMode === 'index') {
+              const data = await loadNISARIndex(file, {
+                frequency: selectedFrequency,
+                indexId,
+                form: indexForm,
+              });
+              return { file, data, getTile: data.getTile };
+            }
             const data = await loadNISARGCOV(file, {
               frequency: selectedFrequency,
               polarization: selectedPolarization,
@@ -2577,7 +2741,7 @@ function App() {
     })();
 
     return () => { cancelled = true; };
-  }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog]);
+  }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, displayMode, compositeId, indexId, indexForm, addStatusLog]);
 
   const handleNITFFileSelect = useCallback(async (file) => {
     setLoading(true);
@@ -2849,6 +3013,12 @@ function App() {
 
       const composites = getAvailableComposites(datasets);
       setAvailableComposites(composites);
+      const remoteIndices = getAvailableIndices(datasets);
+      setAvailableIndices(remoteIndices);
+      if (remoteIndices.length > 0) {
+        setIndexId(remoteIndices[0].id);
+        setIndexForm(remoteIndices[0].form);
+      }
       const autoComp = autoSelectComposite(datasets);
       setCompositeId(autoComp);
       setDisplayMode('single');
@@ -2988,6 +3158,33 @@ function App() {
               ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
           }
         }
+      } else if (displayMode === 'index') {
+        // ── Remote GCOV scalar index (e.g. RVI) — single-band render ──
+        addStatusLog('info', `Loading remote index: ${indexId} (${indexForm}-pol form)`);
+
+        data = await loadNISARIndex(remoteUrl, {
+          frequency: selectedFrequency,
+          indexId,
+          form: indexForm,
+          _streamReader: handleRemoteFileSelect._cachedReader || imageData?._h5chunk || null,
+          _chunkCaches: imageData?._chunkCaches || null,
+          fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+        });
+
+        data.onRefine = () => setTileVersion(v => v + 1);
+        if (data.prefetchOverviewChunks) {
+          data.prefetchOverviewChunks().catch(e =>
+            console.warn('[SARdine] Index overview prefetch failed:', e.message)
+          );
+        }
+
+        setUseDecibels(!!data.indexUseDecibels);
+        setContrastMin(data.indexRange?.[0] ?? 0);
+        setContrastMax(data.indexRange?.[1] ?? 1);
+        setColormap(data.indexColormap || 'viridis');
+
+        addStatusLog('success', `Remote ${indexId.toUpperCase()} loaded`,
+          `${data.width}x${data.height}, ${data.indexColormap}`);
       } else {
         // Single band mode
         addStatusLog('info', `Loading remote NISAR: ${selectedFrequency}/${selectedPolarization}`);
@@ -3312,6 +3509,28 @@ function App() {
           setCorrectionLayers(null);
           setEnabledCorrections(new Set());
         }
+      } else if (displayMode === 'index') {
+        // ── GCOV scalar index mode (e.g. RVI) — single-band render ──
+        addStatusLog('info', `Loading index: ${indexId} (${indexForm}-pol form)`);
+
+        data = await loadNISARIndex(nisarFile, {
+          frequency: selectedFrequency,
+          indexId,
+          form: indexForm,
+          _streamReader: imageData?._h5chunk || null,
+          _chunkCaches: imageData?._chunkCaches || null,
+        });
+
+        data.onRefine = () => setTileVersion(v => v + 1);
+
+        // Auto-apply index render settings: linear scale, index range, colormap.
+        setUseDecibels(!!data.indexUseDecibels);
+        setContrastMin(data.indexRange?.[0] ?? 0);
+        setContrastMax(data.indexRange?.[1] ?? 1);
+        setColormap(data.indexColormap || 'viridis');
+
+        addStatusLog('success', `${indexId.toUpperCase()} loaded`,
+          `${data.width}x${data.height}, range ${data.indexRange?.[0]}–${data.indexRange?.[1]}, ${data.indexColormap}`);
       } else if (displayMode === 'rgb' && compositeId) {
         // ── GCOV RGB composite mode ──
         const requiredPols = getRequiredDatasets(compositeId);
@@ -4358,6 +4577,43 @@ function App() {
 
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
+    // Compare grid mode — stitch all panels into one figure.
+    if (compareMode && compareGridRef.current) {
+      const gridPanels = compareGridRef.current.getPanels();
+      const ready = gridPanels.filter((p) => p.viewer?.getCanvas?.());
+      if (ready.length === 0) {
+        addStatusLog('error', 'Compare grid: no panels to export');
+        return;
+      }
+      addStatusLog('info', `Capturing compare grid (${ready.length} panels)...`);
+      try {
+        const panelSpecs = ready.map((p) => ({
+          canvas: p.viewer.getCanvas(),
+          options: {
+            colormap: p.colormap,
+            contrastLimits: p.contrastLimits,
+            useDecibels: p.useDecibels,
+            stretchMode: p.stretchMode,
+            gamma: p.gamma,
+            compositeId: null,
+            viewState: p.viewer.getViewState?.(),
+            bounds: p.source?.bounds,
+            filename: p.name,
+            crs: p.source?.crs || '',
+          },
+        }));
+        const blob = await exportFigureGrid(panelSpecs);
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        downloadBlob(blob, `sardine_compare_${ts}.png`);
+        addStatusLog('success', 'Compare grid figure saved');
+        ready.forEach((p) => p.viewer.redraw?.());
+      } catch (e) {
+        addStatusLog('error', 'Compare grid export failed', e.message);
+        console.error('Compare grid export error:', e);
+      }
+      return;
+    }
+
     if (!viewerRef.current) {
       addStatusLog('error', 'Viewer not ready');
       return;
@@ -4452,7 +4708,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
+  }, [compareMode, colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async () => {
@@ -4925,6 +5181,15 @@ function App() {
       { id: 'mode.grid', group: 'mode', label: 'Toggle coordinate grid', run: () => setShowGrid(v => !v) },
       { id: 'mode.db', group: 'mode', label: 'Toggle dB / linear', run: () => setUseDecibels(v => !v) },
       { id: 'mode.classifier', group: 'mode', label: 'Toggle classifier', shortcut: 'C', when: () => hasData, run: () => setClassifierOpen(v => !v) },
+      { id: 'mode.profileV', group: 'mode', label: 'Toggle ROI vertical profile', when: () => !!roi, run: () => setProfileShow(p => ({ ...p, v: !p.v })) },
+      { id: 'mode.profileH', group: 'mode', label: 'Toggle ROI horizontal profile', when: () => !!roi, run: () => setProfileShow(p => ({ ...p, h: !p.h })) },
+      { id: 'mode.profileI', group: 'mode', label: 'Toggle ROI intensity histogram', when: () => !!roi, run: () => setProfileShow(p => ({ ...p, i: !p.i })) },
+      { id: 'mode.transect', group: 'mode', label: transectEnabled ? 'Transect tool: disable' : 'Transect tool: draw a profile line', when: () => hasData, run: () => setTransectEnabled(v => {
+          const next = !v;
+          if (next) { setBottomTab('transect'); setStatusCollapsed(false); }
+          return next;
+        }) },
+      { id: 'mode.transectClear', group: 'mode', label: 'Transect: clear line', when: () => !!transectLine, run: () => setTransectLine(null) },
 
       // Stretch presets
       { id: 'stretch.1sigma', group: 'stretch', label: 'Stretch ±1σ', when: () => hasHist, run: setSigma(1) },
@@ -4951,12 +5216,12 @@ function App() {
 
       // Actions
       { id: 'act.reload', group: 'action', label: 'Reload current view', when: () => hasData, run: handleReload },
-      { id: 'act.figure', group: 'action', label: 'Save figure (PNG)', shortcut: 'Ctrl+S', when: () => hasData, run: handleSaveFigure },
+      { id: 'act.figure', group: 'action', label: 'Save figure (PNG)', shortcut: 'Ctrl+S', when: () => hasData || compareMode, run: handleSaveFigure },
       { id: 'act.figureOverlays', group: 'action', label: 'Save figure with overlays', shortcut: 'Ctrl+Shift+S', when: () => hasData, run: handleSaveFigureWithOverlays },
       { id: 'act.colorbar', group: 'action', label: 'Export RGB colorbar', when: () => isRGBDisplayMode, run: handleExportColorbar },
     ];
   }, [
-    imageData, histogramData, isRGBDisplayMode,
+    imageData, histogramData, isRGBDisplayMode, compareMode, roi, transectEnabled, transectLine,
     handleReload, handleSaveFigure, handleSaveFigureWithOverlays, handleExportColorbar, addStatusLog,
   ]);
 
@@ -5227,6 +5492,36 @@ function App() {
                   </div>
                 )}
               </div>
+
+              {/* Compare grid — open up to 4 GeoTIFFs / NISAR .h5 side by side / 2×2 */}
+              <div className="control-group">
+                <label>Compare (up to 4, synced)</label>
+                <input
+                  type="file"
+                  accept=".tif,.tiff,.h5,.hdf5,.he5"
+                  multiple
+                  id="compare-grid-input"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    setCompareInitialFiles(files);
+                    setCompareMode(true);
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  className={compareMode ? 'btn-primary' : 'btn-secondary'}
+                  onClick={() => {
+                    if (compareMode) { setCompareMode(false); setCompareInitialFiles(null); }
+                    else document.getElementById('compare-grid-input').click();
+                  }}
+                  style={{ width: '100%' }}
+                >
+                  {compareMode ? 'Exit Compare Grid' : 'Compare Files…'}
+                </button>
+              </div>
+
               {imageData?.sliceCount > 1 && (
                 <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                   Mosaic: {imageData.sliceCount} slices, {imageData.width}x{imageData.height} px
@@ -5614,9 +5909,38 @@ function App() {
                       RGB Composite
                     </option>
                   )}
+                  {nisarProductType === 'GCOV' && (
+                    <option value="index" disabled={availableIndices.length === 0}>
+                      Index (RVI)
+                    </option>
+                  )}
                   <option value="multi-temporal">Multi-temporal RGB (3 dates)</option>
                 </select>
               </div>
+
+              {displayMode === 'index' && availableIndices.length > 0 && nisarProductType === 'GCOV' && (
+                <div className="control-group">
+                  <label>Index</label>
+                  <select
+                    value={indexId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setIndexId(id);
+                      const match = availableIndices.find(i => i.id === id);
+                      if (match) setIndexForm(match.form);
+                    }}
+                  >
+                    {availableIndices.map(i => (
+                      <option key={i.id} value={i.id}>{i.name}</option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {availableIndices.find(i => i.id === indexId)?.description || ''}
+                    {' · '}
+                    {indexForm === 'quad' ? 'quad-pol form' : 'dual-pol form'}
+                  </div>
+                </div>
+              )}
 
               {displayMode === 'rgb' && availableComposites.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
@@ -6044,7 +6368,16 @@ function App() {
 
           {/* Display Settings */}
           <CollapsibleSection title="Display">
-            
+
+            <div className="control-group">
+              <label>UI Theme</label>
+              <select value={uiTheme} onChange={(e) => setUiTheme(e.target.value)}>
+                <option value="">Dark</option>
+                <option value="sardine">SARdine (navy)</option>
+                <option value="light">Light</option>
+              </select>
+            </div>
+
             {/* Colormap selector — hidden in RGB composite mode */}
             {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
@@ -6098,10 +6431,10 @@ function App() {
                   type="checkbox"
                   id="useDb"
                   checked={effectiveUseDecibels}
-                  disabled={nisarProductType === 'GUNW'}
+                  disabled={nisarProductType === 'GUNW' || displayMode === 'index'}
                   onChange={(e) => setUseDecibels(e.target.checked)}
                 />
-                <label htmlFor="useDb">dB Scaling{nisarProductType === 'GUNW' ? ' (N/A)' : ''}</label>
+                <label htmlFor="useDb">dB Scaling{(nisarProductType === 'GUNW' || displayMode === 'index') ? ' (N/A)' : ''}</label>
               </div>
             </div>
 
@@ -6517,13 +6850,47 @@ function App() {
                       </button>
                     ))}
                   </div>
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', alignItems: 'center' }}>
+                  {/* Size presets — standardized S/M/L (line weight + text scale together) */}
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
                     {[
-                      { key: 'cyan',    hex: '#4ec9d4' },
-                      { key: 'orange',  hex: '#e8833a' },
-                      { key: 'green',   hex: '#3ddc84' },
-                      { key: 'magenta', hex: '#d45cff' },
-                    ].map(({ key, hex }) => (
+                      { key: 'small',  label: 'S' },
+                      { key: 'medium', label: 'M' },
+                      { key: 'large',  label: 'L' },
+                    ].map(({ key, label }) => (
+                      <button
+                        key={key}
+                        onClick={() => {
+                          setAnnotationSize(key);
+                          // Retro-apply to the selected annotation so users can resize
+                          // an existing arrow/label without redrawing it.
+                          if (selectedAnnotationId) {
+                            setAnnotations(anns => anns.map(a =>
+                              a.id === selectedAnnotationId ? { ...a, size: key, fontSize: undefined } : a
+                            ));
+                          }
+                        }}
+                        title={
+                          `${key.charAt(0).toUpperCase() + key.slice(1)} — thicker lines & larger text`
+                          + (selectedAnnotationId ? ' (also resizes the selected annotation)' : '')
+                        }
+                        style={{
+                          flex: 1,
+                          padding: '4px 6px',
+                          fontSize: '0.7rem',
+                          fontWeight: 600,
+                          background: annotationSize === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
+                          color: annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                          border: `1px solid ${annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
+                          borderRadius: '2px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', alignItems: 'center' }}>
+                    {ANNOTATION_COLOR_KEYS.map((key) => (
                       <button
                         key={key}
                         onClick={() => setAnnotationColor(key)}
@@ -6531,12 +6898,13 @@ function App() {
                         style={{
                           width: 18, height: 18,
                           padding: 0,
-                          background: hex,
+                          background: ANNOTATION_COLORS[key],
                           border: annotationColor === key
                             ? `2px solid var(--sardine-text-primary, #e8edf5)`
                             : `1px solid var(--sardine-border, #1e3a5f)`,
                           borderRadius: '50%',
                           cursor: 'pointer',
+                          boxShadow: annotationColor === key ? `0 0 0 1px ${ANNOTATION_COLORS[key]}` : 'none',
                         }}
                       />
                     ))}
@@ -6693,6 +7061,18 @@ function App() {
                 showHeader={false}
               />
             )}
+
+            {/* ROI profile plots — drawer panel (toggle views from command palette) */}
+            {roi && activeViewer === 'main' && (
+              <CollapsibleSection title="ROI Profiles" defaultOpen={true}>
+                <ROIProfilePanel
+                  profileData={roiProfile}
+                  show={profileShow}
+                  useDecibels={effectiveUseDecibels}
+                />
+              </CollapsibleSection>
+            )}
+
 
             {/* GUNW phase controls: LOS displacement toggle + symmetric range presets */}
             {nisarProductType === 'GUNW' && imageData && (
@@ -7095,7 +7475,7 @@ function App() {
 
           {error && <div className="error">{error}</div>}
 
-          {!loading && !error && !imageData && (
+          {!loading && !error && !imageData && !compareMode && (
             <div className="loading">
               {fileType === 'cmr'
                 ? (nisarDatasets.length > 0
@@ -7111,8 +7491,31 @@ function App() {
             </div>
           )}
 
+          {/* Compare Grid: up to 4 GeoTIFFs, synced pan/zoom */}
+          {compareMode && (
+            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+              <button
+                onClick={() => { setCompareMode(false); setCompareInitialFiles(null); }}
+                style={{
+                  position: 'absolute', top: '8px', right: '8px', zIndex: 2000,
+                  background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                }}
+              >
+                Close Compare
+              </button>
+              <CompareGrid
+                ref={compareGridRef}
+                initialFiles={compareInitialFiles}
+                onStatus={(level, msg, detail) => addStatusLog(level, msg, detail)}
+                onExport={handleSaveFigure}
+              />
+            </div>
+          )}
+
           {/* GUNW Paired View: Phase + Coherence side-by-side */}
-          {gunwPairedView && (
+          {!compareMode && gunwPairedView && (
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <button
                 onClick={() => setGunwPairedView(null)}
@@ -7136,14 +7539,14 @@ function App() {
             </div>
           )}
 
-          {imageData && !gunwPairedView && (
+          {imageData && !gunwPairedView && !compareMode && (
             <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
               {/* Loading overlay — shown on top of existing data while new data streams */}
               {loading && (
                 <div style={{
                   position: 'absolute', inset: 0, zIndex: 10,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'rgba(10, 22, 40, 0.75)',
+                  background: 'var(--overlay-bg, rgba(10, 22, 40, 0.75))',
                   pointerEvents: 'none',
                 }}>
                   <div style={{
@@ -7200,6 +7603,9 @@ function App() {
                   extraLayers={[...opticalPeekLayers, ...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
                   roi={roi}
                   onROIChange={setROI}
+                  transectEnabled={transectEnabled}
+                  transectLine={transectLine}
+                  onTransectLineChange={setTransectLine}
                   imageWidth={imageData?.sourceWidth || imageData?.width}
                   imageHeight={imageData?.sourceHeight || imageData?.height}
                   getPixelValue={imageData?.getPixelValue}
@@ -7225,6 +7631,7 @@ function App() {
                   annotations={annotations}
                   annotationMode={annotationMode}
                   annotationColor={annotationColor}
+                  annotationSize={annotationSize}
                   onAnnotationsChange={setAnnotations}
                   selectedAnnotationId={selectedAnnotationId}
                   onSelectAnnotation={setSelectedAnnotationId}
@@ -7463,6 +7870,22 @@ function App() {
         logs={statusLogs}
         isCollapsed={statusCollapsed}
         onToggle={() => setStatusCollapsed(!statusCollapsed)}
+        activeTab={bottomTab}
+        onTabChange={setBottomTab}
+        tabs={transectEnabled ? [{
+          id: 'transect',
+          label: 'Transect',
+          content: (
+            <TransectProfilePanel
+              data={transectData}
+              enabled={transectEnabled}
+              useDecibels={effectiveUseDecibels}
+              width={transectWidth}
+              onWidthChange={setTransectWidth}
+              line={transectLine}
+            />
+          ),
+        }] : []}
       />
 
       {/* Footer */}

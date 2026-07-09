@@ -15,7 +15,7 @@ export {
   loadMultiBandCOG,
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
-export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
+export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARIndex, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
 export { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from './loaders/nisar-gunw-loader.js';
 export { detectNISARProduct, openNISARReader, getRenderMode, RENDER_MODES } from './loaders/nisar-product.js';
 export {
@@ -57,12 +57,14 @@ export {
   ComparisonViewer,
   SwipeComparisonViewer,
 } from './viewers/ComparisonViewer.jsx';
+export { CompareGrid } from './viewers/CompareGrid.jsx';
 export { MapViewer } from './viewers/MapViewer.jsx';
 
 // Utilities
 export {
   computeStats,
   autoContrastLimits,
+  autoContrastWithDbDetect,
   computeHistogram,
   sampleTileStats,
   computeChannelStats,
@@ -102,9 +104,17 @@ export {
   COLORBLIND_MATRICES,
 } from './utils/sar-composites.js';
 
+export {
+  SAR_INDICES,
+  computeRVI,
+  selectRVIForm,
+  rviRequiredPols,
+  getAvailableIndices,
+} from './utils/sar-indices.js';
+
 export { writeRGBAGeoTIFF, writeRGBGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
 
-export { exportFigure, downloadBlob } from './utils/figure-export.js';
+export { exportFigure, exportFigureSideBySide, exportFigureGrid, downloadBlob } from './utils/figure-export.js';
 
 export { STRETCH_MODES, applyStretch, createStretchFn } from './utils/stretch.js';
 
@@ -203,6 +213,7 @@ import { SARTileLayer } from './layers/SARTileLayer.js';
 import { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 import { SARViewer } from './viewers/SARViewer.jsx';
 import { ComparisonViewer, SwipeComparisonViewer } from './viewers/ComparisonViewer.jsx';
+import { CompareGrid } from './viewers/CompareGrid.jsx';
 import { MapViewer } from './viewers/MapViewer.jsx';
 
 // Default export
@@ -216,5 +227,6 @@ export default {
   SARViewer,
   ComparisonViewer,
   SwipeComparisonViewer,
+  CompareGrid,
   MapViewer,
 };

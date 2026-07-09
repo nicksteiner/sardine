@@ -96,12 +96,14 @@ const requiredFiles = [
   'src/utils/stretch.js',
   'src/utils/stats.js',
   'src/utils/sar-composites.js',
+  'src/utils/sar-indices.js',
   'src/utils/png-state.js',
   'src/loaders/cog-loader.js',
   'src/loaders/nisar-loader.js',
   'src/loaders/h5chunk.js',
   'src/viewers/SARViewer.jsx',
   'src/viewers/ComparisonViewer.jsx',
+  'src/viewers/CompareGrid.jsx',
   'src/viewers/MapViewer.jsx',
   'src/theme/sardine-theme.css',
   'app/main.jsx',
@@ -130,7 +132,10 @@ const requiredExports = [
   'SARGPULayer',
   'SARViewer',
   'ComparisonViewer',
+  'CompareGrid',
   'MapViewer',
+  'exportFigureGrid',
+  'autoContrastWithDbDetect',
   'loadCOG',
   'loadNISARGCOV',
   'getColormapId',
@@ -138,6 +143,9 @@ const requiredExports = [
   'applyStretch',
   'computeRGBBands',
   'createRGBTexture',
+  'computeRVI',
+  'SAR_INDICES',
+  'loadNISARIndex',
   'loadNITFFromUrl',
   'loadNITFDatasetFromUrl',
   'URLFile',
@@ -1442,8 +1450,8 @@ check('GCOV mosaic effect deps include displayMode and compositeId', () => {
   // loaded would not trigger a re-load — secondaries would stay in the
   // previous mode and not match the primary.
   assertContains(mainSrcForMosaic,
-    'selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog',
-    'displayMode + compositeId in deps');
+    'selectedFrequency, selectedPolarization, displayMode, compositeId, indexId, indexForm, addStatusLog',
+    'displayMode + compositeId + index deps');
 });
 
 check('SARViewer secondary passes rgbSaturation + colorblindMode', () => {
@@ -1657,6 +1665,98 @@ try {
 
 } catch (err) {
   skip('colorblind functional tests', `import failed: ${err.message}`);
+}
+
+// ─── 13b. SAR indices (RVI) ──────────────────────────────────────────────────
+
+suite('SAR indices — RVI (functional)');
+
+try {
+  const { computeRVI, selectRVIForm, rviRequiredPols, getAvailableIndices, SAR_INDICES } =
+    await import(join(rootDir, 'src/utils/sar-indices.js'));
+
+  check('selectRVIForm picks quad-pol when HH/HV/VV present', () => {
+    const form = selectRVIForm(['HHHH', 'HVHV', 'VVVV']);
+    if (form !== 'quad') throw new Error(`expected 'quad', got '${form}'`);
+  });
+
+  check('selectRVIForm picks dual-pol when only HH/HV present', () => {
+    const form = selectRVIForm(['HHHH', 'HVHV']);
+    if (form !== 'dual') throw new Error(`expected 'dual', got '${form}'`);
+  });
+
+  check('selectRVIForm returns null with a single polarization', () => {
+    const form = selectRVIForm(['HHHH']);
+    if (form !== null) throw new Error(`expected null, got '${form}'`);
+  });
+
+  check('rviRequiredPols(quad) = HH/HV/VV', () => {
+    const pols = rviRequiredPols('quad');
+    if (pols.join(',') !== 'HHHH,HVHV,VVVV') throw new Error(pols.join(','));
+  });
+
+  check('computeRVI quad-pol matches 8·HV/(HH+VV+2·HV)', () => {
+    // HH=4, HV=1, VV=4 → 8·1/(4+4+2) = 8/10 = 0.8
+    const bands = {
+      HHHH: new Float32Array([4]),
+      HVHV: new Float32Array([1]),
+      VVVV: new Float32Array([4]),
+    };
+    const rvi = computeRVI(bands, 'quad');
+    if (Math.abs(rvi[0] - 0.8) > 1e-6) throw new Error(`got ${rvi[0]}, expected 0.8`);
+  });
+
+  check('computeRVI dual-pol matches 4·HV/(HH+HV)', () => {
+    // HH=3, HV=1 → 4·1/(3+1) = 1.0
+    const bands = {
+      HHHH: new Float32Array([3]),
+      HVHV: new Float32Array([1]),
+    };
+    const rvi = computeRVI(bands, 'dual');
+    if (Math.abs(rvi[0] - 1.0) > 1e-6) throw new Error(`got ${rvi[0]}, expected 1.0`);
+  });
+
+  check('computeRVI is low for surface-dominant (small HV)', () => {
+    // HH=10, HV=0 → 0
+    const bands = { HHHH: new Float32Array([10]), HVHV: new Float32Array([0]) };
+    const rvi = computeRVI(bands, 'dual');
+    if (rvi[0] !== 0) throw new Error(`got ${rvi[0]}, expected 0`);
+  });
+
+  check('computeRVI: zero-span pixel → NaN (nodata)', () => {
+    const bands = {
+      HHHH: new Float32Array([0]),
+      HVHV: new Float32Array([0]),
+      VVVV: new Float32Array([0]),
+    };
+    const rvi = computeRVI(bands, 'quad');
+    if (!Number.isNaN(rvi[0])) throw new Error(`got ${rvi[0]}, expected NaN`);
+  });
+
+  check('computeRVI: NaN input → NaN output', () => {
+    const bands = { HHHH: new Float32Array([NaN]), HVHV: new Float32Array([1]) };
+    const rvi = computeRVI(bands, 'dual');
+    if (!Number.isNaN(rvi[0])) throw new Error(`got ${rvi[0]}, expected NaN`);
+  });
+
+  check('getAvailableIndices surfaces RVI for GCOV dual-pol', () => {
+    const idx = getAvailableIndices([
+      { polarization: 'HHHH' }, { polarization: 'HVHV' },
+    ]);
+    const rvi = idx.find(i => i.id === 'rvi');
+    if (!rvi) throw new Error('RVI not surfaced');
+    if (rvi.form !== 'dual') throw new Error(`form=${rvi.form}, expected dual`);
+  });
+
+  check('SAR_INDICES.rvi is not dB-scaled and defaults to viridis', () => {
+    const rvi = SAR_INDICES.rvi;
+    if (rvi.useDecibels !== false) throw new Error('RVI should not be dB-scaled');
+    if (rvi.defaultColormap !== 'viridis') throw new Error(`colormap=${rvi.defaultColormap}`);
+    if (rvi.range[0] !== 0 || rvi.range[1] !== 1) throw new Error(`range=${rvi.range}`);
+  });
+
+} catch (err) {
+  skip('RVI functional tests', `import failed: ${err.message}`);
 }
 
 // ─── 14. Lite report charts ─────────────────────────────────────────────────

@@ -4,13 +4,20 @@ import React, { useState, useRef, useEffect } from 'react';
  * StatusWindow - Collapsible debug/status window at bottom of screen.
  * When collapsed, shows a small pull-tab above the footer for easy re-opening.
  */
-export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onToggle }) {
+export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onToggle, tabs = [], activeTab, onTabChange }) {
   const [internalCollapsed, setInternalCollapsed] = useState(false);
+  const [internalTab, setInternalTab] = useState(null);
   const contentRef = useRef(null);
 
   // Use external collapsed state if provided, otherwise use internal
   const isCollapsed = externalCollapsed !== undefined ? externalCollapsed : internalCollapsed;
   const handleToggle = onToggle || (() => setInternalCollapsed(!internalCollapsed));
+
+  // Extra tabs beyond the built-in Status log. 'status' is the reserved id.
+  const allTabs = [{ id: 'status', label: 'Status' }, ...tabs];
+  const currentTab = (activeTab !== undefined ? activeTab : internalTab) || 'status';
+  const selectTab = (id) => { onTabChange ? onTabChange(id) : setInternalTab(id); };
+  const activeContent = tabs.find(t => t.id === currentTab)?.content ?? null;
 
   // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
@@ -158,39 +165,64 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
     }
   }
 
+  const tabStyle = (active) => ({
+    padding: '3px 10px',
+    borderRadius: '4px',
+    fontSize: '0.7rem',
+    letterSpacing: '0.5px',
+    textTransform: 'uppercase',
+    cursor: 'pointer',
+    userSelect: 'none',
+    background: active ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.1))' : 'transparent',
+    border: active ? '1px solid var(--sardine-cyan-dim, #2a8a93)' : '1px solid transparent',
+    color: active ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--text-muted, #5a7099)',
+  });
+
   return (
     <div style={containerStyle}>
-      <div style={headerStyle} onClick={handleToggle}>
-        <div style={titleStyle}>
-          Status Window
-          {logs.length > 0 && (
-            <span style={{ marginLeft: '8px', color: 'var(--text-disabled, #3a5070)' }}>
-              ({logs.length} {logs.length === 1 ? 'entry' : 'entries'})
-            </span>
-          )}
-        </div>
-        <div style={toggleButtonStyle}>▼</div>
-      </div>
-
-      <div style={contentStyle} ref={contentRef}>
-        {logs.length === 0 ? (
-          <div style={{ color: 'var(--text-disabled, #3a5070)', fontStyle: 'italic' }}>
-            No status messages yet...
-          </div>
-        ) : (
-          logs.map((log, index) => (
-            <div key={index} style={logEntryStyle(log.type)}>
-              <span style={timestampStyle}>{log.timestamp}</span>
-              <span style={messageStyle(log.type)}>{log.message}</span>
-              {log.details && (
-                <div style={{ marginTop: '4px', color: 'var(--text-muted, #5a7099)', fontSize: '11px', paddingLeft: '80px' }}>
-                  {log.details}
-                </div>
+      <div style={headerStyle}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {allTabs.map(t => (
+            <div
+              key={t.id}
+              style={tabStyle(currentTab === t.id)}
+              onClick={(e) => { e.stopPropagation(); selectTab(t.id); }}
+            >
+              {t.label}
+              {t.id === 'status' && logs.length > 0 && (
+                <span style={{ marginLeft: '6px', color: 'var(--text-disabled, #3a5070)' }}>{logs.length}</span>
               )}
             </div>
-          ))
-        )}
+          ))}
+        </div>
+        <div style={toggleButtonStyle} onClick={handleToggle}>▼</div>
       </div>
+
+      {currentTab === 'status' ? (
+        <div style={contentStyle} ref={contentRef}>
+          {logs.length === 0 ? (
+            <div style={{ color: 'var(--text-disabled, #3a5070)', fontStyle: 'italic' }}>
+              No status messages yet...
+            </div>
+          ) : (
+            logs.map((log, index) => (
+              <div key={index} style={logEntryStyle(log.type)}>
+                <span style={timestampStyle}>{log.timestamp}</span>
+                <span style={messageStyle(log.type)}>{log.message}</span>
+                {log.details && (
+                  <div style={{ marginTop: '4px', color: 'var(--text-muted, #5a7099)', fontSize: '11px', paddingLeft: '80px' }}>
+                    {log.details}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div style={{ ...contentStyle, color: 'var(--text-secondary, #8fa4c4)' }}>
+          {activeContent}
+        </div>
+      )}
     </div>
   );
 }

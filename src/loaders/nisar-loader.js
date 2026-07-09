@@ -33,6 +33,7 @@ import { bboxToPixelRange, reprojectBbox, roiIntersectsFile, computeSubsetBounds
 import { loadMetadataCube } from '../utils/metadata-cube.js';
 import { normalizeS3Url } from '../utils/s3-url.js';
 import { createPersistentChunkCache } from '../utils/chunk-cache.js';
+import { SAR_INDICES, computeRVI, rviRequiredPols } from '../utils/sar-indices.js';
 
 // ─── NISAR GCOV Product Specification (JPL D-102274 Rev E) ──────────────
 // All paths below are derived from Tables 5-1 through 5-8 of the spec.
@@ -4345,6 +4346,93 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
   }
 
   return result;
+}
+
+/**
+ * Load a NISAR GCOV file as a single-band scalar index (e.g. RVI).
+ *
+ * Reuses loadNISARRGBComposite's multi-band read/cache/batch machinery to
+ * fetch the required power bands, then collapses each tile / export stripe to
+ * ONE derived band via the index formula. The returned object matches the
+ * single-band loader contract: getTile → {bands: {[indexId]: Float32Array}}.
+ *
+ * The index renders through the single-band colormap path (NOT dB-scaled).
+ *
+ * @param {File|string} fileOrUrl
+ * @param {Object} options
+ * @param {string} options.frequency - 'A' or 'B' (default: 'A')
+ * @param {string} options.indexId   - Key in SAR_INDICES (e.g. 'rvi')
+ * @param {string} options.form      - Index form ('quad' | 'dual' | 'dual-v')
+ * @returns {Promise<Object>} single-band-compatible loader result
+ */
+export async function loadNISARIndex(fileOrUrl, options = {}) {
+  const {
+    frequency = 'A',
+    indexId = 'rvi',
+    form = 'dual',
+    _streamReader = null,
+    _chunkCaches = null,
+    fetchHeaders,
+  } = options;
+
+  const index = SAR_INDICES[indexId];
+  if (!index) throw new Error(`Unknown index: ${indexId}`);
+
+  const requiredPols = index.requiredPols
+    ? index.requiredPols(form)
+    : rviRequiredPols(form);
+  const bandName = indexId.toUpperCase();
+
+  console.log(`[NISAR Loader] Loading index ${indexId} (form=${form}, pols=${requiredPols.join(', ')})`);
+
+  // Reuse the composite loader to read the underlying power bands.
+  const base = await loadNISARRGBComposite(fileOrUrl, {
+    frequency,
+    compositeId: `__index_${indexId}__`,
+    requiredPols,
+    requiredComplexPols: [],
+    _streamReader,
+    _chunkCaches,
+    fetchHeaders,
+  });
+
+  const compute = index.compute || computeRVI;
+
+  // Collapse a raw multi-band tile to one derived band. The single-band
+  // render path (SARTileLayer) keys off tileData.data (a flat Float32Array),
+  // so return `data`, not `bands`.
+  async function getTile(args) {
+    const tile = await base.getRGBTile(args);
+    if (!tile) return null;
+    const values = compute(tile.bands, form);
+    const out = { data: values, width: tile.width, height: tile.height };
+    if (tile.mask) out.mask = tile.mask;
+    return out;
+  }
+
+  async function getExportStripe(args) {
+    const stripe = await base.getExportStripe(args);
+    const values = compute(stripe.bands, form);
+    return { bands: { [bandName]: values }, width: stripe.width, height: stripe.height };
+  }
+
+  return {
+    ...base,
+    getTile,
+    getRGBTile: undefined,
+    getExportStripe,
+    polarization: bandName,
+    requiredPols: [bandName],
+    _indexPols: requiredPols,
+    indexId,
+    indexForm: form,
+    isIndex: true,
+    // Index range/scale hints for the app to auto-apply render settings.
+    indexRange: index.range || [0, 1],
+    indexColormap: index.defaultColormap || 'viridis',
+    indexUseDecibels: index.useDecibels === true,
+    composite: undefined,
+  };
 }
 
 /**

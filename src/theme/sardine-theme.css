@@ -1,11 +1,20 @@
 /*
  * SARdine Design System — sardine-theme.css
  * ===========================================
- * Dark-first operational SAR flood monitoring theme.
- * Based on the SARdine Style Guide v1.0 (Feb 2026).
+ * Dark-first SAR analysis workstation theme.
  *
- * Fonts: JetBrains Mono (data), Space Grotesk (headings), IBM Plex Sans (body)
- * Palette: Deep navy backgrounds, cyan/orange/green/magenta accents
+ * Themes:
+ *   (default) "dark"          Neutral near-black. Optimal for raster work:
+ *                             a chromatically neutral, low-luminance surround
+ *                             (radiology reading-room practice) so the
+ *                             imagery's tones and colors read true.
+ *   [data-theme="sardine"]    Navy-tinted brand variant.
+ *   [data-theme="light"]      Light theme.
+ *
+ * Fonts: JetBrains Mono (data values), Space Grotesk (headings), IBM Plex Sans (body/labels)
+ * Color rule: surfaces and text are neutral; cyan is the single interactive
+ * accent; green/magenta/orange are reserved for data semantics (polarization
+ * channels, alerts) — never for chrome.
  */
 
 /* ─── WEB FONTS ─── */
@@ -15,46 +24,60 @@
    DESIGN TOKENS (CSS Custom Properties)
    ═══════════════════════════════════════════════ */
 :root {
-  /* ─── PRIMARY PALETTE ─── */
-  /* Base bg is "Darkest Black" #030201 — the canonical deepest perceptible
-     hex on a standard display (asymmetric RGB nudges perception darker
-     than pure #000, mirroring how Vantablack/Musou Black absorb light
-     non-uniformly). The raised/panel/hover steps are a near-black ramp
-     just bright enough to read panel boundaries against the base. */
-  --sardine-bg:            #030201;
-  --sardine-bg-raised:     #0a0a0a;
-  --sardine-bg-panel:      #0f0f10;
-  --sardine-bg-hover:      #161618;
-  --sardine-border:        #1f1f22;
-  --sardine-border-subtle: #141416;
+  /* ─── PRIMARY PALETTE (dark — default) ─── */
+  /* Neutral near-black ramp, per display literature for image interpretation:
+     zero hue in the surround (a tinted surround shifts perceived color
+     balance via simultaneous contrast), luminance low but slightly above
+     pure black so panel structure stays legible and the eye's adaptation
+     level suits dB-grayscale reading. */
+  --sardine-bg:            #0a0a0b;
+  --sardine-bg-raised:     #121316;
+  --sardine-bg-panel:      #16171b;
+  --sardine-bg-hover:      #1e2024;
+  --sardine-border:        #292b31;
+  --sardine-border-subtle: #1e2025;
 
-  /* ─── ACCENT: SAR SIGNAL CYAN ─── */
+  /* ─── ACCENT: SAR SIGNAL CYAN (single interactive accent) ─── */
   --sardine-cyan:       #4ec9d4;
   --sardine-cyan-dim:   #2a8a93;
-  --sardine-cyan-glow:  rgba(78, 201, 212, 0.25);
+  --sardine-cyan-glow:  transparent;  /* flat states — glows retired, tokens kept for compat */
   --sardine-cyan-bg:    rgba(78, 201, 212, 0.08);
 
-  /* ─── ACCENT: FLOOD ALERT ORANGE ─── */
+  /* ─── DATA SEMANTICS: FLOOD ALERT ORANGE ─── */
   --sardine-orange:      #e8833a;
   --sardine-orange-dim:  #b5642a;
-  --sardine-orange-glow: rgba(232, 131, 58, 0.25);
+  --sardine-orange-glow: transparent;
   --sardine-orange-bg:   rgba(232, 131, 58, 0.08);
 
-  /* ─── ACCENT: VV POLARIZATION GREEN ─── */
+  /* ─── DATA SEMANTICS: VV POLARIZATION GREEN ─── */
   --sardine-green:      #3ddc84;
   --sardine-green-dim:  #2a9e5e;
-  --sardine-green-glow: rgba(61, 220, 132, 0.2);
+  --sardine-green-glow: transparent;
 
-  /* ─── ACCENT: HH POLARIZATION MAGENTA ─── */
+  /* ─── DATA SEMANTICS: HH POLARIZATION MAGENTA ─── */
   --sardine-magenta:      #d45cff;
   --sardine-magenta-dim:  #9a3db8;
-  --sardine-magenta-glow: rgba(212, 92, 255, 0.2);
+  --sardine-magenta-glow: transparent;
 
-  /* ─── TEXT ─── */
-  --text-primary:   #e8edf5;
-  --text-secondary: #8fa4c4;
-  --text-muted:     #5a7099;
-  --text-disabled:  #3a5070;
+  /* ─── STATUS RED (errors, destructive actions) ─── */
+  --sardine-red: #e74c3c;
+
+  /* ─── TEXT (neutral grays — no blue tint) ─── */
+  --text-primary:   #e8eaed;
+  --text-secondary: #a0a6ad;
+  --text-muted:     #6e747b;
+  --text-disabled:  #4a4f55;
+
+  /* Aliases consumed by component inline styles */
+  --sardine-text-primary:   var(--text-primary);
+  --sardine-text-secondary: var(--text-secondary);
+  --sardine-text-muted:     var(--text-muted);
+  --sardine-text-disabled:  var(--text-disabled);
+
+  /* ─── CHROME BEHAVIOR ─── */
+  --panel-border-style: solid;
+  --overlay-bg:         rgba(16, 17, 20, 0.92); /* floating panels over the viewer */
+  --overlay-bg-hover:   rgba(30, 32, 36, 0.95);
 
   /* ─── STATUS ─── */
   --status-flood:   #ff5c5c;
@@ -105,23 +128,6 @@ body {
   min-height: 100vh;
 }
 
-/* ─── SCANLINE OVERLAY (subtle radar-display feel) ─── */
-body::after {
-  content: '';
-  position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0,0,0,0.03) 2px,
-    rgba(0,0,0,0.03) 4px
-  );
-  pointer-events: none;
-  z-index: 9999;
-}
-
-
 /* ═══════════════════════════════════════════════
    APP LAYOUT
    ═══════════════════════════════════════════════ */
@@ -137,7 +143,7 @@ body::after {
 .header {
   background: var(--sardine-bg-panel);
   padding: var(--space-sm) var(--space-lg);
-  border-bottom: 2px dashed var(--sardine-border);
+  border-bottom: 2px var(--panel-border-style) var(--sardine-border);
   display: flex;
   align-items: center;
   gap: var(--space-lg);
@@ -181,7 +187,7 @@ body::after {
   padding: var(--space-md);
   padding-bottom: 48px; /* Extra room so content clears the fixed status bar */
   overflow-y: auto;
-  border-right: 1px dashed var(--sardine-border);
+  border-right: 1px var(--panel-border-style) var(--sardine-border);
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
@@ -203,7 +209,7 @@ body::after {
   color: var(--text-muted);
   margin-bottom: var(--space-sm);
   padding-bottom: var(--space-xs);
-  border-bottom: 1px dashed var(--sardine-border-subtle);
+  border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle);
 }
 
 /* ─── COLLAPSIBLE SECTIONS ─── */
@@ -264,11 +270,11 @@ body::after {
   margin-bottom: 0;
 }
 
+/* Labels are sans; mono is reserved for data values (.value-display, metadata values) */
 .control-group label {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 0.75rem;
   color: var(--text-secondary);
-  letter-spacing: 0.5px;
 }
 
 .control-group input[type="text"],
@@ -352,7 +358,6 @@ button {
 
 button:hover {
   background: #5ed8e6;
-  box-shadow: 0 0 20px var(--sardine-cyan-glow);
 }
 
 button:disabled {
@@ -383,7 +388,6 @@ button.btn-alert {
 }
 
 button.btn-alert:hover {
-  box-shadow: 0 0 20px var(--sardine-orange-glow);
 }
 
 /* Danger button variant */
@@ -411,7 +415,7 @@ button.btn-danger:hover {
 .state-panel {
   width: 350px;
   background: var(--sardine-bg-raised);
-  border-left: 1px dashed var(--sardine-border);
+  border-left: 1px var(--panel-border-style) var(--sardine-border);
   display: flex;
   flex-direction: column;
 }
@@ -419,7 +423,7 @@ button.btn-danger:hover {
 .state-panel-header {
   padding: var(--space-sm) var(--space-md);
   background: var(--sardine-bg-panel);
-  border-bottom: 1px dashed var(--sardine-border);
+  border-bottom: 1px var(--panel-border-style) var(--sardine-border);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -435,7 +439,7 @@ button.btn-danger:hover {
 
 .state-panel-header .badge {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   color: var(--sardine-cyan);
   background: var(--sardine-cyan-bg);
   border: 1px solid var(--sardine-border);
@@ -596,14 +600,14 @@ button.btn-danger:hover {
   right: var(--space-sm);
   width: 220px;
   max-height: calc(100% - 16px);
-  background: rgba(10, 22, 40, 0.92);
+  background: var(--overlay-bg);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--sardine-border);
   border-radius: var(--radius-md);
   z-index: 100;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   overflow: hidden;
   transition: width var(--transition-med), max-height var(--transition-med);
@@ -634,7 +638,7 @@ button.btn-danger:hover {
 }
 
 .metadata-panel-title {
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 1.5px;
   text-transform: uppercase;
@@ -646,7 +650,7 @@ button.btn-danger:hover {
 }
 
 .metadata-panel-toggle {
-  font-size: 0.6rem;
+  font-size: 0.65rem;
   color: var(--text-muted);
   transition: transform var(--transition-fast);
 }
@@ -660,7 +664,7 @@ button.btn-danger:hover {
 /* ─── METADATA SECTIONS ─── */
 .metadata-section {
   padding: 6px 4px;
-  border-bottom: 1px dashed var(--sardine-border-subtle);
+  border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle);
 }
 
 .metadata-section:last-child {
@@ -668,14 +672,14 @@ button.btn-danger:hover {
 }
 
 .metadata-section-title {
-  font-size: 0.6rem;
+  font-size: 0.65rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--text-muted);
   margin-bottom: 4px;
   padding-bottom: 2px;
-  border-bottom: 1px dashed var(--sardine-border-subtle);
+  border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle);
 }
 
 /* ─── METADATA ROWS ─── */
@@ -688,8 +692,9 @@ button.btn-danger:hover {
 }
 
 .metadata-label {
-  color: var(--text-disabled);
-  font-size: 0.6rem;
+  font-family: var(--font-body);
+  color: var(--text-muted);
+  font-size: 0.65rem;
   white-space: nowrap;
   margin-right: 8px;
   flex-shrink: 0;
@@ -697,7 +702,7 @@ button.btn-danger:hover {
 
 .metadata-value {
   color: var(--text-secondary);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   text-align: right;
   word-break: break-word;
 }
@@ -722,7 +727,7 @@ button.btn-danger:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(10, 22, 40, 0.85);
+  background: var(--overlay-bg);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--sardine-border);
@@ -734,7 +739,7 @@ button.btn-danger:hover {
 }
 
 .overview-map-toggle:hover {
-  background: rgba(18, 34, 64, 0.95);
+  background: var(--overlay-bg-hover);
   border-color: var(--sardine-cyan-dim);
 }
 
@@ -756,7 +761,7 @@ button.btn-danger:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(10, 22, 40, 0.85);
+  background: var(--overlay-bg);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--sardine-border);
@@ -768,7 +773,7 @@ button.btn-danger:hover {
 }
 
 .satellite-map-toggle:hover {
-  background: rgba(18, 34, 64, 0.95);
+  background: var(--overlay-bg-hover);
   border-color: var(--sardine-cyan-dim);
 }
 
@@ -782,14 +787,14 @@ button.btn-danger:hover {
   bottom: calc(var(--bottom-dock, 40px) + 50px);
   left: calc(var(--space-md, 12px) + 44px);
   width: 420px;
-  background: rgba(10, 22, 40, 0.95);
+  background: var(--overlay-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--sardine-border);
   border-radius: var(--radius-md, 8px);
   z-index: 1010;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   overflow: hidden;
   box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
@@ -803,14 +808,14 @@ button.btn-danger:hover {
   bottom: calc(var(--bottom-dock, 40px) + 50px);
   left: var(--space-md, 12px);
   width: 420px;
-  background: rgba(10, 22, 40, 0.95);
+  background: var(--overlay-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--sardine-border);
   border-radius: var(--radius-md, 8px);
   z-index: 1010;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   color: var(--text-secondary);
   overflow: hidden;
   box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
@@ -841,7 +846,7 @@ button.btn-danger:hover {
 }
 
 .overview-map-title {
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 1.2px;
   text-transform: uppercase;
@@ -909,7 +914,7 @@ button.btn-danger:hover {
 }
 
 .overview-map-zoom-label {
-  font-size: 0.6rem;
+  font-size: 0.65rem;
   color: var(--sardine-cyan);
   min-width: 28px;
   text-align: center;
@@ -931,9 +936,30 @@ button.btn-danger:hover {
   justify-content: space-between;
   align-items: center;
   padding: 4px 10px;
-  font-size: 0.58rem;
+  font-size: 0.65rem;
   color: var(--text-muted);
   letter-spacing: 0.3px;
+}
+
+
+/* ═══════════════════════════════════════════════
+   SARDINE THEME — navy-tinted brand variant
+   ═══════════════════════════════════════════════ */
+[data-theme="sardine"] {
+  --sardine-bg:            #182338;
+  --sardine-bg-raised:     #1e2b44;
+  --sardine-bg-panel:      #233250;
+  --sardine-bg-hover:      #2b3d60;
+  --sardine-border:        #35486c;
+  --sardine-border-subtle: #283a58;
+
+  --text-primary:   #e8edf5;
+  --text-secondary: #a7b7d4;
+  --text-muted:     #7389ad;
+  --text-disabled:  #4d6182;
+
+  --overlay-bg:       rgba(24, 35, 56, 0.92);
+  --overlay-bg-hover: rgba(43, 61, 96, 0.95);
 }
 
 
@@ -941,6 +967,9 @@ button.btn-danger:hover {
    LIGHT THEME
    ═══════════════════════════════════════════════ */
 [data-theme="light"] {
+  --overlay-bg:       rgba(250, 249, 246, 0.94);
+  --overlay-bg-hover: rgba(237, 234, 228, 0.96);
+
   --sardine-bg:            #f5f3ef;
   --sardine-bg-raised:     #ffffff;
   --sardine-bg-panel:      #faf9f6;
@@ -950,21 +979,21 @@ button.btn-danger:hover {
 
   --sardine-cyan:       #0e8a96;
   --sardine-cyan-dim:   #0a6e78;
-  --sardine-cyan-glow:  rgba(14, 138, 150, 0.15);
+  --sardine-cyan-glow:  transparent;
   --sardine-cyan-bg:    rgba(14, 138, 150, 0.06);
 
   --sardine-orange:      #c96a25;
   --sardine-orange-dim:  #a0541d;
-  --sardine-orange-glow: rgba(201, 106, 37, 0.15);
+  --sardine-orange-glow: transparent;
   --sardine-orange-bg:   rgba(201, 106, 37, 0.06);
 
   --sardine-green:      #1a8a4a;
   --sardine-green-dim:  #146b3a;
-  --sardine-green-glow: rgba(26, 138, 74, 0.15);
+  --sardine-green-glow: transparent;
 
   --sardine-magenta:      #9b3dbb;
   --sardine-magenta-dim:  #7a2f94;
-  --sardine-magenta-glow: rgba(155, 61, 187, 0.15);
+  --sardine-magenta-glow: transparent;
 
   --text-primary:   #1a2233;
   --text-secondary: #4a5568;
@@ -977,9 +1006,6 @@ button.btn-danger:hover {
   --status-success: #1a8a4a;
 }
 
-[data-theme="light"] body::after {
-  background: none;
-}
 
 
 /* ─── DATA DISCOVERY / BUCKET BROWSER ─── */
@@ -1001,7 +1027,7 @@ button.btn-danger:hover {
 
 .discovery-url {
   font-family: var(--font-mono, monospace);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   color: var(--sardine-cyan, #4ec9d4);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1027,7 +1053,7 @@ button.btn-danger:hover {
   flex-wrap: wrap;
   gap: 1px;
   margin-bottom: 6px;
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   font-family: var(--font-mono, monospace);
 }
 
@@ -1037,7 +1063,7 @@ button.btn-danger:hover {
   color: var(--sardine-cyan, #4ec9d4);
   cursor: pointer;
   padding: 1px 3px;
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   font-family: inherit;
 }
 .discovery-crumb:hover {
@@ -1068,7 +1094,7 @@ button.btn-danger:hover {
   gap: 6px;
   padding: 4px 8px;
   cursor: default;
-  border-bottom: 1px solid rgba(30, 58, 95, 0.3);
+  border-bottom: 1px solid var(--sardine-border-subtle);
   transition: background 0.15s ease;
 }
 .discovery-item:last-child {
@@ -1099,7 +1125,7 @@ button.btn-danger:hover {
 
 .discovery-size {
   flex-shrink: 0;
-  font-size: 0.6rem;
+  font-size: 0.65rem;
   color: var(--text-muted, #5a7099);
   font-family: var(--font-mono, monospace);
 }
@@ -1152,7 +1178,7 @@ button.btn-danger:hover {
 
 .discovery-auth-badge {
   float: right;
-  font-size: 0.6rem;
+  font-size: 0.65rem;
 }
 
 .discovery-filter-bar {
@@ -1169,7 +1195,7 @@ button.btn-danger:hover {
   background: var(--sardine-bg-raised, #162033);
   border: 1px solid var(--sardine-border, #1e3a5f);
   color: var(--text-secondary, #b0bec5);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   padding: 2px 8px;
   border-radius: 3px;
   cursor: pointer;
@@ -1192,7 +1218,7 @@ button.btn-danger:hover {
   border-radius: 7px;
   background: var(--sardine-cyan, #4ec9d4);
   color: var(--sardine-bg, #0a1628);
-  font-size: 0.55rem;
+  font-size: 0.6rem;
   font-weight: 700;
   line-height: 1;
 }
@@ -1201,7 +1227,7 @@ button.btn-danger:hover {
   background: none;
   border: none;
   color: var(--text-muted, #5a7099);
-  font-size: 0.6rem;
+  font-size: 0.65rem;
   cursor: pointer;
   padding: 2px 4px;
   font-family: inherit;
@@ -1228,14 +1254,14 @@ button.btn-danger:hover {
 }
 
 .discovery-filter-group label {
-  font-size: 0.55rem;
+  font-size: 0.6rem;
   color: var(--text-muted, #5a7099);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .discovery-filter-group select {
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   padding: 1px 2px;
   background: var(--sardine-bg, #0a1628);
   color: var(--text-primary, #e0e8f0);
