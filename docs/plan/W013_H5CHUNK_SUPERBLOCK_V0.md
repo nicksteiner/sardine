@@ -1,7 +1,7 @@
 # W013 — h5chunk superblock v0/v1 root-group address bug
 
 wave: 1
-status: todo
+status: launched
 blocked_by: [W001]
 branch: w013-superblock-v0
 

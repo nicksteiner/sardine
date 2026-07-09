@@ -1,7 +1,7 @@
 # W005 — Export provenance sidecar (metadata survives the exit)
 
 wave: 1
-status: branch-ready (commit 3cb02d2)
+status: merged — was branch-ready (commit 3cb02d2)
 blocked_by: []
 branch: w005-export-sidecar
 

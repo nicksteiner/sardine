@@ -1,7 +1,7 @@
 # W006 — Web Worker pool for chunk decompression
 
 wave: 1
-status: branch-ready (commit 40fe086, stacked on W003 9b4f090)
+status: merged — was branch-ready (commit 40fe086, stacked on W003 9b4f090)
 blocked_by: [W003]
 branch: w006-decode-workers
 

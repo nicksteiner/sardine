@@ -1,7 +1,7 @@
 # W008 — Granule deep links (the distribution primitive)
 
 wave: 1
-status: todo
+status: launched
 blocked_by: []
 branch: w008-granule-deeplinks
 

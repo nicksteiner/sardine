@@ -1,7 +1,7 @@
 # W003 — Fix signal-abort cascade + adaptive-concurrency decay (P0)
 
 wave: 0
-status: branch-ready (commit 9b4f090)
+status: merged — was branch-ready (commit 9b4f090)
 blocked_by: []
 branch: w003-abort-cascade-fix
 

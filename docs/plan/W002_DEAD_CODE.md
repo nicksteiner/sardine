@@ -1,7 +1,7 @@
 # W002 — Delete dead code and stale docs
 
 wave: 0
-status: branch-ready (commit c8fa22b, +103/−1429)
+status: merged — was branch-ready (commit c8fa22b, +103/−1429)
 blocked_by: []
 branch: w002-dead-code
 

@@ -1,7 +1,7 @@
 # W004 — Annotation/ROI/transect GeoJSON serialization (interpretation as data, step 1)
 
 wave: 1
-status: branch-ready (commit 0088163)
+status: merged — was branch-ready (commit 0088163)
 blocked_by: []
 branch: w004-annotation-geojson-io
 

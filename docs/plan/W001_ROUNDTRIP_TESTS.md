@@ -1,7 +1,7 @@
 # W001 — Loader & export round-trip tests (the refactor safety net)
 
 wave: 0
-status: branch-ready (commit 2730fcc)
+status: merged — was branch-ready (commit 2730fcc)
 blocked_by: []
 branch: w001-roundtrip-tests
 

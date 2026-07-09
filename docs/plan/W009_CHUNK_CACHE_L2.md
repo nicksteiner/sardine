@@ -1,7 +1,7 @@
 # W009 — IndexedDB L2 chunk cache + MERGE_GAP tuning
 
 wave: 1
-status: branch-ready (commit d991340, stacked on W006 40fe086)
+status: merged — was branch-ready (commit d991340, stacked on W006 40fe086)
 blocked_by: [W006]
 branch: w009-chunk-cache-l2
 
