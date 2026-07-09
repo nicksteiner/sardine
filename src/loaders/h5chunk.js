@@ -3100,19 +3100,30 @@ export class H5Chunk {
       const batch = mergedRanges.slice(i, i + concurrency);
       const batchStart = performance.now();
       let batchBytes = 0;
-      const batchResults = await Promise.all(batch.map(async (range, idx) => {
+      const settled = await Promise.allSettled(batch.map(async (range) => {
         const fetchOpts = { headers: { 'Range': `bytes=${range.start}-${range.end - 1}`, ...this.fetchHeaders } };
+        // Regression note (W003): tile getTile paths intentionally do NOT pass a
+        // signal here — chunk reads run to completion so the chunk cache stays warm
+        // even when the requesting deck.gl tile has been aborted.
         if (signal) fetchOpts.signal = signal;
         const response = await fetch(this.url, fetchOpts);
         const buf = await response.arrayBuffer();
         batchBytes += buf.byteLength;
         return buf;
       }));
-      for (let j = 0; j < batchResults.length; j++) {
-        rangeResults[i + j] = batchResults[j];
+      const rejected = settled.find(s => s.status === 'rejected');
+      if (rejected) {
+        // Aborted/failed fetches are EXCLUDED from throughput samples — a batch
+        // containing an AbortError would register as ~0 MB/s and falsely decay
+        // adaptive concurrency (audit BUG 3). Rethrow to preserve failure semantics.
+        throw rejected.reason;
       }
-      // Measure throughput and adapt concurrency
-      // Skip measurement if batch was very fast (likely cached or aborted)
+      for (let j = 0; j < settled.length; j++) {
+        rangeResults[i + j] = settled[j].value;
+      }
+      // Measure throughput and adapt concurrency — only batches where every
+      // request completed contribute samples.
+      // Skip measurement if batch was very fast (likely cached)
       const elapsed = (performance.now() - batchStart) / 1000; // seconds
       if (elapsed > 0.1 && batchBytes > 0) {
         const mbps = (batchBytes / (1024 * 1024)) / elapsed;

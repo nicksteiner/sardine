@@ -4736,8 +4736,14 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   const tileResultCache = new Map();
   const MAX_TILE_CACHE = 64;
 
-  // Build getTile function for on-demand chunk reading
-  const getTile = async ({ x, y, z, bbox, multiLook }) => {
+  // Build getTile function for on-demand chunk reading.
+  // Regression note (W003): chunk reads below are intentionally NOT abortable —
+  // the deck.gl tile `signal` must never be forwarded into readChunksBatch/
+  // readRegion. Aborted chunk fetches would leave the chunk cache cold and
+  // poison the adaptive-concurrency estimator (RENDERING_PIPELINE_AUDIT §14).
+  // The signal is only checked AFTER chunks resolve, as a cheap CPU skip:
+  // the cached chunks then serve the next tile request.
+  const getTile = async ({ x, y, z, bbox, multiLook, signal }) => {
     _enterForeground();
     const tileSize = 256;
     try {
@@ -4785,6 +4791,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         if (maskDatasetId) readPromises.push(streamReader.readRegion(maskDatasetId, pxTop, pxLeft, sliceH, sliceW));
         const [result, maskRegion] = await Promise.all(readPromises);
         if (!result) return null;
+        // Tile aborted while chunks were in flight: skip building (cheap CPU
+        // skip) — the reads above completed and warmed h5chunk's caches.
+        if (signal?.aborted) return null;
         tileData = result.data || result;
         const maskRaw = maskRegion ? (maskRegion.data || maskRegion) : null;
 
@@ -4875,6 +4884,10 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
           })
         ));
       }
+
+      // Tile aborted while chunks were in flight: the reads above completed and
+      // populated chunkCache — skip the mosaic build, next request reuses them.
+      if (signal?.aborted) return null;
 
       // GPU-native upscale: sub-block mosaic + GL_LINEAR upscaling
       // subN=4: each sub-block averages ~128×128 px (eliminates speckle aliasing)
