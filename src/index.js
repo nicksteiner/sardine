@@ -39,7 +39,6 @@ export { clearChunkCache } from './utils/chunk-cache.js';
 export { SARTileLayer } from './layers/SARTileLayer.js';
 export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
 export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
-export { SARGPUBitmapLayer } from './layers/SARGPUBitmapLayer.js';
 export { SARGPULayer } from './layers/SARGPULayer.js';
 export {
   sarVertexShader,
@@ -102,7 +101,7 @@ export {
   COLORBLIND_MATRICES,
 } from './utils/sar-composites.js';
 
-export { writeRGBAGeoTIFF, writeRGBGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
+export { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
 
 export { exportFigure, downloadBlob } from './utils/figure-export.js';
 

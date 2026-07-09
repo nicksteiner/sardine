@@ -87,7 +87,6 @@ suite('File structure');
 const requiredFiles = [
   'src/index.js',
   'src/layers/SARGPULayer.js',
-  'src/layers/SARGPUBitmapLayer.js',
   'src/layers/SARBitmapLayer.js',
   'src/layers/SARTileLayer.js',
   'src/layers/SARTiledCOGLayer.js',
@@ -126,7 +125,6 @@ const requiredExports = [
   'SARTileLayer',
   'SARBitmapLayer',
   'SARTiledCOGLayer',
-  'SARGPUBitmapLayer',
   'SARGPULayer',
   'SARViewer',
   'ComparisonViewer',
@@ -231,34 +229,6 @@ check('creates R32F texture', () => {
 
 check('balanced braces', () => {
   assertBraceBalance(gpuContent, 'SARGPULayer.js');
-});
-
-// ─── 4. SARGPUBitmapLayer validation ─────────────────────────────────────────
-
-suite('SARGPUBitmapLayer');
-
-const gpuBitmapContent = readFile('src/layers/SARGPUBitmapLayer.js');
-
-check('extends BitmapLayer', () => {
-  assertContains(gpuBitmapContent, 'extends BitmapLayer', 'BitmapLayer extension');
-});
-
-check('uses shader injection', () => {
-  assertContains(gpuBitmapContent, 'inject', 'shader injection');
-  assertContains(gpuBitmapContent, 'fs:#decl', 'fragment shader declarations');
-  assertContains(gpuBitmapContent, 'DECKGL_FILTER_COLOR', 'color filter hook');
-});
-
-check('has all 5 colormaps in injected shader', () => {
-  // Colormaps may be defined inline OR imported via glslColormaps from shaders.js
-  const combined = gpuBitmapContent + _shadersContent;
-  for (const cm of ['grayscale', 'viridis', 'inferno', 'plasma', 'phaseColormap']) {
-    assertContains(combined, `vec3 ${cm}(float t)`, `${cm} colormap`);
-  }
-});
-
-check('balanced braces', () => {
-  assertBraceBalance(gpuBitmapContent, 'SARGPUBitmapLayer.js');
 });
 
 // ─── 5. SARBitmapLayer (CPU) validation ──────────────────────────────────────

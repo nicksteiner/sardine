@@ -309,7 +309,7 @@ export class SARTileLayer extends TileLayer {
 /**
  * Create an RGBA texture from SAR data
  *
- * @deprecated Use SARGPUBitmapLayer for GPU-accelerated rendering.
+ * @deprecated Use SARGPULayer for GPU-accelerated rendering.
  * Retained ONLY for export/histogram computation (needs CPU pixel data).
  *
  * This CPU implementation is 240-720x slower than GPU rendering.

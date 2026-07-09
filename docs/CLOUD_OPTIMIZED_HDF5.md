@@ -276,8 +276,7 @@ h5chunk enables client-side HDF5 streaming from S3 to GPU with no server or Pyth
 ```
 src/loaders/
 ├── h5chunk.js           # Core cloud-optimized HDF5 reader
-├── nisar-loader.js      # NISAR-specific loader using h5chunk
-└── hdf5-chunked.js      # Legacy/simpler implementation
+└── nisar-loader.js      # NISAR-specific loader using h5chunk
 ```
 
 ## API Example

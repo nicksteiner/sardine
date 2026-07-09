@@ -52,12 +52,10 @@ sardine/
 │   ├── loaders/
 │   │   ├── cog-loader.js       # geotiff.js COG wrapper
 │   │   ├── h5chunk.js          # Cloud-optimized HDF5 chunk reader (pure JS)
-│   │   ├── hdf5-chunked.js     # Legacy HDF5 implementation
 │   │   ├── nisar-loader.js     # NISAR GCOV product loader (~3000 lines)
 │   │   └── overture-loader.js  # Overture Maps PMTiles/GeoParquet
 │   ├── layers/
 │   │   ├── SARGPULayer.js      # Primary GPU-accelerated layer (WebGL2 textures)
-│   │   ├── SARGPUBitmapLayer.js # GPU bitmap variant
 │   │   ├── SARBitmapLayer.js   # CPU-fallback bitmap layer
 │   │   ├── SARTileLayer.js     # Original tile layer (Phase 1)
 │   │   ├── SARTiledCOGLayer.js # Tiled COG layer
