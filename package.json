@@ -10,7 +10,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "example": "vite --config vite.example.config.js",
-    "test": "node test/run-tests.js && node test/w003-abort-cascade.test.mjs && node test/unit/run-unit-tests.mjs",
+    "test": "node test/run-tests.js && node test/w003-abort-cascade.test.mjs && node test/w006-decode-pool.test.mjs && node test/unit/run-unit-tests.mjs",
     "test:unit": "node test/unit/run-unit-tests.mjs",
     "test:layer": "vite --config vite.test.config.js --open /test/layer-test.html",
     "test:quick": "node test/quick-validation.js",
