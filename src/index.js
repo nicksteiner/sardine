@@ -135,6 +135,7 @@ export {
   getDeviceLimits,
   computeHistogramGPU,
   computeChannelStatsAuto,
+  sampleViewportStatsAuto,
   canUseGPUStats,
   applySpeckleFilter,
   getFilterTypes,
