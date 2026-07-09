@@ -13,6 +13,12 @@
  * https://docs.hdfgroup.org/hdf5/develop/_f_m_t3.html
  */
 
+import { getDecodePool } from './decode-pool.js';
+import { decodeBytes } from './decode-core.js';
+
+// Re-export pool controls so existing consumers (app/main.jsx) keep working.
+export { setWorkerCount, getWorkerPoolInfo } from './decode-pool.js';
+
 // HDF5 signature
 const HDF5_SIGNATURE = new Uint8Array([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -1162,165 +1168,6 @@ function _releaseChunkSlot() {
   }
 }
 
-// ── Worker pool for parallel decompression ──────────────────────────
-// Shared across all H5Chunk instances. Lazily initialized on first use.
-let _workerPool = null;
-
-class DecompressWorkerPool {
-  constructor(size) {
-    this.size = size;
-    this.workers = [];
-    this.idle = [];
-    this.queue = [];     // pending tasks: {resolve, reject, msg}
-    this.pending = new Map(); // id → {resolve, reject}
-    this.workerTask = new Map(); // workerIdx → task id currently running
-    this._nextId = 0;
-
-    for (let i = 0; i < size; i++) {
-      const worker = new Worker(
-        new URL('./decompress-worker.js', import.meta.url),
-        { type: 'module' }
-      );
-      worker.onmessage = (e) => this._onMessage(i, e);
-      worker.onerror = (e) => this._onError(i, e);
-      this.workers.push(worker);
-      this.idle.push(i);
-    }
-    console.log(`[h5chunk] Decompression worker pool: ${size} threads`);
-  }
-
-  _onMessage(workerIdx, e) {
-    const { id, data, error } = e.data;
-    this.workerTask.delete(workerIdx);
-    const task = this.pending.get(id);
-    if (task) {
-      this.pending.delete(id);
-      if (error) {
-        task.reject(new Error(error));
-      } else {
-        task.resolve(data);
-      }
-    }
-    // Worker is now idle — dispatch next queued task
-    this.idle.push(workerIdx);
-    this._dispatch();
-  }
-
-  _onError(workerIdx, e) {
-    console.warn(`[h5chunk] Worker ${workerIdx} error:`, e.message);
-    // Reject the pending task for this worker so the promise doesn't hang
-    const taskId = this.workerTask.get(workerIdx);
-    if (taskId !== undefined) {
-      this.workerTask.delete(workerIdx);
-      const task = this.pending.get(taskId);
-      if (task) {
-        this.pending.delete(taskId);
-        task.reject(new Error(`Worker ${workerIdx} crashed: ${e.message}`));
-      }
-    }
-    this.idle.push(workerIdx);
-    this._dispatch();
-  }
-
-  _dispatch() {
-    while (this.idle.length > 0 && this.queue.length > 0) {
-      const workerIdx = this.idle.pop();
-      const task = this.queue.shift();
-      this.pending.set(task.msg.id, { resolve: task.resolve, reject: task.reject });
-      this.workerTask.set(workerIdx, task.msg.id);
-      this.workers[workerIdx].postMessage(task.msg, [task.msg.buffer]);
-    }
-  }
-
-  /**
-   * Submit a chunk for decompression. Returns a Promise<ArrayBuffer>.
-   * The compressed buffer is transferred (zero-copy) to the worker.
-   */
-  decompress(compressedBuffer, filters, dtype) {
-    const id = this._nextId++;
-    const msg = { id, buffer: compressedBuffer, filters, dtype };
-    return new Promise((resolve, reject) => {
-      this.queue.push({ resolve, reject, msg });
-      this._dispatch();
-    });
-  }
-
-  /**
-   * Resize the pool. Adds or removes workers to match the new size.
-   * In-flight tasks on removed workers will still complete.
-   */
-  resize(newSize) {
-    if (newSize === this.size) return;
-    if (newSize > this.size) {
-      // Add workers
-      for (let i = this.size; i < newSize; i++) {
-        const worker = new Worker(
-          new URL('./decompress-worker.js', import.meta.url),
-          { type: 'module' }
-        );
-        worker.onmessage = (e) => this._onMessage(i, e);
-        worker.onerror = (e) => this._onError(i, e);
-        this.workers.push(worker);
-        this.idle.push(i);
-      }
-    } else {
-      // Remove excess workers (only idle ones immediately; busy ones finish naturally)
-      for (let i = newSize; i < this.size; i++) {
-        const idleIdx = this.idle.indexOf(i);
-        if (idleIdx !== -1) {
-          this.idle.splice(idleIdx, 1);
-          this.workers[i].terminate();
-        }
-        // Busy workers will be cleaned up when their task completes
-      }
-    }
-    this.size = newSize;
-    console.log(`[h5chunk] Worker pool resized to ${newSize} threads`);
-    this._dispatch(); // dispatch queued tasks to any new idle workers
-  }
-
-  terminate() {
-    for (const w of this.workers) w.terminate();
-    this.workers = [];
-    this.idle = [];
-  }
-}
-
-function getWorkerPool() {
-  if (!_workerPool) {
-    const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency
-      ? navigator.hardwareConcurrency : 4;
-    // Use up to 8 workers — inflate+unshuffle is CPU-bound and benefits from
-    // true parallelism across cores. Each worker handles ~1-4MB per chunk.
-    _workerPool = new DecompressWorkerPool(Math.min(cores, 8));
-  }
-  return _workerPool;
-}
-
-/**
- * Set the number of decompression workers at runtime.
- * @param {number} count - Number of workers (1–32)
- */
-export function setWorkerCount(count) {
-  const clamped = Math.max(1, Math.min(32, count));
-  const pool = getWorkerPool();
-  pool.resize(clamped);
-}
-
-/**
- * Get current worker pool info.
- * @returns {{size: number, idle: number, queued: number, cores: number}}
- */
-export function getWorkerPoolInfo() {
-  const pool = getWorkerPool();
-  return {
-    size: pool.size,
-    idle: pool.idle.length,
-    queued: pool.queue.length,
-    cores: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4,
-  };
-}
-
 export class H5Chunk {
   constructor() {
     this.superblock = null;
@@ -1331,7 +1178,7 @@ export class H5Chunk {
     this.url = null;
     this.fetchHeaders = {}; // Extra headers for all HTTP fetches (e.g. Authorization)
     this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
-    this.useWorkerPool = true; // Parallel decompress+unshuffle across worker threads
+    this.useWorkerPool = true; // Decompress+unshuffle in the decode-pool Web Workers (falls back to sync main-thread decode when Workers unavailable)
 
     // Adaptive concurrency: start at 12, measure throughput, adjust to 6–50
     this._concurrency = 12;
@@ -3019,7 +2866,11 @@ export class H5Chunk {
     const chunkDims = dataset.layout?.chunkDims || [];
     const results = new Map();
 
-    // Phase 1: Resolve all chunk coordinates to file offsets
+    // Phase 1: Resolve all chunk coordinates to file offsets.
+    // Pre-seed every requested key (in `coords` order) so the returned Map's
+    // iteration order always matches the request order, regardless of the
+    // order in which fetches/decodes complete (Map.set on an existing key
+    // preserves its original insertion position).
     const chunkEntries = []; // { key, row, col, offset, size, filterMask }
     for (const [row, col] of coords) {
       const key = `${row},${col}`;
@@ -3030,6 +2881,7 @@ export class H5Chunk {
       if (!info) {
         results.set(key, null); // sparse chunk
       } else {
+        results.set(key, null); // placeholder — overwritten with decoded data below
         chunkEntries.push({
           key, row, col,
           offset: info.offset, size: info.size,
@@ -3155,10 +3007,16 @@ export class H5Chunk {
   /**
    * Decompress and decode a single chunk buffer.
    * Shared logic between readChunk and readChunksBatch.
+   *
+   * W006: decode runs in the shared decode-pool — Web Workers with
+   * transferable ArrayBuffers when available, otherwise a synchronous
+   * main-thread fallback (bit-exact, same decode-core code). Setting
+   * `this.useWorkerPool = false` forces the synchronous path.
    */
   async _decompressAndDecode(buffer, dataset, filterMask) {
     // Determine which filters to apply
     let filters = null;
+    let fallbackFilters = null;
     const chunkDimsProduct = (dataset.layout?.chunkDims || [])
       .slice(0, -1)
       .reduce((a, b) => a * b, 1);
@@ -3167,54 +3025,37 @@ export class H5Chunk {
     if (dataset.filters && filterMask === 0) {
       filters = dataset.filters;
     } else if (!dataset.filters && buffer.byteLength < expectedBytes) {
-      // Try deflate, then shuffle+deflate
+      // Filter pipeline unknown: try deflate, then shuffle+deflate.
+      // The retry happens INSIDE the pool job (worker or sync) because the
+      // compressed buffer is transferred/detached on the worker path.
       filters = [{ id: FILTER_DEFLATE }];
+      fallbackFilters = [
+        { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
+        { id: FILTER_DEFLATE },
+      ];
     }
 
-    // Worker pool path: transfer buffer to worker (zero-copy, no allocation).
-    // Buffer becomes detached after transfer — no main-thread fallback.
-    if (this.useWorkerPool && filters) {
-      try {
-        const pool = getWorkerPool();
-        const buf = ArrayBuffer.isView(buffer) ? buffer.buffer : buffer;
-        const resultBuffer = await pool.decompress(buf, filters, dataset.dtype);
-        return new Float32Array(resultBuffer);
-      } catch (e) {
-        console.warn(`[h5chunk] Worker decompress failed (${e.message})`);
-        const chunkDims = dataset.layout?.chunkDims || [512, 512];
-        const chunkSize = chunkDims.reduce((a, b) => a * b, 1);
-        return new Float32Array(chunkSize);
-      }
+    // Uncompressed chunk: decode raw bytes inline (no pool round-trip)
+    if (!filters) {
+      return this._decodeData(buffer, dataset.dtype);
     }
 
-    // Main-thread decompression (used when worker pool is disabled)
-    let data = buffer;
-    let decompressOk = !filters;
-    if (filters) {
-      try {
-        data = await this._decompressChunk(buffer, filters);
-        decompressOk = true;
-      } catch (e) {
-        if (!dataset.filters) {
-          try {
-            data = await this._decompressChunk(buffer, [
-              { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
-              { id: FILTER_DEFLATE },
-            ]);
-            decompressOk = true;
-          } catch (e2) { /* decompression failed */ }
-        }
-      }
-    }
-
-    if (!decompressOk) {
+    try {
+      const pool = getDecodePool();
+      const buf = ArrayBuffer.isView(buffer) ? buffer.buffer : buffer;
+      return await pool.decode({
+        buffer: buf,
+        filters,
+        dtype: dataset.dtype,
+        fallbackFilters,
+        sync: !this.useWorkerPool,
+      });
+    } catch (e) {
       const chunkDims = dataset.layout?.chunkDims || [512, 512];
       const chunkSize = chunkDims.reduce((a, b) => a * b, 1);
-      console.warn(`[h5chunk] Decompression failed, returning empty chunk (${chunkSize} values)`);
+      console.warn(`[h5chunk] Decompression failed (${e.message}), returning empty chunk (${chunkSize} values)`);
       return new Float32Array(chunkSize);
     }
-
-    return this._decodeData(data, dataset.dtype);
   }
 
   /**
@@ -3370,160 +3211,12 @@ export class H5Chunk {
   }
 
   /**
-   * Decompress chunk data
-   */
-  async _decompressChunk(buffer, filters) {
-    let data = new Uint8Array(buffer);
-
-    // Apply filters in reverse order
-    for (let i = filters.length - 1; i >= 0; i--) {
-      const filter = filters[i];
-
-      switch (filter.id) {
-        case FILTER_DEFLATE:
-          data = await this._inflateData(data);
-          break;
-
-        case FILTER_SHUFFLE:
-          data = this._unshuffle(data, filter.params[0] || 4);
-          break;
-
-        // Other filters would go here
-      }
-    }
-
-    return data.buffer;
-  }
-
-  /**
-   * Inflate (decompress) zlib-compressed data.
-   * HDF5 deflate filter uses zlib format.
-   * Works in both Node.js (via zlib module) and browser (via DecompressionStream).
-   */
-  async _inflateData(data) {
-    // 1. Try browser DecompressionStream first (native, no dependencies)
-    //    'deflate' format = RFC 1950 zlib, which is what HDF5 deflate uses
-    if (typeof DecompressionStream !== 'undefined') {
-      try {
-        const ds = new DecompressionStream('deflate');
-        const writer = ds.writable.getWriter();
-        writer.write(data);
-        writer.close();
-        const reader = ds.readable.getReader();
-        const chunks = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
-        const result = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          result.set(chunk, offset);
-          offset += chunk.length;
-        }
-        return result;
-      } catch (e) {
-        // DecompressionStream failed, try other methods
-      }
-    }
-
-    throw new Error('No deflate decompressor available (need DecompressionStream)');
-  }
-
-  /**
-   * Unshuffle filter
-   */
-  _unshuffle(data, elementSize) {
-    if (elementSize <= 1) return data;
-    const len = data.length;
-    const count = (len / elementSize) | 0;
-    if (count * elementSize !== len) {
-      console.warn(`[h5chunk] Shuffle: data length ${len} not divisible by elementSize ${elementSize}, truncating`);
-    }
-    const result = new Uint8Array(len);
-
-    for (let i = 0; i < count; i++) {
-      for (let j = 0; j < elementSize; j++) {
-        result[i * elementSize + j] = data[j * count + i];
-      }
-    }
-
-    return result;
-  }
-
-  /**
-   * Decode raw bytes to Float32Array
+   * Decode raw bytes to Float32Array.
+   * Delegates to decode-core so the raw path, the worker path, and the
+   * synchronous fallback all share one implementation (W006).
    */
   _decodeData(buffer, dtype) {
-    // Ensure we have an ArrayBuffer for typed array construction.
-    // Only copy when the view has a non-zero byteOffset (alignment issue).
-    if (ArrayBuffer.isView(buffer)) {
-      if (buffer.byteOffset === 0 && buffer.byteLength === buffer.buffer.byteLength) {
-        buffer = buffer.buffer; // Zero-copy: view spans entire ArrayBuffer
-      } else {
-        buffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-      }
-    }
-    switch (dtype) {
-      case 'float32':
-        return new Float32Array(buffer);
-      case 'float64':
-        return new Float32Array(new Float64Array(buffer));
-      case 'float16':
-        return this._decodeFloat16(buffer);
-      case 'int16':
-        return new Float32Array(new Int16Array(buffer));
-      case 'uint16':
-        return new Float32Array(new Uint16Array(buffer));
-      case 'int32':
-        return new Float32Array(new Int32Array(buffer));
-      case 'uint32':
-        return new Float32Array(new Uint32Array(buffer));
-      case 'uint8':
-        return new Float32Array(new Uint8Array(buffer));
-      case 'int8':
-        return new Float32Array(new Int8Array(buffer));
-      case 'cfloat32':
-        // Interleaved [real, imag, real, imag, ...] — 2 float32 per pixel
-        return new Float32Array(buffer);
-      case 'cfloat64':
-        // Interleaved complex float64 → convert to float32
-        return new Float32Array(new Float64Array(buffer));
-      default:
-        console.warn(`[h5chunk] Unknown dtype: ${dtype}, assuming float32`);
-        return new Float32Array(buffer);
-    }
-  }
-
-  /**
-   * Decode float16 to float32
-   */
-  _decodeFloat16(buffer) {
-    const uint16 = new Uint16Array(buffer);
-    const result = new Float32Array(uint16.length);
-
-    for (let i = 0; i < uint16.length; i++) {
-      const h = uint16[i];
-      const sign = (h & 0x8000) >> 15;
-      const exp = (h & 0x7C00) >> 10;
-      const frac = h & 0x03FF;
-
-      if (exp === 0) {
-        if (frac === 0) {
-          result[i] = sign ? -0 : 0;
-        } else {
-          result[i] = (sign ? -1 : 1) * (frac / 1024) * Math.pow(2, -14);
-        }
-      } else if (exp === 31) {
-        result[i] = frac ? NaN : (sign ? -Infinity : Infinity);
-      } else {
-        result[i] = (sign ? -1 : 1) * Math.pow(2, exp - 15) * (1 + frac / 1024);
-      }
-    }
-
-    return result;
+    return decodeBytes(buffer, dtype);
   }
 }
 
