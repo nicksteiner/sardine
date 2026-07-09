@@ -49,6 +49,20 @@ const FILTER_NBIT = 5;
 const FILTER_SCALEOFFSET = 6;
 
 /**
+ * Batch-read range coalescing gap (W009, raised from 256 KB).
+ *
+ * `readChunksBatch()` merges chunk reads whose file-offset gap is below this
+ * threshold into a single HTTP Range request. NISAR GCOV chunks (512×512
+ * float32, ~1 MB compressed) are stored sequentially by dataset, so with the
+ * old 256 KB gap adjacent chunks were almost always mergeable but rows were
+ * not — a 2 MB gap merges entire chunk rows into single requests, cutting
+ * request count 3–5×. Trade-off: some unused gap bytes are fetched, which is
+ * negligible at S3 throughput. See docs/CHUNK_PIPELINE.md
+ * "Optimization Opportunities".
+ */
+export const MERGE_GAP = 2 * 1024 * 1024;
+
+/**
  * DataView wrapper with position tracking
  */
 class BufferReader {
@@ -2922,7 +2936,7 @@ export class H5Chunk {
     // Phase 2: Sort by file offset and merge nearby ranges
     chunkEntries.sort((a, b) => a.offset - b.offset);
 
-    const MERGE_GAP = 2 * 1024 * 1024; // Merge ranges within 2 MB gap — NISAR chunks are stored sequentially; wider merging coalesces entire chunk rows into fewer HTTP requests
+    // MERGE_GAP: module-level constant (see definition above for rationale)
     const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
     let current = null;
 

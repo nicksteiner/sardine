@@ -32,7 +32,7 @@ import { wktToBbox, validateWKT } from '../utils/wkt.js';
 import { bboxToPixelRange, reprojectBbox, roiIntersectsFile, computeSubsetBounds } from '../utils/roi-subset.js';
 import { loadMetadataCube } from '../utils/metadata-cube.js';
 import { normalizeS3Url } from '../utils/s3-url.js';
-import { createPersistentChunkCache } from '../utils/chunk-cache.js';
+import { createPersistentChunkCache } from './chunk-cache-idb.js';
 import { SAR_INDICES, computeRVI, rviRequiredPols } from '../utils/sar-indices.js';
 
 // ─── NISAR GCOV Product Specification (JPL D-102274 Rev E) ──────────────
@@ -4561,22 +4561,30 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
   // Per-chunk cache for streaming (keyed by "cr,cc")
   // L1: in-memory Map (fast, volatile)
-  // L2: persistent Cache API (survives reload, async)
+  // L2: persistent IndexedDB, ~200 MB LRU (survives reload — W009)
+  // L3: HTTP Range fetch via h5chunk
+  // URL sources only: local File loaders never construct a persistent cache.
   const chunkCache = new Map();
   const MAX_CHUNK_CACHE = 1000;
   const maskChunkCache = new Map();
   const persistentCache = resolvedUrl
-    ? createPersistentChunkCache(resolvedUrl, selectedDatasetId)
+    ? createPersistentChunkCache(resolvedUrl, selectedDataset.path || String(selectedDatasetId))
     : null;
 
-  /** Insert a chunk into L1 (Map) and L2 (Cache API) caches. */
-  function cacheChunk(key, result) {
+  /** Insert a chunk into the in-memory L1 Map only. */
+  function cacheChunkL1(key, result) {
     if (chunkCache.size >= MAX_CHUNK_CACHE) {
       chunkCache.delete(chunkCache.keys().next().value);
     }
     chunkCache.set(key, result);
+  }
+
+  /** Insert a chunk into L1 (Map) and L2 (IndexedDB, fire-and-forget). */
+  function cacheChunk(key, result) {
+    cacheChunkL1(key, result);
     if (persistentCache && result) {
       const [cr, cc] = key.split(',').map(Number);
+      // Fire-and-forget: never blocks the read path (put never rejects).
       persistentCache.put(cr, cc, result).catch(() => {});
     }
   }
@@ -4585,11 +4593,12 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     const key = `${cr},${cc}`;
     // L1: in-memory
     if (chunkCache.has(key)) return chunkCache.get(key);
-    // L2: persistent cache (survives page reload)
+    // L2: persistent cache (survives page reload) — L1-only insert to avoid
+    // rewriting the buffer back into IndexedDB (get() already bumps the LRU).
     if (persistentCache) {
       const cached = await persistentCache.get(cr, cc);
       if (cached) {
-        cacheChunk(key, cached);
+        cacheChunkL1(key, cached);
         return cached;
       }
     }
@@ -4601,6 +4610,39 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Batch-read data chunks through the layered cache (W009):
+   * for each coord not in L1, try L2 (IndexedDB) first; only the remaining
+   * misses go to streamReader.readChunksBatch (coalesced HTTP Range reads).
+   * Handles all cache insertion internally. Returns Map<"cr,cc", chunk|null>.
+   */
+  async function readDataChunksBatch(coords) {
+    const results = new Map();
+    let missing = coords;
+    if (persistentCache && coords.length > 0) {
+      missing = [];
+      await Promise.all(coords.map(async ([cr, cc]) => {
+        const cached = await persistentCache.get(cr, cc);
+        if (cached) {
+          const key = `${cr},${cc}`;
+          cacheChunkL1(key, cached);
+          results.set(key, cached);
+        } else {
+          missing.push([cr, cc]);
+        }
+      }));
+    }
+    if (missing.length > 0) {
+      const batchMap = await streamReader.readChunksBatch(selectedDatasetId, missing);
+      for (const [key, data] of batchMap) {
+        const result = data?.data || data;
+        cacheChunk(key, result);
+        results.set(key, result);
+      }
+    }
+    return results;
   }
 
   async function getStreamMaskChunk(cr, cc) {
@@ -4719,11 +4761,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       await _waitForIdle();
       if (_pendingForeground > 0) return; // new foreground work started
       if (streamReader.readChunksBatch) {
-        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, prefetchCoords);
-        for (const [key, data] of batchMap) {
-          const result = data?.data || data;
-          cacheChunk(key, result);
-        }
+        // Layered batch read: L2 hits skip the network, misses are coalesced.
+        await readDataChunksBatch(prefetchCoords);
       }
     } catch {
       // prefetch failure is non-critical
@@ -4870,10 +4909,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }
 
       if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
-        const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
-        for (const [key, data] of batchMap) {
-          const result = data?.data || data;
-          cacheChunk(key, result);
+        const batchMap = await readDataChunksBatch(uncachedCoords);
+        for (const [key, result] of batchMap) {
           if (result) coarseGrid.set(key, result);
         }
       } else if (uncachedCoords.length > 0) {
@@ -4985,10 +5022,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
               }
             }
             if (fineUncached.length > 0 && streamReader.readChunksBatch) {
-              const batchMap = await streamReader.readChunksBatch(selectedDatasetId, fineUncached);
-              for (const [key, data] of batchMap) {
-                const result = data?.data || data;
-                cacheChunk(key, result);
+              const batchMap = await readDataChunksBatch(fineUncached);
+              for (const [key, result] of batchMap) {
                 if (result) fineGrid.set(key, result);
               }
             } else if (fineUncached.length > 0) {
@@ -5112,13 +5147,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }
     }
 
-    // Batch-fetch uncached chunks (coalesced HTTP Range requests)
+    // Batch-fetch uncached chunks (L2 first, then coalesced HTTP Range requests)
     if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
-      const batchMap = await streamReader.readChunksBatch(selectedDatasetId, uncachedCoords);
-      for (const [key, data] of batchMap) {
-        const result = data?.data || data;
-        cacheChunk(key, result);
-      }
+      await readDataChunksBatch(uncachedCoords);
     } else if (uncachedCoords.length > 0) {
       // Fallback: individual parallel reads
       await Promise.all(uncachedCoords.map(([cr, cc]) => getStreamChunk(cr, cc)));
@@ -5316,15 +5347,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         tasks.push(streamReader._ensureChunkIndex(maskDatasetId).catch(() => {}));
       }
 
-      // Use batch read if available (coalesces into fewer HTTP requests)
+      // Use batch read if available (L2 first, then coalesced HTTP requests)
       if (streamReader.readChunksBatch) {
-        tasks.push(
-          streamReader.readChunksBatch(selectedDatasetId, coords).then(batchMap => {
-            for (const [key, data] of batchMap) {
-              cacheChunk(key, data);
-            }
-          })
-        );
+        tasks.push(readDataChunksBatch(coords));
       } else {
         // Fallback: individual parallel reads
         for (const [cr, cc] of coords) {
