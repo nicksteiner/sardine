@@ -32,8 +32,8 @@ export { bboxToPixelRange, reprojectBbox, computeSubsetBounds, roiIntersectsFile
 // S3 URL utilities
 export { normalizeS3Url, isS3Url } from './utils/s3-url.js';
 
-// Persistent chunk cache
-export { clearChunkCache } from './utils/chunk-cache.js';
+// Persistent chunk cache (IndexedDB L2 — W009)
+export { clearChunkCache, ChunkCacheL2, createPersistentChunkCache, L2_MAX_BYTES } from './loaders/chunk-cache-idb.js';
 
 // Layers
 export { SARTileLayer } from './layers/SARTileLayer.js';
