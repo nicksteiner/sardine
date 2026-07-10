@@ -717,6 +717,10 @@ function App() {
   // loads. One-shot like the pins: applyDeepLinkRoi consumes it. The loader
   // reads it (pre-consumption) to scope chunk prefetch to the region.
   const deepLinkRoiRef = useRef(null);
+  // W016: a bbox/wkt deep link bounds the fetch to the region, so the
+  // click-to-load guard (NISAR files are large) doesn't apply — auto-load.
+  const deepLinkAutoLoad = useRef(false);
+  const handleLoadRemoteNISARRef = useRef(null);
   useEffect(() => {
     const { dataUrl, dataType, view } = parseShareLink();
     if (!dataUrl) return;
@@ -732,6 +736,7 @@ function App() {
         // Explicit c/z in the link wins over the region fit.
         fitView: !(Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)),
       };
+      deepLinkAutoLoad.current = true;    // bounded fetch → skip click-to-load
     }
 
     // Apply view-state synchronously so the auto-loaded data renders with the
@@ -3203,7 +3208,16 @@ function App() {
       addStatusLog('success', `Found ${datasets.length} remote datasets`,
         datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
 
-      // Show dataset controls — user clicks "Load" manually (NISAR files are large)
+      // Show dataset controls — user clicks "Load" manually (NISAR files are
+      // large). Exception (W016): a bbox/wkt deep link bounds the fetch to the
+      // region, so auto-load the selected dataset instead of waiting.
+      if (deepLinkAutoLoad.current && datasets.length > 0) {
+        deepLinkAutoLoad.current = false;
+        addStatusLog('info', 'Deep-link region present — loading dataset automatically');
+        // Next tick: let the freq/pol state set above commit first, and let
+        // handleLoadRemoteNISAR (defined below) bind its ref.
+        setTimeout(() => handleLoadRemoteNISARRef.current?.(), 0);
+      }
     } catch (e) {
       const isAuthErr = e.message?.includes('401') || e.message?.includes('403') || e.message?.includes('Unauthorized');
       const hint = isAuthErr
@@ -3540,8 +3554,15 @@ function App() {
     }
   }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, applyDeepLinkRoi, logHistogramPathOnce]);
 
+  // Keep the forward-ref current so the deep-link auto-load (bbox links only,
+  // W016) can fire it from handleRemoteFileSelect, which is defined earlier.
+  useEffect(() => {
+    handleLoadRemoteNISARRef.current = handleLoadRemoteNISAR;
+  }, [handleLoadRemoteNISAR]);
+
   // Note: Auto-load removed — NISAR files are large (multi-GB), user clicks "Load" manually
   // after selecting a granule and reviewing the dataset/frequency/polarization options.
+  // Exception: bbox/wkt deep links auto-load (bounded fetch, see above).
 
   // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
