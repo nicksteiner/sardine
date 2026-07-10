@@ -13,7 +13,7 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-0.1.1-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.6-orange)](https://github.com/nicksteiner/sardine/releases)
 [![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
@@ -27,13 +27,14 @@
 
 ## 🚀 Try it now — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
 
-The hosted build runs entirely in your browser. **Three ways in:**
+The hosted build runs entirely in your browser. **Four ways in:**
 
 | | What you do | What you need |
 |---|---|---|
 | **Drag-and-drop** | Drop a `.tif`, NISAR `.h5`, NITF/SICD, or `.geojson` onto the page | A local file |
 | **Public URL** | Paste a public COG URL into "Direct URL" — Capella Open Data, Umbra Open Data, Sentinel-2 cogs, etc. | A CORS-friendly URL |
 | **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov/profile](https://urs.earthdata.nasa.gov/profile) → *Generate Token*, and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
+| **Deep link** | Open a URL like `?bbox=-74.26,40.49,-73.70,40.92&db=1` — SARdine finds the best NISAR granule covering that region via NASA CMR, streams **only the chunks inside it**, and renders with your settings. See [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md) | Coordinates (+ EDL token for DAAC data) |
 
 Your token is stored only in your browser's localStorage. NASA data requests are routed through a small Cloudflare Worker ([`sardine-edl-proxy/`](sardine-edl-proxy/)) that adds CORS headers and forwards your token to the DAAC; nothing is logged or persisted server-side.
 
@@ -65,7 +66,13 @@ Draw an ROI and export a subregion as a raw Float32 GeoTIFF (linear power, with 
 Load multiple dates for ROI time series plotting, or compose a multi-date RGB composite for change detection visualization.
 
 **Stream from S3**
-Paste a presigned URL and stream directly from a bucket — same workflow, no download required.
+Paste a presigned URL and stream directly from a bucket — same workflow, no download required. Chunk decompression runs in a Web Worker pool, and a persistent IndexedDB cache makes repeat visits to the same scene near-instant.
+
+**Share exactly what you see**
+**Copy Link** captures the data source, render settings, and active ROI as a URL. A link with just a `bbox` resolves its own granule via NASA CMR (newest, best-coverage, full-frame first) and loads only the region — coordinates outlive granule IDs across reprocessing campaigns. See [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md).
+
+**Save your markup, keep your provenance**
+Annotations, ROIs, transects, and classifier regions save/load as GeoJSON with a versioned schema (observer, method, timestamps, per-ROI statistics). Every GeoTIFF export writes a `{name}.tif.json` sidecar carrying the full product identification, render state, and `derived_from` lineage.
 
 ---
 
@@ -119,6 +126,21 @@ Nothing is uploaded. Chunks are read directly from disk via the browser File API
 4. Pick frequency and polarization → **Load Remote Dataset**
 
 File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.tiff` → COG.
+
+### Deep Links
+
+Every load is addressable. Examples (full parameter reference in [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md)):
+
+```text
+?url=<granule .h5/.tif URL>&min=-16&max=2&db=1&cmap=viridis     # explicit source + render state
+?url=<granule>&bbox=-77.48,38.90,-77.26,39.01                   # + region: view, ROI, and chunk
+                                                                #   fetching scoped to the bbox
+?bbox=-74.26,40.49,-73.70,40.92&db=1                            # region-first: resolves the best
+                                                                #   NISAR granule via NASA CMR
+?bbox=…&t=2025-12-01/2025-12-31                                 # same place, bounded in time
+```
+
+Links carrying a region auto-load (the fetch is bounded); plain granule links stay click-to-load. A verified end-to-end walkthrough against live ASF DAAC data is in [docs/DEMO.md](docs/DEMO.md).
 
 ### COG URLs
 
@@ -325,7 +347,8 @@ Access via JupyterLab proxy: `https://<hub-host>/user/<username>/proxy/8050/`
 npm install          # Install dependencies
 npm run dev          # Dev server at localhost:5173
 npm run build        # Production build → dist/
-npm test             # Full test suite (100+ checks)
+npm test             # Full suite: structural + pipeline regressions + unit tests
+npm run test:unit    # Behavioral unit tests (test/unit/*.test.mjs, auto-discovered)
 npm run test:quick   # Fast smoke tests
 npm run benchmark    # GPU vs CPU performance comparison
 ```
@@ -337,8 +360,7 @@ npm run benchmark    # GPU vs CPU performance comparison
 | Issue | Status |
 |:---|:---|
 | Georeferencing errors on coarse overviews | Low priority |
-| Small area GeoTIFFs may be invalid | Low priority |
-| Slow loading RGB frequency A | Low priority |
+| Slow loading RGB frequency A | Low priority — frequency A has no HDF5 pyramids; zoomed-in views are fast, full-frame overviews are not. Use a `bbox` deep link or frequency B for browse. |
 
 ---
 
