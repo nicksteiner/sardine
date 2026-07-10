@@ -1,7 +1,7 @@
 # W015 — Merge to main + release (post-W014)
 
 wave: 1 (closeout)
-status: todo
+status: done — released as v1.0.0-beta.5 (2026-07-10). Deviations by PI instruction: ATBD/SPA line (W014) deferred; playwright e2e + /code-review ultra skipped (concurrent browser automation; "dont stop and ask") — run both on the next release.
 blocked_by: [W014]
 branch: (release PR from optical-peek-georef-fix)
 

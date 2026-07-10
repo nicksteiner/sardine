@@ -1,7 +1,7 @@
 # W014 — ASF DAAC demo capacity: track + integrate the D582/D106 line
 
 wave: 1 (external, in progress)
-status: external-in-progress (separate agent, sardine-agent directives D582/D106)
+status: deferred — ATBD/SPA integration held out of v1.0.0-beta.5 by PI decision (2026-07-10); d106-work line intact, integrate before the next release
 blocked_by: []
 branch: d106-work (most advanced; lineage d582-work → d106-work; worktrees under ~/.sardine/worktrees/sardine/)
 

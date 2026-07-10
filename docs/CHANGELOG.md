@@ -5,11 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Wave 0/1 work-order batch + ASF DAAC demo (2026-07-08 → 2026-07-10)
+## [1.0.0-beta.5] - 2026-07-10 — Wave 0/1 work-order batch + DAAC demo hardening
 
 Executed as machine-verifiable work orders (`docs/plan/W001–W017`) by parallel
 worktree agents against acceptance criteria; strategy in `docs/PLATFORM_REVIEW.md`.
-Also merges the July WIP feature set and the ASF DAAC demo line (D582/D106).
+Also merges the July WIP feature set. (The ATBD/SPA demo-apps line — D582/D106 —
+is deferred to the next release; see `docs/plan/W014_ASF_DEMO_INTEGRATION.md`.)
 
 ### Added
 - **Region-first deep links** (W017) — `?bbox=w,s,e,n` (or `wkt=`) with no granule
@@ -21,10 +22,8 @@ Also merges the July WIP feature set and the ASF DAAC demo line (D582/D106).
   for a small AOI); Copy Link emits the active ROI as `bbox=`
 - **Deep-link auto-load** — links carrying a region skip the remote-NISAR
   click-to-load guard (bounded fetch); the region ROI survives scene load
-- **ASF DAAC demo capacity** (D582/D106 + W014) — hash-routed SPA shell with
-  Landing + ATBD apps (/inundation with ASF auto-stack streaming, /crop,
-  /disturbance), Playwright e2e, demo runbook (`docs/DEMO.md`); the GCOV explorer
-  is now `app/pages/GCOVExplorer.jsx`
+- **NISAR demo runbook** (`docs/DEMO.md`) — verified end-to-end walkthrough against
+  live ASF DAAC data (Chesapeake Bay dual-pol granule), FreqA caveats, CMR recipes
 - **DAAC streaming hardening** — dev-proxy presigned-URL cache (OAuth chain resolved
   once per scene), keep-alive agents (removes per-Range TLS cost), EDL token attach
   for pasted URLs, overview mask-fetch deferral, latency-aware concurrency
