@@ -224,4 +224,94 @@ test('buildShareLink throws without dataUrl/dataType', () => {
   assert.throws(() => buildShareLink({ baseUrl: BASE, dataType: 'cog' }));
 });
 
+// ---------------------------------------------------------------------------
+// Spatial subset params (W016): ?bbox= / ?wkt=
+// ---------------------------------------------------------------------------
+
+// Silence the expected malformed-param warnings during these tests.
+function quietly(fn) {
+  const orig = console.warn;
+  console.warn = () => {};
+  try { return fn(); } finally { console.warn = orig; }
+}
+
+test('?bbox=w,s,e,n parses to view.roiBbox (WGS84)', () => {
+  const { view } = parseShareLink(
+    `?url=${encodeURIComponent(NISAR_URL)}&bbox=-91.4,30.2,-91.0,30.6`);
+  assert.deepEqual(view.roiBbox, [-91.4, 30.2, -91.0, 30.6]);
+  assert.equal(view.roiWkt, undefined, 'no wkt when only bbox given');
+});
+
+test('malformed bbox values are ignored with a warning, never thrown', () => {
+  quietly(() => {
+    // wrong count
+    assert.equal(parseShareLink(`?url=x.h5&bbox=1,2,3`).view.roiBbox, undefined);
+    // non-numeric
+    assert.equal(parseShareLink(`?url=x.h5&bbox=a,b,c,d`).view.roiBbox, undefined);
+    // inverted (w >= e)
+    assert.equal(parseShareLink(`?url=x.h5&bbox=10,0,5,1`).view.roiBbox, undefined);
+    // inverted (s >= n)
+    assert.equal(parseShareLink(`?url=x.h5&bbox=0,10,5,10`).view.roiBbox, undefined);
+    // empty
+    assert.equal(parseShareLink(`?url=x.h5&bbox=`).view.roiBbox, undefined);
+  });
+});
+
+test('?wkt=POLYGON parses to roiWkt + reduces to its bbox', () => {
+  const wkt = 'POLYGON ((-91.4 30.2, -91.0 30.2, -91.0 30.6, -91.4 30.6, -91.4 30.2))';
+  const { view } = parseShareLink(
+    `?url=${encodeURIComponent(NISAR_URL)}&wkt=${encodeURIComponent(wkt)}`);
+  assert.equal(view.roiWkt, wkt, 'original WKT preserved for the ROI input');
+  assert.deepEqual(view.roiBbox, [-91.4, 30.2, -91.0, 30.6], 'wkt reduced to bbox');
+});
+
+test('?wkt=BBOX(...) shorthand parses', () => {
+  const { view } = parseShareLink(
+    `?url=x.h5&wkt=${encodeURIComponent('BBOX(-123, 44, -122, 45)')}`);
+  assert.deepEqual(view.roiBbox, [-123, 44, -122, 45]);
+});
+
+test('wkt wins over bbox when both present', () => {
+  const wkt = 'BBOX(-10, -5, 10, 5)';
+  const { view } = parseShareLink(
+    `?url=x.h5&bbox=0,0,1,1&wkt=${encodeURIComponent(wkt)}`);
+  assert.deepEqual(view.roiBbox, [-10, -5, 10, 5], 'wkt bbox wins');
+  assert.equal(view.roiWkt, wkt);
+});
+
+test('malformed wkt is ignored and falls back to a valid bbox param', () => {
+  quietly(() => {
+    const { view } = parseShareLink(
+      `?url=x.h5&bbox=0,0,1,1&wkt=${encodeURIComponent('CIRCLE (0 0, 5)')}`);
+    assert.equal(view.roiWkt, undefined, 'bad wkt dropped');
+    assert.deepEqual(view.roiBbox, [0, 0, 1, 1], 'bbox fallback used');
+  });
+});
+
+test('degenerate wkt (zero-area POINT) is rejected', () => {
+  quietly(() => {
+    const { view } = parseShareLink(`?url=x.h5&wkt=${encodeURIComponent('POINT (3 7)')}`);
+    assert.equal(view.roiBbox, undefined, 'zero-area bbox rejected');
+  });
+});
+
+test('buildShareLink emits bbox= from view.roiBbox and round-trips', () => {
+  const roiBbox = [-91.43215, 30.21876, -91.01004, 30.62199];
+  const link = buildShareLink({
+    baseUrl: BASE, dataUrl: NISAR_URL, dataType: 'nisar', view: { roiBbox },
+  });
+  const u = new URL(link);
+  assert.equal(u.searchParams.get('bbox'), '-91.43215,30.21876,-91.01004,30.62199');
+
+  const parsed = parseShareLink(u.search);
+  assert.deepEqual(parsed.view.roiBbox, roiBbox, 'bbox round-trips exactly at 5 dp');
+});
+
+test('buildShareLink omits bbox for missing/degenerate roiBbox', () => {
+  for (const roiBbox of [undefined, null, [1, 2, 3], [5, 0, 5, 1], [0, 3, 1, 3], [NaN, 0, 1, 1]]) {
+    const link = buildShareLink({ baseUrl: BASE, dataUrl: COG_URL, dataType: 'cog', view: { roiBbox } });
+    assert.equal(new URL(link).searchParams.has('bbox'), false, `no bbox for ${JSON.stringify(roiBbox)}`);
+  }
+});
+
 await run();

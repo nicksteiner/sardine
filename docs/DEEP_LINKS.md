@@ -1,4 +1,4 @@
-# Deep Links (W008)
+# Deep Links (W008, W016)
 
 Paste a granule URL, see it in seconds. SARdine auto-loads a remote dataset from URL
 query params on startup, and the **Share Link → Copy share link** button (sidebar)
@@ -38,6 +38,30 @@ https://<sardine-host>/?url=https://host/scene.tif&colormap=viridis&contrastMin=
 Short keys win when both spellings are present. "Copy share link" emits short keys and
 omits defaults to keep URLs paste-friendly; it uses `?url=` when the extension
 round-trips to the loaded type, otherwise pins `?cog=`/`?nisar=`/`?nitf=`.
+
+## Spatial subset params (W016)
+
+| Param | Meaning |
+|:------|:--------|
+| `bbox` | `w,s,e,n` in WGS84 lon/lat. Fits the initial view to the region, applies it as the ROI (WKT input + profile panel), and — for remote NISAR — restricts overview chunk prefetch and background refinement to the chunks intersecting the region. |
+| `wkt` | URL-encoded WKT (`POLYGON`, `BBOX(w,s,e,n)`, `MULTIPOLYGON`, …) in WGS84. Wins over `bbox` when both are present. The polygon is kept verbatim in the ROI/WKT input; fetch scoping uses its bounding box. |
+
+```
+https://<sardine-host>/?url=https://datapool.asf.alaska.edu/GCOV/NISAR_L2_GCOV_001.h5&bbox=-91.4,30.2,-91.0,30.6
+https://<sardine-host>/?url=https://host/scene.tif&wkt=POLYGON%20((-91.4%2030.2%2C%20-91.0%2030.2%2C%20-91.0%2030.6%2C%20-91.4%2030.6%2C%20-91.4%2030.2))
+```
+
+- Malformed values are ignored with a console warning — the scene loads full-frame.
+- A region that does not intersect the scene falls back to a full-scene load
+  (status log warns).
+- Explicit `c`/`z` in the same link win over the region view-fit; the ROI is
+  still applied.
+- Panning outside the region still works — tile fetches stay viewport-driven
+  and load lazily; only the eager prefetch and background refinement are scoped.
+- "Copy share link" emits `bbox=` (WGS84, 5 dp) whenever a rectangular ROI is
+  active, reprojecting from projected file CRSs via proj4.
+- COG sources need no fetch scoping (tile/overview reads are already
+  viewport-driven); the region fit + ROI apply the same way.
 
 ## Behavior notes
 

@@ -20,7 +20,16 @@
  *
  * The recipient still needs their own Earthdata Login token for DAAC URLs —
  * tokens never travel in deep links.
+ *
+ * Spatial subset (W016): `?bbox=w,s,e,n` (WGS84 lon/lat) or `?wkt=<POLYGON/BBOX>`
+ * loads only the region — the app fits the view to it, applies it as the ROI,
+ * and (for remote NISAR) scopes chunk prefetch to the intersecting chunk range.
+ * `wkt` wins over `bbox` when both are present; internally the WKT reduces to
+ * its bbox for fetch scoping (polygon fidelity is kept only for the ROI/WKT
+ * input display). Malformed values are ignored with a console warning.
  */
+
+import { validateWKT } from './wkt.js';
 
 // Keep emitted param keys short — links get pasted into chat apps that truncate.
 const KEYS = {
@@ -45,6 +54,9 @@ const KEYS = {
   // Viewport (optional — center as lon,lat, plus zoom)
   c: 'c',
   z: 'z',
+  // Spatial subset (W016) — WGS84 lon/lat
+  bbox: 'bbox',       // w,s,e,n
+  wkt: 'wkt',         // URL-encoded WKT (POLYGON/BBOX/...); wins over bbox
 };
 
 // Long-form aliases accepted on parse (short key → long key).
@@ -145,6 +157,33 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
   }
   const z = num(p.get(KEYS.z));    if (z != null) view.viewZoom = z;
 
+  // Spatial subset (W016): wkt wins over bbox; both reduce to a WGS84 bbox.
+  // Malformed values are rejected with a warning, never a throw.
+  const wktStr = p.get(KEYS.wkt);
+  let roiFromWkt = false;
+  if (wktStr) {
+    const v = validateWKT(wktStr);
+    if (v.valid && v.bbox[0] < v.bbox[2] && v.bbox[1] < v.bbox[3]) {
+      view.roiWkt = wktStr;
+      view.roiBbox = v.bbox; // [west, south, east, north]
+      roiFromWkt = true;
+    } else {
+      console.warn(`[deep-link] Ignoring malformed wkt= param: ${v.error || 'degenerate geometry (zero-area bbox)'}`);
+    }
+  }
+  if (!roiFromWkt) {
+    const bboxStr = p.get(KEYS.bbox);
+    if (bboxStr) {
+      const parts = bboxStr.split(',').map(Number);
+      if (parts.length === 4 && parts.every(Number.isFinite)
+          && parts[0] < parts[2] && parts[1] < parts[3]) {
+        view.roiBbox = parts;
+      } else {
+        console.warn(`[deep-link] Ignoring malformed bbox= param (want w,s,e,n with w<e, s<n): ${bboxStr}`);
+      }
+    }
+  }
+
   return { dataUrl, dataType, view };
 }
 
@@ -191,6 +230,14 @@ export function buildShareLink({ baseUrl, dataUrl, dataType, view = {} }) {
     p.set(KEYS.c, `${lon.toFixed(5)},${lat.toFixed(5)}`);
   }
   if (Number.isFinite(view.viewZoom)) p.set(KEYS.z, String(Math.round(view.viewZoom * 100) / 100));
+
+  // Spatial subset (W016): emit the active ROI as a WGS84 bbox. Callers with
+  // projected scenes reproject to 4326 before passing roiBbox (see main.jsx).
+  if (Array.isArray(view.roiBbox) && view.roiBbox.length === 4
+      && view.roiBbox.every(Number.isFinite)
+      && view.roiBbox[0] < view.roiBbox[2] && view.roiBbox[1] < view.roiBbox[3]) {
+    p.set(KEYS.bbox, view.roiBbox.map(v => Math.round(v * 1e5) / 1e5).join(','));
+  }
 
   return `${base}?${p.toString()}`;
 }

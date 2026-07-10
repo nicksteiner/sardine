@@ -15,6 +15,7 @@ import {
   computeSubsetBounds,
   reprojectBbox,
   roiIntersectsFile,
+  scopeBboxToChunkRange,
 } from '../../src/utils/roi-subset.js';
 import { suite } from './harness.mjs';
 
@@ -186,6 +187,61 @@ test('reprojectBbox: EPSG:4326 and missing CRS pass through unchanged', () => {
   assert.deepEqual(reprojectBbox(bbox, 'EPSG:4326'), bbox, '4326 passthrough');
   assert.deepEqual(reprojectBbox(bbox, null), bbox, 'null CRS passthrough');
   assert.deepEqual(reprojectBbox(bbox, 'not-a-crs'), bbox, 'unparseable CRS passthrough');
+});
+
+// ─── scopeBboxToChunkRange: W016 deep-link prefetch scoping ──────────────────
+
+// Same 100×50 px grid, tiled into 16-row × 32-col chunks →
+// chunk grid is ceil(50/16)=4 rows × ceil(100/32)=4 cols.
+const chunkMeta = { ...linearMeta, chunkH: 16, chunkW: 32, crs: 'EPSG:4326' };
+
+test('scopeBboxToChunkRange: hand-computed chunk subset', () => {
+  // bbox [10,20,30,40] → pixel range rows 10..30, cols 10..30 (see above)
+  // → chunk rows floor(10/16)=0 .. floor(30/16)=1, cols floor(10/32)=0 .. floor(30/32)=0
+  assert.deepEqual(scopeBboxToChunkRange([10, 20, 30, 40], chunkMeta),
+    { startCR: 0, endCR: 1, startCC: 0, endCC: 0 }, 'exact chunk subset');
+});
+
+test('scopeBboxToChunkRange: small AOI resolves to a single chunk', () => {
+  // bbox [65,5,70,12] → cols 65..70 (chunk col 2), rows 38..45 (chunk row 2)
+  assert.deepEqual(scopeBboxToChunkRange([65, 5, 70, 12], chunkMeta),
+    { startCR: 2, endCR: 2, startCC: 2, endCC: 2 }, 'single chunk');
+});
+
+test('scopeBboxToChunkRange: full-scene bbox covers the whole chunk grid', () => {
+  assert.deepEqual(scopeBboxToChunkRange([0, 0, 100, 50], chunkMeta),
+    { startCR: 0, endCR: 3, startCC: 0, endCC: 3 }, 'full 4×4 grid');
+});
+
+test('scopeBboxToChunkRange: oversized bbox clamps to the chunk grid', () => {
+  assert.deepEqual(scopeBboxToChunkRange([-500, -500, 500, 500], chunkMeta),
+    { startCR: 0, endCR: 3, startCC: 0, endCC: 3 }, 'clamped to grid');
+});
+
+test('scopeBboxToChunkRange: disjoint bbox or missing chunk dims → null', () => {
+  assert.equal(scopeBboxToChunkRange([200, 200, 300, 300], chunkMeta), null, 'disjoint');
+  assert.equal(scopeBboxToChunkRange([10, 20, 30, 40], { ...linearMeta, crs: 'EPSG:4326' }),
+    null, 'no chunk dims');
+});
+
+test('scopeBboxToChunkRange: coordinate-array path matches bboxToPixelRange', () => {
+  const meta = { ...coordMeta, chunkH: 16, chunkW: 32, crs: 'EPSG:4326' };
+  // Pixel range (coords path): rows 10..29, cols 10..29 (see bboxToPixelRange test)
+  assert.deepEqual(scopeBboxToChunkRange([10.2, 20.2, 30.2, 40.2], meta),
+    { startCR: 0, endCR: 1, startCC: 0, endCC: 0 }, 'coordinate-array chunk subset');
+});
+
+test('scopeBboxToChunkRange: WGS84 scope is reprojected into a projected file grid', () => {
+  const crs = 'EPSG:32610';
+  // Synthetic UTM file covering the reprojection of this WGS84 envelope,
+  // 400×400 px in 100×100 px chunks → 4×4 chunk grid.
+  const fileBounds = reprojectBbox([-123.2, 44.9, -122.8, 45.3], crs);
+  const meta = { worldBounds: fileBounds, width: 400, height: 400, chunkH: 100, chunkW: 100, crs };
+  // Central quarter of the scene (in lon/lat) must land on interior chunks only.
+  const r = scopeBboxToChunkRange([-123.05, 45.05, -122.95, 45.15], meta);
+  assert.ok(r !== null, 'intersects');
+  assert.ok(r.startCC >= 1 && r.endCC <= 2, `interior cols [${r.startCC}, ${r.endCC}]`);
+  assert.ok(r.startCR >= 1 && r.endCR <= 2, `interior rows [${r.startCR}, ${r.endCR}]`);
 });
 
 test('reprojectBbox: EPSG:32610 straddles the UTM 10N central meridian', () => {
