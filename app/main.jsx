@@ -22,8 +22,7 @@ import { annotationsToGeoJSON, geoJSONToAnnotations, downloadMarkupGeoJSON, isSa
 import { buildExportSidecar, downloadSidecar } from '../src/utils/export-sidecar.js';
 import { makeReproject, reprojectFeature } from '../src/utils/overture-projection.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
-import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
-import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
+import { computeChannelStatsAuto, sampleViewportStatsAuto } from '../src/gpu/gpu-stats.js';
 import { probeGPU } from '../src/utils/gpu-detect.js';
 import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
@@ -1122,6 +1121,15 @@ function App() {
     });
   }, []);
 
+  // One-time status log of which histogram compute path is active (W007).
+  // Emitted the first time histogram stats are actually computed.
+  const histogramPathLoggedRef = useRef(false);
+  const logHistogramPathOnce = useCallback(() => {
+    if (histogramPathLoggedRef.current) return;
+    histogramPathLoggedRef.current = true;
+    addStatusLog('info', `histogram: ${gpuInfo.webgpu ? 'WebGPU' : 'CPU'}`);
+  }, [addStatusLog, gpuInfo.webgpu]);
+
   // WKT ROI: track sync source to avoid loops between WKT input and Shift+drag
   const wktSyncSource = useRef('');
 
@@ -1262,9 +1270,10 @@ function App() {
         }
 
         addStatusLog('info', `ROI RGB sampled ${rawValues.R.length} pixels per channel`);
+        logHistogramPathOnce();
         roiHists = {};
         for (const ch of ['R', 'G', 'B']) {
-          const stats = computeChannelStats(rawValues[ch], false);
+          const stats = await computeChannelStatsAuto(rawValues[ch], false, 128);
           if (stats) {
             roiHists[ch] = stats;
             lims[ch] = [stats.p2, stats.p98];
@@ -1288,7 +1297,7 @@ function App() {
     } finally {
       setRoiRGBLoading(false);
     }
-  }, [nisarFile, remoteUrl, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog]);
+  }, [nisarFile, remoteUrl, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog, logHistogramPathOnce]);
 
   // Load time-series into ROI side panel
   const handleLoadRoiTimeSeries = useCallback(async () => {
@@ -1394,6 +1403,7 @@ function App() {
       const applyDeci = isGUNW ? false : useDecibels;
 
       const isRGBTS = frames.length > 0 && frames[0].isRGB;
+      logHistogramPathOnce();
       for (let fi = 0; fi < frames.length; fi++) {
         try {
           if (isRGBTS) {
@@ -1411,14 +1421,14 @@ function App() {
                 for (let i = 0; i < arr.length; i++) {
                   if (arr[i] > 0 && !isNaN(arr[i])) valid.push(arr[i]);
                 }
-                chStats[ch] = computeChannelStats(valid, false) || null;
+                chStats[ch] = (await computeChannelStatsAuto(valid, false, 128)) || null;
               }
               frames[fi].stats = chStats;
             } else {
               frames[fi].stats = null;
             }
           } else {
-            const stats = await sampleViewportStats(
+            const stats = await sampleViewportStatsAuto(
               frames[fi].getTile, regionW, regionH, applyDeci, 128,
               minX, minY, frames[fi].height,
             );
@@ -1468,7 +1478,7 @@ function App() {
     } finally {
       setRoiTSLoading(false);
     }
-  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, displayMode, compositeId, addStatusLog]);
+  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, displayMode, compositeId, addStatusLog, logHistogramPathOnce]);
 
   // Update histogram and contrast when time-series frame changes
   useEffect(() => {
@@ -1787,7 +1797,8 @@ function App() {
           }
         }
 
-        addStatusLog('info', 'Histogram: computing statistics (GPU)...');
+        logHistogramPathOnce();
+        addStatusLog('info', 'Histogram: computing statistics...');
         const hists = {};
         let hasAnyStats = false;
         for (const ch of ['R', 'G', 'B']) {
@@ -1831,7 +1842,8 @@ function App() {
         } else {
           // Viewport/ROI scope or no HDF5 stats — sample tiles
           console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', effectiveUseDecibels);
-          const stats = await sampleViewportStats(
+          logHistogramPathOnce();
+          const stats = await sampleViewportStatsAuto(
             imageData.getTile, regionW, regionH, effectiveUseDecibels, 128,
             regionX, regionY, imageData.height,
             (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
@@ -1850,12 +1862,12 @@ function App() {
       console.error('[histogram] recompute error:', e);
       addStatusLog('warning', 'Histogram recompute failed', e.message);
     }
-  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, effectiveUseDecibels, nisarProductType, selectedGunwDataset, roi, addStatusLog]);
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, effectiveUseDecibels, nisarProductType, selectedGunwDataset, roi, addStatusLog, logHistogramPathOnce]);
 
   // Recompute histogram when scope changes — but skip on initial load if
   // metadata-based contrast was already applied (avoids redundant tile reads).
   const skipInitialHistogramRef = useRef(false);
-  // Separate flag for the viewport auto-refresh timer — persists across the 800ms delay.
+  // Separate flag for the viewport auto-refresh timer — persists across the debounce delay.
   const skipViewportRefreshRef = useRef(false);
   useEffect(() => {
     if (!imageData) return;
@@ -1879,7 +1891,9 @@ function App() {
   const recomputeRef = useRef(handleRecomputeHistogram);
   recomputeRef.current = handleRecomputeHistogram;
   // Auto-recompute histogram when viewport changes (viewport scope, debounced).
-  // Uses GPU when available, falls back to CPU — debounce absorbs the latency.
+  // With WebGPU compute the stats are near-instant, so a short ~100 ms debounce
+  // gives near-real-time updates while panning; on the CPU fallback keep the
+  // long 800 ms debounce to absorb the latency.
   const vcx = viewCenter[0];
   const vcy = viewCenter[1];
   useEffect(() => {
@@ -1890,9 +1904,9 @@ function App() {
         return;
       }
       recomputeRef.current();
-    }, 800);
+    }, gpuInfo.webgpu ? 100 : 800);
     return () => clearTimeout(timer);
-  }, [vcx, vcy, viewZoom, imageData, histogramScope]);
+  }, [vcx, vcy, viewZoom, imageData, histogramScope, gpuInfo.webgpu]);
 
   // Auto-recompute histogram when ROI changes (ROI scope only)
   // Disabled without WebGPU — CPU histogram is too slow for live ROI updates.
@@ -3327,6 +3341,7 @@ function App() {
                 }
               }
             }
+            logHistogramPathOnce();
             const hists = {};
             const lims = {};
             for (const ch of ['R', 'G', 'B']) {
@@ -3350,7 +3365,8 @@ function App() {
           try {
             // Sample using world-coordinate bounds so getTile receives world-space bboxes
             const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
-            const stats = await sampleViewportStats(
+            logHistogramPathOnce();
+            const stats = await sampleViewportStatsAuto(
               data.getTile, gMaxX - gMinX, gMaxY - gMinY, effectiveUseDecibels, 128,
               gMinX, gMinY,
             );
@@ -3372,7 +3388,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, logHistogramPathOnce]);
 
   // Note: Auto-load removed — NISAR files are large (multi-GB), user clicks "Load" manually
   // after selecting a granule and reviewing the dataset/frequency/polarization options.
