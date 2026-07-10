@@ -36,7 +36,14 @@ The hosted build runs entirely in your browser. **Four ways in:**
 | **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov/profile](https://urs.earthdata.nasa.gov/profile) → *Generate Token*, and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
 | **Deep link** | Open a URL like `?bbox=-74.26,40.49,-73.70,40.92&db=1` — SARdine finds the best NISAR granule covering that region via NASA CMR, streams **only the chunks inside it**, and renders with your settings. See [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md) | Coordinates (+ EDL token for DAAC data) |
 
-Your token is stored only in your browser's localStorage. NASA data requests are routed through a small Cloudflare Worker ([`sardine-edl-proxy/`](sardine-edl-proxy/)) that adds CORS headers and forwards your token to the DAAC; nothing is logged or persisted server-side.
+### About your Earthdata token (read this if you're security-conscious)
+
+NASA DAACs don't send CORS headers, so the hosted build relays data requests through a small Cloudflare Worker ([`sardine-edl-proxy/`](sardine-edl-proxy/), ~200 lines) that adds CORS and forwards your token to NASA. Straight answers about that:
+
+- **Your token stays in your browser's localStorage** and is sent only to the Worker and NASA servers. It travels in a request header (not the URL). The Worker hard-allowlists NASA hostnames, drops the auth header on any redirect leaving the allowlist, and doesn't log or store tokens — but SARdine is a research project, and you shouldn't have to take our word for it:
+- **Run your own relay in ~2 minutes.** The Worker source is right here in the repo. `cd sardine-edl-proxy && npx wrangler deploy` puts an identical copy on *your* free Cloudflare account; paste your `*.workers.dev` URL into SARdine's Earthdata panel (Proxy URL field) and your token never touches ours.
+- **The stakes are low by design.** EDL tokens are read-only data-access credentials for (mostly public) NASA data. They expire, and you can [revoke them anytime](https://urs.earthdata.nasa.gov/user_tokens). Worst case is someone downloads free satellite data under your account.
+- Running locally? `npm run dev` uses a local Vite proxy — no Worker involved at all.
 
 ---
 

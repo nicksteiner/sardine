@@ -3197,7 +3197,12 @@ function App() {
     // Store auth token for subsequent data fetches (e.g. Earthdata bearer token from STAC search)
     // Strip "Bearer " prefix if user already included it
     const cleanToken = token?.replace(/^Bearer\s+/i, '').trim();
-    const fetchHeaders = cleanToken ? { 'Authorization': `Bearer ${cleanToken}` } : undefined;
+    // Authorization for the dev proxy + DAAC direct; X-EDL-Token for the
+    // hosted Worker. Header transport keeps the token out of URLs (and
+    // therefore out of anything that logs request lines).
+    const fetchHeaders = cleanToken
+      ? { 'Authorization': `Bearer ${cleanToken}`, 'X-EDL-Token': cleanToken }
+      : undefined;
     handleRemoteFileSelect._fetchHeaders = fetchHeaders;
     console.log(`[SARdine] Token: ${cleanToken ? `set (${cleanToken.slice(0, 8)}...)` : 'none'}, URL: ${url.slice(0, 80)}`);
     if (!cleanToken) {
@@ -3207,8 +3212,8 @@ function App() {
     // Route external URLs through the appropriate CORS proxy
     // (Vite dev plugin in development, Cloudflare Worker on the hosted Pages
     // build). h5chunk makes Range requests directly to this.url, so we
-    // rewrite once here.
-    const resolvedUrl = proxyUrlShared(url);
+    // rewrite once here. Token rides in fetchHeaders, not the query string.
+    const resolvedUrl = proxyUrlShared(url, { tokenInQuery: false });
     setSharedRawUrl(url);
 
     if (type === 'cog') {
@@ -5724,6 +5729,16 @@ function App() {
                 </a>
                 <br/>
                 Then click <strong>Generate Token</strong> in the left sidebar.
+              </div>
+              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '6px', lineHeight: 1.45 }}>
+                <strong>Where your token goes:</strong> it stays in this browser's
+                localStorage and is sent only to NASA servers{isHostedBuild()
+                  ? ' via the relay Worker below (needed because DAACs don’t send CORS headers). SARdine is a research project — the Worker doesn’t log or store tokens, and its ~200-line source is in the repo (sardine-edl-proxy/). Don’t want to take our word for it? Deploy your own copy and paste its URL below.'
+                  : ' (the local dev proxy relays it).'}{' '}
+                EDL tokens are read-only data-access credentials for mostly-public
+                data, they expire, and you can{' '}
+                <a href="https://urs.earthdata.nasa.gov/user_tokens" target="_blank" rel="noopener noreferrer"
+                   style={{ color: 'var(--sardine-cyan)' }}>revoke them anytime</a>.
               </div>
             </div>
             {isHostedBuild() && (

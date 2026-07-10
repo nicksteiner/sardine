@@ -67,10 +67,17 @@ function needsProxy(url) {
  * Rewrite an external URL to go through the appropriate proxy.
  *
  * Dev: `${origin}/stac-proxy/<encoded>`
- * Hosted with token: `${worker}/proxy?url=<encoded>&t=<token>`
+ * Hosted with token: `${worker}/proxy?url=<encoded>[&t=<token>]`
  * Hosted without token: returns the original URL (best-effort direct fetch)
+ *
+ * Token transport: prefer the `X-EDL-Token` HEADER (pass
+ * `{ tokenInQuery: false }` and add the header to your fetches — the NISAR
+ * h5chunk path does this via fetchHeaders). The `&t=` query fallback exists
+ * only for fetch paths that can't set custom headers (geotiff.js COG loads,
+ * URLFile) — query strings are more likely to end up in intermediary logs,
+ * so don't use it where a header is possible.
  */
-export function proxyUrl(rawUrl) {
+export function proxyUrl(rawUrl, { tokenInQuery = true } = {}) {
   if (!rawUrl) return rawUrl;
   if (!needsProxy(rawUrl)) return rawUrl;
 
@@ -83,7 +90,8 @@ export function proxyUrl(rawUrl) {
       return rawUrl;
     }
     const sep = base.endsWith('/') ? '' : '/';
-    return `${base}${sep}proxy?url=${encodeURIComponent(rawUrl)}&t=${encodeURIComponent(token)}`;
+    const tokenPart = tokenInQuery ? `&t=${encodeURIComponent(token)}` : '';
+    return `${base}${sep}proxy?url=${encodeURIComponent(rawUrl)}${tokenPart}`;
   }
 
   // Dev: route through Vite's corsProxyPlugin
