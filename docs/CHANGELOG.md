@@ -5,13 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — Wave 0/1 work-order batch (2026-07-08 → 2026-07-10)
+## [Unreleased] — Wave 0/1 work-order batch + ASF DAAC demo (2026-07-08 → 2026-07-10)
 
-Executed as ten machine-verifiable work orders (`docs/plan/W001–W009, W013`) by
-parallel worktree agents against acceptance criteria; strategy in
-`docs/PLATFORM_REVIEW.md`. Also merges the July WIP feature set.
+Executed as machine-verifiable work orders (`docs/plan/W001–W017`) by parallel
+worktree agents against acceptance criteria; strategy in `docs/PLATFORM_REVIEW.md`.
+Also merges the July WIP feature set and the ASF DAAC demo line (D582/D106).
 
 ### Added
+- **Region-first deep links** (W017) — `?bbox=w,s,e,n` (or `wkt=`) with no granule
+  resolves its own data: client-side CMR spatial search (VALIDATED → PROVISIONAL →
+  BETA), footprint-coverage ranking (full-frame > partial, dual-pol, newest),
+  auto-load of the winner; `t=start/end` date filter (`src/utils/granule-resolve.js`)
+- **Spatial-subset deep links** (W016) — `bbox`/`wkt` params fit the view, apply the
+  ROI, and scope chunk prefetch + refinement to the region (verified: 6 of 64 chunks
+  for a small AOI); Copy Link emits the active ROI as `bbox=`
+- **Deep-link auto-load** — links carrying a region skip the remote-NISAR
+  click-to-load guard (bounded fetch); the region ROI survives scene load
+- **ASF DAAC demo capacity** (D582/D106 + W014) — hash-routed SPA shell with
+  Landing + ATBD apps (/inundation with ASF auto-stack streaming, /crop,
+  /disturbance), Playwright e2e, demo runbook (`docs/DEMO.md`); the GCOV explorer
+  is now `app/pages/GCOVExplorer.jsx`
+- **DAAC streaming hardening** — dev-proxy presigned-URL cache (OAuth chain resolved
+  once per scene), keep-alive agents (removes per-Range TLS cost), EDL token attach
+  for pasted URLs, overview mask-fetch deferral, latency-aware concurrency
 - **Markup GeoJSON save/load** (W004) — annotations, ROI, transects, and classifier
   regions serialize as a GeoJSON FeatureCollection with a versioned properties schema
   (`sardine:kind`, observer/method/created/confidence, `sourceScene`, embedded ROI
@@ -45,6 +61,10 @@ parallel worktree agents against acceptance criteria; strategy in
 - `MERGE_GAP` hoisted to an exported, test-guarded 2 MB constant (W009)
 
 ### Fixed
+- Deep-link region ROI was wiped by the scene-change cleanup effect the moment the
+  raster committed (orange box flashed and vanished); ROI rectangles are now
+  bounds-only (interior fill removed on screen and in figure exports)
+- `cmr-client.js` no longer appends `T00:00:00Z` to full ISO datetimes (W017)
 - **Single-tile RGBA GeoTIFF corruption** — `writeIFD` wrote a placeholder 0 for
   inline TileOffsets on images ≤512×512 (W001)
 - **Signal-abort cascade** — tile aborts no longer cancel chunk reads (cache always
