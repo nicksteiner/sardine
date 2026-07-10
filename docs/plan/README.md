@@ -23,6 +23,27 @@ findings appended when something doesn't work.
 Stream → interpret → adjudicate → learn → propose better. Every wave lands a flywheel
 piece, not just hygiene. See `docs/PLATFORM_REVIEW.md` §6–7 for the strategy.
 
+## Wave 0/1 completion report (2026-07-08 → 2026-07-10)
+
+Ten work orders executed by parallel worktree agents, merged into
+`optical-peek-georef-fix` (merge sequence ends at `98f8ba0`; integrated suite:
+272 structural + 47 pipeline + 125 unit checks green, build clean).
+
+- **Merged:** W001 (tests + single-tile RGBA GeoTIFF fix), W002 (−1,429 dead lines),
+  W003 (abort cascade P0), W004 (markup GeoJSON), W005 (export sidecar), W006 (decode
+  workers + zero-fill fix), W007 (GPU histogram + WGSL numBins guard), W008 (deep
+  links), W009 (IDB L2 cache), W013 (superblock v0).
+- **Bugs found beyond scope:** corrupt single-tile RGBA TIFFs; silent all-zero decode
+  without Workers; lost shuffle+deflate retry; silent zero-dataset open for v0 HDF5;
+  latent `computeHistogramGPU` numBins overflow (guarded, WGSL fix still open).
+- **Premise drift caught by the findings convention:** 5 work orders adapted to
+  already-landed upstream work rather than implementing against stale audits.
+- **Running in parallel outside this process:** the ASF DAAC demo capacity
+  (D582/D106 line — SPA shell + ATBD apps + ASF auto-stack streaming). Integration
+  hazard and plan tracked as **W014** — read it before any Wave 2 main.jsx work,
+  because that line renames `app/main.jsx` → `app/pages/GCOVExplorer.jsx`.
+- Full narrative: `docs/CHANGELOG.md` [Unreleased]; per-order findings in each W###.
+
 ## Wave graph
 
 ```
@@ -32,6 +53,7 @@ Wave 1 (parallel):          W004 annotation-geojson  W005 export-sidecar
                             W007 gpu-histogram       W008 deep-links
                                                           W006 decode-workers (after W003)
                                                           W009 chunk-cache-L2 (after W006)
+Wave 1 (external):          W014 ASF DAAC demo line (D582/D106) — merge BEFORE Wave 2
 Wave 2 (design-gated):      W010 scene/renderconfig/session schema  ← HUMAN SIGN-OFF
                                 │  then store extraction (strangler PRs, spawned from W010)
 Wave 3 (vertical slice):    W011 flood workflow end-to-end (SAM assist + agent proposals

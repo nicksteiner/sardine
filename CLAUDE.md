@@ -46,60 +46,63 @@ Context for Claude Code (or any AI coding assistant) to understand the SARdine p
 sardine/
 ├── app/
 │   ├── index.html              # Entry HTML
-│   └── main.jsx                # Main React application (~3000 lines)
+│   └── main.jsx                # Main React application (large monolith; refactor gated on W010)
 ├── src/
-│   ├── index.js                # Library exports
+│   ├── index.js                # Library exports (the app/agent boundary)
 │   ├── loaders/
 │   │   ├── cog-loader.js       # geotiff.js COG wrapper
 │   │   ├── h5chunk.js          # Cloud-optimized HDF5 chunk reader (pure JS)
-│   │   ├── nisar-loader.js     # NISAR GCOV product loader (~3000 lines)
+│   │   ├── decode-core.js / decode-worker.js / decode-pool.js  # chunk decode worker pool (W006)
+│   │   ├── chunk-cache-idb.js  # IndexedDB L2 chunk cache, ~200 MB LRU (W009)
+│   │   ├── nisar-loader.js     # NISAR GCOV product loader
+│   │   ├── nisar-gunw-loader.js / nisar-product.js  # GUNW layers + product auto-detect
+│   │   ├── nitf-loader.js / url-file.js  # NITF/SICD + Range-request file adapter
+│   │   ├── stac-client.js / cmr-client.js  # STAC + NASA CMR search
 │   │   └── overture-loader.js  # Overture Maps PMTiles/GeoParquet
-│   ├── layers/
-│   │   ├── SARGPULayer.js      # Primary GPU-accelerated layer (WebGL2 textures)
-│   │   ├── SARBitmapLayer.js   # CPU-fallback bitmap layer
-│   │   ├── SARTileLayer.js     # Original tile layer (Phase 1)
-│   │   ├── SARTiledCOGLayer.js # Tiled COG layer
-│   │   ├── OvertureLayer.js    # Overture Maps vector overlay
-│   │   └── shaders.js          # GLSL vertex + fragment shaders (dB, colormaps, stretch)
-│   ├── viewers/
-│   │   ├── SARViewer.jsx       # Orthographic viewer (no basemap)
-│   │   ├── MapViewer.jsx       # MapLibre basemap + SAR overlay
-│   │   └── ComparisonViewer.jsx # Side-by-side / swipe comparison
-│   ├── components/
-│   │   ├── Histogram.jsx       # Interactive histogram with percentile markers
-│   │   ├── StatusWindow.jsx    # Scrolling status/log panel
-│   │   ├── ScaleBar.jsx        # Dynamic scale bar overlay
-│   │   ├── CoordinateGrid.jsx  # Lat/lon grid overlay
-│   │   ├── CornerCoordinates.jsx # Corner coordinate labels
-│   │   └── LoadingIndicator.jsx # Loading spinner
+│   ├── gpu/                    # WebGPU compute (+ WebGL2 FBO filters)
+│   │   ├── webgpu-device.js    # device singleton + capability detection
+│   │   ├── histogram-compute.js / gpu-stats.js  # 2-pass WGSL histogram; Auto wrappers w/ CPU fallback (W007)
+│   │   └── spatial-filter.js / webgl-spatial-filter.js  # speckle filters (WGSL + FBO)
+│   ├── layers/                 # SARGPULayer (primary), SARTileLayer, SARTiledCOGLayer,
+│   │                           # SARBitmapLayer (CPU fallback), OvertureLayer, shaders.js (GLSL)
+│   ├── viewers/                # SARViewer, MapViewer, ComparisonViewer, CompareGrid (multi-panel)
+│   ├── components/             # Histogram, StatusWindow, AnnotationOverlay, ROIOverlay,
+│   │                           # ROIProfilePanel, TransectLineOverlay, ScatterClassifier, ...
 │   ├── utils/
-│   │   ├── sar-composites.js   # RGB composite presets (Pauli, dual-pol, quad-pol)
-│   │   ├── stretch.js          # Stretch modes (linear, sqrt, gamma, sigmoid)
-│   │   ├── colormap.js         # Colormaps (grayscale, viridis, inferno, plasma, phase)
-│   │   ├── stats.js            # Histogram computation, auto-contrast, percentile stats
-│   │   ├── geotiff-writer.js   # Client-side GeoTIFF writer (RGBA + RGB + Float32)
-│   │   ├── figure-export.js    # Figure/colorbar PNG export with overlays
-│   │   ├── geo-overlays.js     # Scale bar, coordinates, theme constants
-│   │   └── gpu-detect.js       # WebGL2 capability detection
-│   └── theme/
-│       └── sardine-theme.css   # CSS custom properties (dark theme)
+│   │   ├── annotation-io.js    # markup ⇄ GeoJSON w/ versioned properties schema (W004)
+│   │   ├── export-sidecar.js   # {output}.tif.json provenance sidecar (W005)
+│   │   ├── deep-link.js        # ?url= + render-param links; share-link.js is a shim (W008)
+│   │   ├── sar-composites.js / sar-indices.js  # RGB presets + RVI-family indices
+│   │   ├── stats.js / stretch.js / colormap.js
+│   │   ├── geotiff-writer.js / figure-export.js / png-state.js / svg-export.js
+│   │   ├── wkt.js / roi-subset.js / geo-overlays.js / gpu-detect.js
+│   │   └── metadata-cube.js / phase-corrections.js / s3-presign.js / s3-url.js
+│   └── theme/sardine-theme.css
+├── server/launch.cjs           # Optional server: file browser, STAC (DuckDB), S3 presigning
 ├── test/
-│   ├── run-tests.js            # Main test runner (100+ checks)
-│   ├── quick-validation.js     # Fast smoke tests
-│   ├── layer-test.html         # Browser-based layer rendering test
-│   ├── gpu-debug.html          # GPU shader debugging page
-│   ├── georef-comparison.mjs   # Georeferencing validation
+│   ├── run-tests.js            # Structural checks (files, exports, layer contracts)
+│   ├── unit/                   # Behavioral tests — auto-discovered *.test.mjs (W001):
+│   │                           # geotiff round-trip, stats, wkt/roi, annotation-io,
+│   │                           # export-sidecar, deep-link, gpu-stats fallback,
+│   │                           # h5chunk synthetic fixtures (v0 + v2 paged)
+│   ├── w003/w006/w009 *.test.mjs  # pipeline regression tests (chained into npm test)
 │   └── benchmarks/
-│       └── gpu-vs-cpu.html     # GPU vs CPU rendering benchmark
 ├── docs/
-│   ├── CLOUD_OPTIMIZED_HDF5.md # h5chunk technical design
-│   ├── COMPETITIVE_ANALYSIS.md # Market landscape analysis
-│   ├── VISUALIZATION.md        # SAR visualization roadmap
-│   └── sardine-style-guide.html # Visual design system
+│   ├── PLATFORM_REVIEW.md      # Strategy: integration, GPU, positioning (July 2026)
+│   ├── plan/                   # Machine-executable work orders (W###) + conventions
+│   ├── CLOUD_OPTIMIZED_HDF5.md / CHUNK_PIPELINE.md / HDF5_FILE_FORMAT.md
+│   ├── DEEP_LINKS.md           # URL parameter reference
+│   └── ...                     # product specs, roadmaps, tutorials
 ├── package.json
 ├── vite.config.js
 └── CLAUDE.md                   # This file
 ```
+
+**Working conventions:** implementation work is tracked as work orders in `docs/plan/`
+(one order → one branch → runnable acceptance criteria; findings appended on premise
+drift). Read `docs/plan/README.md` before starting roadmap work — it also records the
+sardine-agent API ground truth and naming collisions (e.g. `{file}.sardine.json` is
+reserved).
 
 ## Architecture
 
@@ -156,7 +159,8 @@ Colorbar Export: triangle ternary diagram → PNG
 ```bash
 npm install          # Install dependencies
 npm run dev          # Start dev server (localhost:5173)
-npm test             # Run test suite (100+ checks)
+npm test             # Full suite: structural checks + pipeline regressions + unit tests
+npm run test:unit    # Behavioral unit tests only (test/unit/*.test.mjs, auto-discovered)
 npm run test:quick   # Fast smoke tests
 npm run test:layer   # Browser layer rendering test
 npm run debug:gpu    # GPU shader debug page
@@ -233,28 +237,38 @@ downloadBuffer(buffer, 'export.tif');
 
 ## Roadmap
 
+The living roadmap is `docs/plan/` (work orders with acceptance criteria) driven by
+the strategy in `docs/PLATFORM_REVIEW.md`. Snapshot:
+
 ### Shipped
 - COG viewer with dB scaling, colormaps, contrast sliders
-- NISAR HDF5 GCOV streaming via h5chunk
-- GPU-accelerated rendering (SARGPULayer with GLSL shaders)
-- RGB composite mode (Pauli, dual-pol-h, dual-pol-v, quad-pol)
-- Histogram panel with auto-contrast (percentile-based)
-- Stretch modes (sqrt, gamma, sigmoid)
-- GeoTIFF export (raw Float32 + rendered RGBA + RGB composites)
-- Figure export (PNG with overlays)
-- RGB triangle colorbar export
-- MapLibre basemap integration
-- Overture Maps vector overlay
-- Scale bar, coordinate grid, corner coordinates
+- NISAR HDF5 GCOV + GUNW streaming via h5chunk; NITF/SICD via URLFile
+- GPU-accelerated rendering (SARGPULayer, GLSL) + WebGPU compute histogram/stats
+  with CPU fallback; decode worker pool; IndexedDB L2 chunk cache
+- RGB composite mode (Pauli, dual-pol, quad-pol) + RVI-family indices
+- Annotations (arrows/text), rectangular ROI + profiles, transects, scatter
+  classifier — with **GeoJSON markup save/load** (versioned schema, annotation-io.js)
+- GeoTIFF export (raw Float32 + rendered RGBA) with **provenance sidecars**
+  ({output}.tif.json); figure PNG export; PNG state embedding
+- **Deep links** (?url= + render params) and Copy Link (docs/DEEP_LINKS.md)
+- Compare grid (up to 4 synced panels, mixed COG/NISAR), GUNW paired view
+- MapLibre basemap, Overture Maps overlay, scale bar/coordinate overlays
+- Server mode (sardine-launch): file browser, DuckDB STAC API, S3 presigning
+- Behavioral test suite (test/unit) + pipeline regression tests
 
-### Next
-- Chat/prompt interface for natural language visualization control
-- Drawing/annotation tools on the map
-- Time series multi-date loading and animation
-- Split view / swipe comparison
-- Flood thresholding with mask overlay and GeoJSON export
-- Server mode for Docker deployment (sardine-launch)
-- Processing backend hook (Nextflow / Python pipeline)
+### In flight
+- ASF DAAC demo capacity — SPA shell + ATBD apps (/inundation with ASF auto-stack,
+  /crop, /disturbance) on the D582/D106 line; integration tracked as W014
+
+### Next (see docs/plan/)
+- W010 SARScene/RenderConfig/SessionState schema (design gate) → main-app store
+  extraction
+- W011 flood vertical slice: GPU threshold + AI proposals + accept/reject
+  adjudication + STAC-labeled export (adds sardine_annotate/sardine_write_mask to
+  sardine-agent)
+- W012 publish: h5chunk to npm (converge with sardine-agent's packages/h5chunk),
+  schemas as draft STAC extensions, public demo instance
+- Time series multi-date loading and animation; chat/prompt interface
 
 ## Target Workflow
 

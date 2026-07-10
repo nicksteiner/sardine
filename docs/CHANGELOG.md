@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Wave 0/1 work-order batch (2026-07-08 → 2026-07-10)
+
+Executed as ten machine-verifiable work orders (`docs/plan/W001–W009, W013`) by
+parallel worktree agents against acceptance criteria; strategy in
+`docs/PLATFORM_REVIEW.md`. Also merges the July WIP feature set.
+
+### Added
+- **Markup GeoJSON save/load** (W004) — annotations, ROI, transects, and classifier
+  regions serialize as a GeoJSON FeatureCollection with a versioned properties schema
+  (`sardine:kind`, observer/method/created/confidence, `sourceScene`, embedded ROI
+  measurements); round-trip import incl. drag-drop; unknown properties preserved
+  (`src/utils/annotation-io.js`)
+- **Export provenance sidecar** (W005) — every GeoTIFF export writes `{output}.tif.json`
+  with verbatim product identification, georeference, render state, and `derived_from`
+  lineage (`src/utils/export-sidecar.js`)
+- **Granule deep links** (W008) — `?url=<granule>` auto-load with render params
+  (colormap/contrast/dB/stretch/pol/freq/composite/view); "Copy Link" reproduces the
+  view; post-load guards keep deep-link contrast from being clobbered by auto-contrast
+  (`src/utils/deep-link.js`, `docs/DEEP_LINKS.md`)
+- **Decode worker pool** (W006) — HDF5 chunk inflate+shuffle in transferable-buffer
+  Web Workers, lazy min(4, cores), bit-exact sync fallback
+  (`src/loaders/decode-core.js`, `decode-worker.js`, `decode-pool.js`)
+- **IndexedDB L2 chunk cache** (W009) — ~200 MB LRU persistent cache under the
+  in-memory L1, probed by all five batch-fetch paths; repeat sessions on the same
+  remote scene avoid refetching (`src/loaders/chunk-cache-idb.js`)
+- **Behavioral unit-test suite** (W001) — `npm run test:unit`: GeoTIFF write/read
+  round-trip (bit-exact Float32), stats, WKT/ROI, synthetic HDF5 fixtures; auto-
+  discovering runner (`test/unit/`)
+- Compare-grid NISAR panels (per-panel freq/pol), transect line + profile panels,
+  ROI profile sidebar, annotation size presets, RVI SAR index (July WIP)
+
+### Changed
+- **GPU histogram wired into the UI** (W007) — all seven stats call sites route
+  through WebGPU compute with CPU fallback; viewport debounce 800 ms → 100 ms when
+  WebGPU is active; one-time "histogram: WebGPU/CPU" status log
+- Adaptive concurrency ignores aborted batches (`Promise.allSettled`) so AbortErrors
+  no longer decay throughput (W003)
+- `MERGE_GAP` hoisted to an exported, test-guarded 2 MB constant (W009)
+
+### Fixed
+- **Single-tile RGBA GeoTIFF corruption** — `writeIFD` wrote a placeholder 0 for
+  inline TileOffsets on images ≤512×512 (W001)
+- **Signal-abort cascade** — tile aborts no longer cancel chunk reads (cache always
+  warms); tile-level abort check re-plumbed through SARViewer (W003)
+- **Silent all-zero chunk decode** when `Worker` is unavailable; lost
+  deflate→shuffle+deflate retry on the worker path (W006)
+- **h5chunk superblock v0/v1 misparse** — default-settings h5py files opened with
+  zero datasets (root symbol-table entry's `linkNameOffset` read as the root group
+  address); v0 fixture + 6 regression tests (W013)
+- Latent `computeHistogramGPU` out-of-bounds: WGSL is compiled at 256 bins, so
+  caller `numBins` is honored only on the CPU fallback (W007, guard)
+
+### Removed
+- Dead modules (W002, −1,429 lines): `SARGPUBitmapLayer.js`, `hdf5-chunked.js`,
+  `ChunkedDatasetReader`, `writeLegacyRGBGeoTIFF` (+ the deprecated public
+  `writeRGBGeoTIFF` export), `jest.config.cjs`; interim Cache-API chunk cache
+  (`src/utils/chunk-cache.js`, superseded by W009)
+- Stale `docs/API.md`/`docs/CONTRIBUTING.md` (v0.1 TypeScript API) rewritten
+
 ## [1.0.0-beta.4] - 2026-03-18
 
 ### Added
