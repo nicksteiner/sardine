@@ -60,15 +60,25 @@ uniform sampler2D uAtlas;       // optical RGB atlas (Web Mercator tiles stitche
 uniform sampler2D uWarp;        // RG32F, N×N, baked image-CRS→atlas-UV mapping
 uniform vec4 uImageBounds;      // [minX, minY, maxX, maxY] in image CRS
 uniform float uOpacity;
+uniform float uWarpSize;        // N — warp texture edge length (gridSize + 1)
 
 in vec2 vTexCoord;
 out vec4 fragColor;
 
 void main() {
   // vTexCoord is the layer-local UV (0..1) over the image bounds.
-  // The warp texture is sampled at the *same* UV — GPU bilinear interpolation
-  // between the precomputed grid nodes gives a smooth atlas-UV per fragment.
-  vec2 atlasUV = texture(uWarp, vTexCoord).rg;
+  //
+  // The warp is a VERTEX-aligned grid: node i holds the atlas-UV for layer-UV
+  // i/gridSize, so node 0 sits at layer-UV 0 and node N-1 at layer-UV 1. But a
+  // texture of width N samples at TEXEL CENTERS — node i lives at texture coord
+  // (i+0.5)/N, not i/(N-1). Sampling uWarp at the raw vTexCoord therefore reads
+  // half a texel off and slightly mis-scales, which drifts the optical overlay
+  // off the SAR (worse toward the edges). Remap layer-UV → texel-center space:
+  //   u=0  → 0.5/N            (center of texel 0   = node 0)
+  //   u=1  → (N-1+0.5)/N      (center of texel N-1 = node N-1)
+  float gridSpan = uWarpSize - 1.0;
+  vec2 warpUV = (vTexCoord * gridSpan + 0.5) / uWarpSize;
+  vec2 atlasUV = texture(uWarp, warpUV).rg;
 
   // Out-of-atlas marker: CPU encodes "no data" as negative UV.
   if (atlasUV.x < 0.0 || atlasUV.y < 0.0) {
@@ -145,10 +155,12 @@ async function buildPeek({ bounds, crs, tileUrlTemplate, gridSize, opticalZoom, 
   }
 
   // 2. Pick optical zoom from approximate pixels-per-degree if not provided.
-  // The +3 boost takes the coarse "one tile covers the scene" pick and
-  // makes it 64× finer — about z=14 for a 0.27°-span SAR chip, which
-  // reveals roads and parcels at typical SAR resolutions.
-  const ZOOM_BOOST = 3;
+  // The +4 boost takes the coarse "one tile covers the scene" pick and
+  // makes it 256× finer — about z=15 for a 0.27°-span SAR chip, which
+  // resolves individual buildings and field boundaries. Each +1 here
+  // quadruples the tile count (and GPU atlas memory); the 1024-tile cap
+  // below is the backstop. Drop to 3 if large scenes hit that cap.
+  const ZOOM_BOOST = 4;
   const z = opticalZoom ?? Math.min(18, Math.max(1, Math.floor(Math.log2(360 / Math.max(lonMax - lonMin, 0.0001)) + 1) + ZOOM_BOOST));
 
   // 3. Determine the tile range and fetch all tiles into an atlas canvas.
@@ -308,6 +320,20 @@ export class OpticalPeekLayer extends Layer {
       if (token !== this.state.buildToken) return; // stale
 
       // Upload atlas as RGBA8 (canvas → texImage2D).
+      //
+      // CRITICAL: force UNPACK_FLIP_Y_WEBGL off. deck.gl/luma upload image
+      // textures with FLIP_Y *on* by default and leave that state set on the
+      // shared GL context. FLIP_Y is honoured for DOM/canvas sources (the
+      // atlas) but IGNORED for ArrayBufferView sources (the warp, a
+      // Float32Array). If we inherit a stale FLIP_Y=true, the atlas canvas
+      // gets mirrored vertically while the warp does not — north ends up at
+      // atlas v=1 but the warp still points at v=0, and the optical overlay
+      // is mis-registered (sheared/offset against the SAR). Pinning it false
+      // makes "memory row 0 == v==0" hold for both textures, matching how
+      // buildPeek bakes atlasPxY (north → 0).
+      const prevFlipY = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+
       const atlasTex = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, atlasTex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, result.atlas);
@@ -331,9 +357,12 @@ export class OpticalPeekLayer extends Layer {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.bindTexture(gl.TEXTURE_2D, null);
 
+      // Restore the context's FLIP_Y so later luma texture uploads behave.
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, prevFlipY);
+
       if (this.state.atlasTex) gl.deleteTexture(this.state.atlasTex);
       if (this.state.warpTex) gl.deleteTexture(this.state.warpTex);
-      this.setState({ atlasTex, warpTex });
+      this.setState({ atlasTex, warpTex, warpSize: result.warpSize });
       console.log(`[OpticalPeek] built atlas: ${result.atlasW}×${result.atlasH} (z=${result.z}, ${result.tilesFetched} tiles), warp ${result.warpSize}²`);
       this.setNeedsRedraw('optical-peek rebuilt');
     } catch (err) {
@@ -342,7 +371,7 @@ export class OpticalPeekLayer extends Layer {
   }
 
   draw({ uniforms }) {
-    const { model, atlasTex, warpTex } = this.state;
+    const { model, atlasTex, warpTex, warpSize } = this.state;
     if (!model || !atlasTex || !warpTex) return;
 
     const { gl } = this.context;
@@ -359,6 +388,7 @@ export class OpticalPeekLayer extends Layer {
       uWarp: 1,
       uImageBounds: bounds,
       uOpacity: opacity,
+      uWarpSize: warpSize,
     });
     model.draw();
 

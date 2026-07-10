@@ -10,6 +10,7 @@ import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
 import { ScaleBar } from '../components/ScaleBar.jsx';
 import { CoordinateGrid } from '../components/CoordinateGrid.jsx';
 import { ROIOverlay } from '../components/ROIOverlay.jsx';
+import { TransectLineOverlay } from '../components/TransectLineOverlay.jsx';
 import ClassificationOverlay from '../components/ClassificationOverlay.jsx';
 import { PixelExplorer } from '../components/PixelExplorer.jsx';
 import { ROIProfilePlot } from '../components/ROIProfilePlot.jsx';
@@ -62,6 +63,9 @@ export const SARViewer = forwardRef(function SARViewer({
   extraLayers = [],   // Additional deck.gl layers (e.g., Overture overlay)
   roi = null,         // ROI rectangle { left, top, width, height } in image pixels
   onROIChange,        // Callback when ROI changes via Shift+drag
+  transectEnabled = false, // Free profile-line tool armed
+  transectLine = null,     // { x0, y0, x1, y1 } in image pixels, or null
+  onTransectLineChange,    // Callback when the transect line moves/rotates
   imageWidth,         // Source image width in pixels (for ROI overlay)
   imageHeight,        // Source image height in pixels (for ROI overlay)
   getPixelValue,      // async (row, col, windowSize?) => value (for pixel explorer)
@@ -86,6 +90,7 @@ export const SARViewer = forwardRef(function SARViewer({
   annotations = [],
   annotationMode = 'off',     // 'off' | 'arrow' | 'text'
   annotationColor = 'cyan',
+  annotationSize = 'medium',  // 'small' | 'medium' | 'large'
   onAnnotationsChange = null,
   selectedAnnotationId = null,
   onSelectAnnotation = null,
@@ -98,13 +103,16 @@ export const SARViewer = forwardRef(function SARViewer({
   // so SARTileLayer won't re-fetch tiles when visual props (colormap, contrast, etc.) change.
   const stableGetTileData = useCallback(
     async (tile) => {
-      const { bbox } = tile;
+      const { bbox, signal } = tile;
+      // W003: `signal` is used by getTile only as a post-read CPU skip — it is
+      // never forwarded into chunk fetches (those must complete to warm caches).
       return getTileRef.current({
         x: tile.index.x,
         y: tile.index.y,
         z: tile.index.z,
         bbox,
         multiLook,
+        signal,
       });
     },
     [multiLook]
@@ -125,13 +133,14 @@ export const SARViewer = forwardRef(function SARViewer({
       } else {
         const fnRef = { current: src.getTile };
         const stable = async (tile) => {
-          const { bbox } = tile;
+          const { bbox, signal } = tile;
           return fnRef.current({
             x: tile.index.x,
             y: tile.index.y,
             z: tile.index.z,
             bbox,
             multiLook,
+            signal,
           });
         };
         m.set(src.id, { fnRef, stable });
@@ -466,6 +475,15 @@ export const SARViewer = forwardRef(function SARViewer({
         roi={roi}
         onROIChange={onROIChange}
       />
+      <TransectLineOverlay
+        enabled={transectEnabled}
+        viewState={viewState}
+        bounds={bounds}
+        imageWidth={imageWidth}
+        imageHeight={imageHeight}
+        line={transectLine}
+        onLineChange={onTransectLineChange}
+      />
       {classificationMap && roi && classifierRoiDims && (
         <ClassificationOverlay
           viewState={viewState}
@@ -506,6 +524,7 @@ export const SARViewer = forwardRef(function SARViewer({
         bounds={bounds}
         mode={annotationMode}
         color={annotationColor}
+        size={annotationSize}
         annotations={annotations}
         onAnnotationsChange={onAnnotationsChange}
         selectedId={selectedAnnotationId}

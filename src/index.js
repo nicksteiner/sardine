@@ -15,7 +15,7 @@ export {
   loadMultiBandCOG,
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
-export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
+export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARIndex, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
 export { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from './loaders/nisar-gunw-loader.js';
 export { detectNISARProduct, openNISARReader, getRenderMode, RENDER_MODES } from './loaders/nisar-product.js';
 export {
@@ -32,14 +32,13 @@ export { bboxToPixelRange, reprojectBbox, computeSubsetBounds, roiIntersectsFile
 // S3 URL utilities
 export { normalizeS3Url, isS3Url } from './utils/s3-url.js';
 
-// Persistent chunk cache
-export { clearChunkCache } from './utils/chunk-cache.js';
+// Persistent chunk cache (IndexedDB L2 — W009)
+export { clearChunkCache, ChunkCacheL2, createPersistentChunkCache, L2_MAX_BYTES } from './loaders/chunk-cache-idb.js';
 
 // Layers
 export { SARTileLayer } from './layers/SARTileLayer.js';
 export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
 export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
-export { SARGPUBitmapLayer } from './layers/SARGPUBitmapLayer.js';
 export { SARGPULayer } from './layers/SARGPULayer.js';
 export {
   sarVertexShader,
@@ -57,12 +56,14 @@ export {
   ComparisonViewer,
   SwipeComparisonViewer,
 } from './viewers/ComparisonViewer.jsx';
+export { CompareGrid } from './viewers/CompareGrid.jsx';
 export { MapViewer } from './viewers/MapViewer.jsx';
 
 // Utilities
 export {
   computeStats,
   autoContrastLimits,
+  autoContrastWithDbDetect,
   computeHistogram,
   sampleTileStats,
   computeChannelStats,
@@ -102,9 +103,17 @@ export {
   COLORBLIND_MATRICES,
 } from './utils/sar-composites.js';
 
-export { writeRGBAGeoTIFF, writeRGBGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
+export {
+  SAR_INDICES,
+  computeRVI,
+  selectRVIForm,
+  rviRequiredPols,
+  getAvailableIndices,
+} from './utils/sar-indices.js';
 
-export { exportFigure, downloadBlob } from './utils/figure-export.js';
+export { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from './utils/geotiff-writer.js';
+
+export { exportFigure, exportFigureSideBySide, exportFigureGrid, downloadBlob } from './utils/figure-export.js';
 
 export { STRETCH_MODES, applyStretch, createStretchFn } from './utils/stretch.js';
 
@@ -126,6 +135,7 @@ export {
   getDeviceLimits,
   computeHistogramGPU,
   computeChannelStatsAuto,
+  sampleViewportStatsAuto,
   canUseGPUStats,
   applySpeckleFilter,
   getFilterTypes,
@@ -203,6 +213,7 @@ import { SARTileLayer } from './layers/SARTileLayer.js';
 import { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 import { SARViewer } from './viewers/SARViewer.jsx';
 import { ComparisonViewer, SwipeComparisonViewer } from './viewers/ComparisonViewer.jsx';
+import { CompareGrid } from './viewers/CompareGrid.jsx';
 import { MapViewer } from './viewers/MapViewer.jsx';
 
 // Default export
@@ -216,5 +227,6 @@ export default {
   SARViewer,
   ComparisonViewer,
   SwipeComparisonViewer,
+  CompareGrid,
   MapViewer,
 };

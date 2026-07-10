@@ -367,8 +367,7 @@ function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeig
   const rh = Math.abs(sy1 - sy0);
 
   ctx.save();
-  ctx.fillStyle = 'rgba(255, 200, 50, 0.08)';
-  ctx.fillRect(rx, ry, rw, rh);
+  // Bounds only — no fill (matches ROIOverlay; the shading tinted the data)
   ctx.strokeStyle = '#ffc832';
   ctx.lineWidth = 2 * dpr;
   ctx.setLineDash([6 * dpr, 4 * dpr]);
@@ -998,12 +997,12 @@ function drawAnnotations(ctx, W, H, annotations, viewState, dpr) {
       const [x1, y1] = worldToPixel(a.worldX,  a.worldY,  viewState, W, H);
       const [x2, y2] = worldToPixel(a.worldX2, a.worldY2, viewState, W, H);
       drawAnnArrow(ctx, x1, y1, x2, y2, {
-        colorKey: a.color, caption: a.text || '', dpr, fontSize: a.fontSize || 12,
+        colorKey: a.color, caption: a.text || '', dpr, size: a.size, fontSize: a.fontSize,
       });
     } else if (a.type === 'text') {
       const [x, y] = worldToPixel(a.worldX, a.worldY, viewState, W, H);
       drawAnnText(ctx, x, y, a.text || '', {
-        colorKey: a.color, dpr, fontSize: a.fontSize || 13,
+        colorKey: a.color, dpr, size: a.size, fontSize: a.fontSize,
       });
     }
   }
@@ -1642,6 +1641,135 @@ export async function exportFigureSideBySide(left, right) {
 
   await drawPanel(left.options,  0,          lW, lH);
   await drawPanel(right.options, lW + divider, rW, rH);
+
+  return new Promise((resolve) => {
+    canvas.toBlob(resolve, 'image/png');
+  });
+}
+
+/**
+ * Capture N viewer panels (up to 4) in an adaptive grid and export as one PNG.
+ *
+ * Layout matches the on-screen CompareGrid: 1 → full, 2 → side-by-side,
+ * 3-4 → 2×2. Each panel gets the full SARdine overlay set (grid, scalebar,
+ * colorbar, metadata, branding) clipped to its cell. Cells are sized to the
+ * largest panel canvas so the grid is uniform.
+ *
+ * @param {Array<{canvas: HTMLCanvasElement, options: Object}>} panels
+ * @returns {Promise<Blob>} PNG blob
+ */
+export async function exportFigureGrid(panels) {
+  const valid = (panels || []).filter((p) => p && p.canvas);
+  if (valid.length === 0) return null;
+  if (valid.length === 1) {
+    // Single panel — defer to the standard figure export.
+    return exportFigure(valid[0].canvas, valid[0].options);
+  }
+  if (valid.length === 2) {
+    return exportFigureSideBySide(valid[0], valid[1]);
+  }
+
+  const dpr = window.devicePixelRatio || 1;
+  const divider = Math.round(3 * dpr);
+
+  // 3 or 4 panels → 2×2 grid. Uniform cell = largest panel dimensions.
+  const cols = 2;
+  const rows = 2;
+  const cellW = Math.max(...valid.map((p) => p.canvas.width));
+  const cellH = Math.max(...valid.map((p) => p.canvas.height));
+
+  const W = cols * cellW + (cols - 1) * divider;
+  const H = rows * cellH + (rows - 1) * divider;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0a1628';
+  ctx.fillRect(0, 0, W, H);
+
+  const s = (v) => Math.round(v * dpr);
+
+  async function drawPanel(opts, offsetX, offsetY, panelW, panelH, srcCanvas) {
+    const {
+      colormap = 'grayscale',
+      contrastLimits,
+      useDecibels = true,
+      compositeId = null,
+      viewState,
+      bounds,
+      filename = '',
+      crs = '',
+      histogramData = null,
+      polarization = '',
+      identification = null,
+      colorblindMode = 'off',
+      wgs84Bounds = null,
+    } = opts;
+
+    const projected = isProjectedBounds(bounds);
+
+    // Draw the captured image into its cell.
+    ctx.drawImage(srcCanvas, offsetX, offsetY);
+
+    ctx.save();
+    ctx.translate(offsetX, offsetY);
+    ctx.beginPath();
+    ctx.rect(0, 0, panelW, panelH);
+    ctx.clip();
+
+    drawBorder(ctx, panelW, panelH, s);
+    drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s);
+    drawCornerCoordinates(ctx, panelW, panelH, viewState, projected, s);
+    drawScaleBar(ctx, panelW, panelH, viewState, bounds, projected, s);
+
+    if (compositeId) {
+      drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s, colorblindMode);
+    } else {
+      drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s);
+    }
+
+    drawMetadata(ctx, panelW, panelH, {
+      filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
+    }, s);
+    drawBranding(ctx, panelW, panelH, s);
+
+    if (histogramData) {
+      drawHistogramInset(ctx, panelW, panelH, {
+        histogramData, compositeId, contrastLimits, useDecibels, polarization,
+      }, dpr);
+    }
+
+    await drawLocationInset(ctx, panelW, panelH, wgs84Bounds, projected, dpr);
+
+    ctx.restore();
+  }
+
+  // Cell origins in 2×2 order: TL, TR, BL, BR.
+  const origins = [
+    [0, 0],
+    [cellW + divider, 0],
+    [0, cellH + divider],
+    [cellW + divider, cellH + divider],
+  ];
+
+  for (let i = 0; i < valid.length; i++) {
+    const [ox, oy] = origins[i];
+    await drawPanel(
+      valid[i].options,
+      ox,
+      oy,
+      valid[i].canvas.width,
+      valid[i].canvas.height,
+      valid[i].canvas
+    );
+  }
+
+  // Dividers between cells.
+  ctx.fillStyle = 'rgba(30, 58, 95, 0.80)';
+  ctx.fillRect(cellW, 0, divider, H);          // vertical
+  ctx.fillRect(0, cellH, W, divider);          // horizontal
 
   return new Promise((resolve) => {
     canvas.toBlob(resolve, 'image/png');

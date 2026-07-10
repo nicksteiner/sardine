@@ -1,89 +1,43 @@
 # Contributing to SARdine
 
-Thank you for your interest in contributing to SARdine!
+## Setup
 
-## Development Setup
-
-1. Clone the repository:
 ```bash
 git clone https://github.com/nicksteiner/sardine.git
 cd sardine
-```
-
-2. Install dependencies:
-```bash
 npm install
+npm run dev          # Vite dev server at localhost:5173
 ```
 
-3. Build the library:
-```bash
-npm run build
-```
-
-4. Run tests:
-```bash
-npm test
-```
-
-## Project Structure
-
-```
-sardine/
-├── src/
-│   ├── SARdine.ts              # Main viewer class
-│   ├── index.ts                # Public API exports
-│   ├── layers/
-│   │   └── SARImageLayer.ts    # Custom deck.gl layer for SAR imagery
-│   ├── types/
-│   │   └── index.ts            # TypeScript type definitions
-│   └── utils/
-│       └── geotiff.ts          # GeoTIFF utilities
-├── examples/
-│   ├── basic.html              # HTML example
-│   └── usage.ts                # TypeScript usage examples
-├── dist/                       # Build output (generated)
-└── README.md
-```
-
-## Development Workflow
-
-1. **Make changes** to the source code in the `src/` directory
-2. **Build** using `npm run build` to compile TypeScript
-3. **Test** using `npm test` to ensure nothing breaks
-4. **Create a PR** with a clear description of your changes
-
-## Coding Standards
-
-- Use TypeScript for all source code
-- Follow existing code style and conventions
-- Add JSDoc comments for public APIs
-- Write tests for new functionality
-- Keep dependencies minimal
-
-## Testing
-
-We use Jest for testing. Tests are located alongside the source files with `.test.ts` extension.
+## Commands
 
 ```bash
-npm test                    # Run all tests
-npm test -- --watch         # Run tests in watch mode
+npm test             # Main test suite (node test/run-tests.js, 100+ checks)
+npm run test:quick   # Fast smoke tests
+npm run build        # Production build → dist/
+npm run test:layer   # Browser-based layer rendering test
+npm run debug:gpu    # GPU shader debug page
+npm run benchmark    # GPU vs CPU rendering benchmark
 ```
 
-## Building
+## Ground rules
 
-```bash
-npm run build              # Build once
-npm run dev                # Build in watch mode
-```
+- **Plain JavaScript** — no TypeScript in app code. ES modules throughout.
+  React components use `.jsx`.
+- **GPU-first** — new visualization features should run in GLSL shaders when possible.
+- **No server required** — everything must work client-side from local File objects
+  or HTTP Range URLs.
+- **Minimal dependencies** — pure JS/WASM stack; no GDAL, no tile server.
+- **Export parity** — any new rendering feature must work in both the on-screen
+  and export paths.
+- **Test with real data** — use actual NISAR GCOV `.h5` files and SAR GeoTIFFs.
+- Keep diffs small and focused.
 
-## Pull Request Process
+See [`CLAUDE.md`](../CLAUDE.md) for project structure, architecture, and coding
+patterns, and [`API.md`](API.md) for the public API surface.
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+## Pull requests
 
-## Questions?
-
-Feel free to open an issue for any questions or concerns.
+1. Branch from `main`
+2. Make your change; run `npm test` and `npm run build`
+3. Open a PR with a clear description

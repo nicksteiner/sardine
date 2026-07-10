@@ -289,7 +289,7 @@ new SARTileLayer({
 
 ## 8. Known Bugs & Issues
 
-### BUG 1: Signal Abort Cascade (CRITICAL — tiles never render)
+### BUG 1: Signal Abort Cascade — **FIXED** (W003, 2026-07: chunk reads no longer abortable; tile-level signal check re-plumbed through SARViewer)
 
 **Symptom:** All chunk reads fail with "signal is aborted without reason". No tiles render.
 
@@ -310,7 +310,7 @@ new SARTileLayer({
 
 **Fix:** Port the `buildMosaicTile` approach from single-band to RGB, OR implement per-chunk sub-sampling where each fetched chunk contributes a representative block of pixels.
 
-### BUG 3: Adaptive Concurrency Decay from AbortErrors
+### BUG 3: Adaptive Concurrency Decay from AbortErrors — **FIXED** (W003: Promise.allSettled; failed batches record no throughput sample)
 
 **Symptom:** Concurrency drops from 12→8→6 even on fast connections.
 

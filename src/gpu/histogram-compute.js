@@ -343,7 +343,7 @@ export async function computeHistogramGPU(data, { useDecibels = true, numBins = 
   const chunksSize = numWorkgroups * numBins * 4;
   const chunksBuffer = device.createBuffer({
     size: chunksSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
   });
 
   // Zero-initialize chunks buffer

@@ -133,6 +133,52 @@ export function autoContrastLimits(
 }
 
 /**
+ * Auto-contrast for a raw GeoTIFF/COG band that ALSO decides whether dB
+ * scaling should be on. Mirrors the inline logic in app/main.jsx's
+ * handleLocalTIFMultiSelect so per-panel compare-grid viewers match the
+ * main viewer's defaults exactly.
+ *
+ * @param {Float32Array|number[]} data - Raw band samples (power or scaled)
+ * @returns {{ useDecibels: boolean, contrastLimits: [number, number] }}
+ */
+export function autoContrastWithDbDetect(data) {
+  if (!data || data.length === 0) {
+    return { useDecibels: true, contrastLimits: [-30, 0] };
+  }
+
+  // Subsample to ~10k valid values (skip NaN and exact-zero nodata)
+  const vals = [];
+  const stride = Math.max(1, Math.floor(data.length / 10000));
+  for (let i = 0; i < data.length; i += stride) {
+    const v = data[i];
+    if (!isNaN(v) && v !== 0) vals.push(v);
+  }
+  if (vals.length === 0) {
+    return { useDecibels: true, contrastLimits: [-30, 0] };
+  }
+  vals.sort((a, b) => a - b);
+
+  const p02 = vals[Math.floor(vals.length * 0.02)] || 0;
+  const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
+
+  // Raw SAR power → dB useful; values with negatives or already small → linear.
+  const hasNegatives = p02 < 0;
+  const useDecibels = !hasNegatives && p98 > 1;
+
+  const displayVals = useDecibels
+    ? vals.map((v) => 10 * Math.log10(Math.max(v, 1e-10)))
+    : vals;
+  const lowIdx = Math.floor(0.02 * displayVals.length);
+  const highIdx = Math.floor(0.98 * displayVals.length);
+  const contrastLimits = [
+    displayVals[lowIdx] ?? (useDecibels ? -30 : 0),
+    displayVals[Math.min(highIdx, displayVals.length - 1)] ?? (useDecibels ? 0 : 1),
+  ];
+
+  return { useDecibels, contrastLimits };
+}
+
+/**
  * Compute histogram of SAR data
  * @param {Float32Array|number[]} data - Raw SAR data
  * @param {boolean} useDecibels - Whether to compute histogram in dB
@@ -321,6 +367,46 @@ export function computeChannelStats(values, useDecibels = false, numBins = 128, 
 }
 
 /**
+ * Fetch a gridSize×gridSize grid of tiles covering a world-coordinate region.
+ *
+ * @param {Function} getTile - Tile fetcher ({x, y, z, bbox}) => {data, width, height}
+ * @param {number} regionWidth - Width of the region to sample (world-units)
+ * @param {number} regionHeight - Height of the region to sample
+ * @param {number} originX - Left edge of the region (default 0 for global)
+ * @param {number} originY - Top edge of the region (default 0 for global)
+ * @param {number} gridSize - Tiles per side (default 3)
+ * @returns {Promise<Array<Float32Array|null>>} Tile data in row-major order; null for failed tiles
+ */
+export async function fetchTileGrid(getTile, regionWidth, regionHeight, originX = 0, originY = 0, gridSize = 3) {
+  const stepX = regionWidth / gridSize;
+  const stepY = regionHeight / gridSize;
+
+  // Build tile requests — pass world-coordinate bboxes directly.
+  const promises = [];
+  for (let ty = 0; ty < gridSize; ty++) {
+    for (let tx = 0; tx < gridSize; tx++) {
+      const left = originX + tx * stepX;
+      const right = originX + (tx + 1) * stepX;
+      const top = originY + ty * stepY;
+      const bottom = originY + (ty + 1) * stepY;
+
+      // background: stats sampling must not preempt viewport tiles or abort
+      // the loader's progressive overview refinement (loaders that don't
+      // know the flag ignore it).
+      promises.push(getTile({
+        x: tx, y: ty, z: 0,
+        bbox: { left, top, right, bottom },
+        background: true,
+      }));
+    }
+  }
+
+  const results = await Promise.allSettled(promises);
+  return results.map(r =>
+    (r.status === 'fulfilled' && r.value && r.value.data) ? r.value.data : null);
+}
+
+/**
  * Sample tile data from an OrthographicView loader and compute histogram stats.
  * Reads a 3x3 grid of tiles covering the specified region.
  *
@@ -343,38 +429,16 @@ export async function sampleViewportStats(
 ) {
   const gridSize = 3;
   const totalTiles = gridSize * gridSize;
-  const stepX = regionWidth / gridSize;
-  const stepY = regionHeight / gridSize;
 
-  // Build tile requests — pass world-coordinate bboxes directly.
-  const tileRequests = [];
-  for (let ty = 0; ty < gridSize; ty++) {
-    for (let tx = 0; tx < gridSize; tx++) {
-      const left = originX + tx * stepX;
-      const right = originX + (tx + 1) * stepX;
-      const top = originY + ty * stepY;
-      const bottom = originY + (ty + 1) * stepY;
-
-      tileRequests.push({
-        promise: getTile({
-          x: tx, y: ty, z: 0,
-          bbox: { left, top, right, bottom },
-        }),
-        tx, ty,
-      });
-    }
-  }
-
-  const results = await Promise.allSettled(tileRequests.map(r => r.promise));
+  const tiles = await fetchTileGrid(getTile, regionWidth, regionHeight, originX, originY, gridSize);
 
   // Pass 1: walk each tile inline, track min/max/sum/count, cache tile data for Pass 2
   let min = Infinity, max = -Infinity, sum = 0, count = 0;
   const tileCache = [];
 
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    if (result.status === 'fulfilled' && result.value && result.value.data) {
-      const tileData = result.value.data;
+  for (let i = 0; i < tiles.length; i++) {
+    const tileData = tiles[i];
+    if (tileData) {
       // Adaptive stride: larger stride for big tiles
       const stride = Math.max(4, Math.floor(tileData.length / 50000));
       tileCache.push({ data: tileData, stride });

@@ -1,6 +1,6 @@
 {
   "name": "sardine",
-  "version": "0.2.2",
+  "version": "1.0.0-beta.5",
   "type": "module",
   "description": "SARdine - SAR Data INspection and Exploration",
   "main": "src/index.js",
@@ -10,7 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "example": "vite --config vite.example.config.js",
-    "test": "node test/run-tests.js",
+    "test": "node test/run-tests.js && node test/w003-abort-cascade.test.mjs && node test/w006-decode-pool.test.mjs && node test/w009-chunk-cache-l2.test.mjs && node test/unit/run-unit-tests.mjs",
+    "test:unit": "node test/unit/run-unit-tests.mjs",
     "test:layer": "vite --config vite.test.config.js --open /test/layer-test.html",
     "test:quick": "node test/quick-validation.js",
     "test:watch": "nodemon -w src -x 'npm run test:quick'",

@@ -13,6 +13,12 @@
  * https://docs.hdfgroup.org/hdf5/develop/_f_m_t3.html
  */
 
+import { getDecodePool } from './decode-pool.js';
+import { decodeBytes } from './decode-core.js';
+
+// Re-export pool controls so existing consumers (app/main.jsx) keep working.
+export { setWorkerCount, getWorkerPoolInfo } from './decode-pool.js';
+
 // HDF5 signature
 const HDF5_SIGNATURE = new Uint8Array([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -41,6 +47,20 @@ const FILTER_FLETCHER32 = 3;
 const FILTER_SZIP = 4;
 const FILTER_NBIT = 5;
 const FILTER_SCALEOFFSET = 6;
+
+/**
+ * Batch-read range coalescing gap (W009, raised from 256 KB).
+ *
+ * `readChunksBatch()` merges chunk reads whose file-offset gap is below this
+ * threshold into a single HTTP Range request. NISAR GCOV chunks (512×512
+ * float32, ~1 MB compressed) are stored sequentially by dataset, so with the
+ * old 256 KB gap adjacent chunks were almost always mergeable but rows were
+ * not — a 2 MB gap merges entire chunk rows into single requests, cutting
+ * request count 3–5×. Trade-off: some unused gap bytes are fetched, which is
+ * negligible at S3 throughput. See docs/CHUNK_PIPELINE.md
+ * "Optimization Opportunities".
+ */
+export const MERGE_GAP = 2 * 1024 * 1024;
 
 /**
  * DataView wrapper with position tracking
@@ -158,7 +178,11 @@ function parseSuperblock(reader) {
     superblock.endOfFileAddress = reader.readOffset(superblock.offsetSize);
     superblock.driverInfoAddress = reader.readOffset(superblock.offsetSize);
 
-    // Root group symbol table entry
+    // Root group symbol table entry:
+    //   linkNameOffset(O) → objectHeaderAddress(O) → cacheType(4) → reserved(4) → scratch(16)
+    // The object header address is the SECOND offset-sized field; the first
+    // (linkNameOffset) is always 0 for the root group and must be skipped.
+    reader.readOffset(superblock.offsetSize); // link name offset (into local heap)
     superblock.rootGroupAddress = reader.readOffset(superblock.offsetSize);
 
   } else if (version === 2 || version === 3) {
@@ -1162,165 +1186,6 @@ function _releaseChunkSlot() {
   }
 }
 
-// ── Worker pool for parallel decompression ──────────────────────────
-// Shared across all H5Chunk instances. Lazily initialized on first use.
-let _workerPool = null;
-
-class DecompressWorkerPool {
-  constructor(size) {
-    this.size = size;
-    this.workers = [];
-    this.idle = [];
-    this.queue = [];     // pending tasks: {resolve, reject, msg}
-    this.pending = new Map(); // id → {resolve, reject}
-    this.workerTask = new Map(); // workerIdx → task id currently running
-    this._nextId = 0;
-
-    for (let i = 0; i < size; i++) {
-      const worker = new Worker(
-        new URL('./decompress-worker.js', import.meta.url),
-        { type: 'module' }
-      );
-      worker.onmessage = (e) => this._onMessage(i, e);
-      worker.onerror = (e) => this._onError(i, e);
-      this.workers.push(worker);
-      this.idle.push(i);
-    }
-    console.log(`[h5chunk] Decompression worker pool: ${size} threads`);
-  }
-
-  _onMessage(workerIdx, e) {
-    const { id, data, error } = e.data;
-    this.workerTask.delete(workerIdx);
-    const task = this.pending.get(id);
-    if (task) {
-      this.pending.delete(id);
-      if (error) {
-        task.reject(new Error(error));
-      } else {
-        task.resolve(data);
-      }
-    }
-    // Worker is now idle — dispatch next queued task
-    this.idle.push(workerIdx);
-    this._dispatch();
-  }
-
-  _onError(workerIdx, e) {
-    console.warn(`[h5chunk] Worker ${workerIdx} error:`, e.message);
-    // Reject the pending task for this worker so the promise doesn't hang
-    const taskId = this.workerTask.get(workerIdx);
-    if (taskId !== undefined) {
-      this.workerTask.delete(workerIdx);
-      const task = this.pending.get(taskId);
-      if (task) {
-        this.pending.delete(taskId);
-        task.reject(new Error(`Worker ${workerIdx} crashed: ${e.message}`));
-      }
-    }
-    this.idle.push(workerIdx);
-    this._dispatch();
-  }
-
-  _dispatch() {
-    while (this.idle.length > 0 && this.queue.length > 0) {
-      const workerIdx = this.idle.pop();
-      const task = this.queue.shift();
-      this.pending.set(task.msg.id, { resolve: task.resolve, reject: task.reject });
-      this.workerTask.set(workerIdx, task.msg.id);
-      this.workers[workerIdx].postMessage(task.msg, [task.msg.buffer]);
-    }
-  }
-
-  /**
-   * Submit a chunk for decompression. Returns a Promise<ArrayBuffer>.
-   * The compressed buffer is transferred (zero-copy) to the worker.
-   */
-  decompress(compressedBuffer, filters, dtype) {
-    const id = this._nextId++;
-    const msg = { id, buffer: compressedBuffer, filters, dtype };
-    return new Promise((resolve, reject) => {
-      this.queue.push({ resolve, reject, msg });
-      this._dispatch();
-    });
-  }
-
-  /**
-   * Resize the pool. Adds or removes workers to match the new size.
-   * In-flight tasks on removed workers will still complete.
-   */
-  resize(newSize) {
-    if (newSize === this.size) return;
-    if (newSize > this.size) {
-      // Add workers
-      for (let i = this.size; i < newSize; i++) {
-        const worker = new Worker(
-          new URL('./decompress-worker.js', import.meta.url),
-          { type: 'module' }
-        );
-        worker.onmessage = (e) => this._onMessage(i, e);
-        worker.onerror = (e) => this._onError(i, e);
-        this.workers.push(worker);
-        this.idle.push(i);
-      }
-    } else {
-      // Remove excess workers (only idle ones immediately; busy ones finish naturally)
-      for (let i = newSize; i < this.size; i++) {
-        const idleIdx = this.idle.indexOf(i);
-        if (idleIdx !== -1) {
-          this.idle.splice(idleIdx, 1);
-          this.workers[i].terminate();
-        }
-        // Busy workers will be cleaned up when their task completes
-      }
-    }
-    this.size = newSize;
-    console.log(`[h5chunk] Worker pool resized to ${newSize} threads`);
-    this._dispatch(); // dispatch queued tasks to any new idle workers
-  }
-
-  terminate() {
-    for (const w of this.workers) w.terminate();
-    this.workers = [];
-    this.idle = [];
-  }
-}
-
-function getWorkerPool() {
-  if (!_workerPool) {
-    const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency
-      ? navigator.hardwareConcurrency : 4;
-    // Use up to 8 workers — inflate+unshuffle is CPU-bound and benefits from
-    // true parallelism across cores. Each worker handles ~1-4MB per chunk.
-    _workerPool = new DecompressWorkerPool(Math.min(cores, 8));
-  }
-  return _workerPool;
-}
-
-/**
- * Set the number of decompression workers at runtime.
- * @param {number} count - Number of workers (1–32)
- */
-export function setWorkerCount(count) {
-  const clamped = Math.max(1, Math.min(32, count));
-  const pool = getWorkerPool();
-  pool.resize(clamped);
-}
-
-/**
- * Get current worker pool info.
- * @returns {{size: number, idle: number, queued: number, cores: number}}
- */
-export function getWorkerPoolInfo() {
-  const pool = getWorkerPool();
-  return {
-    size: pool.size,
-    idle: pool.idle.length,
-    queued: pool.queue.length,
-    cores: typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4,
-  };
-}
-
 export class H5Chunk {
   constructor() {
     this.superblock = null;
@@ -1331,7 +1196,7 @@ export class H5Chunk {
     this.url = null;
     this.fetchHeaders = {}; // Extra headers for all HTTP fetches (e.g. Authorization)
     this.lazyTreeWalking = true; // Enable lazy tree-walking (fetch B-trees on-demand)
-    this.useWorkerPool = true; // Parallel decompress+unshuffle across worker threads
+    this.useWorkerPool = true; // Decompress+unshuffle in the decode-pool Web Workers (falls back to sync main-thread decode when Workers unavailable)
 
     // Adaptive concurrency: start at 12, measure throughput, adjust to 6–50
     this._concurrency = 12;
@@ -1355,12 +1220,10 @@ export class H5Chunk {
     } else if (avg > 5) {
       // Medium connection (5-20 MB/s): modest increase
       this._concurrency = Math.min(this._concurrencyMax, prev + 2);
-    } else if (avg < 1) {
-      // Slow connection (<1 MB/s): reduce to avoid congestion
-      this._concurrency = Math.max(this._concurrencyMin, prev - 4);
     } else if (avg < 3) {
-      // Slow-ish (<3 MB/s): reduce slightly
-      this._concurrency = Math.max(this._concurrencyMin, prev - 2);
+      // Low aggregate throughput is usually latency-bound (proxied/high-RTT
+      // links), not congestion — cutting parallelism makes it worse. Hold
+      // the current level; genuinely congested links stay at the floor.
     }
     // else: 3-5 MB/s — keep current level
     if (this._concurrency !== prev) {
@@ -3005,9 +2868,13 @@ export class H5Chunk {
    * @param {Array<[number, number]>} coords - Array of [row, col] chunk indices
    * @param {object} [options] - Optional settings
    * @param {AbortSignal} [options.signal] - AbortSignal to cancel in-flight HTTP requests
+   * @param {number} [options.mergeGap] - Range-merge gap override (bytes).
+   *   Pass 0 for STRIDED reads (overview sampling): with small chunks the
+   *   default gap merges everything between the strided samples, inflating
+   *   the transfer ~10× and defeating the sampling entirely.
    * @returns {Promise<Map<string, Float32Array|null>>} Map of "row,col" → decoded chunk data
    */
-  async readChunksBatch(datasetId, coords, { signal } = {}) {
+  async readChunksBatch(datasetId, coords, { signal, mergeGap, tag } = {}) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
 
@@ -3019,7 +2886,11 @@ export class H5Chunk {
     const chunkDims = dataset.layout?.chunkDims || [];
     const results = new Map();
 
-    // Phase 1: Resolve all chunk coordinates to file offsets
+    // Phase 1: Resolve all chunk coordinates to file offsets.
+    // Pre-seed every requested key (in `coords` order) so the returned Map's
+    // iteration order always matches the request order, regardless of the
+    // order in which fetches/decodes complete (Map.set on an existing key
+    // preserves its original insertion position).
     const chunkEntries = []; // { key, row, col, offset, size, filterMask }
     for (const [row, col] of coords) {
       const key = `${row},${col}`;
@@ -3030,6 +2901,7 @@ export class H5Chunk {
       if (!info) {
         results.set(key, null); // sparse chunk
       } else {
+        results.set(key, null); // placeholder — overwritten with decoded data below
         chunkEntries.push({
           key, row, col,
           offset: info.offset, size: info.size,
@@ -3070,13 +2942,15 @@ export class H5Chunk {
     // Phase 2: Sort by file offset and merge nearby ranges
     chunkEntries.sort((a, b) => a.offset - b.offset);
 
-    const MERGE_GAP = 2 * 1024 * 1024; // Merge ranges within 2 MB gap — NISAR chunks are stored sequentially; wider merging coalesces entire chunk rows into fewer HTTP requests
+    // MERGE_GAP: module-level default; callers doing strided sampling pass 0
+    const gap = mergeGap ?? MERGE_GAP;
+    console.log(`[h5chunk] batch[${tag || 'untagged'}]: ${datasetId.split('/').slice(-2).join('/')} ${chunkEntries.length} chunks, gap=${gap}`);
     const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
     let current = null;
 
     for (const entry of chunkEntries) {
       const entryEnd = entry.offset + entry.size;
-      if (current && entry.offset <= current.end + MERGE_GAP) {
+      if (current && entry.offset <= current.end + gap) {
         // Extend current range
         current.chunks.push({ entry, localOffset: entry.offset - current.start });
         current.end = Math.max(current.end, entryEnd);
@@ -3100,19 +2974,30 @@ export class H5Chunk {
       const batch = mergedRanges.slice(i, i + concurrency);
       const batchStart = performance.now();
       let batchBytes = 0;
-      const batchResults = await Promise.all(batch.map(async (range, idx) => {
+      const settled = await Promise.allSettled(batch.map(async (range) => {
         const fetchOpts = { headers: { 'Range': `bytes=${range.start}-${range.end - 1}`, ...this.fetchHeaders } };
+        // Regression note (W003): tile getTile paths intentionally do NOT pass a
+        // signal here — chunk reads run to completion so the chunk cache stays warm
+        // even when the requesting deck.gl tile has been aborted.
         if (signal) fetchOpts.signal = signal;
         const response = await fetch(this.url, fetchOpts);
         const buf = await response.arrayBuffer();
         batchBytes += buf.byteLength;
         return buf;
       }));
-      for (let j = 0; j < batchResults.length; j++) {
-        rangeResults[i + j] = batchResults[j];
+      const rejected = settled.find(s => s.status === 'rejected');
+      if (rejected) {
+        // Aborted/failed fetches are EXCLUDED from throughput samples — a batch
+        // containing an AbortError would register as ~0 MB/s and falsely decay
+        // adaptive concurrency (audit BUG 3). Rethrow to preserve failure semantics.
+        throw rejected.reason;
       }
-      // Measure throughput and adapt concurrency
-      // Skip measurement if batch was very fast (likely cached or aborted)
+      for (let j = 0; j < settled.length; j++) {
+        rangeResults[i + j] = settled[j].value;
+      }
+      // Measure throughput and adapt concurrency — only batches where every
+      // request completed contribute samples.
+      // Skip measurement if batch was very fast (likely cached)
       const elapsed = (performance.now() - batchStart) / 1000; // seconds
       if (elapsed > 0.1 && batchBytes > 0) {
         const mbps = (batchBytes / (1024 * 1024)) / elapsed;
@@ -3144,10 +3029,16 @@ export class H5Chunk {
   /**
    * Decompress and decode a single chunk buffer.
    * Shared logic between readChunk and readChunksBatch.
+   *
+   * W006: decode runs in the shared decode-pool — Web Workers with
+   * transferable ArrayBuffers when available, otherwise a synchronous
+   * main-thread fallback (bit-exact, same decode-core code). Setting
+   * `this.useWorkerPool = false` forces the synchronous path.
    */
   async _decompressAndDecode(buffer, dataset, filterMask) {
     // Determine which filters to apply
     let filters = null;
+    let fallbackFilters = null;
     const chunkDimsProduct = (dataset.layout?.chunkDims || [])
       .slice(0, -1)
       .reduce((a, b) => a * b, 1);
@@ -3156,54 +3047,37 @@ export class H5Chunk {
     if (dataset.filters && filterMask === 0) {
       filters = dataset.filters;
     } else if (!dataset.filters && buffer.byteLength < expectedBytes) {
-      // Try deflate, then shuffle+deflate
+      // Filter pipeline unknown: try deflate, then shuffle+deflate.
+      // The retry happens INSIDE the pool job (worker or sync) because the
+      // compressed buffer is transferred/detached on the worker path.
       filters = [{ id: FILTER_DEFLATE }];
+      fallbackFilters = [
+        { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
+        { id: FILTER_DEFLATE },
+      ];
     }
 
-    // Worker pool path: transfer buffer to worker (zero-copy, no allocation).
-    // Buffer becomes detached after transfer — no main-thread fallback.
-    if (this.useWorkerPool && filters) {
-      try {
-        const pool = getWorkerPool();
-        const buf = ArrayBuffer.isView(buffer) ? buffer.buffer : buffer;
-        const resultBuffer = await pool.decompress(buf, filters, dataset.dtype);
-        return new Float32Array(resultBuffer);
-      } catch (e) {
-        console.warn(`[h5chunk] Worker decompress failed (${e.message})`);
-        const chunkDims = dataset.layout?.chunkDims || [512, 512];
-        const chunkSize = chunkDims.reduce((a, b) => a * b, 1);
-        return new Float32Array(chunkSize);
-      }
+    // Uncompressed chunk: decode raw bytes inline (no pool round-trip)
+    if (!filters) {
+      return this._decodeData(buffer, dataset.dtype);
     }
 
-    // Main-thread decompression (used when worker pool is disabled)
-    let data = buffer;
-    let decompressOk = !filters;
-    if (filters) {
-      try {
-        data = await this._decompressChunk(buffer, filters);
-        decompressOk = true;
-      } catch (e) {
-        if (!dataset.filters) {
-          try {
-            data = await this._decompressChunk(buffer, [
-              { id: FILTER_SHUFFLE, params: [dataset.bytesPerElement] },
-              { id: FILTER_DEFLATE },
-            ]);
-            decompressOk = true;
-          } catch (e2) { /* decompression failed */ }
-        }
-      }
-    }
-
-    if (!decompressOk) {
+    try {
+      const pool = getDecodePool();
+      const buf = ArrayBuffer.isView(buffer) ? buffer.buffer : buffer;
+      return await pool.decode({
+        buffer: buf,
+        filters,
+        dtype: dataset.dtype,
+        fallbackFilters,
+        sync: !this.useWorkerPool,
+      });
+    } catch (e) {
       const chunkDims = dataset.layout?.chunkDims || [512, 512];
       const chunkSize = chunkDims.reduce((a, b) => a * b, 1);
-      console.warn(`[h5chunk] Decompression failed, returning empty chunk (${chunkSize} values)`);
+      console.warn(`[h5chunk] Decompression failed (${e.message}), returning empty chunk (${chunkSize} values)`);
       return new Float32Array(chunkSize);
     }
-
-    return this._decodeData(data, dataset.dtype);
   }
 
   /**
@@ -3359,160 +3233,12 @@ export class H5Chunk {
   }
 
   /**
-   * Decompress chunk data
-   */
-  async _decompressChunk(buffer, filters) {
-    let data = new Uint8Array(buffer);
-
-    // Apply filters in reverse order
-    for (let i = filters.length - 1; i >= 0; i--) {
-      const filter = filters[i];
-
-      switch (filter.id) {
-        case FILTER_DEFLATE:
-          data = await this._inflateData(data);
-          break;
-
-        case FILTER_SHUFFLE:
-          data = this._unshuffle(data, filter.params[0] || 4);
-          break;
-
-        // Other filters would go here
-      }
-    }
-
-    return data.buffer;
-  }
-
-  /**
-   * Inflate (decompress) zlib-compressed data.
-   * HDF5 deflate filter uses zlib format.
-   * Works in both Node.js (via zlib module) and browser (via DecompressionStream).
-   */
-  async _inflateData(data) {
-    // 1. Try browser DecompressionStream first (native, no dependencies)
-    //    'deflate' format = RFC 1950 zlib, which is what HDF5 deflate uses
-    if (typeof DecompressionStream !== 'undefined') {
-      try {
-        const ds = new DecompressionStream('deflate');
-        const writer = ds.writable.getWriter();
-        writer.write(data);
-        writer.close();
-        const reader = ds.readable.getReader();
-        const chunks = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const totalLength = chunks.reduce((acc, c) => acc + c.length, 0);
-        const result = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          result.set(chunk, offset);
-          offset += chunk.length;
-        }
-        return result;
-      } catch (e) {
-        // DecompressionStream failed, try other methods
-      }
-    }
-
-    throw new Error('No deflate decompressor available (need DecompressionStream)');
-  }
-
-  /**
-   * Unshuffle filter
-   */
-  _unshuffle(data, elementSize) {
-    if (elementSize <= 1) return data;
-    const len = data.length;
-    const count = (len / elementSize) | 0;
-    if (count * elementSize !== len) {
-      console.warn(`[h5chunk] Shuffle: data length ${len} not divisible by elementSize ${elementSize}, truncating`);
-    }
-    const result = new Uint8Array(len);
-
-    for (let i = 0; i < count; i++) {
-      for (let j = 0; j < elementSize; j++) {
-        result[i * elementSize + j] = data[j * count + i];
-      }
-    }
-
-    return result;
-  }
-
-  /**
-   * Decode raw bytes to Float32Array
+   * Decode raw bytes to Float32Array.
+   * Delegates to decode-core so the raw path, the worker path, and the
+   * synchronous fallback all share one implementation (W006).
    */
   _decodeData(buffer, dtype) {
-    // Ensure we have an ArrayBuffer for typed array construction.
-    // Only copy when the view has a non-zero byteOffset (alignment issue).
-    if (ArrayBuffer.isView(buffer)) {
-      if (buffer.byteOffset === 0 && buffer.byteLength === buffer.buffer.byteLength) {
-        buffer = buffer.buffer; // Zero-copy: view spans entire ArrayBuffer
-      } else {
-        buffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
-      }
-    }
-    switch (dtype) {
-      case 'float32':
-        return new Float32Array(buffer);
-      case 'float64':
-        return new Float32Array(new Float64Array(buffer));
-      case 'float16':
-        return this._decodeFloat16(buffer);
-      case 'int16':
-        return new Float32Array(new Int16Array(buffer));
-      case 'uint16':
-        return new Float32Array(new Uint16Array(buffer));
-      case 'int32':
-        return new Float32Array(new Int32Array(buffer));
-      case 'uint32':
-        return new Float32Array(new Uint32Array(buffer));
-      case 'uint8':
-        return new Float32Array(new Uint8Array(buffer));
-      case 'int8':
-        return new Float32Array(new Int8Array(buffer));
-      case 'cfloat32':
-        // Interleaved [real, imag, real, imag, ...] — 2 float32 per pixel
-        return new Float32Array(buffer);
-      case 'cfloat64':
-        // Interleaved complex float64 → convert to float32
-        return new Float32Array(new Float64Array(buffer));
-      default:
-        console.warn(`[h5chunk] Unknown dtype: ${dtype}, assuming float32`);
-        return new Float32Array(buffer);
-    }
-  }
-
-  /**
-   * Decode float16 to float32
-   */
-  _decodeFloat16(buffer) {
-    const uint16 = new Uint16Array(buffer);
-    const result = new Float32Array(uint16.length);
-
-    for (let i = 0; i < uint16.length; i++) {
-      const h = uint16[i];
-      const sign = (h & 0x8000) >> 15;
-      const exp = (h & 0x7C00) >> 10;
-      const frac = h & 0x03FF;
-
-      if (exp === 0) {
-        if (frac === 0) {
-          result[i] = sign ? -0 : 0;
-        } else {
-          result[i] = (sign ? -1 : 1) * (frac / 1024) * Math.pow(2, -14);
-        }
-      } else if (exp === 31) {
-        result[i] = frac ? NaN : (sign ? -Infinity : Infinity);
-      } else {
-        result[i] = (sign ? -1 : 1) * Math.pow(2, exp - 15) * (1 + frac / 1024);
-      }
-    }
-
-    return result;
+    return decodeBytes(buffer, dtype);
   }
 }
 

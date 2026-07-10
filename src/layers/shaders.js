@@ -30,7 +30,7 @@ void main(void) {
 
 /**
  * Consolidated GLSL colormap functions (single source of truth).
- * Used by sarFragmentShader, SARGPULayer, and SARGPUBitmapLayer.
+ * Used by sarFragmentShader and SARGPULayer.
  */
 export const glslColormaps = `
 // Grayscale colormap

@@ -5,7 +5,10 @@ import {
   drawTextLabel,
   measureTextLabel,
   resolveColor,
+  resolveSize,
   ANNOTATION_COLOR_KEYS,
+  ANNOTATION_SIZE_KEYS,
+  DEFAULT_ANNOTATION_SIZE,
 } from '../utils/annotation-render.js';
 
 /**
@@ -27,6 +30,7 @@ export function AnnotationOverlay({
   bounds,
   mode = 'off',
   color = 'cyan',
+  size = DEFAULT_ANNOTATION_SIZE,
   annotations = [],
   onAnnotationsChange,
   selectedId = null,
@@ -40,8 +44,8 @@ export function AnnotationOverlay({
   const [editorValue, setEditorValue] = useState('');
   const [drag, setDrag] = useState(null);               // {id, kind, dx, dy}
 
-  const propsRef = useRef({ viewState, bounds, mode, color, annotations, onAnnotationsChange, onSelectAnnotation });
-  propsRef.current = { viewState, bounds, mode, color, annotations, onAnnotationsChange, onSelectAnnotation };
+  const propsRef = useRef({ viewState, bounds, mode, color, size, annotations, onAnnotationsChange, onSelectAnnotation });
+  propsRef.current = { viewState, bounds, mode, color, size, annotations, onAnnotationsChange, onSelectAnnotation };
 
   // ─── Sizing & redraw ──────────────────────────────────────────────────────
   const redraw = useCallback(() => {
@@ -67,12 +71,14 @@ export function AnnotationOverlay({
         const [x1, y1] = worldToPixel(a.worldX,  a.worldY,  vs, W, H);
         const [x2, y2] = worldToPixel(a.worldX2, a.worldY2, vs, W, H);
         drawArrow(ctx, x1, y1, x2, y2, {
-          colorKey: a.color, caption: a.text || '', dpr: 1, fontSize: a.fontSize || 12, selected: isSel,
+          colorKey: a.color, caption: a.text || '', dpr: 1,
+          size: a.size || DEFAULT_ANNOTATION_SIZE, fontSize: a.fontSize, selected: isSel,
         });
       } else if (a.type === 'text') {
         const [x, y] = worldToPixel(a.worldX, a.worldY, vs, W, H);
         drawTextLabel(ctx, x, y, a.text || '(label)', {
-          colorKey: a.color, dpr: 1, fontSize: a.fontSize || 13, selected: isSel,
+          colorKey: a.color, dpr: 1,
+          size: a.size || DEFAULT_ANNOTATION_SIZE, fontSize: a.fontSize, selected: isSel,
         });
       }
     }
@@ -80,12 +86,13 @@ export function AnnotationOverlay({
     // Draft arrow during drawing
     if (draftArrow) {
       drawArrow(ctx, draftArrow.x1, draftArrow.y1, draftArrow.cx, draftArrow.cy, {
-        colorKey: propsRef.current.color, caption: '', dpr: 1, fontSize: 12,
+        colorKey: propsRef.current.color, caption: '', dpr: 1,
+        size: propsRef.current.size || DEFAULT_ANNOTATION_SIZE,
       });
     }
   }, [selectedId, draftArrow]);
 
-  useEffect(() => { redraw(); }, [redraw, viewState, annotations, mode, color]);
+  useEffect(() => { redraw(); }, [redraw, viewState, annotations, mode, color, size]);
 
   // Resize observer so canvas resolution tracks container
   useEffect(() => {
@@ -127,7 +134,8 @@ export function AnnotationOverlay({
       const a = anns[i];
       if (a.type === 'text') {
         const [x, y] = worldToPixel(a.worldX, a.worldY, vs, W, H);
-        const { w, h } = measureTextLabel(ctx, a.text || '(label)', a.fontSize || 13, 1);
+        const fs = a.fontSize || resolveSize(a.size || DEFAULT_ANNOTATION_SIZE).fontSize;
+        const { w, h } = measureTextLabel(ctx, a.text || '(label)', fs, 1);
         if (sx >= x && sx <= x + w && sy >= y && sy <= y + h) {
           return { id: a.id, kind: 'text-body' };
         }
@@ -169,7 +177,7 @@ export function AnnotationOverlay({
     if (!isOverCanvas(e)) return;
     const sc = screenFromEvent(e);
     if (!sc) return;
-    const { mode: m, color: c, annotations: anns, onAnnotationsChange: cb, onSelectAnnotation: sel } = propsRef.current;
+    const { mode: m, color: c, size: sz, annotations: anns, onAnnotationsChange: cb, onSelectAnnotation: sel } = propsRef.current;
 
     // First, see if user clicked an existing annotation
     const hit = hitTest(sc.sx, sc.sy);
@@ -215,7 +223,7 @@ export function AnnotationOverlay({
         if (w1 && w2) {
           const id = `ann-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           const next = [...anns, {
-            id, type: 'arrow', color: c,
+            id, type: 'arrow', color: c, size: sz,
             worldX: w1[0], worldY: w1[1],
             worldX2: w2[0], worldY2: w2[1],
             text: '',
@@ -233,7 +241,7 @@ export function AnnotationOverlay({
       if (!w) return;
       const id = `ann-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const next = [...anns, {
-        id, type: 'text', color: c,
+        id, type: 'text', color: c, size: sz,
         worldX: w[0], worldY: w[1],
         text: '',
       }];
@@ -465,4 +473,4 @@ function pointToSegment(px, py, x1, y1, x2, y2) {
   return { d: Math.hypot(px - cx, py - cy), t };
 }
 
-export { ANNOTATION_COLOR_KEYS };
+export { ANNOTATION_COLOR_KEYS, ANNOTATION_SIZE_KEYS };

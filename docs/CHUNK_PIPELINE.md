@@ -192,7 +192,7 @@ The most impactful optimization for S3 streaming. Instead of N individual `fetch
 ```
 Phase 1: Resolve chunk coordinates → file byte offsets (from B-tree index)
 Phase 2: Sort by file offset ascending
-Phase 3: Merge adjacent ranges (gap < MERGE_GAP = 256 KB)
+Phase 3: Merge adjacent ranges (gap < MERGE_GAP = 2 MB)
            chunk A: [offset=1000, size=500]
            chunk B: [offset=1800, size=500]  ← gap = 300, merge!
            merged:  [offset=1000, size=1300]  ← one HTTP request
@@ -231,7 +231,7 @@ This ensures 100% of S3 bandwidth goes to the tile the user is looking at right 
 |:---------|:------|:---------|:--------|
 | Metadata buffer | 8 MB | `h5chunk.openUrl` | Initial metadata fetch size |
 | READ_AHEAD | 512 KB | `h5chunk._fetchBytes` | Read-ahead cache window for small reads |
-| MERGE_GAP | 256 KB | `h5chunk.readChunksBatch` | Maximum gap between chunks to merge into one HTTP request |
+| MERGE_GAP | 2 MB (exported constant, test-guarded — W009) | `h5chunk.readChunksBatch` | Maximum gap between chunks to merge into one HTTP request |
 | MAX_CONCURRENT | 30 | `h5chunk.readChunksBatch` | Maximum parallel HTTP requests per batch |
 | COARSE_MAX | 8 | `nisar-loader.getTile` | Coarse grid dimension (Phase 1) |
 | FINE_MAX | 24 | `nisar-loader.getTile` | Fine grid dimension (Phase 2) |
@@ -264,7 +264,7 @@ File dimensions range from 33840×33120 to 40032×40176 pixels, with 512×512 ch
 
 1. **8 MB metadata buffer** — Eliminates ~280 sequential HTTP round-trips during tree walking
 2. **Lazy B-tree walking** — Only builds chunk index for accessed datasets
-3. **Batch coalescing** — Merges nearby chunk reads into fewer HTTP requests (MERGE_GAP = 256 KB)
+3. **Batch coalescing** — Merges nearby chunk reads into fewer HTTP requests (MERGE_GAP = 2 MB)
 4. **Read-ahead cache** — 512 KB window for metadata tree walking
 5. **Parallel metadata reads** — Coordinates, shapes, CRS read concurrently
 6. **Coordinate endpoint fallback** — Reads first/last elements instead of full coordinate arrays
@@ -280,7 +280,7 @@ File dimensions range from 33840×33120 to 40032×40176 pixels, with 512×512 ch
 
 **High impact:**
 
-- **Increase MERGE_GAP to 2–4 MB** — NISAR chunks are stored sequentially by dataset. With 512×512 × 4 bytes ≈ 1 MB per chunk, a 256 KB gap means adjacent chunks are almost always mergeable. A larger gap could merge entire rows of chunks into single HTTP requests, cutting request count by 3–5×. The trade-off is fetching some unused bytes in the gaps, but at S3 throughput this is negligible.
+- ~~**Increase MERGE_GAP to 2–4 MB**~~ **DONE** (2 MB, commit cc93320 + W009 constant hoist). — NISAR chunks are stored sequentially by dataset. With 512×512 × 4 bytes ≈ 1 MB per chunk, a 256 KB gap means adjacent chunks are almost always mergeable. A larger gap could merge entire rows of chunks into single HTTP requests, cutting request count by 3–5×. The trade-off is fetching some unused bytes in the gaps, but at S3 throughput this is negligible.
 
 - **Adaptive metadata buffer** — Files with larger coordinate arrays or more datasets may need 16–32 MB. Detecting metadata overflow (tree walking falls outside buffer) and issuing a second metadata fetch could eliminate residual `_fetchBytes` round-trips.
 

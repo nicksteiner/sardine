@@ -1,8 +1,8 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer } from '../src/index.js';
-import { loadNISARRGBComposite, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
+import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
+import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
 import { loadNITF, isNITFFile, listNITFDatasets, loadNITFDataset } from '../src/loaders/nitf-loader.js';
@@ -12,15 +12,17 @@ import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
-import { computeSubsetBounds } from '../src/utils/roi-subset.js';
+import { computeSubsetBounds, reprojectBbox, bboxToPixelRange, roiIntersectsFile } from '../src/utils/roi-subset.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
+import { getAvailableIndices, SAR_INDICES } from '../src/utils/sar-indices.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
+import { annotationsToGeoJSON, geoJSONToAnnotations, downloadMarkupGeoJSON, isSardineMarkup } from '../src/utils/annotation-io.js';
+import { buildExportSidecar, downloadSidecar } from '../src/utils/export-sidecar.js';
 import { makeReproject, reprojectFeature } from '../src/utils/overture-projection.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
-import { computeChannelStats, sampleViewportStats } from '../src/utils/stats.js';
-import { computeChannelStatsAuto } from '../src/gpu/gpu-stats.js';
+import { computeChannelStatsAuto, sampleViewportStatsAuto } from '../src/gpu/gpu-stats.js';
 import { probeGPU } from '../src/utils/gpu-detect.js';
 import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
@@ -29,7 +31,7 @@ import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
 import { HistogramPanel } from '../src/components/Histogram.jsx';
 import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
-import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
+import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportFigureGrid, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
 import {
   proxyUrl as proxyUrlShared,
   isHostedBuild,
@@ -39,7 +41,8 @@ import {
   setEDLToken,
   validateEDLToken,
 } from '../src/utils/proxy.js';
-import { parseShareLink, buildShareLink, clearShareLinkParams } from '../src/utils/share-link.js';
+import { parseShareLink, buildShareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
+import { resolveGranulesForBbox } from '../src/utils/granule-resolve.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
@@ -50,6 +53,9 @@ import { COORDINATE_SYSTEM } from '@deck.gl/core';
 import { SceneCatalog } from '../src/components/SceneCatalog.jsx';
 import { NISARSearch } from '../src/components/NISARSearch.jsx';
 import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
+import { ROIProfilePanel } from '../src/components/ROIProfilePanel.jsx';
+import { TransectProfilePanel } from '../src/components/TransectProfilePanel.jsx';
+import { ANNOTATION_COLORS, ANNOTATION_COLOR_KEYS } from '../src/utils/annotation-render.js';
 import { CommandPalette } from '../src/components/CommandPalette.jsx';
 import { ScrubNumber } from '../src/components/ScrubNumber.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
@@ -209,6 +215,8 @@ function generateMarkdownState(state) {
   if (state.source === 'nisar') {
     if (state.displayMode === 'rgb' && state.composite) {
       lines.push(`- **Composite:** ${state.composite}`);
+    } else if (state.displayMode === 'index' && state.indexId) {
+      lines.push(`- **Index:** ${state.indexId.toUpperCase()} (${state.indexForm}-pol)`);
     } else if (state.dataset) {
       lines.push(`- **Dataset:** ${state.dataset.frequency}/${state.dataset.polarization}`);
     }
@@ -355,6 +363,19 @@ function PagesBanner() {
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
+  // UI theme: '' (dark, default) | 'sardine' (navy) | 'light'
+  const [uiTheme, setUiTheme] = useState(() => {
+    try {
+      const t = localStorage.getItem('sardine.theme');
+      return t === 'sardine' || t === 'light' ? t : '';
+    } catch { return ''; }
+  });
+  useEffect(() => {
+    if (uiTheme) document.documentElement.dataset.theme = uiTheme;
+    else delete document.documentElement.dataset.theme;
+    try { localStorage.setItem('sardine.theme', uiTheme); } catch {}
+  }, [uiTheme]);
+
   // GPU capability detection (cached, runs once)
   const gpuInfo = useMemo(() => probeGPU(), []);
 
@@ -410,6 +431,11 @@ function App() {
   const [gunwIncidenceAngleGrid, setGunwIncidenceAngleGrid] = useState(null); // {data, width, height}
   const [gunwPairedView, setGunwPairedView] = useState(null); // {left, right} image configs for ComparisonViewer
 
+  // Compare grid — up to 4 GeoTIFFs in an adaptive grid, synced pan/zoom.
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareInitialFiles, setCompareInitialFiles] = useState(null); // files to seed the grid on open
+  const compareGridRef = useRef(null);
+
   // GUNW phase corrections — individual layers uploaded to GPU as separate textures
   const [correctionLayers, setCorrectionLayers] = useState(null); // {ionosphere, troposphereWet, ...}
   const [enabledCorrections, setEnabledCorrections] = useState(new Set()); // Set of enabled correction keys
@@ -431,6 +457,11 @@ function App() {
   const [displayMode, setDisplayMode] = useState('single'); // 'single' | 'rgb' | 'multi-temporal'
   const [compositeId, setCompositeId] = useState(null);
   const [availableComposites, setAvailableComposites] = useState([]);
+
+  // Scalar-index state (RVI, etc.) — displayMode === 'index'
+  const [availableIndices, setAvailableIndices] = useState([]);
+  const [indexId, setIndexId] = useState('rvi');
+  const [indexForm, setIndexForm] = useState('dual');
 
   // True for any RGB-flavoured display mode (standard composite or multi-temporal)
   const isRGBDisplayMode = displayMode === 'rgb' || displayMode === 'multi-temporal';
@@ -484,8 +515,9 @@ function App() {
   const [colormap, setColormap] = useState('grayscale');
   const [reverseColormap, setReverseColormap] = useState(false);
   const [useDecibels, setUseDecibels] = useState(true);
-  // GUNW data is in radians/meters — dB conversion is never valid
-  const effectiveUseDecibels = nisarProductType === 'GUNW' ? false : useDecibels;
+  // GUNW data is in radians/meters — dB conversion is never valid.
+  // Scalar indices (RVI, etc.) are linear ratios — dB is never valid either.
+  const effectiveUseDecibels = (nisarProductType === 'GUNW' || displayMode === 'index') ? false : useDecibels;
   const [showGrid, setShowGrid] = useState(false);
   const [pixelExplorer, setPixelExplorer] = useState(false);
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
@@ -519,7 +551,8 @@ function App() {
   // Annotations — arrows + text labels drawn over the viewer and into PNG exports
   const [annotations, setAnnotations] = useState([]);
   const [annotationMode, setAnnotationMode] = useState('off');     // 'off'|'arrow'|'text'
-  const [annotationColor, setAnnotationColor] = useState('cyan');  // cyan|orange|green|magenta
+  const [annotationColor, setAnnotationColor] = useState('red');  // see ANNOTATION_COLOR_KEYS
+  const [annotationSize, setAnnotationSize] = useState('medium');  // small|medium|large
   const [selectedAnnotationId, setSelectedAnnotationId] = useState(null);
   const [stretchMode, setStretchMode] = useState('linear');
   const [multiLook, setMultiLook] = useState(false);
@@ -556,6 +589,10 @@ function App() {
   const [wktInput, setWktInput] = useState('');       // WKT text input value
   const [wktError, setWktError] = useState(null);     // WKT validation error message
   const [profileShow, setProfileShow] = useState({ v: true, h: true, i: true }); // V/H/I visibility
+  const [transectEnabled, setTransectEnabled] = useState(false); // Free profile-line tool armed
+  const [transectLine, setTransectLine] = useState(null);        // { x0, y0, x1, y1 } image px
+  const [transectData, setTransectData] = useState(null);        // { dist, values, lenPx, angleDeg }
+  const [transectWidth, setTransectWidth] = useState(0);         // perpendicular half-width (px); 0 = centerline
 
   // Feature space classifier state
   const [classifierOpen, setClassifierOpen] = useState(false);
@@ -628,17 +665,27 @@ function App() {
   // Status window state
   const [statusLogs, setStatusLogs] = useState([]);
   const [statusCollapsed, setStatusCollapsed] = useState(true);
+  const [bottomTab, setBottomTab] = useState('status'); // active tab in the lower dock
+  useEffect(() => { if (!transectEnabled && bottomTab === 'transect') setBottomTab('status'); }, [transectEnabled, bottomTab]);
 
   // Overview map state
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
   const [satelliteMapVisible, setSatelliteMapVisible] = useState(false);
 
-  // Clear ROI and classifier when image data changes (new file/dataset loaded)
+  // Clear ROI and classifier when image data changes (new file/dataset loaded).
+  // Exception (W016): when a deep-link region was just applied for this very
+  // load, keep the ROI/WKT — applyDeepLinkRoi sets them moments before
+  // setImageData commits, and this effect would otherwise wipe them.
   useEffect(() => {
-    setROI(null);
-    setRoiProfile(null);
-    setWktInput('');
-    setWktError(null);
+    if (consumeDeepLinkPin('roi')) {
+      // Keep ROI + WKT from the deep link; still reset the classifier state
+      // below (it belongs to the previous scene either way).
+    } else {
+      setROI(null);
+      setRoiProfile(null);
+      setWktInput('');
+      setWktError(null);
+    }
     setClassifierOpen(false);
     setClassRegions([]);
     setClassifierData(null);
@@ -659,17 +706,54 @@ function App() {
     setActiveViewer('main');
   }, [imageData]);
 
-  // Share-link support: ?cog=<url> or ?nisar=<url> auto-loads on mount, plus
-  // optional view-state params (cmap, min, max, db, stretch, gamma, pol, freq,
-  // comp, mode, c, z). See src/utils/share-link.js for the full schema.
+  // Deep-link support (W008): ?url=<remote .h5/.tif/.ntf> (type inferred from
+  // extension) or explicit ?cog=/?nisar=/?nitf= auto-loads on mount, plus
+  // optional render params in short (cmap, min, max, db, …) or long
+  // (colormap, contrastMin, contrastMax, useDecibels, …) form. See
+  // src/utils/deep-link.js for the full schema and docs/DEEP_LINKS.md.
   //
   // The recipient still needs to paste their own EDL token if the link points
   // at a DAAC URL — tokens never travel in share links.
+  //
+  // W017: ?bbox=/?wkt= WITHOUT a data param resolves its own granule via CMR
+  // spatial search (granule-resolve.js) and feeds the winner through the same
+  // NISAR staging path (stageNisarUrl below). Optional t=/col= refine it.
   const urlCogTriggered = useRef(false);
   const [shareLinkPending, setShareLinkPending] = useState(false);
+  // Fields the deep link pinned explicitly. The load handlers auto-derive
+  // contrast / pol / freq / view-fit after data arrives, which would clobber
+  // the pinned values — each guarded site consumes its pin (one-shot) so the
+  // first post-load derivation is suppressed and later loads behave normally.
+  const deepLinkPins = useRef(new Set());
+  const consumeDeepLinkPin = useCallback((field) => deepLinkPins.current.delete(field), []);
+  // W016: deep-link spatial subset (?bbox=/?wkt=), staged until the raster
+  // loads. One-shot like the pins: applyDeepLinkRoi consumes it. The loader
+  // reads it (pre-consumption) to scope chunk prefetch to the region.
+  const deepLinkRoiRef = useRef(null);
+  // W016: a bbox/wkt deep link bounds the fetch to the region, so the
+  // click-to-load guard (NISAR files are large) doesn't apply — auto-load.
+  const deepLinkAutoLoad = useRef(false);
+  const handleLoadRemoteNISARRef = useRef(null);
   useEffect(() => {
     const { dataUrl, dataType, view } = parseShareLink();
-    if (!dataUrl) return;
+    // W017: spatial params ALONE are a valid link — the granule is resolved
+    // from the region via CMR below (region-first deep links).
+    const regionOnly = !dataUrl && Array.isArray(view.roiBbox);
+    if (!dataUrl && !regionOnly) return;
+
+    if (Number.isFinite(view.contrastMin) || Number.isFinite(view.contrastMax)) deepLinkPins.current.add('contrast');
+    if (view.selectedPolarization) deepLinkPins.current.add('pol');
+    if (view.selectedFrequency) deepLinkPins.current.add('freq');
+    if (Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)) deepLinkPins.current.add('view');
+    if (Array.isArray(view.roiBbox)) {
+      deepLinkRoiRef.current = {
+        bbox: view.roiBbox,               // [w, s, e, n] WGS84
+        wkt: view.roiWkt || null,          // original WKT (polygon fidelity for the input)
+        // Explicit c/z in the link wins over the region fit.
+        fitView: !(Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)),
+      };
+      deepLinkAutoLoad.current = true;    // bounded fetch → skip click-to-load
+    }
 
     // Apply view-state synchronously so the auto-loaded data renders with the
     // sharer's settings the first time the layer mounts.
@@ -687,6 +771,28 @@ function App() {
     if (view.displayMode) setDisplayMode(view.displayMode);
     if (Array.isArray(view.viewCenter)) setViewCenter(view.viewCenter);
     if (Number.isFinite(view.viewZoom)) setViewZoom(view.viewZoom);
+
+    // Shared NISAR staging (W008/W016): EDL-token gate on hosted builds, then
+    // the same handleRemoteFileSelect path used by the discovery UI. Both an
+    // explicit ?nisar=/?url= link and a W017 region-resolved URL end here so
+    // token attach + W016 auto-load/chunk-scoping behave identically.
+    const stageNisarUrl = (nisarUrl) => {
+      const pathOnly = nisarUrl.split('?')[0];
+      const name = pathOnly.split('/').pop() || 'shared-nisar';
+      if (isHostedBuild() && !getEDLToken()) {
+        setShareLinkPending(true);
+        addStatusLog?.('warning', 'Share link requires Earthdata Login — paste your token below to continue');
+        // Stash the pending URL on a ref so we can fire after the token is set.
+        urlCogTriggered.current = { pendingNisar: { url: nisarUrl, name } };
+      } else {
+        // Defer to the next tick so handleRemoteFileSelect is bound.
+        // Attach the stored EDL token — the dev proxy and direct fetches
+        // authenticate via the Authorization header, not the proxy URL.
+        setTimeout(() => {
+          handleRemoteFileSelectRef.current?.({ url: nisarUrl, name, size: 0, type: 'nisar', token: getEDLToken() });
+        }, 0);
+      }
+    };
 
     if (dataType === 'cog') {
       urlCogTriggered.current = true;
@@ -716,19 +822,46 @@ function App() {
       // DAAC URLs need an EDL token on hosted builds. If we have one already,
       // route through the same handler used by the discovery UI. If not, park
       // the URL in state and open the EDL panel so the user can paste a token.
-      const pathOnly = dataUrl.split('?')[0];
-      const name = pathOnly.split('/').pop() || 'shared-nisar';
-      if (isHostedBuild() && !getEDLToken()) {
-        setShareLinkPending(true);
-        addStatusLog?.('warning', 'Share link requires Earthdata Login — paste your token below to continue');
-        // Stash the pending URL on a ref so we can fire after the token is set.
-        urlCogTriggered.current = { pendingNisar: { url: dataUrl, name } };
-      } else {
-        // Defer to the next tick so handleRemoteFileSelect is bound.
-        setTimeout(() => {
-          handleRemoteFileSelectRef.current?.({ url: dataUrl, name, size: 0, type: 'nisar' });
-        }, 0);
-      }
+      stageNisarUrl(dataUrl);
+    } else if (regionOnly) {
+      // W017: region-first link — resolve the granule from the bbox via CMR
+      // spatial search, then feed the winner through the exact same staging
+      // as an explicit ?nisar= link (EDL gate + W016 auto-load included).
+      const bbox = view.roiBbox;
+      addStatusLog?.('info', `Region link: searching CMR for NISAR GCOV granules over [${bbox.join(', ')}]`,
+        view.dateRange ? `Date range: ${view.dateRange.start || '…'}/${view.dateRange.end || '…'}` : null);
+      (async () => {
+        try {
+          const candidates = await resolveGranulesForBbox(bbox, {
+            dateRange: view.dateRange || null,
+            collections: view.collection ? [view.collection] : undefined,
+          });
+          const top = candidates[0];
+          const listing = candidates.slice(0, 5).map((c, i) =>
+            `${i + 1}. ${c.granuleId} — ${c.coveragePct.toFixed(0)}% coverage`
+            + `${c.fullFrame ? ', full-frame' : ''}${c.polMode ? `, ${c.polMode}` : ''}`
+            + `${c.startTime ? `, ${String(c.startTime).slice(0, 10)}` : ''}`).join('\n');
+          addStatusLog?.('info', `Region link: ${candidates.length} candidate granule(s) ranked`, listing);
+          const nearTie = candidates.length > 1
+            && (top.coveragePct - candidates[1].coveragePct) < 1;
+          if (top.coveragePct < 90) {
+            addStatusLog?.('warning',
+              `Region link: best candidate covers only ${top.coveragePct.toFixed(0)}% of the region — auto-loading ${top.name}`,
+              'Pin a specific granule with ?nisar=<url> (or narrow with t=/col=) for a different pick');
+          } else if (nearTie) {
+            addStatusLog?.('info',
+              `Region link: multiple granules cover the region — picked ${top.name}`,
+              'Tie broken by full-frame > dual-pol (DHDH) > newest; pin with ?nisar=<url> to override');
+          } else {
+            addStatusLog?.('success',
+              `Region link: resolved to ${top.name} (${top.coveragePct.toFixed(0)}% coverage, ${top.collection})`);
+          }
+          stageNisarUrl(top.url);
+        } catch (e) {
+          addStatusLog?.('error', `Region link: granule resolution failed — ${e.message}`);
+          setError(`Region link: ${e.message}`);
+        }
+      })();
     }
 
     // Don't clear the params yet — keep them in the URL until the data has
@@ -849,6 +982,118 @@ function App() {
     run();
     return () => { cancelled = true; };
   }, [roi, imageData, useDecibels]);
+
+  // Sample pixel values along the free transect line whenever it moves/rotates.
+  // Evenly spaced samples (capped) along the segment via bilinear-ish nearest
+  // getPixelValue reads. Values converted to dB when the display is in dB.
+  useEffect(() => {
+    if (!transectEnabled || !transectLine || !imageData?.getPixelValue) {
+      setTransectData(null);
+      return;
+    }
+    let cancelled = false;
+    const { x0, y0, x1, y1 } = transectLine;
+    const lenPx = Math.hypot(x1 - x0, y1 - y0);
+    let angleDeg = Math.atan2(-(y1 - y0), x1 - x0) * 180 / Math.PI;
+    if (angleDeg < 0) angleDeg += 360;
+    if (lenPx < 1) { setTransectData(null); return; }
+
+    const getPixelValue = imageData.getPixelValue;
+    const db = effectiveUseDecibels;
+
+    // Perpendicular unit vector (image px) for cross-line averaging.
+    // Line dir = (x1-x0, y1-y0); perpendicular = (-dy, dx) normalized.
+    const perpX = -(y1 - y0) / lenPx;
+    const perpY = (x1 - x0) / lenPx;
+    const w = Math.max(0, Math.round(transectWidth)); // half-width in px; 0 = centerline only
+    const offsets = [];
+    for (let k = -w; k <= w; k++) offsets.push(k);
+
+    // Bound total getPixelValue reads to a fixed budget so wide strips on long
+    // lines don't stall the UI. Each read can decompress an HDF5 chunk.
+    const MAX_READS = 768;
+    const maxN = Math.max(2, Math.floor(MAX_READS / offsets.length));
+    const N = Math.max(2, Math.min(256, maxN, Math.round(lenPx)));
+
+    const pickScalar = (v) => {
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'number') return v;
+      if (typeof v === 'object') {
+        if (typeof v[selectedPolarization] === 'number') return v[selectedPolarization];
+        if (typeof v.value === 'number') return v.value;
+        if (typeof v.mean === 'number') return v.mean;
+        for (const k in v) { if (typeof v[k] === 'number') return v[k]; }
+      }
+      return null;
+    };
+
+    const run = async () => {
+      const dist = new Float32Array(N);
+      const M = offsets.length;
+      const nums = new Array(N).fill(NaN);
+      let sawNegative = false;
+
+      // Sample with BOUNDED concurrency, processed in small batches with an
+      // abort check between them. Firing all N×M reads via one Promise.all
+      // fans out hundreds of concurrent decompress jobs — which, stacked on
+      // top of RGB tile loading, exhausts workers/memory and crashes the tab.
+      const BATCH = 24;
+
+      const flushBatch = async (fromI, toI) => {
+        const reqs = [];
+        for (let i = fromI; i < toI; i++) {
+          const t = i / (N - 1);
+          dist[i] = t * lenPx;
+          const cx = x0 + t * (x1 - x0);
+          const cy = y0 + t * (y1 - y0);
+          const strip = [];
+          for (const k of offsets) {
+            const col = Math.round(cx + k * perpX);
+            const row = Math.round(cy + k * perpY);
+            strip.push(getPixelValue(row, col, 1).catch(() => null));
+          }
+          reqs.push(Promise.all(strip).then(vals => {
+            let sum = 0, cnt = 0;
+            for (const raw of vals) {
+              const s = pickScalar(raw);
+              if (s === null || !Number.isFinite(s)) continue;
+              sum += s; cnt++;
+            }
+            const v = cnt > 0 ? sum / cnt : NaN;
+            nums[i] = v;
+            if (Number.isFinite(v) && v < 0) sawNegative = true;
+          }));
+        }
+        await Promise.all(reqs);
+      };
+
+      for (let batchStart = 0; batchStart < N; batchStart += BATCH) {
+        if (cancelled) return;
+        await flushBatch(batchStart, Math.min(N, batchStart + BATCH));
+      }
+      if (cancelled) return;
+
+      // If any sampled value is negative, the source already holds dB/signed
+      // data — pass through untouched. Otherwise it's linear power: mask
+      // nodata (0 / NaN) and apply 10·log10 when the display is in dB.
+      const isAlreadyDb = sawNegative;
+      const values = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        const v = nums[i];
+        if (!Number.isFinite(v)) { values[i] = NaN; continue; }
+        if (isAlreadyDb) { values[i] = v; continue; }
+        if (v === 0) { values[i] = NaN; continue; } // power nodata
+        values[i] = db ? 10 * Math.log10(v) : v;
+      }
+      setTransectData({ dist, values, lenPx, angleDeg });
+    };
+
+    // Debounce: sampling issues up to N×(2w+1) getPixelValue reads, each of
+    // which can pull/decompress whole HDF5 chunks. Firing that on every drag
+    // frame freezes the UI, so wait until the line settles (~140 ms idle).
+    const timer = setTimeout(run, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [transectEnabled, transectLine, imageData, effectiveUseDecibels, selectedPolarization, transectWidth]);
 
   // Fetch multi-band ROI data for feature space classifier
   useEffect(() => {
@@ -971,6 +1216,15 @@ function App() {
     });
   }, []);
 
+  // One-time status log of which histogram compute path is active (W007).
+  // Emitted the first time histogram stats are actually computed.
+  const histogramPathLoggedRef = useRef(false);
+  const logHistogramPathOnce = useCallback(() => {
+    if (histogramPathLoggedRef.current) return;
+    histogramPathLoggedRef.current = true;
+    addStatusLog('info', `histogram: ${gpuInfo.webgpu ? 'WebGPU' : 'CPU'}`);
+  }, [addStatusLog, gpuInfo.webgpu]);
+
   // WKT ROI: track sync source to avoid loops between WKT input and Shift+drag
   const wktSyncSource = useRef('');
 
@@ -994,6 +1248,71 @@ function App() {
       addStatusLog('error', `WKT error: ${e.message}`);
     }
   }, [wktInput, imageData, addStatusLog]);
+
+  // W016: apply a deep-link ?bbox=/?wkt= region once the raster is loaded.
+  // Same pathway as handleWktApply (bbox → file CRS → pixel ROI → setROI +
+  // WKT input), plus a view fit to the region unless the link pinned explicit
+  // c/z. Takes the freshly-loaded data object directly (imageData state has
+  // not committed yet when the load handlers call this). One-shot: consumes
+  // deepLinkRoiRef so later loads behave normally (W008 pin pattern).
+  // Returns { bboxFileCrs } (clamped to the scene) or null on no-op/fallback.
+  const applyDeepLinkRoi = useCallback((data) => {
+    const pending = deepLinkRoiRef.current;
+    if (!pending || !data?.width || !data?.height || !data?.bounds) return null;
+    deepLinkRoiRef.current = null;
+    try {
+      const fileCrs = data.crs || 'EPSG:4326';
+      const bboxFileCrs = reprojectBbox(pending.bbox, fileCrs);
+      const fileBbox = data.worldBounds || data.bounds;
+      if (!roiIntersectsFile(bboxFileCrs, fileBbox)) {
+        addStatusLog('warning', 'Deep-link region does not intersect the scene — showing full scene',
+          `bbox ${pending.bbox.map(v => v.toFixed(4)).join(', ')} (WGS84)`);
+        return null;
+      }
+      const px = bboxToPixelRange(bboxFileCrs, {
+        worldBounds: fileBbox,
+        width: data.width,
+        height: data.height,
+        xCoords: data.xCoords || null,
+        yCoords: data.yCoords || null,
+      });
+      if (!px) {
+        addStatusLog('warning', 'Deep-link region maps to an empty pixel range — showing full scene');
+        return null;
+      }
+      wktSyncSource.current = 'wkt'; // prevent reverse-sync from overwriting the input
+      // Pin so the imageData-change cleanup effect doesn't wipe this ROI the
+      // moment the freshly loaded scene commits (one-shot, like the others).
+      deepLinkPins.current.add('roi');
+      setROI({ left: px.startCol, top: px.startRow, width: px.numCols, height: px.numRows });
+      const [w, s, e, n] = pending.bbox;
+      setWktInput(pending.wkt || `BBOX(${w}, ${s}, ${e}, ${n})`);
+      setWktError(null);
+
+      // Clamp to the scene so a half-outside bbox still frames sensibly.
+      const clamped = [
+        Math.max(bboxFileCrs[0], fileBbox[0]),
+        Math.max(bboxFileCrs[1], fileBbox[1]),
+        Math.min(bboxFileCrs[2], fileBbox[2]),
+        Math.min(bboxFileCrs[3], fileBbox[3]),
+      ];
+      if (pending.fitView) {
+        const [minX, minY, maxX, maxY] = clamped;
+        setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
+        const maxSpan = Math.max(maxX - minX, maxY - minY) || 1;
+        // Same zoom conventions as the load handlers: projected → fit ~1000 px,
+        // geographic → degree-based formula (see handleLoadCOG / autoFitIfNewScene).
+        const isProjected = fileCrs && fileCrs !== 'EPSG:4326';
+        setViewZoom(isProjected ? Math.log2(1000 / maxSpan) : Math.log2(360 / maxSpan) - 1);
+      }
+      addStatusLog('success', `Deep-link region applied: ${px.numCols} × ${px.numRows} px ROI`,
+        `bbox ${pending.bbox.map(v => v.toFixed(4)).join(', ')} (WGS84)${pending.fitView ? ', view fitted to region' : ''}`);
+      return { bboxFileCrs: clamped };
+    } catch (e) {
+      addStatusLog('warning', `Deep-link region ignored: ${e.message}`);
+      return null;
+    }
+  }, [addStatusLog]);
 
   // WKT ROI: reverse-sync — when ROI changes via Shift+drag, populate WKT input
   useEffect(() => {
@@ -1111,9 +1430,10 @@ function App() {
         }
 
         addStatusLog('info', `ROI RGB sampled ${rawValues.R.length} pixels per channel`);
+        logHistogramPathOnce();
         roiHists = {};
         for (const ch of ['R', 'G', 'B']) {
-          const stats = computeChannelStats(rawValues[ch], false);
+          const stats = await computeChannelStatsAuto(rawValues[ch], false, 128);
           if (stats) {
             roiHists[ch] = stats;
             lims[ch] = [stats.p2, stats.p98];
@@ -1137,7 +1457,7 @@ function App() {
     } finally {
       setRoiRGBLoading(false);
     }
-  }, [nisarFile, remoteUrl, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog]);
+  }, [nisarFile, remoteUrl, roi, roiCompositeId, selectedFrequency, imageData, addStatusLog, logHistogramPathOnce]);
 
   // Load time-series into ROI side panel
   const handleLoadRoiTimeSeries = useCallback(async () => {
@@ -1214,6 +1534,8 @@ function App() {
             bounds: data.bounds,
             label,
             date,
+            fileName: file.name,
+            identification: data.identification || null,
             width: data.width,
             height: data.height,
             renderMode: data.renderMode || null,
@@ -1241,6 +1563,7 @@ function App() {
       const applyDeci = isGUNW ? false : useDecibels;
 
       const isRGBTS = frames.length > 0 && frames[0].isRGB;
+      logHistogramPathOnce();
       for (let fi = 0; fi < frames.length; fi++) {
         try {
           if (isRGBTS) {
@@ -1258,14 +1581,14 @@ function App() {
                 for (let i = 0; i < arr.length; i++) {
                   if (arr[i] > 0 && !isNaN(arr[i])) valid.push(arr[i]);
                 }
-                chStats[ch] = computeChannelStats(valid, false) || null;
+                chStats[ch] = (await computeChannelStatsAuto(valid, false, 128)) || null;
               }
               frames[fi].stats = chStats;
             } else {
               frames[fi].stats = null;
             }
           } else {
-            const stats = await sampleViewportStats(
+            const stats = await sampleViewportStatsAuto(
               frames[fi].getTile, regionW, regionH, applyDeci, 128,
               minX, minY, frames[fi].height,
             );
@@ -1315,7 +1638,7 @@ function App() {
     } finally {
       setRoiTSLoading(false);
     }
-  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, displayMode, compositeId, addStatusLog]);
+  }, [roiTSFiles, roi, imageData, selectedFrequency, selectedPolarization, nisarProductType, selectedLayer, selectedGunwDataset, useDecibels, displayMode, compositeId, addStatusLog, logHistogramPathOnce]);
 
   // Update histogram and contrast when time-series frame changes
   useEffect(() => {
@@ -1634,7 +1957,8 @@ function App() {
           }
         }
 
-        addStatusLog('info', 'Histogram: computing statistics (GPU)...');
+        logHistogramPathOnce();
+        addStatusLog('info', 'Histogram: computing statistics...');
         const hists = {};
         let hasAnyStats = false;
         for (const ch of ['R', 'G', 'B']) {
@@ -1678,7 +2002,8 @@ function App() {
         } else {
           // Viewport/ROI scope or no HDF5 stats — sample tiles
           console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', effectiveUseDecibels);
-          const stats = await sampleViewportStats(
+          logHistogramPathOnce();
+          const stats = await sampleViewportStatsAuto(
             imageData.getTile, regionW, regionH, effectiveUseDecibels, 128,
             regionX, regionY, imageData.height,
             (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
@@ -1697,12 +2022,12 @@ function App() {
       console.error('[histogram] recompute error:', e);
       addStatusLog('warning', 'Histogram recompute failed', e.message);
     }
-  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, effectiveUseDecibels, nisarProductType, selectedGunwDataset, roi, addStatusLog]);
+  }, [imageData, histogramScope, viewCenter, viewZoom, displayMode, compositeId, effectiveUseDecibels, nisarProductType, selectedGunwDataset, roi, addStatusLog, logHistogramPathOnce]);
 
   // Recompute histogram when scope changes — but skip on initial load if
   // metadata-based contrast was already applied (avoids redundant tile reads).
   const skipInitialHistogramRef = useRef(false);
-  // Separate flag for the viewport auto-refresh timer — persists across the 800ms delay.
+  // Separate flag for the viewport auto-refresh timer — persists across the debounce delay.
   const skipViewportRefreshRef = useRef(false);
   useEffect(() => {
     if (!imageData) return;
@@ -1726,7 +2051,9 @@ function App() {
   const recomputeRef = useRef(handleRecomputeHistogram);
   recomputeRef.current = handleRecomputeHistogram;
   // Auto-recompute histogram when viewport changes (viewport scope, debounced).
-  // Uses GPU when available, falls back to CPU — debounce absorbs the latency.
+  // With WebGPU compute the stats are near-instant, so a short ~100 ms debounce
+  // gives near-real-time updates while panning; on the CPU fallback keep the
+  // long 800 ms debounce to absorb the latency.
   const vcx = viewCenter[0];
   const vcy = viewCenter[1];
   useEffect(() => {
@@ -1737,9 +2064,9 @@ function App() {
         return;
       }
       recomputeRef.current();
-    }, 800);
+    }, gpuInfo.webgpu ? 100 : 800);
     return () => clearTimeout(timer);
-  }, [vcx, vcy, viewZoom, imageData, histogramScope]);
+  }, [vcx, vcy, viewZoom, imageData, histogramScope, gpuInfo.webgpu]);
 
   // Auto-recompute histogram when ROI changes (ROI scope only)
   // Disabled without WebGPU — CPU histogram is too slow for live ROI updates.
@@ -2012,8 +2339,11 @@ function App() {
       if (gen !== loadGenRef.current) return; // stale load
       setImageData(data);
 
-      // Auto-calculate contrast limits from a sample
-      try {
+      // Auto-calculate contrast limits from a sample (skipped when a deep
+      // link pinned explicit contrastMin/Max — W008 guard)
+      if (consumeDeepLinkPin('contrast')) {
+        addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
+      } else try {
         addStatusLog('info', 'Calculating auto-contrast from sample data...');
 
         // Load a small sample from a middle overview for contrast calculation
@@ -2034,8 +2364,8 @@ function App() {
         console.warn('Could not auto-calculate contrast limits:', e);
       }
 
-      // Update view to fit bounds
-      if (data.bounds) {
+      // Update view to fit bounds (skipped when a deep link pinned c/z — W008 guard)
+      if (data.bounds && !consumeDeepLinkPin('view')) {
         const [minX, minY, maxX, maxY] = data.bounds;
         const centerX = (minX + maxX) / 2;
         const centerY = (minY + maxY) / 2;
@@ -2064,6 +2394,12 @@ function App() {
           `Center: [${centerX.toFixed(4)}, ${centerY.toFixed(4)}], Zoom: ${zoom.toFixed(2)}, Span: ${maxSpan.toFixed(2)}`);
       }
 
+      // W016: deep-link ?bbox=/?wkt= — apply the region as ROI + fit the view
+      // to it (overrides the full-scene fit above in the same render commit).
+      // COG tile fetches are viewport-driven, so the region fit alone scopes
+      // network traffic — no loader change needed.
+      applyDeepLinkRoi(data);
+
       addStatusLog('success', 'COG loaded and ready to display');
     } catch (e) {
       setError(`Failed to load COG: ${e.message}`);
@@ -2073,7 +2409,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [cogUrl, useDecibels, addStatusLog, multiFileMode, multiFileModeType, fileList, bandNames]);
+  }, [cogUrl, useDecibels, addStatusLog, multiFileMode, multiFileModeType, fileList, bandNames, applyDeepLinkRoi]);
 
   // Auto-load COG when set via ?cog= URL parameter
   useEffect(() => {
@@ -2100,6 +2436,11 @@ function App() {
    */
   const autoFitIfNewScene = useCallback((newBounds) => {
     if (!newBounds) return;
+    // Deep link pinned an explicit center/zoom — keep it for the first load (W008 guard)
+    if (consumeDeepLinkPin('view')) {
+      prevBoundsRef.current = newBounds;
+      return;
+    }
     console.log('[SARdine] autoFitIfNewScene:', newBounds, 'prev:', prevBoundsRef.current);
     const prev = prevBoundsRef.current;
     if (prev) {
@@ -2254,6 +2595,13 @@ function App() {
 
         const composites = getAvailableComposites(datasets);
         setAvailableComposites(composites);
+
+        const indices = getAvailableIndices(datasets);
+        setAvailableIndices(indices);
+        if (indices.length > 0) {
+          setIndexId(indices[0].id);
+          setIndexForm(indices[0].form);
+        }
 
         const autoComposite = autoSelectComposite(datasets);
         setCompositeId(autoComposite);
@@ -2534,6 +2882,14 @@ function App() {
               });
               return { file, data, getTile: data.getRGBTile };
             }
+            if (displayMode === 'index') {
+              const data = await loadNISARIndex(file, {
+                frequency: selectedFrequency,
+                indexId,
+                form: indexForm,
+              });
+              return { file, data, getTile: data.getTile };
+            }
             const data = await loadNISARGCOV(file, {
               frequency: selectedFrequency,
               polarization: selectedPolarization,
@@ -2577,7 +2933,7 @@ function App() {
     })();
 
     return () => { cancelled = true; };
-  }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, displayMode, compositeId, addStatusLog]);
+  }, [fileType, nisarProductType, gcovMosaicFiles, imageData?.crs, selectedFrequency, selectedPolarization, displayMode, compositeId, indexId, indexForm, addStatusLog]);
 
   const handleNITFFileSelect = useCallback(async (file) => {
     setLoading(true);
@@ -2642,6 +2998,53 @@ function App() {
       setLoading(false);
     }
   }, [nitfFile, selectedNitfId, nitfDatasets, addStatusLog, autoFitIfNewScene]);
+
+  // ─── Markup GeoJSON save/load (W004) — logic lives in src/utils/annotation-io.js ───
+  const markupFileInputRef = useRef(null);
+
+  const handleSaveMarkup = useCallback(() => {
+    try {
+      const scene = {
+        file: fileType === 'cog' ? cogUrl : (nisarFile?.name || nitfFile?.name || ''),
+        crs: imageData?.crs || null,
+        bounds: imageData?.worldBounds || imageData?.bounds || null,
+        width: imageData?.width,
+        height: imageData?.height,
+      };
+      const fc = annotationsToGeoJSON({ annotations, roi, classRegions, scene, roiProfile });
+      downloadMarkupGeoJSON(fc, 'sardine-markup.geojson');
+      addStatusLog('success', `Markup saved: ${fc.features.length} feature(s)`, 'sardine-markup.geojson');
+    } catch (e) {
+      addStatusLog('error', 'Markup save failed', e.message);
+    }
+  }, [annotations, roi, classRegions, roiProfile, fileType, cogUrl, nisarFile, nitfFile, imageData, addStatusLog]);
+
+  const applyMarkupGeoJSON = useCallback((fc, name) => {
+    try {
+      const scene = {
+        crs: imageData?.crs || null,
+        bounds: imageData?.worldBounds || imageData?.bounds || null,
+        width: imageData?.width,
+        height: imageData?.height,
+      };
+      const res = geoJSONToAnnotations(fc, scene);
+      if (res.annotations.length > 0) setAnnotations(prev => [...prev, ...res.annotations]);
+      if (res.roi) setROI(res.roi);
+      if (res.classRegions.length > 0) setClassRegions(prev => [...prev, ...res.classRegions]);
+      // res.transectLine: no transect state at HEAD — wired when the transect-line WIP lands
+      for (const w of res.warnings) addStatusLog('warning', 'Markup import', w);
+      addStatusLog('success', `Markup loaded: ${name}`,
+        `${res.annotations.length} annotation(s)${res.roi ? ', ROI' : ''}${res.classRegions.length > 0 ? `, ${res.classRegions.length} class region(s)` : ''}`);
+    } catch (e) {
+      addStatusLog('error', `Markup load failed: ${name}`, e.message);
+    }
+  }, [imageData, addStatusLog]);
+
+  const handleLoadMarkupFile = useCallback((file) => {
+    file.text()
+      .then(t => applyMarkupGeoJSON(JSON.parse(t), file.name))
+      .catch(e => addStatusLog('error', `Markup load failed: ${file.name}`, e.message));
+  }, [applyMarkupGeoJSON, addStatusLog]);
 
   // Drag-and-drop handler — single dispatch table over file formats.
   // Each entry handles its own bucket (mosaic vs single-shot, append vs
@@ -2740,6 +3143,10 @@ function App() {
             const data = geojson.type === 'Feature'
               ? { type: 'FeatureCollection', features: [geojson] }
               : geojson;
+            if (isSardineMarkup(data)) {
+              applyMarkupGeoJSON(data, gj.name);
+              return;
+            }
             const id = `geojson-${Date.now()}-${gj.name}`;
             setDroppedGeoJSON(prev => [...prev, { id, name: gj.name, data }]);
             addStatusLog('info', `GeoJSON loaded: ${gj.name}`,
@@ -2780,7 +3187,7 @@ function App() {
       addStatusLog('warning', `Unsupported file type: ${files[0].name}`,
         'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
 
   // Handle remote file selection from DataDiscovery browser
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
@@ -2830,14 +3237,19 @@ function App() {
       setNisarDatasets(datasets);
 
       if (datasets.length > 0) {
-        // Prefer frequency B when available
+        // Prefer frequency B when available (deep-link pins win — W008 guard)
         const preferB = datasets.find(d => d.frequency === 'B') || datasets[0];
-        setSelectedFrequency(preferB.frequency);
-        setSelectedPolarization(preferB.polarization);
+        if (!consumeDeepLinkPin('freq')) setSelectedFrequency(preferB.frequency);
+        if (!consumeDeepLinkPin('pol')) setSelectedPolarization(preferB.polarization);
 
-        // Apply auto-contrast immediately from metadata stats (before data loads)
+        // Apply auto-contrast immediately from metadata stats (before data
+        // loads). Peek — don't consume — the pin here: the load-stage
+        // auto-contrast in handleLoadRemoteNISAR consumes it so the pin
+        // survives until the raster actually renders (W008 guard).
         const firstStats = preferB.stats;
-        if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
+        if (deepLinkPins.current.has('contrast')) {
+          addStatusLog('info', 'Keeping deep-link contrast (metadata auto-contrast skipped)');
+        } else if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
           const meanDb = 10 * Math.log10(firstStats.mean_value);
           const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
           setContrastMin(Math.round(meanDb - 2 * stdDb));
@@ -2849,6 +3261,12 @@ function App() {
 
       const composites = getAvailableComposites(datasets);
       setAvailableComposites(composites);
+      const remoteIndices = getAvailableIndices(datasets);
+      setAvailableIndices(remoteIndices);
+      if (remoteIndices.length > 0) {
+        setIndexId(remoteIndices[0].id);
+        setIndexForm(remoteIndices[0].form);
+      }
       const autoComp = autoSelectComposite(datasets);
       setCompositeId(autoComp);
       setDisplayMode('single');
@@ -2856,7 +3274,16 @@ function App() {
       addStatusLog('success', `Found ${datasets.length} remote datasets`,
         datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
 
-      // Show dataset controls — user clicks "Load" manually (NISAR files are large)
+      // Show dataset controls — user clicks "Load" manually (NISAR files are
+      // large). Exception (W016): a bbox/wkt deep link bounds the fetch to the
+      // region, so auto-load the selected dataset instead of waiting.
+      if (deepLinkAutoLoad.current && datasets.length > 0) {
+        deepLinkAutoLoad.current = false;
+        addStatusLog('info', 'Deep-link region present — loading dataset automatically');
+        // Next tick: let the freq/pol state set above commit first, and let
+        // handleLoadRemoteNISAR (defined below) bind its ref.
+        setTimeout(() => handleLoadRemoteNISARRef.current?.(), 0);
+      }
     } catch (e) {
       const isAuthErr = e.message?.includes('401') || e.message?.includes('403') || e.message?.includes('Unauthorized');
       const hint = isAuthErr
@@ -2912,7 +3339,9 @@ function App() {
       type = 'nisar';
     }
 
-    handleRemoteFileSelect({ url, name, size: 0, type });
+    // Attach the stored EDL token so pasted DAAC URLs authenticate in dev
+    // (Authorization header through the Vite proxy) as well as hosted builds.
+    handleRemoteFileSelect({ url, name, size: 0, type, token: getEDLToken() });
   }, [directUrl, handleRemoteFileSelect, addStatusLog]);
 
   // Load remote NISAR dataset by URL (single band or RGB composite)
@@ -2988,6 +3417,33 @@ function App() {
               ['R', 'G', 'B'].map(ch => `${ch}: ${lims[ch][0].toExponential(2)}–${lims[ch][1].toExponential(2)}`).join(', '));
           }
         }
+      } else if (displayMode === 'index') {
+        // ── Remote GCOV scalar index (e.g. RVI) — single-band render ──
+        addStatusLog('info', `Loading remote index: ${indexId} (${indexForm}-pol form)`);
+
+        data = await loadNISARIndex(remoteUrl, {
+          frequency: selectedFrequency,
+          indexId,
+          form: indexForm,
+          _streamReader: handleRemoteFileSelect._cachedReader || imageData?._h5chunk || null,
+          _chunkCaches: imageData?._chunkCaches || null,
+          fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+        });
+
+        data.onRefine = () => setTileVersion(v => v + 1);
+        if (data.prefetchOverviewChunks) {
+          data.prefetchOverviewChunks().catch(e =>
+            console.warn('[SARdine] Index overview prefetch failed:', e.message)
+          );
+        }
+
+        setUseDecibels(!!data.indexUseDecibels);
+        setContrastMin(data.indexRange?.[0] ?? 0);
+        setContrastMax(data.indexRange?.[1] ?? 1);
+        setColormap(data.indexColormap || 'viridis');
+
+        addStatusLog('success', `Remote ${indexId.toUpperCase()} loaded`,
+          `${data.width}x${data.height}, ${data.indexColormap}`);
       } else {
         // Single band mode
         addStatusLog('info', `Loading remote NISAR: ${selectedFrequency}/${selectedPolarization}`);
@@ -2997,6 +3453,10 @@ function App() {
           polarization: selectedPolarization,
           _streamReader: handleRemoteFileSelect._cachedReader || null,
           fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+          // W016: deep-link region (WGS84) — scopes overview prefetch +
+          // Phase-2 refinement to the intersecting chunks. Read pre-
+          // consumption; applyDeepLinkRoi below consumes the ref.
+          scopeBbox: deepLinkRoiRef.current?.bbox || undefined,
         });
 
         // Progressive refinement: when background Phase 2 completes, bump version
@@ -3004,9 +3464,11 @@ function App() {
         if (data.mode === 'streaming') {
           data.onRefine = () => setTileVersion(v => v + 1);
           // Eagerly warm chunk cache (fire-and-forget — tiles use coarse mosaic
-          // from cached chunks while remaining chunks load in background)
+          // from cached chunks while remaining chunks load in background).
+          // Keep the promise: the background histogram waits on it so its
+          // tile sampling doesn't compete with the first-paint chunk fetch.
           if (data.prefetchOverviewChunks) {
-            data.prefetchOverviewChunks().catch(e =>
+            data._prefetchPromise = data.prefetchOverviewChunks().catch(e =>
               console.warn('[SARdine] Overview prefetch failed:', e.message)
             );
           }
@@ -3015,8 +3477,10 @@ function App() {
         addStatusLog('success', `Remote NISAR loaded: ${data.width}×${data.height}`,
           `URL: ${remoteUrl}`);
 
-        // Use embedded HDF5 statistics for auto-contrast (same as local file path)
-        if (data.stats && data.stats.mean_value !== undefined) {
+        // Use embedded HDF5 statistics for auto-contrast (same as local file
+        // path). Peek the deep-link pin — the background histogram below is
+        // the last auto-contrast in this flow and consumes it (W008 guard).
+        if (data.stats && data.stats.mean_value !== undefined && !deepLinkPins.current.has('contrast')) {
           const { mean_value, sample_stddev } = data.stats;
           if (mean_value > 0 && sample_stddev > 0) {
             const meanDb = 10 * Math.log10(mean_value);
@@ -3038,6 +3502,11 @@ function App() {
 
       // Auto-fit view only if this is a new scene (different track-frame)
       autoFitIfNewScene(data.bounds);
+
+      // W016: deep-link ?bbox=/?wkt= — apply the region as ROI + WKT input and
+      // refit the view to it (both state sets batch in this commit; the region
+      // fit wins over the full-scene fit above).
+      const dlRoi = applyDeepLinkRoi(data);
 
       // Auto-open OverviewMap when loading from CMR so user sees geographic context
       if (fileType === 'cmr') {
@@ -3075,6 +3544,7 @@ function App() {
                 }
               }
             }
+            logHistogramPathOnce();
             const hists = {};
             const lims = {};
             for (const ch of ['R', 'G', 'B']) {
@@ -3096,18 +3566,46 @@ function App() {
         addStatusLog('info', 'Computing histogram in background...');
         (async () => {
           try {
-            // Sample using world-coordinate bounds so getTile receives world-space bboxes
-            const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
-            const stats = await sampleViewportStats(
-              data.getTile, gMaxX - gMinX, gMaxY - gMinY, effectiveUseDecibels, 128,
-              gMinX, gMinY,
-            );
+            // Let the first-paint chunk prefetch finish before sampling —
+            // histogram reads would compete with it for bandwidth.
+            if (data._prefetchPromise) await data._prefetchPromise;
+            // Sample using world-coordinate bounds so getTile receives world-space
+            // bboxes. W016: when a deep-link region is active, sample the region
+            // instead of the full scene — contrast matches the AOI and the
+            // sampling doesn't pull out-of-region chunks.
+            const [gMinX, gMinY, gMaxX, gMaxY] = dlRoi?.bboxFileCrs || data.bounds;
+            logHistogramPathOnce();
+            let stats = null;
+            if (data.mode === 'streaming') {
+              // Streaming loaders: the z0 overview mosaic is already a spatial
+              // sample of the full image and sits in the chunk cache after
+              // prefetch — one background tile, zero new bytes. (The old 3×3
+              // sampleViewportStats grid re-fetched most of the raster.)
+              const overviewTile = await data.getTile({
+                x: 0, y: 0, z: 0,
+                bbox: { left: gMinX, top: gMinY, right: gMaxX, bottom: gMaxY },
+                background: true,
+              });
+              if (overviewTile?.data) {
+                stats = await computeChannelStatsAuto(overviewTile.data, effectiveUseDecibels, 128);
+              }
+            }
+            if (!stats) {
+              stats = await sampleViewportStatsAuto(
+                data.getTile, gMaxX - gMinX, gMaxY - gMinY, effectiveUseDecibels, 128,
+                gMinX, gMinY,
+              );
+            }
             if (stats) {
               setHistogramData({ single: stats });
-              setContrastMin(Number(stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)));
-              setContrastMax(Number(stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)));
-              const unit = effectiveUseDecibels ? 'dB' : '';
-              addStatusLog('success', `Auto-contrast: ${stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)} to ${stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)} ${unit}`);
+              if (consumeDeepLinkPin('contrast')) {
+                addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
+              } else {
+                setContrastMin(Number(stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)));
+                setContrastMax(Number(stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)));
+                const unit = effectiveUseDecibels ? 'dB' : '';
+                addStatusLog('success', `Auto-contrast: ${stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)} to ${stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)} ${unit}`);
+              }
             }
           } catch (e) {
             addStatusLog('warning', 'Background histogram failed', e.message);
@@ -3120,10 +3618,17 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, applyDeepLinkRoi, logHistogramPathOnce]);
+
+  // Keep the forward-ref current so the deep-link auto-load (bbox links only,
+  // W016) can fire it from handleRemoteFileSelect, which is defined earlier.
+  useEffect(() => {
+    handleLoadRemoteNISARRef.current = handleLoadRemoteNISAR;
+  }, [handleLoadRemoteNISAR]);
 
   // Note: Auto-load removed — NISAR files are large (multi-GB), user clicks "Load" manually
   // after selecting a granule and reviewing the dataset/frequency/polarization options.
+  // Exception: bbox/wkt deep links auto-load (bounded fetch, see above).
 
   // Load selected NISAR dataset (single band or RGB composite)
   const handleLoadNISAR = useCallback(async () => {
@@ -3312,6 +3817,28 @@ function App() {
           setCorrectionLayers(null);
           setEnabledCorrections(new Set());
         }
+      } else if (displayMode === 'index') {
+        // ── GCOV scalar index mode (e.g. RVI) — single-band render ──
+        addStatusLog('info', `Loading index: ${indexId} (${indexForm}-pol form)`);
+
+        data = await loadNISARIndex(nisarFile, {
+          frequency: selectedFrequency,
+          indexId,
+          form: indexForm,
+          _streamReader: imageData?._h5chunk || null,
+          _chunkCaches: imageData?._chunkCaches || null,
+        });
+
+        data.onRefine = () => setTileVersion(v => v + 1);
+
+        // Auto-apply index render settings: linear scale, index range, colormap.
+        setUseDecibels(!!data.indexUseDecibels);
+        setContrastMin(data.indexRange?.[0] ?? 0);
+        setContrastMax(data.indexRange?.[1] ?? 1);
+        setColormap(data.indexColormap || 'viridis');
+
+        addStatusLog('success', `${indexId.toUpperCase()} loaded`,
+          `${data.width}x${data.height}, range ${data.indexRange?.[0]}–${data.indexRange?.[1]}, ${data.indexColormap}`);
       } else if (displayMode === 'rgb' && compositeId) {
         // ── GCOV RGB composite mode ──
         const requiredPols = getRequiredDatasets(compositeId);
@@ -3959,6 +4486,31 @@ function App() {
       const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
 
       downloadBuffer(geotiff, filename);
+
+      // W005: provenance sidecar — {output}.tif.json (identification passed through opaquely)
+      try {
+        downloadSidecar(buildExportSidecar({
+          scene: {
+            file: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
+            productType: imageData?.identification?.productType || nisarProductType || null,
+            identification: imageData?.identification || null,
+          },
+          renderState: isRendered ? {
+            mode: 'rendered',
+            useDecibels: effectiveUseDecibels,
+            contrastLimits: (displayMode === 'rgb' && compositeId) ? effectiveContrastLimits : [contrastMin, contrastMax],
+            colormap,
+            stretchMode,
+            gamma,
+            compositeId: compositeId || null,
+          } : { mode: 'raw' },
+          exportParams: { crs: epsgCode, bounds: exportBounds, width: exportWidth, height: exportHeight, multilook: effectiveMl },
+        }), filename);
+        addStatusLog('info', `Sidecar: ${filename}.json`);
+      } catch (sidecarErr) {
+        addStatusLog('warning', `Sidecar write failed: ${sidecarErr.message}`);
+      }
+
       addStatusLog('success', `Exported: ${filename}`);
       addStatusLog('success', `File size: ${sizeMB} MB, Time: ${elapsed}s`);
       addStatusLog('info', '--- GeoTIFF Export Complete ---');
@@ -3969,7 +4521,7 @@ function App() {
       setExporting(false);
       setExportProgress(0);
     }
-  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, addStatusLog]);
+  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, fileType, nisarFile, cogUrl, nisarProductType, effectiveUseDecibels, addStatusLog]);
 
   // Export the current time-series frame as a georeferenced GeoTIFF with multilooking
   const handleExportTSFrame = useCallback(async () => {
@@ -4146,6 +4698,31 @@ function App() {
       }
 
       downloadBuffer(geotiff, filename);
+
+      // W005: provenance sidecar — {output}.tif.json (identification passed through opaquely)
+      try {
+        downloadSidecar(buildExportSidecar({
+          scene: {
+            file: frame.fileName || null,
+            productType: frame.identification?.productType || nisarProductType || null,
+            identification: frame.identification || null,
+          },
+          renderState: isRendered ? {
+            mode: 'rendered',
+            useDecibels: nisarProductType === 'GUNW' ? false : useDecibels,
+            contrastLimits: roiTSContrastLimits,
+            colormap,
+            stretchMode,
+            gamma,
+            compositeId: frame.compositeId || null,
+          } : { mode: 'raw' },
+          exportParams: { crs: epsgCode, bounds: exportBounds, width: exportWidth, height: exportHeight, multilook: effectiveMl },
+        }), filename);
+        addStatusLog('info', `Sidecar: ${filename}.json`);
+      } catch (sidecarErr) {
+        addStatusLog('warning', `Sidecar write failed: ${sidecarErr.message}`);
+      }
+
       const elapsed = ((performance.now() - exportStart) / 1000).toFixed(1);
       addStatusLog('success', `Exported: ${filename} (${(geotiff.byteLength / 1e6).toFixed(1)} MB, ${elapsed}s)`);
     } catch (e) {
@@ -4358,6 +4935,43 @@ function App() {
 
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async () => {
+    // Compare grid mode — stitch all panels into one figure.
+    if (compareMode && compareGridRef.current) {
+      const gridPanels = compareGridRef.current.getPanels();
+      const ready = gridPanels.filter((p) => p.viewer?.getCanvas?.());
+      if (ready.length === 0) {
+        addStatusLog('error', 'Compare grid: no panels to export');
+        return;
+      }
+      addStatusLog('info', `Capturing compare grid (${ready.length} panels)...`);
+      try {
+        const panelSpecs = ready.map((p) => ({
+          canvas: p.viewer.getCanvas(),
+          options: {
+            colormap: p.colormap,
+            contrastLimits: p.contrastLimits,
+            useDecibels: p.useDecibels,
+            stretchMode: p.stretchMode,
+            gamma: p.gamma,
+            compositeId: null,
+            viewState: p.viewer.getViewState?.(),
+            bounds: p.source?.bounds,
+            filename: p.name,
+            crs: p.source?.crs || '',
+          },
+        }));
+        const blob = await exportFigureGrid(panelSpecs);
+        const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        downloadBlob(blob, `sardine_compare_${ts}.png`);
+        addStatusLog('success', 'Compare grid figure saved');
+        ready.forEach((p) => p.viewer.redraw?.());
+      } catch (e) {
+        addStatusLog('error', 'Compare grid export failed', e.message);
+        console.error('Compare grid export error:', e);
+      }
+      return;
+    }
+
     if (!viewerRef.current) {
       addStatusLog('error', 'Viewer not ready');
       return;
@@ -4452,7 +5066,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
+  }, [compareMode, colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async () => {
@@ -4925,6 +5539,15 @@ function App() {
       { id: 'mode.grid', group: 'mode', label: 'Toggle coordinate grid', run: () => setShowGrid(v => !v) },
       { id: 'mode.db', group: 'mode', label: 'Toggle dB / linear', run: () => setUseDecibels(v => !v) },
       { id: 'mode.classifier', group: 'mode', label: 'Toggle classifier', shortcut: 'C', when: () => hasData, run: () => setClassifierOpen(v => !v) },
+      { id: 'mode.profileV', group: 'mode', label: 'Toggle ROI vertical profile', when: () => !!roi, run: () => setProfileShow(p => ({ ...p, v: !p.v })) },
+      { id: 'mode.profileH', group: 'mode', label: 'Toggle ROI horizontal profile', when: () => !!roi, run: () => setProfileShow(p => ({ ...p, h: !p.h })) },
+      { id: 'mode.profileI', group: 'mode', label: 'Toggle ROI intensity histogram', when: () => !!roi, run: () => setProfileShow(p => ({ ...p, i: !p.i })) },
+      { id: 'mode.transect', group: 'mode', label: transectEnabled ? 'Transect tool: disable' : 'Transect tool: draw a profile line', when: () => hasData, run: () => setTransectEnabled(v => {
+          const next = !v;
+          if (next) { setBottomTab('transect'); setStatusCollapsed(false); }
+          return next;
+        }) },
+      { id: 'mode.transectClear', group: 'mode', label: 'Transect: clear line', when: () => !!transectLine, run: () => setTransectLine(null) },
 
       // Stretch presets
       { id: 'stretch.1sigma', group: 'stretch', label: 'Stretch ±1σ', when: () => hasHist, run: setSigma(1) },
@@ -4951,12 +5574,12 @@ function App() {
 
       // Actions
       { id: 'act.reload', group: 'action', label: 'Reload current view', when: () => hasData, run: handleReload },
-      { id: 'act.figure', group: 'action', label: 'Save figure (PNG)', shortcut: 'Ctrl+S', when: () => hasData, run: handleSaveFigure },
+      { id: 'act.figure', group: 'action', label: 'Save figure (PNG)', shortcut: 'Ctrl+S', when: () => hasData || compareMode, run: handleSaveFigure },
       { id: 'act.figureOverlays', group: 'action', label: 'Save figure with overlays', shortcut: 'Ctrl+Shift+S', when: () => hasData, run: handleSaveFigureWithOverlays },
       { id: 'act.colorbar', group: 'action', label: 'Export RGB colorbar', when: () => isRGBDisplayMode, run: handleExportColorbar },
     ];
   }, [
-    imageData, histogramData, isRGBDisplayMode,
+    imageData, histogramData, isRGBDisplayMode, compareMode, roi, transectEnabled, transectLine,
     handleReload, handleSaveFigure, handleSaveFigureWithOverlays, handleExportColorbar, addStatusLog,
   ]);
 
@@ -5153,17 +5776,42 @@ function App() {
             </div>
           </CollapsibleSection>
 
-          {/* Share link — only meaningful for remote sources (COG URL or
-              DAAC NISAR URL). Local files can't be shared via link. */}
-          {sharedRawUrl && (fileType === 'cog' || fileType === 'nisar' || fileType === 'nisar-gunw' || fileType === 'nitf') && (
+          {/* Share link — a URL exists only for remote sources (COG URL or
+              DAAC NISAR URL). For local files the button is shown disabled
+              with an explanatory tooltip (W008). */}
+          {(sharedRawUrl || imageData) && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
               <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
                 Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.
               </div>
               <div className="control-group" style={{ display: 'flex', gap: '6px' }}>
                 <button
+                  disabled={!sharedRawUrl}
+                  title={sharedRawUrl
+                    ? 'Copy a deep link that reproduces this view'
+                    : 'Local file — no URL exists to share. Load from a URL to enable deep links.'}
                   onClick={async () => {
+                    if (!sharedRawUrl) return;
                     try {
+                      // W016: active ROI → ?bbox= (WGS84). ROI pixel range →
+                      // file-CRS bounds → inverse-reproject when projected.
+                      let roiBbox;
+                      if (roi && imageData?.width && imageData?.height) {
+                        try {
+                          const fileBbox = imageData.worldBounds || imageData.bounds;
+                          const sub = computeSubsetBounds(
+                            { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+                            {
+                              worldBounds: fileBbox,
+                              width: imageData.width,
+                              height: imageData.height,
+                              xCoords: imageData.xCoords || null,
+                              yCoords: imageData.yCoords || null,
+                            });
+                          const crs = imageData.crs || 'EPSG:4326';
+                          roiBbox = crs === 'EPSG:4326' ? sub : projectedToWGS84(sub, crs);
+                        } catch { /* omit bbox from the link */ }
+                      }
                       const link = buildShareLink({
                         dataUrl: sharedRawUrl,
                         dataType: fileType === 'cog' ? 'cog'
@@ -5174,7 +5822,7 @@ function App() {
                           contrastMin, contrastMax, stretchMode, gamma,
                           selectedPolarization, selectedFrequency,
                           multiLook, compositeId, displayMode,
-                          viewCenter, viewZoom,
+                          viewCenter, viewZoom, roiBbox,
                         },
                       });
                       await navigator.clipboard.writeText(link);
@@ -5227,6 +5875,36 @@ function App() {
                   </div>
                 )}
               </div>
+
+              {/* Compare grid — open up to 4 GeoTIFFs / NISAR .h5 side by side / 2×2 */}
+              <div className="control-group">
+                <label>Compare (up to 4, synced)</label>
+                <input
+                  type="file"
+                  accept=".tif,.tiff,.h5,.hdf5,.he5"
+                  multiple
+                  id="compare-grid-input"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    setCompareInitialFiles(files);
+                    setCompareMode(true);
+                    e.target.value = '';
+                  }}
+                />
+                <button
+                  className={compareMode ? 'btn-primary' : 'btn-secondary'}
+                  onClick={() => {
+                    if (compareMode) { setCompareMode(false); setCompareInitialFiles(null); }
+                    else document.getElementById('compare-grid-input').click();
+                  }}
+                  style={{ width: '100%' }}
+                >
+                  {compareMode ? 'Exit Compare Grid' : 'Compare Files…'}
+                </button>
+              </div>
+
               {imageData?.sliceCount > 1 && (
                 <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                   Mosaic: {imageData.sliceCount} slices, {imageData.width}x{imageData.height} px
@@ -5614,9 +6292,38 @@ function App() {
                       RGB Composite
                     </option>
                   )}
+                  {nisarProductType === 'GCOV' && (
+                    <option value="index" disabled={availableIndices.length === 0}>
+                      Index (RVI)
+                    </option>
+                  )}
                   <option value="multi-temporal">Multi-temporal RGB (3 dates)</option>
                 </select>
               </div>
+
+              {displayMode === 'index' && availableIndices.length > 0 && nisarProductType === 'GCOV' && (
+                <div className="control-group">
+                  <label>Index</label>
+                  <select
+                    value={indexId}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      setIndexId(id);
+                      const match = availableIndices.find(i => i.id === id);
+                      if (match) setIndexForm(match.form);
+                    }}
+                  >
+                    {availableIndices.map(i => (
+                      <option key={i.id} value={i.id}>{i.name}</option>
+                    ))}
+                  </select>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    {availableIndices.find(i => i.id === indexId)?.description || ''}
+                    {' · '}
+                    {indexForm === 'quad' ? 'quad-pol form' : 'dual-pol form'}
+                  </div>
+                </div>
+              )}
 
               {displayMode === 'rgb' && availableComposites.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
@@ -6044,7 +6751,16 @@ function App() {
 
           {/* Display Settings */}
           <CollapsibleSection title="Display">
-            
+
+            <div className="control-group">
+              <label>UI Theme</label>
+              <select value={uiTheme} onChange={(e) => setUiTheme(e.target.value)}>
+                <option value="">Dark</option>
+                <option value="sardine">SARdine (navy)</option>
+                <option value="light">Light</option>
+              </select>
+            </div>
+
             {/* Colormap selector — hidden in RGB composite mode */}
             {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
@@ -6098,10 +6814,10 @@ function App() {
                   type="checkbox"
                   id="useDb"
                   checked={effectiveUseDecibels}
-                  disabled={nisarProductType === 'GUNW'}
+                  disabled={nisarProductType === 'GUNW' || displayMode === 'index'}
                   onChange={(e) => setUseDecibels(e.target.checked)}
                 />
-                <label htmlFor="useDb">dB Scaling{nisarProductType === 'GUNW' ? ' (N/A)' : ''}</label>
+                <label htmlFor="useDb">dB Scaling{(nisarProductType === 'GUNW' || displayMode === 'index') ? ' (N/A)' : ''}</label>
               </div>
             </div>
 
@@ -6517,13 +7233,47 @@ function App() {
                       </button>
                     ))}
                   </div>
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', alignItems: 'center' }}>
+                  {/* Size presets — standardized S/M/L (line weight + text scale together) */}
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
                     {[
-                      { key: 'cyan',    hex: '#4ec9d4' },
-                      { key: 'orange',  hex: '#e8833a' },
-                      { key: 'green',   hex: '#3ddc84' },
-                      { key: 'magenta', hex: '#d45cff' },
-                    ].map(({ key, hex }) => (
+                      { key: 'small',  label: 'S' },
+                      { key: 'medium', label: 'M' },
+                      { key: 'large',  label: 'L' },
+                    ].map(({ key, label }) => (
+                      <button
+                        key={key}
+                        onClick={() => {
+                          setAnnotationSize(key);
+                          // Retro-apply to the selected annotation so users can resize
+                          // an existing arrow/label without redrawing it.
+                          if (selectedAnnotationId) {
+                            setAnnotations(anns => anns.map(a =>
+                              a.id === selectedAnnotationId ? { ...a, size: key, fontSize: undefined } : a
+                            ));
+                          }
+                        }}
+                        title={
+                          `${key.charAt(0).toUpperCase() + key.slice(1)} — thicker lines & larger text`
+                          + (selectedAnnotationId ? ' (also resizes the selected annotation)' : '')
+                        }
+                        style={{
+                          flex: 1,
+                          padding: '4px 6px',
+                          fontSize: '0.7rem',
+                          fontWeight: 600,
+                          background: annotationSize === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
+                          color: annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                          border: `1px solid ${annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
+                          borderRadius: '2px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', alignItems: 'center' }}>
+                    {ANNOTATION_COLOR_KEYS.map((key) => (
                       <button
                         key={key}
                         onClick={() => setAnnotationColor(key)}
@@ -6531,12 +7281,13 @@ function App() {
                         style={{
                           width: 18, height: 18,
                           padding: 0,
-                          background: hex,
+                          background: ANNOTATION_COLORS[key],
                           border: annotationColor === key
                             ? `2px solid var(--sardine-text-primary, #e8edf5)`
                             : `1px solid var(--sardine-border, #1e3a5f)`,
                           borderRadius: '50%',
                           cursor: 'pointer',
+                          boxShadow: annotationColor === key ? `0 0 0 1px ${ANNOTATION_COLORS[key]}` : 'none',
                         }}
                       />
                     ))}
@@ -6557,6 +7308,54 @@ function App() {
                     >
                       Clear
                     </button>
+                  </div>
+                  {/* Markup GeoJSON I/O (W004) — annotations + ROI + class regions */}
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                    <button
+                      onClick={handleSaveMarkup}
+                      disabled={annotations.length === 0 && !roi && classRegions.length === 0}
+                      title="Download annotations, ROI, and class regions as GeoJSON"
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: '0.7rem',
+                        background: 'transparent',
+                        color: (annotations.length === 0 && !roi && classRegions.length === 0)
+                          ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: (annotations.length === 0 && !roi && classRegions.length === 0) ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      Save Markup
+                    </button>
+                    <button
+                      onClick={() => markupFileInputRef.current?.click()}
+                      title="Load markup GeoJSON (annotations, ROI, class regions)"
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: '0.7rem',
+                        background: 'transparent',
+                        color: 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Load Markup
+                    </button>
+                    <input
+                      ref={markupFileInputRef}
+                      type="file"
+                      accept=".geojson,.json"
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleLoadMarkupFile(f);
+                        e.target.value = '';
+                      }}
+                    />
                   </div>
                 </div>
               </div>
@@ -6693,6 +7492,18 @@ function App() {
                 showHeader={false}
               />
             )}
+
+            {/* ROI profile plots — drawer panel (toggle views from command palette) */}
+            {roi && activeViewer === 'main' && (
+              <CollapsibleSection title="ROI Profiles" defaultOpen={true}>
+                <ROIProfilePanel
+                  profileData={roiProfile}
+                  show={profileShow}
+                  useDecibels={effectiveUseDecibels}
+                />
+              </CollapsibleSection>
+            )}
+
 
             {/* GUNW phase controls: LOS displacement toggle + symmetric range presets */}
             {nisarProductType === 'GUNW' && imageData && (
@@ -7095,7 +7906,7 @@ function App() {
 
           {error && <div className="error">{error}</div>}
 
-          {!loading && !error && !imageData && (
+          {!loading && !error && !imageData && !compareMode && (
             <div className="loading">
               {fileType === 'cmr'
                 ? (nisarDatasets.length > 0
@@ -7111,8 +7922,31 @@ function App() {
             </div>
           )}
 
+          {/* Compare Grid: up to 4 GeoTIFFs, synced pan/zoom */}
+          {compareMode && (
+            <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+              <button
+                onClick={() => { setCompareMode(false); setCompareInitialFiles(null); }}
+                style={{
+                  position: 'absolute', top: '8px', right: '8px', zIndex: 2000,
+                  background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
+                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                }}
+              >
+                Close Compare
+              </button>
+              <CompareGrid
+                ref={compareGridRef}
+                initialFiles={compareInitialFiles}
+                onStatus={(level, msg, detail) => addStatusLog(level, msg, detail)}
+                onExport={handleSaveFigure}
+              />
+            </div>
+          )}
+
           {/* GUNW Paired View: Phase + Coherence side-by-side */}
-          {gunwPairedView && (
+          {!compareMode && gunwPairedView && (
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <button
                 onClick={() => setGunwPairedView(null)}
@@ -7136,14 +7970,14 @@ function App() {
             </div>
           )}
 
-          {imageData && !gunwPairedView && (
+          {imageData && !gunwPairedView && !compareMode && (
             <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
               {/* Loading overlay — shown on top of existing data while new data streams */}
               {loading && (
                 <div style={{
                   position: 'absolute', inset: 0, zIndex: 10,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'rgba(10, 22, 40, 0.75)',
+                  background: 'var(--overlay-bg, rgba(10, 22, 40, 0.75))',
                   pointerEvents: 'none',
                 }}>
                   <div style={{
@@ -7200,6 +8034,9 @@ function App() {
                   extraLayers={[...opticalPeekLayers, ...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
                   roi={roi}
                   onROIChange={setROI}
+                  transectEnabled={transectEnabled}
+                  transectLine={transectLine}
+                  onTransectLineChange={setTransectLine}
                   imageWidth={imageData?.sourceWidth || imageData?.width}
                   imageHeight={imageData?.sourceHeight || imageData?.height}
                   getPixelValue={imageData?.getPixelValue}
@@ -7225,6 +8062,7 @@ function App() {
                   annotations={annotations}
                   annotationMode={annotationMode}
                   annotationColor={annotationColor}
+                  annotationSize={annotationSize}
                   onAnnotationsChange={setAnnotations}
                   selectedAnnotationId={selectedAnnotationId}
                   onSelectAnnotation={setSelectedAnnotationId}
@@ -7463,6 +8301,22 @@ function App() {
         logs={statusLogs}
         isCollapsed={statusCollapsed}
         onToggle={() => setStatusCollapsed(!statusCollapsed)}
+        activeTab={bottomTab}
+        onTabChange={setBottomTab}
+        tabs={transectEnabled ? [{
+          id: 'transect',
+          label: 'Transect',
+          content: (
+            <TransectProfilePanel
+              data={transectData}
+              enabled={transectEnabled}
+              useDecibels={effectiveUseDecibels}
+              width={transectWidth}
+              onWidthChange={setTransectWidth}
+              line={transectLine}
+            />
+          ),
+        }] : []}
       />
 
       {/* Footer */}
