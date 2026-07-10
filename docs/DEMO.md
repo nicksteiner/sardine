@@ -64,15 +64,17 @@ Indus delta coast quad-pol
 partial frame, mostly ocean — see
 [demo-2026-07-10-indus-delta.png](images/demo-2026-07-10-indus-delta.png)).
 
-### Frequency A caveat (know before the demo)
+### Frequency A behavior (progressive overview ladder)
 
-Frequency B (~80 m posting) is the browse product — its full-frame overview
-is ~80 MB and renders fast. **Frequency A (10 m, 35k×35k) has no pyramids in
-the HDF5**: a full-frame overview needs hundreds of MB of chunks and takes
-~3 minutes to first pixels (measured 2026-07-10, 1.28 GB fetched). Don't
-switch to Frequency A at full-frame zoom during a live demo. Zoomed-in
-viewports on Frequency A are cheap (direct chunk reads) — the roadmap fix is
-a byte-budgeted progressive overview ladder.
+Frequency B (~80 m posting) is the browse product and renders the full
+frame fast — demo with it. **Frequency A (10 m, 35k×35k) has no pyramids in
+the HDF5**, so its full-frame overview streams through a byte-budgeted
+progressive ladder (added 2026-07-10): a coarse patchwork paints in
+~30–40 s and sharpens live as ladder levels land, capped at a ~384 MB
+loader-wide pool (previously: 3+ minutes of black while 1.3 GB downloaded).
+Overview quality tops out below the fine grid on freq A ("zoom in for
+detail" — zoomed viewports use cheap direct chunk reads). Fine for showing
+progressive streaming; don't lead the demo with it.
 
 ### Finding fresh granules
 

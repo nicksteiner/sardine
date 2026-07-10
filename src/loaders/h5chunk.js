@@ -2874,7 +2874,7 @@ export class H5Chunk {
    *   the transfer ~10× and defeating the sampling entirely.
    * @returns {Promise<Map<string, Float32Array|null>>} Map of "row,col" → decoded chunk data
    */
-  async readChunksBatch(datasetId, coords, { signal, mergeGap } = {}) {
+  async readChunksBatch(datasetId, coords, { signal, mergeGap, tag } = {}) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
 
@@ -2944,7 +2944,7 @@ export class H5Chunk {
 
     // MERGE_GAP: module-level default; callers doing strided sampling pass 0
     const gap = mergeGap ?? MERGE_GAP;
-    console.log(`[h5chunk] batch: ${datasetId.split('/').slice(-2).join('/')} ${chunkEntries.length} chunks, gap=${gap}`);
+    console.log(`[h5chunk] batch[${tag || 'untagged'}]: ${datasetId.split('/').slice(-2).join('/')} ${chunkEntries.length} chunks, gap=${gap}`);
     const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
     let current = null;
 

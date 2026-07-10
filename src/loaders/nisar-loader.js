@@ -4633,31 +4633,66 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
    * for each coord not in L1, try L2 (IndexedDB) first; only the remaining
    * misses go to streamReader.readChunksBatch (coalesced HTTP Range reads).
    * Handles all cache insertion internally. Returns Map<"cr,cc", chunk|null>.
+   *
+   * In-flight dedup: concurrent callers (viewport tiles + prefetch + ladder
+   * refinements all fire at load) compute their miss lists before each
+   * other's fetches land — without dedup the same chunks download N times.
    */
+  const _inflightChunks = new Map(); // "cr,cc" → Promise<chunk|null>
   async function readDataChunksBatch(coords, batchOpts = {}) {
     const results = new Map();
-    let missing = coords;
-    if (persistentCache && coords.length > 0) {
-      missing = [];
-      await Promise.all(coords.map(async ([cr, cc]) => {
-        const cached = await persistentCache.get(cr, cc);
-        if (cached) {
-          const key = `${cr},${cc}`;
-          cacheChunkL1(key, cached);
-          results.set(key, cached);
-        } else {
-          missing.push([cr, cc]);
-        }
-      }));
-    }
-    if (missing.length > 0) {
-      const batchMap = await streamReader.readChunksBatch(selectedDatasetId, missing, batchOpts);
-      for (const [key, data] of batchMap) {
-        const result = data?.data || data;
-        cacheChunk(key, result);
-        results.set(key, result);
+    const waits = [];
+    const mine = [];
+    for (const [cr, cc] of coords) {
+      const key = `${cr},${cc}`;
+      const inflight = _inflightChunks.get(key);
+      if (inflight) {
+        waits.push(inflight.then(v => { results.set(key, v); }));
+      } else {
+        mine.push([cr, cc]);
       }
     }
+
+    if (mine.length > 0) {
+      const batchPromise = (async () => {
+        const out = new Map();
+        let missing = mine;
+        if (persistentCache) {
+          missing = [];
+          await Promise.all(mine.map(async ([cr, cc]) => {
+            const cached = await persistentCache.get(cr, cc);
+            if (cached) {
+              const key = `${cr},${cc}`;
+              cacheChunkL1(key, cached);
+              out.set(key, cached);
+            } else {
+              missing.push([cr, cc]);
+            }
+          }));
+        }
+        if (missing.length > 0) {
+          const batchMap = await streamReader.readChunksBatch(selectedDatasetId, missing, batchOpts);
+          for (const [key, data] of batchMap) {
+            const result = data?.data || data;
+            cacheChunk(key, result);
+            out.set(key, result);
+          }
+        }
+        return out;
+      })();
+
+      for (const [cr, cc] of mine) {
+        const key = `${cr},${cc}`;
+        const p = batchPromise.then(m => m.get(key) ?? null, () => null);
+        _inflightChunks.set(key, p);
+        p.then(() => _inflightChunks.delete(key), () => _inflightChunks.delete(key));
+      }
+
+      const m = await batchPromise;
+      for (const [k, v] of m) results.set(k, v);
+    }
+
+    await Promise.all(waits);
     return results;
   }
 
@@ -4721,6 +4756,13 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   // draw from ONE loader-wide pool (_overviewSpent), or N tiles would each
   // spend the budget independently and re-flood the link.
   const OVERVIEW_ENTRY_BUDGET = 24 * 1024 * 1024;
+  // First-paint pool shared by ALL entry-level fetches (prefetch + every
+  // viewport tile). deck.gl splits the overview into ~4-8 tiles; without a
+  // shared entry pool each one enters at its per-tile cap and first paint
+  // costs 6× the intended bytes. Tiles that arrive after the pool drains
+  // enter at the 2×2 floor (a few MB) and sharpen via refinement.
+  const OVERVIEW_ENTRY_POOL = 48 * 1024 * 1024;
+  let _entrySpent = 0;
   const OVERVIEW_GLOBAL_BUDGET = 384 * 1024 * 1024;
   let _overviewSpent = 0;
   let _avgChunkBytesCache = 0;
@@ -4764,9 +4806,11 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   }
 
   /** Densest ladder level whose uncached chunk bytes fit the entry budget
-   *  (per-tile cap AND the loader-wide pool). */
+   *  (per-tile cap AND the shared first-paint pool AND the global pool). */
   function _ladderEntryIndex(startCR, endCR, startCC, endCC) {
-    const cap = Math.min(OVERVIEW_ENTRY_BUDGET,
+    const cap = Math.min(
+      OVERVIEW_ENTRY_BUDGET,
+      Math.max(0, OVERVIEW_ENTRY_POOL - _entrySpent),
       Math.max(0, OVERVIEW_GLOBAL_BUDGET - _overviewSpent));
     for (let i = OVERVIEW_LADDER.length - 1; i > 0; i--) {
       const { rows, cols } = _ladderCoords(startCR, endCR, startCC, endCC, OVERVIEW_LADDER[i]);
@@ -4989,7 +5033,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const { rows: coarseRows, cols: coarseCols, strideR: coarseStrideR, strideC: coarseStrideC } =
         _ladderCoords(startCR, endCR, startCC, endCC, entryLevel);
       if (!background) {
-        _overviewSpent += _ladderUncachedBytes(coarseRows, coarseCols);
+        const entryBytes = _ladderUncachedBytes(coarseRows, coarseCols);
+        _overviewSpent += entryBytes;
+        _entrySpent += entryBytes;
       }
       if (entryIdx < OVERVIEW_LADDER.length - 1) {
         console.log(`[NISAR Loader] Overview ladder: entering at ${entryLevel}×${entryLevel} `
@@ -5017,7 +5063,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         // Strided sampling: disable range merging or the gaps between
         // sampled chunks get downloaded too (small chunks → ~10× overfetch)
         const strided = coarseStrideR > 1 || coarseStrideC > 1;
-        const batchMap = await readDataChunksBatch(uncachedCoords, strided ? { mergeGap: 0 } : {});
+        const batchMap = await readDataChunksBatch(uncachedCoords, strided ? { mergeGap: 0, tag: 'entry' } : { tag: 'entry' });
         for (const [key, result] of batchMap) {
           if (result) coarseGrid.set(key, result);
         }
@@ -5159,7 +5205,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
               }
               if (uncached.length > 0 && streamReader.readChunksBatch) {
                 const strided = strideR > 1 || strideC > 1;
-                const bm = await readDataChunksBatch(uncached, strided ? { mergeGap: 0 } : {});
+                const bm = await readDataChunksBatch(uncached, strided ? { mergeGap: 0, tag: 'climb' } : { tag: 'climb' });
                 for (const [key, result] of bm) {
                   if (result) grid.set(key, result);
                 }
@@ -5206,7 +5252,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
             }
             if (fineUncached.length > 0 && streamReader.readChunksBatch) {
               const fineStrided = fineStrideR > 1 || fineStrideC > 1;
-              const batchMap = await readDataChunksBatch(fineUncached, fineStrided ? { mergeGap: 0 } : {});
+              const batchMap = await readDataChunksBatch(fineUncached, fineStrided ? { mergeGap: 0, tag: 'fine' } : { tag: 'fine' });
               for (const [key, result] of batchMap) {
                 if (result) fineGrid.set(key, result);
               }
@@ -5537,7 +5583,11 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
           coords.push([cr, cc]);
         }
       }
-      _overviewSpent += _ladderUncachedBytes(rows, cols);
+      {
+        const entryBytes = _ladderUncachedBytes(rows, cols);
+        _overviewSpent += entryBytes;
+        _entrySpent += entryBytes;
+      }
 
       console.log(`[NISAR Loader] Prefetching ${coords.length} overview chunks `
         + `(${totalCR}×${totalCC} grid${scopeChunkRange ? `, scoped to rows ${pr0}–${pr1} cols ${pc0}–${pc1}` : ''}, `
@@ -5552,7 +5602,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       // Use batch read if available (L2 first, then coalesced HTTP requests).
       // mergeGap 0: this grid is strided — merging would download the gaps.
       if (streamReader.readChunksBatch) {
-        tasks.push(readDataChunksBatch(coords, (strideR > 1 || strideC > 1) ? { mergeGap: 0 } : {}));
+        tasks.push(readDataChunksBatch(coords, (strideR > 1 || strideC > 1) ? { mergeGap: 0, tag: 'prefetch' } : { tag: 'prefetch' }));
       } else {
         // Fallback: individual parallel reads
         for (const [cr, cc] of coords) {
