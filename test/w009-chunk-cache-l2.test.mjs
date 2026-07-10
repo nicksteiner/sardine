@@ -458,7 +458,12 @@ await check('h5chunk exports MERGE_GAP = 2 MB', async () => {
 await check('readChunksBatch merges ranges using the module-level MERGE_GAP', () => {
   const src = readFileSync(join(rootDir, 'src/loaders/h5chunk.js'), 'utf8');
   assert(src.includes('export const MERGE_GAP'), 'MERGE_GAP must be a named module-level export');
-  assert(src.includes('current.end + MERGE_GAP'), 'range merging must reference MERGE_GAP');
+  // The merge gap may be overridden per call (mergeGap option, added for strided
+  // sampling), but the module constant must remain the default.
+  assert(
+    /mergeGap\s*\?\?\s*MERGE_GAP/.test(src) || src.includes('current.end + MERGE_GAP'),
+    'range merging must default to the module-level MERGE_GAP'
+  );
   const defs = (src.match(/const MERGE_GAP\s*=/g) || []).length;
   assert(defs === 1, `MERGE_GAP defined ${defs}× (stale function-local copy shadows the constant)`);
 });
