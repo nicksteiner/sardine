@@ -10,13 +10,30 @@ import http from 'node:http';
  * the response back. Used for both STAC API calls and HDF5 data fetches.
  */
 function corsProxyPlugin() {
+  // Presigned-URL cache: origin DAAC URL → { url, ts }. The OAuth redirect
+  // chain (DAAC → EDL → DAAC → CloudFront) costs 3 round-trips per request;
+  // h5chunk makes hundreds of Range reads per scene. Resolve once, then hit
+  // the signed CloudFront URL directly. Presigned URLs last ~1 h; re-resolve
+  // on TTL expiry or a 403 (signature expired).
+  const signedUrlCache = new Map();
+  const SIGNED_TTL_MS = 30 * 60 * 1000;
+
+  // Keep-alive agents: h5chunk issues dozens of concurrent Range reads to the
+  // same CloudFront host; without connection reuse every request pays a fresh
+  // TLS handshake (~300-500 ms), capping aggregate throughput at ~1 MB/s.
+  const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
+  const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64 });
+
   /**
    * Make a proxied request, following redirects (301/302/303/307/308).
    *
    * Earthdata OAuth flow: DAAC → EDL OAuth (keep auth) → DAAC callback (with cookies) → signed URL.
    * The proxy maintains cookies across the redirect chain so the EDL session is preserved.
+   *
+   * ctx: { originUrl, originHost, fromCache, retryHeaders } — identity of the
+   * original browser-requested URL, used to populate/invalidate signedUrlCache.
    */
-  function proxyRequest(targetUrl, method, headers, body, res, redirectCount = 0, cookieJar = {}) {
+  function proxyRequest(targetUrl, method, headers, body, res, redirectCount = 0, cookieJar = {}, ctx = null) {
     if (redirectCount > 10) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Too many redirects' }));
@@ -35,7 +52,8 @@ function corsProxyPlugin() {
       headers = { ...headers, 'Cookie': cookieStr };
     }
 
-    const proxyReq = transport.request(parsed, { method, headers }, (proxyRes) => {
+    const agent = parsed.protocol === 'https:' ? httpsAgent : httpAgent;
+    const proxyReq = transport.request(parsed, { method, headers, agent }, (proxyRes) => {
       const status = proxyRes.statusCode;
 
       // Collect Set-Cookie headers into the jar
@@ -79,9 +97,35 @@ function corsProxyPlugin() {
         const cookieInfo = cookieStr ? ' [+cookies]' : '';
         console.log(`[cors-proxy] ${method} ${targetUrl.slice(0, 80)}${rangeInfo} → ${status} → ${location.slice(0, 80)}${authInfo}${cookieInfo}`);
 
+        // Landed on a signed URL (not EDL, not the DAAC itself) — cache it so
+        // subsequent Range reads for the same origin URL skip the OAuth chain.
+        if (ctx && !isEarthdataAuth && !isOriginalDaac && locationHost && locationHost !== ctx.originHost) {
+          signedUrlCache.set(ctx.originUrl, { url: location, ts: Date.now() });
+        }
+
         // Consume redirect response body before following
         proxyRes.resume();
-        proxyRequest(location, nextMethod, nextHeaders, null, res, redirectCount + 1, cookieJar);
+        proxyRequest(location, nextMethod, nextHeaders, null, res, redirectCount + 1, cookieJar, ctx);
+        return;
+      }
+
+      // Transient upstream failure (CloudFront occasionally 500s) — one retry.
+      // Without this, a failed merged range read poisons every chunk in it.
+      if (status >= 500 && ctx && !ctx.retriedTransient && method === 'GET') {
+        console.log(`[cors-proxy] transient ${status}, retrying once: ${targetUrl.slice(0, 80)}`);
+        proxyRes.resume();
+        setTimeout(() => proxyRequest(targetUrl, method, headers, body, res, redirectCount, cookieJar,
+          { ...ctx, retriedTransient: true }), 250);
+        return;
+      }
+
+      // Cached signed URL rejected (expired signature) — invalidate and
+      // re-resolve through the full OAuth chain with the original headers.
+      if (ctx && ctx.fromCache && (status === 403 || status === 401)) {
+        console.log(`[cors-proxy] cached signed URL expired (${status}), re-resolving ${ctx.originUrl.slice(0, 80)}`);
+        signedUrlCache.delete(ctx.originUrl);
+        proxyRes.resume();
+        proxyRequest(ctx.originUrl, method, ctx.retryHeaders, body, res, 0, {}, { ...ctx, fromCache: false });
         return;
       }
 
@@ -153,9 +197,25 @@ function corsProxyPlugin() {
           if (body) headers['Content-Length'] = body.length;
 
           const authDebug = headers['Authorization'] ? `Bearer ${headers['Authorization'].slice(7, 15)}...` : 'none';
-          console.log(`[cors-proxy] → ${req.method} ${targetUrl.slice(0, 80)} auth=${authDebug}`);
 
-          proxyRequest(targetUrl, req.method || 'GET', headers, body, res);
+          const ctx = {
+            originUrl: targetUrl,
+            originHost: (() => { try { return new URL(targetUrl).hostname; } catch { return ''; } })(),
+            fromCache: false,
+            retryHeaders: headers,
+          };
+
+          // Signed-URL fast path: skip the OAuth redirect chain entirely.
+          const cached = signedUrlCache.get(targetUrl);
+          if (cached && Date.now() - cached.ts < SIGNED_TTL_MS && (req.method || 'GET') === 'GET') {
+            const directHeaders = { ...headers };
+            delete directHeaders['Authorization']; // signed URLs must not see the token
+            proxyRequest(cached.url, 'GET', directHeaders, body, res, 0, {}, { ...ctx, fromCache: true });
+            return;
+          }
+
+          console.log(`[cors-proxy] → ${req.method} ${targetUrl.slice(0, 80)} auth=${authDebug}`);
+          proxyRequest(targetUrl, req.method || 'GET', headers, body, res, 0, {}, ctx);
         });
       });
     },

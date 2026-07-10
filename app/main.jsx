@@ -776,8 +776,10 @@ function App() {
         urlCogTriggered.current = { pendingNisar: { url: dataUrl, name } };
       } else {
         // Defer to the next tick so handleRemoteFileSelect is bound.
+        // Attach the stored EDL token — the dev proxy and direct fetches
+        // authenticate via the Authorization header, not the proxy URL.
         setTimeout(() => {
-          handleRemoteFileSelectRef.current?.({ url: dataUrl, name, size: 0, type: 'nisar' });
+          handleRemoteFileSelectRef.current?.({ url: dataUrl, name, size: 0, type: 'nisar', token: getEDLToken() });
         }, 0);
       }
     }
@@ -3177,7 +3179,9 @@ function App() {
       type = 'nisar';
     }
 
-    handleRemoteFileSelect({ url, name, size: 0, type });
+    // Attach the stored EDL token so pasted DAAC URLs authenticate in dev
+    // (Authorization header through the Vite proxy) as well as hosted builds.
+    handleRemoteFileSelect({ url, name, size: 0, type, token: getEDLToken() });
   }, [directUrl, handleRemoteFileSelect, addStatusLog]);
 
   // Load remote NISAR dataset by URL (single band or RGB composite)
@@ -3296,9 +3300,11 @@ function App() {
         if (data.mode === 'streaming') {
           data.onRefine = () => setTileVersion(v => v + 1);
           // Eagerly warm chunk cache (fire-and-forget — tiles use coarse mosaic
-          // from cached chunks while remaining chunks load in background)
+          // from cached chunks while remaining chunks load in background).
+          // Keep the promise: the background histogram waits on it so its
+          // tile sampling doesn't compete with the first-paint chunk fetch.
           if (data.prefetchOverviewChunks) {
-            data.prefetchOverviewChunks().catch(e =>
+            data._prefetchPromise = data.prefetchOverviewChunks().catch(e =>
               console.warn('[SARdine] Overview prefetch failed:', e.message)
             );
           }
@@ -3391,6 +3397,9 @@ function App() {
         addStatusLog('info', 'Computing histogram in background...');
         (async () => {
           try {
+            // Let the first-paint chunk prefetch finish before sampling tiles —
+            // histogram reads pull most of the raster and would starve it.
+            if (data._prefetchPromise) await data._prefetchPromise;
             // Sample using world-coordinate bounds so getTile receives world-space bboxes
             const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
             logHistogramPathOnce();

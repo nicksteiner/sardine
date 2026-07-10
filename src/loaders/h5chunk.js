@@ -1220,12 +1220,10 @@ export class H5Chunk {
     } else if (avg > 5) {
       // Medium connection (5-20 MB/s): modest increase
       this._concurrency = Math.min(this._concurrencyMax, prev + 2);
-    } else if (avg < 1) {
-      // Slow connection (<1 MB/s): reduce to avoid congestion
-      this._concurrency = Math.max(this._concurrencyMin, prev - 4);
     } else if (avg < 3) {
-      // Slow-ish (<3 MB/s): reduce slightly
-      this._concurrency = Math.max(this._concurrencyMin, prev - 2);
+      // Low aggregate throughput is usually latency-bound (proxied/high-RTT
+      // links), not congestion — cutting parallelism makes it worse. Hold
+      // the current level; genuinely congested links stay at the floor.
     }
     // else: 3-5 MB/s — keep current level
     if (this._concurrency !== prev) {

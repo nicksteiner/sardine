@@ -1769,26 +1769,13 @@ async function loadNISARGCOVStreaming(file, options = {}) {
           }
           tileData = mosaic;
 
-          // Mask at mosaic resolution — initialized to 1 (valid)
+          // Mask at mosaic resolution — initialized to 1 (valid).
+          // Only mask chunks already in cache are consulted here: fetching the
+          // full mask grid doubles first-render bytes for a layover/shadow
+          // overlay that is invisible at overview zoom. The fine refinement
+          // pass (and any zoomed-in tile) reads the mask normally.
           if (maskDatasetId) {
             maskData = new Float32Array(mosaicH * mosaicW).fill(1);
-            const uncachedMaskCoords = [];
-            for (const cr of coarseRows) {
-              for (const cc of coarseCols) {
-                if (!maskChunkCache.has(`${cr},${cc}`)) uncachedMaskCoords.push([cr, cc]);
-              }
-            }
-            if (uncachedMaskCoords.length > 0 && streamReader.readChunksBatch) {
-              try {
-                const maskBatch = await streamReader.readChunksBatch(maskDatasetId, uncachedMaskCoords);
-                for (const [key, data] of maskBatch) {
-                  if (maskChunkCache.size >= MAX_CHUNK_CACHE) maskChunkCache.delete(maskChunkCache.keys().next().value);
-                  maskChunkCache.set(key, data);
-                }
-              } catch (e) {
-                console.warn('[NISAR Loader] Mask batch read failed:', e.message);
-              }
-            }
             for (let ri = 0; ri < gR; ri++) {
               for (let ci = 0; ci < gC; ci++) {
                 const mChunk = maskChunkCache.get(`${coarseRows[ri]},${coarseCols[ci]}`);
@@ -4692,6 +4679,60 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     }
   }
 
+  // ── Byte-budgeted overview ladder ──
+  // Overview mosaics climb a ladder of chunk-grid sampling densities
+  // (2×2 → 4×4 → 8×8) instead of fetching the full 8×8 grid before first
+  // paint. The entry level is the densest whose UNCACHED chunks fit
+  // OVERVIEW_ENTRY_BUDGET bytes, so first pixels arrive in seconds even for
+  // pyramid-less 35k×35k frequency-A grids (~7 MB/chunk). Later levels
+  // render via the refinement path (refinedTiles + onRefine).
+  const OVERVIEW_LADDER = [2, 4, 8];
+  const OVERVIEW_ENTRY_BUDGET = 32 * 1024 * 1024;
+  let _avgChunkBytesCache = 0;
+
+  function _avgChunkBytes() {
+    if (_avgChunkBytesCache) return _avgChunkBytesCache;
+    const ds = streamReader.datasets?.get?.(selectedDatasetId);
+    if (ds?.chunks?.size) {
+      let sum = 0, n = 0;
+      for (const info of ds.chunks.values()) {
+        sum += info.size;
+        if (++n >= 64) break;
+      }
+      _avgChunkBytesCache = sum / n;
+    }
+    return _avgChunkBytesCache || 2 * 1024 * 1024; // fallback before index loads
+  }
+
+  function _ladderCoords(startCR, endCR, startCC, endCC, N) {
+    const strideR = Math.max(1, Math.ceil((endCR - startCR + 1) / N));
+    const strideC = Math.max(1, Math.ceil((endCC - startCC + 1) / N));
+    const rows = [];
+    for (let cr = startCR; cr <= endCR; cr += strideR) rows.push(cr);
+    const cols = [];
+    for (let cc = startCC; cc <= endCC; cc += strideC) cols.push(cc);
+    return { rows, cols, strideR, strideC };
+  }
+
+  function _ladderUncachedBytes(rows, cols) {
+    let n = 0;
+    for (const cr of rows) {
+      for (const cc of cols) {
+        if (!chunkCache.has(`${cr},${cc}`)) n++;
+      }
+    }
+    return n * _avgChunkBytes();
+  }
+
+  /** Densest ladder level whose uncached chunk bytes fit the entry budget. */
+  function _ladderEntryIndex(startCR, endCR, startCC, endCC) {
+    for (let i = OVERVIEW_LADDER.length - 1; i > 0; i--) {
+      const { rows, cols } = _ladderCoords(startCR, endCR, startCC, endCC, OVERVIEW_LADDER[i]);
+      if (_ladderUncachedBytes(rows, cols) <= OVERVIEW_ENTRY_BUDGET) return i;
+    }
+    return 0;
+  }
+
   // ── Predictive pan-direction prefetch ──
   // Track recent tile requests to infer pan direction, then prefetch
   // chunks just beyond the current viewport edge in that direction.
@@ -4782,8 +4823,11 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   // poison the adaptive-concurrency estimator (RENDERING_PIPELINE_AUDIT §14).
   // The signal is only checked AFTER chunks resolve, as a cheap CPU skip:
   // the cached chunks then serve the next tile request.
-  const getTile = async ({ x, y, z, bbox, multiLook, signal }) => {
-    _enterForeground();
+  const getTile = async ({ x, y, z, bbox, multiLook, signal, background = false }) => {
+    // Background callers (histogram sampling, stats) must not bump the
+    // refinement generation — that would permanently abort the overview
+    // ladder climb. Only real viewport tiles get foreground priority.
+    if (!background) _enterForeground();
     const tileSize = 256;
     try {
       // Check tile result cache first (covers readRegion tiles)
@@ -4882,16 +4926,19 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const totalCR = endCR - startCR + 1;
       const totalCC = endCC - startCC + 1;
 
-      // Phase 1: coarse grid (max 8×8 = 64 chunks).
-      // Fixed stride grid — matches prefetch alignment for z0.
+      // Phase 1: overview ladder entry level (see _ladderEntryIndex).
       // Mask is deferred to Phase 2 to halve HTTP request count.
-      const COARSE_MAX = 8;
-      const coarseStrideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
-      const coarseStrideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
-      const coarseRows = [];
-      for (let cr = startCR; cr <= endCR; cr += coarseStrideR) coarseRows.push(cr);
-      const coarseCols = [];
-      for (let cc = startCC; cc <= endCC; cc += coarseStrideC) coarseCols.push(cc);
+      // Ensure the chunk index is loaded so the byte estimate is real —
+      // one cheap B-tree read that the batch fetch below needs anyway.
+      await streamReader._ensureChunkIndex?.(selectedDatasetId)?.catch?.(() => {});
+      const entryIdx = _ladderEntryIndex(startCR, endCR, startCC, endCC);
+      const entryLevel = OVERVIEW_LADDER[entryIdx];
+      const { rows: coarseRows, cols: coarseCols, strideR: coarseStrideR, strideC: coarseStrideC } =
+        _ladderCoords(startCR, endCR, startCC, endCC, entryLevel);
+      if (entryIdx < OVERVIEW_LADDER.length - 1) {
+        console.log(`[NISAR Loader] Overview ladder: entering at ${entryLevel}×${entryLevel} `
+          + `(~${(_avgChunkBytes() / 1e6).toFixed(1)} MB/chunk), refining in background`);
+      }
 
       const coarseGrid = new Map();
 
@@ -4928,36 +4975,44 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
       // GPU-native upscale: sub-block mosaic + GL_LINEAR upscaling
       // subN=4: each sub-block averages ~128×128 px (eliminates speckle aliasing)
+      const buildSubMosaic = (grid, rows, cols) => {
+        const gR = rows.length, gC = cols.length;
+        const subN = 4;
+        const bH = Math.floor(chunkH / subN);
+        const bW = Math.floor(chunkW / subN);
+        const mH = gR * subN, mW = gC * subN;
+        const m = new Float32Array(mH * mW);
+        for (let ri = 0; ri < gR; ri++) {
+          for (let ci = 0; ci < gC; ci++) {
+            const chunk = grid.get(`${rows[ri]},${cols[ci]}`);
+            if (!chunk) continue;
+            for (let si = 0; si < subN; si++) {
+              const y0 = si * bH, y1 = y0 + bH;
+              for (let sj = 0; sj < subN; sj++) {
+                const x0 = sj * bW, x1 = x0 + bW;
+                let sum = 0, cnt = 0;
+                for (let yy = y0; yy < y1; yy++) {
+                  const row = yy * chunkW;
+                  for (let xx = x0; xx < x1; xx++) {
+                    const v = chunk[row + xx];
+                    if (v > 0 && v === v) { sum += v; cnt++; }
+                  }
+                }
+                m[(ri * subN + si) * mW + (ci * subN + sj)] = cnt > 0 ? sum / cnt : 0;
+              }
+            }
+          }
+        }
+        return { data: m, width: mW, height: mH };
+      };
+
+      const entryMosaic = buildSubMosaic(coarseGrid, coarseRows, coarseCols);
       const gR = coarseRows.length, gC = coarseCols.length;
       const subN = 4;
       const bH = Math.floor(chunkH / subN);
       const bW = Math.floor(chunkW / subN);
-      const mosaicH = gR * subN, mosaicW = gC * subN;
-      const mosaic = new Float32Array(mosaicH * mosaicW);
-
-      for (let ri = 0; ri < gR; ri++) {
-        for (let ci = 0; ci < gC; ci++) {
-          const chunk = coarseGrid.get(`${coarseRows[ri]},${coarseCols[ci]}`);
-          if (!chunk) continue;
-          for (let si = 0; si < subN; si++) {
-            const y0 = si * bH, y1 = y0 + bH;
-            for (let sj = 0; sj < subN; sj++) {
-              const x0 = sj * bW, x1 = x0 + bW;
-              let sum = 0, cnt = 0;
-              for (let yy = y0; yy < y1; yy++) {
-                const row = yy * chunkW;
-                for (let xx = x0; xx < x1; xx++) {
-                  const v = chunk[row + xx];
-                  if (v > 0 && v === v) { sum += v; cnt++; }
-                }
-              }
-              mosaic[(ri * subN + si) * mosaicW + (ci * subN + sj)] =
-                cnt > 0 ? sum / cnt : 0;
-            }
-          }
-        }
-      }
-      tileData = mosaic;
+      const mosaicH = entryMosaic.height, mosaicW = entryMosaic.width;
+      tileData = entryMosaic.data;
 
       // Mask at mosaic resolution — initialized to 1 (valid) so missing chunks show data.
       if (maskDatasetId) {
@@ -4992,6 +5047,11 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         // Captures the generation at scheduling time; if new foreground work starts
         // before refinement runs, it aborts to avoid competing for bandwidth.
         const myGeneration = _refinementGeneration;
+        // Total background bytes allowed for the climb (ladder levels + fine
+        // grid). Pyramid-less freq-A grids would otherwise pull the whole
+        // multi-GB dataset for a full-frame overview.
+        const CLIMB_BUDGET = 256 * 1024 * 1024;
+        let climbSpent = 0;
         const refinementPromise = (async () => {
           try {
             // Wait until all foreground tile requests have completed
@@ -5002,6 +5062,60 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
             if (_refinementGeneration !== myGeneration) return;
             if (_pendingForeground > 0) await _waitForIdle();
             if (_refinementGeneration !== myGeneration) return;
+
+            // Intermediate ladder levels: each paints via onRefine as soon as
+            // its chunks land, so the overview sharpens progressively instead
+            // of jumping straight from the entry level to the fine grid.
+            for (let li = entryIdx + 1; li < OVERVIEW_LADDER.length; li++) {
+              const lvl = OVERVIEW_LADDER[li];
+              const { rows, cols, strideR, strideC } =
+                _ladderCoords(startCR, endCR, startCC, endCC, lvl);
+              // Fine grid supersedes this level — let it handle the rest
+              if (strideR <= fineStrideR && strideC <= fineStrideC) break;
+              const lvlBytes = _ladderUncachedBytes(rows, cols);
+              if (climbSpent + lvlBytes > CLIMB_BUDGET) {
+                console.log(`[NISAR Loader] Overview ladder: stopping at `
+                  + `${OVERVIEW_LADDER[li - 1]}×${OVERVIEW_LADDER[li - 1]} `
+                  + `(next level ~${(lvlBytes / 1e6).toFixed(0)} MB exceeds budget)`);
+                return;
+              }
+              climbSpent += lvlBytes;
+
+              const grid = new Map();
+              const uncached = [];
+              for (const cr of rows) {
+                for (const cc of cols) {
+                  const key = `${cr},${cc}`;
+                  if (chunkCache.has(key)) grid.set(key, chunkCache.get(key));
+                  else uncached.push([cr, cc]);
+                }
+              }
+              if (uncached.length > 0 && streamReader.readChunksBatch) {
+                const bm = await readDataChunksBatch(uncached);
+                for (const [key, result] of bm) {
+                  if (result) grid.set(key, result);
+                }
+              }
+              if (_refinementGeneration !== myGeneration) return;
+              const lvlMosaic = buildSubMosaic(grid, rows, cols);
+              refinedTiles.set(tileKey, lvlMosaic);
+              tileResultCache.delete(`${x},${y},${z},`);
+              tileResultCache.delete(`${x},${y},${z},ml`);
+              if (_onRefine) _onRefine(tileKey);
+            }
+
+            // Fine grid: skip when it would blow the climb budget (huge
+            // pyramid-less datasets) — the last ladder level stands.
+            {
+              const { rows: fRows, cols: fCols } =
+                _ladderCoords(startCR, endCR, startCC, endCC, FINE_MAX);
+              const fineBytes = _ladderUncachedBytes(fRows, fCols);
+              if (climbSpent + fineBytes > CLIMB_BUDGET) {
+                console.log(`[NISAR Loader] Overview ladder: skipping fine grid `
+                  + `(~${(fineBytes / 1e6).toFixed(0)} MB exceeds budget) — zoom in for detail`);
+                return;
+              }
+            }
 
             const fineRows = [];
             for (let cr = startCR; cr <= endCR; cr += fineStrideR) fineRows.push(cr);
@@ -5105,7 +5219,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       console.warn(`[NISAR URL] Tile error (${x},${y},${z}):`, e.message);
       return null;
     } finally {
-      _leaveForeground();
+      if (!background) _leaveForeground();
     }
   };
 
@@ -5325,21 +5439,23 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     async prefetchOverviewChunks() {
       const totalCR = Math.ceil(height / chunkH);
       const totalCC = Math.ceil(width / chunkW);
-      // Prefetch an 8×8 grid — same as the tile coarse grid — so the z0
-      // overview tile is instant from cache. Kept at 8 for fast initial load.
-      const COARSE_MAX = 8;
-      const strideR = Math.max(1, Math.ceil(totalCR / COARSE_MAX));
-      const strideC = Math.max(1, Math.ceil(totalCC / COARSE_MAX));
+      // Prefetch the overview-ladder ENTRY level only — the same grid the
+      // first z0 tile will request, so first paint is instant from cache.
+      // Higher ladder levels stream in via the tile refinement path.
+      await streamReader._ensureChunkIndex?.(selectedDatasetId)?.catch?.(() => {});
+      const entryIdx = _ladderEntryIndex(0, totalCR - 1, 0, totalCC - 1);
+      const entryLevel = OVERVIEW_LADDER[entryIdx];
+      const { rows, cols, strideR, strideC } =
+        _ladderCoords(0, totalCR - 1, 0, totalCC - 1, entryLevel);
 
-      // Collect chunk coordinates for batch read
       const coords = [];
-      for (let cr = 0; cr < totalCR; cr += strideR) {
-        for (let cc = 0; cc < totalCC; cc += strideC) {
+      for (const cr of rows) {
+        for (const cc of cols) {
           coords.push([cr, cc]);
         }
       }
 
-      console.log(`[NISAR Loader] Prefetching ${coords.length} overview chunks (${totalCR}×${totalCC} grid, stride ${strideR}×${strideC})`);
+      console.log(`[NISAR Loader] Prefetching ${coords.length} overview chunks (${totalCR}×${totalCC} grid, entry level ${entryLevel}×${entryLevel}, stride ${strideR}×${strideC})`);
 
       const tasks = [];
       // Eagerly load the mask B-tree index in parallel
