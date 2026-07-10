@@ -671,12 +671,20 @@ function App() {
   const [overviewMapVisible, setOverviewMapVisible] = useState(false);
   const [satelliteMapVisible, setSatelliteMapVisible] = useState(false);
 
-  // Clear ROI and classifier when image data changes (new file/dataset loaded)
+  // Clear ROI and classifier when image data changes (new file/dataset loaded).
+  // Exception (W016): when a deep-link region was just applied for this very
+  // load, keep the ROI/WKT — applyDeepLinkRoi sets them moments before
+  // setImageData commits, and this effect would otherwise wipe them.
   useEffect(() => {
-    setROI(null);
-    setRoiProfile(null);
-    setWktInput('');
-    setWktError(null);
+    if (consumeDeepLinkPin('roi')) {
+      // Keep ROI + WKT from the deep link; still reset the classifier state
+      // below (it belongs to the previous scene either way).
+    } else {
+      setROI(null);
+      setRoiProfile(null);
+      setWktInput('');
+      setWktError(null);
+    }
     setClassifierOpen(false);
     setClassRegions([]);
     setClassifierData(null);
@@ -1218,6 +1226,9 @@ function App() {
         return null;
       }
       wktSyncSource.current = 'wkt'; // prevent reverse-sync from overwriting the input
+      // Pin so the imageData-change cleanup effect doesn't wipe this ROI the
+      // moment the freshly loaded scene commits (one-shot, like the others).
+      deepLinkPins.current.add('roi');
       setROI({ left: px.startCol, top: px.startRow, width: px.numCols, height: px.numRows });
       const [w, s, e, n] = pending.bbox;
       setWktInput(pending.wkt || `BBOX(${w}, ${s}, ${e}, ${n})`);
