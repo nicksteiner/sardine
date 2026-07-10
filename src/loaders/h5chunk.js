@@ -2868,9 +2868,13 @@ export class H5Chunk {
    * @param {Array<[number, number]>} coords - Array of [row, col] chunk indices
    * @param {object} [options] - Optional settings
    * @param {AbortSignal} [options.signal] - AbortSignal to cancel in-flight HTTP requests
+   * @param {number} [options.mergeGap] - Range-merge gap override (bytes).
+   *   Pass 0 for STRIDED reads (overview sampling): with small chunks the
+   *   default gap merges everything between the strided samples, inflating
+   *   the transfer ~10× and defeating the sampling entirely.
    * @returns {Promise<Map<string, Float32Array|null>>} Map of "row,col" → decoded chunk data
    */
-  async readChunksBatch(datasetId, coords, { signal } = {}) {
+  async readChunksBatch(datasetId, coords, { signal, mergeGap } = {}) {
     const dataset = this.datasets.get(datasetId);
     if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
 
@@ -2938,13 +2942,15 @@ export class H5Chunk {
     // Phase 2: Sort by file offset and merge nearby ranges
     chunkEntries.sort((a, b) => a.offset - b.offset);
 
-    // MERGE_GAP: module-level constant (see definition above for rationale)
+    // MERGE_GAP: module-level default; callers doing strided sampling pass 0
+    const gap = mergeGap ?? MERGE_GAP;
+    console.log(`[h5chunk] batch: ${datasetId.split('/').slice(-2).join('/')} ${chunkEntries.length} chunks, gap=${gap}`);
     const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
     let current = null;
 
     for (const entry of chunkEntries) {
       const entryEnd = entry.offset + entry.size;
-      if (current && entry.offset <= current.end + MERGE_GAP) {
+      if (current && entry.offset <= current.end + gap) {
         // Extend current range
         current.chunks.push({ entry, localOffset: entry.offset - current.start });
         current.end = Math.max(current.end, entryEnd);

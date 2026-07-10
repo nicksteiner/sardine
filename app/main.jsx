@@ -3397,16 +3397,32 @@ function App() {
         addStatusLog('info', 'Computing histogram in background...');
         (async () => {
           try {
-            // Let the first-paint chunk prefetch finish before sampling tiles —
-            // histogram reads pull most of the raster and would starve it.
+            // Let the first-paint chunk prefetch finish before sampling —
+            // histogram reads would compete with it for bandwidth.
             if (data._prefetchPromise) await data._prefetchPromise;
-            // Sample using world-coordinate bounds so getTile receives world-space bboxes
             const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
             logHistogramPathOnce();
-            const stats = await sampleViewportStatsAuto(
-              data.getTile, gMaxX - gMinX, gMaxY - gMinY, effectiveUseDecibels, 128,
-              gMinX, gMinY,
-            );
+            let stats = null;
+            if (data.mode === 'streaming') {
+              // Streaming loaders: the z0 overview mosaic is already a spatial
+              // sample of the full image and sits in the chunk cache after
+              // prefetch — one background tile, zero new bytes. (The old 3×3
+              // sampleViewportStats grid re-fetched most of the raster.)
+              const overviewTile = await data.getTile({
+                x: 0, y: 0, z: 0,
+                bbox: { left: gMinX, top: gMinY, right: gMaxX, bottom: gMaxY },
+                background: true,
+              });
+              if (overviewTile?.data) {
+                stats = await computeChannelStatsAuto(overviewTile.data, effectiveUseDecibels, 128);
+              }
+            }
+            if (!stats) {
+              stats = await sampleViewportStatsAuto(
+                data.getTile, gMaxX - gMinX, gMaxY - gMinY, effectiveUseDecibels, 128,
+                gMinX, gMinY,
+              );
+            }
             if (stats) {
               setHistogramData({ single: stats });
               if (consumeDeepLinkPin('contrast')) {

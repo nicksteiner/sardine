@@ -4605,7 +4605,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
    * misses go to streamReader.readChunksBatch (coalesced HTTP Range reads).
    * Handles all cache insertion internally. Returns Map<"cr,cc", chunk|null>.
    */
-  async function readDataChunksBatch(coords) {
+  async function readDataChunksBatch(coords, batchOpts = {}) {
     const results = new Map();
     let missing = coords;
     if (persistentCache && coords.length > 0) {
@@ -4622,7 +4622,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }));
     }
     if (missing.length > 0) {
-      const batchMap = await streamReader.readChunksBatch(selectedDatasetId, missing);
+      const batchMap = await streamReader.readChunksBatch(selectedDatasetId, missing, batchOpts);
       for (const [key, data] of batchMap) {
         const result = data?.data || data;
         cacheChunk(key, result);
@@ -4687,17 +4687,27 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   // pyramid-less 35k×35k frequency-A grids (~7 MB/chunk). Later levels
   // render via the refinement path (refinedTiles + onRefine).
   const OVERVIEW_LADDER = [2, 4, 8];
-  const OVERVIEW_ENTRY_BUDGET = 32 * 1024 * 1024;
+  // Per-tile cap on first-paint bytes. deck.gl splits the viewport into
+  // several tiles, each of which runs this ladder — so both entry and climb
+  // draw from ONE loader-wide pool (_overviewSpent), or N tiles would each
+  // spend the budget independently and re-flood the link.
+  const OVERVIEW_ENTRY_BUDGET = 24 * 1024 * 1024;
+  const OVERVIEW_GLOBAL_BUDGET = 384 * 1024 * 1024;
+  let _overviewSpent = 0;
   let _avgChunkBytesCache = 0;
 
   function _avgChunkBytes() {
     if (_avgChunkBytesCache) return _avgChunkBytesCache;
     const ds = streamReader.datasets?.get?.(selectedDatasetId);
     if (ds?.chunks?.size) {
-      let sum = 0, n = 0;
+      // Spread the sample across the WHOLE index: SAR frames are rotated
+      // rectangles, so the first entries are nodata corners that compress
+      // ~100× smaller than interior chunks and wreck a head-of-list average.
+      const total = ds.chunks.size;
+      const stride = Math.max(1, Math.floor(total / 256));
+      let sum = 0, n = 0, i = 0;
       for (const info of ds.chunks.values()) {
-        sum += info.size;
-        if (++n >= 64) break;
+        if (i++ % stride === 0) { sum += info.size; n++; }
       }
       _avgChunkBytesCache = sum / n;
     }
@@ -4724,11 +4734,14 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     return n * _avgChunkBytes();
   }
 
-  /** Densest ladder level whose uncached chunk bytes fit the entry budget. */
+  /** Densest ladder level whose uncached chunk bytes fit the entry budget
+   *  (per-tile cap AND the loader-wide pool). */
   function _ladderEntryIndex(startCR, endCR, startCC, endCC) {
+    const cap = Math.min(OVERVIEW_ENTRY_BUDGET,
+      Math.max(0, OVERVIEW_GLOBAL_BUDGET - _overviewSpent));
     for (let i = OVERVIEW_LADDER.length - 1; i > 0; i--) {
       const { rows, cols } = _ladderCoords(startCR, endCR, startCC, endCC, OVERVIEW_LADDER[i]);
-      if (_ladderUncachedBytes(rows, cols) <= OVERVIEW_ENTRY_BUDGET) return i;
+      if (_ladderUncachedBytes(rows, cols) <= cap) return i;
     }
     return 0;
   }
@@ -4931,13 +4944,29 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       // Ensure the chunk index is loaded so the byte estimate is real —
       // one cheap B-tree read that the batch fetch below needs anyway.
       await streamReader._ensureChunkIndex?.(selectedDatasetId)?.catch?.(() => {});
-      const entryIdx = _ladderEntryIndex(startCR, endCR, startCC, endCC);
+      let entryIdx;
+      if (background) {
+        // Stats sampling: prefer the densest level that is FULLY cached
+        // (zero new bytes); only if nothing is cached fetch the 2×2 floor.
+        entryIdx = 0;
+        for (let i = OVERVIEW_LADDER.length - 1; i >= 0; i--) {
+          const { rows, cols } = _ladderCoords(startCR, endCR, startCC, endCC, OVERVIEW_LADDER[i]);
+          if (_ladderUncachedBytes(rows, cols) === 0) { entryIdx = i; break; }
+        }
+      } else {
+        entryIdx = _ladderEntryIndex(startCR, endCR, startCC, endCC);
+      }
       const entryLevel = OVERVIEW_LADDER[entryIdx];
       const { rows: coarseRows, cols: coarseCols, strideR: coarseStrideR, strideC: coarseStrideC } =
         _ladderCoords(startCR, endCR, startCC, endCC, entryLevel);
+      if (!background) {
+        _overviewSpent += _ladderUncachedBytes(coarseRows, coarseCols);
+      }
       if (entryIdx < OVERVIEW_LADDER.length - 1) {
         console.log(`[NISAR Loader] Overview ladder: entering at ${entryLevel}×${entryLevel} `
-          + `(~${(_avgChunkBytes() / 1e6).toFixed(1)} MB/chunk), refining in background`);
+          + `(~${(_avgChunkBytes() / 1e6).toFixed(1)} MB/chunk, `
+          + `pool ${(_overviewSpent / 1e6).toFixed(0)}/${(OVERVIEW_GLOBAL_BUDGET / 1e6).toFixed(0)} MB), `
+          + `refining in background`);
       }
 
       const coarseGrid = new Map();
@@ -4956,7 +4985,10 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }
 
       if (uncachedCoords.length > 0 && streamReader.readChunksBatch) {
-        const batchMap = await readDataChunksBatch(uncachedCoords);
+        // Strided sampling: disable range merging or the gaps between
+        // sampled chunks get downloaded too (small chunks → ~10× overfetch)
+        const strided = coarseStrideR > 1 || coarseStrideC > 1;
+        const batchMap = await readDataChunksBatch(uncachedCoords, strided ? { mergeGap: 0 } : {});
         for (const [key, result] of batchMap) {
           if (result) coarseGrid.set(key, result);
         }
@@ -5042,16 +5074,14 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const fineStrideR = Math.max(1, Math.ceil(totalCR / FINE_MAX));
       const fineStrideC = Math.max(1, Math.ceil(totalCC / FINE_MAX));
 
-      if (_refinementEnabled && (coarseStrideR > fineStrideR || coarseStrideC > fineStrideC)) {
-        // Background refinement — deferred and abortable.
+      if (_refinementEnabled && !background
+          && (coarseStrideR > fineStrideR || coarseStrideC > fineStrideC)) {
+        // Background refinement — deferred and abortable. Stats-sampling
+        // (background) tiles never refine: they'd each schedule their own
+        // multi-hundred-MB climb over a region nobody is looking at.
         // Captures the generation at scheduling time; if new foreground work starts
         // before refinement runs, it aborts to avoid competing for bandwidth.
         const myGeneration = _refinementGeneration;
-        // Total background bytes allowed for the climb (ladder levels + fine
-        // grid). Pyramid-less freq-A grids would otherwise pull the whole
-        // multi-GB dataset for a full-frame overview.
-        const CLIMB_BUDGET = 256 * 1024 * 1024;
-        let climbSpent = 0;
         const refinementPromise = (async () => {
           try {
             // Wait until all foreground tile requests have completed
@@ -5073,13 +5103,13 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
               // Fine grid supersedes this level — let it handle the rest
               if (strideR <= fineStrideR && strideC <= fineStrideC) break;
               const lvlBytes = _ladderUncachedBytes(rows, cols);
-              if (climbSpent + lvlBytes > CLIMB_BUDGET) {
+              if (_overviewSpent + lvlBytes > OVERVIEW_GLOBAL_BUDGET) {
                 console.log(`[NISAR Loader] Overview ladder: stopping at `
                   + `${OVERVIEW_LADDER[li - 1]}×${OVERVIEW_LADDER[li - 1]} `
-                  + `(next level ~${(lvlBytes / 1e6).toFixed(0)} MB exceeds budget)`);
+                  + `(next level ~${(lvlBytes / 1e6).toFixed(0)} MB exceeds pool)`);
                 return;
               }
-              climbSpent += lvlBytes;
+              _overviewSpent += lvlBytes;
 
               const grid = new Map();
               const uncached = [];
@@ -5091,7 +5121,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
                 }
               }
               if (uncached.length > 0 && streamReader.readChunksBatch) {
-                const bm = await readDataChunksBatch(uncached);
+                const strided = strideR > 1 || strideC > 1;
+                const bm = await readDataChunksBatch(uncached, strided ? { mergeGap: 0 } : {});
                 for (const [key, result] of bm) {
                   if (result) grid.set(key, result);
                 }
@@ -5104,17 +5135,18 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
               if (_onRefine) _onRefine(tileKey);
             }
 
-            // Fine grid: skip when it would blow the climb budget (huge
+            // Fine grid: skip when it would blow the loader-wide pool (huge
             // pyramid-less datasets) — the last ladder level stands.
             {
               const { rows: fRows, cols: fCols } =
                 _ladderCoords(startCR, endCR, startCC, endCC, FINE_MAX);
               const fineBytes = _ladderUncachedBytes(fRows, fCols);
-              if (climbSpent + fineBytes > CLIMB_BUDGET) {
+              if (_overviewSpent + fineBytes > OVERVIEW_GLOBAL_BUDGET) {
                 console.log(`[NISAR Loader] Overview ladder: skipping fine grid `
-                  + `(~${(fineBytes / 1e6).toFixed(0)} MB exceeds budget) — zoom in for detail`);
+                  + `(~${(fineBytes / 1e6).toFixed(0)} MB exceeds pool) — zoom in for detail`);
                 return;
               }
+              _overviewSpent += fineBytes;
             }
 
             const fineRows = [];
@@ -5136,7 +5168,8 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
               }
             }
             if (fineUncached.length > 0 && streamReader.readChunksBatch) {
-              const batchMap = await readDataChunksBatch(fineUncached);
+              const fineStrided = fineStrideR > 1 || fineStrideC > 1;
+              const batchMap = await readDataChunksBatch(fineUncached, fineStrided ? { mergeGap: 0 } : {});
               for (const [key, result] of batchMap) {
                 if (result) fineGrid.set(key, result);
               }
@@ -5454,6 +5487,7 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
           coords.push([cr, cc]);
         }
       }
+      _overviewSpent += _ladderUncachedBytes(rows, cols);
 
       console.log(`[NISAR Loader] Prefetching ${coords.length} overview chunks (${totalCR}×${totalCC} grid, entry level ${entryLevel}×${entryLevel}, stride ${strideR}×${strideC})`);
 
@@ -5463,9 +5497,10 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         tasks.push(streamReader._ensureChunkIndex(maskDatasetId).catch(() => {}));
       }
 
-      // Use batch read if available (L2 first, then coalesced HTTP requests)
+      // Use batch read if available (L2 first, then coalesced HTTP requests).
+      // mergeGap 0: this grid is strided — merging would download the gaps.
       if (streamReader.readChunksBatch) {
-        tasks.push(readDataChunksBatch(coords));
+        tasks.push(readDataChunksBatch(coords, (strideR > 1 || strideC > 1) ? { mergeGap: 0 } : {}));
       } else {
         // Fallback: individual parallel reads
         for (const [cr, cc] of coords) {

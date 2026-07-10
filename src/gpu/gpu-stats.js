@@ -79,6 +79,8 @@ export async function sampleViewportStatsAuto(
   const tilePromises = [];
   for (let ty = 0; ty < gridSize; ty++) {
     for (let tx = 0; tx < gridSize; tx++) {
+      // background: stats sampling must not preempt viewport tiles or abort
+      // the loader's progressive overview refinement.
       tilePromises.push(getTile({
         x: tx, y: ty, z: 0,
         bbox: {
@@ -87,6 +89,7 @@ export async function sampleViewportStatsAuto(
           top: originY + ty * stepY,
           bottom: originY + (ty + 1) * stepY,
         },
+        background: true,
       }));
     }
   }
