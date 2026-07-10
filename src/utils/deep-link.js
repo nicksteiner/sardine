@@ -27,6 +27,14 @@
  * `wkt` wins over `bbox` when both are present; internally the WKT reduces to
  * its bbox for fetch scoping (polygon fidelity is kept only for the ROI/WKT
  * input display). Malformed values are ignored with a console warning.
+ *
+ * Region-first links (W017): `bbox`/`wkt` WITHOUT any data param is a valid
+ * link — the app resolves the granule from the region via CMR spatial search
+ * (src/utils/granule-resolve.js). Optional refinements:
+ *   `t=<start>/<end>` — ISO acquisition date range, either half optional
+ *                       (`t=2026-01-01/`, `t=/2026-02-01`, `t=2026-01-15`)
+ *   `col=<short_name>` — CMR collection override (default try order:
+ *                       VALIDATED → PROVISIONAL → BETA, first with hits wins)
  */
 
 import { validateWKT } from './wkt.js';
@@ -57,6 +65,9 @@ const KEYS = {
   // Spatial subset (W016) — WGS84 lon/lat
   bbox: 'bbox',       // w,s,e,n
   wkt: 'wkt',         // URL-encoded WKT (POLYGON/BBOX/...); wins over bbox
+  // Region-first resolution (W017) — only used when no data param is present
+  t: 't',             // ISO date range start/end (either half optional)
+  col: 'col',         // CMR collection short_name override
 };
 
 // Long-form aliases accepted on parse (short key → long key).
@@ -183,6 +194,23 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
       }
     }
   }
+
+  // Region-first refinements (W017): acquisition date range + collection
+  // override for CMR granule resolution. Harmless when a data URL is present.
+  const t = p.get(KEYS.t);
+  if (t) {
+    const slash = t.indexOf('/');
+    const start = (slash >= 0 ? t.slice(0, slash) : t).trim();
+    const end = (slash >= 0 ? t.slice(slash + 1) : '').trim();
+    const okDate = (v) => !v || Number.isFinite(Date.parse(v));
+    if ((start || end) && okDate(start) && okDate(end)) {
+      view.dateRange = { start: start || null, end: end || null };
+    } else {
+      console.warn(`[deep-link] Ignoring malformed t= param (want ISO <start>/<end>, either half optional): ${t}`);
+    }
+  }
+  const col = p.get(KEYS.col);
+  if (col) view.collection = col;
 
   return { dataUrl, dataType, view };
 }

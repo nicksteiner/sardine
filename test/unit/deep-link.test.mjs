@@ -314,4 +314,65 @@ test('buildShareLink omits bbox for missing/degenerate roiBbox', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Region-first links (W017): ?bbox= without a data param + t= / col=
+// ---------------------------------------------------------------------------
+
+test('W017: bbox alone is a valid link — no dataUrl, roiBbox parsed', () => {
+  const { dataUrl, dataType, view } = parseShareLink('?bbox=-77.48,38.90,-77.26,39.01');
+  assert.equal(dataUrl, null);
+  assert.equal(dataType, null);
+  assert.deepEqual(view.roiBbox, [-77.48, 38.90, -77.26, 39.01]);
+});
+
+test('W017: wkt alone is a valid link', () => {
+  const { dataUrl, view } = parseShareLink(
+    `?wkt=${encodeURIComponent('BBOX(-77.48, 38.90, -77.26, 39.01)')}`);
+  assert.equal(dataUrl, null);
+  assert.deepEqual(view.roiBbox, [-77.48, 38.90, -77.26, 39.01]);
+});
+
+test('W017: t=<start>/<end> parses to view.dateRange', () => {
+  const { view } = parseShareLink('?bbox=0,0,1,1&t=2026-01-01/2026-02-01');
+  assert.deepEqual(view.dateRange, { start: '2026-01-01', end: '2026-02-01' });
+});
+
+test('W017: t= halves are optional (start-only, end-only, no slash)', () => {
+  assert.deepEqual(parseShareLink('?bbox=0,0,1,1&t=2026-01-01/').view.dateRange,
+    { start: '2026-01-01', end: null });
+  assert.deepEqual(parseShareLink('?bbox=0,0,1,1&t=/2026-02-01').view.dateRange,
+    { start: null, end: '2026-02-01' });
+  // No slash → start-only (everything since that date).
+  assert.deepEqual(parseShareLink('?bbox=0,0,1,1&t=2026-01-15').view.dateRange,
+    { start: '2026-01-15', end: null });
+});
+
+test('W017: full ISO datetimes pass through in t=', () => {
+  const { view } = parseShareLink('?bbox=0,0,1,1&t=2026-01-01T10:00:00Z/2026-01-01T11:00:00Z');
+  assert.deepEqual(view.dateRange, { start: '2026-01-01T10:00:00Z', end: '2026-01-01T11:00:00Z' });
+});
+
+test('W017: malformed t= is ignored with a warning, never thrown', () => {
+  const origWarn = console.warn; console.warn = () => {};
+  try {
+    assert.equal(parseShareLink('?bbox=0,0,1,1&t=not-a-date/whenever').view.dateRange, undefined);
+    assert.equal(parseShareLink('?bbox=0,0,1,1&t=/').view.dateRange, undefined, 'both halves empty');
+  } finally { console.warn = origWarn; }
+});
+
+test('W017: col= collection override parses', () => {
+  const { view } = parseShareLink('?bbox=0,0,1,1&col=NISAR_L2_GCOV_PROVISIONAL_V1');
+  assert.equal(view.collection, 'NISAR_L2_GCOV_PROVISIONAL_V1');
+  assert.equal(parseShareLink('?bbox=0,0,1,1').view.collection, undefined);
+});
+
+test('W017: t=/col= are harmless alongside an explicit data URL', () => {
+  const { dataUrl, dataType, view } = parseShareLink(
+    `?url=${encodeURIComponent(NISAR_URL)}&bbox=0,0,1,1&t=2026-01-01/&col=X`);
+  assert.equal(dataUrl, NISAR_URL);
+  assert.equal(dataType, 'nisar');
+  assert.deepEqual(view.dateRange, { start: '2026-01-01', end: null });
+  assert.equal(view.collection, 'X');
+});
+
 await run();
