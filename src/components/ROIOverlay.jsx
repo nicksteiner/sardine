@@ -168,8 +168,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       const rw = Math.abs(x1 - x0);
       const rh = Math.abs(y1 - y0);
 
-      ctx.fillStyle = 'rgba(255, 200, 50, 0.12)';
-      ctx.fillRect(rx, ry, rw, rh);
+      // Bounds only — no fill, so the data underneath stays readable.
       ctx.strokeStyle = '#ffc832';
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
@@ -187,11 +186,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       const rw = Math.abs(sx1 - sx0);
       const rh = Math.abs(sy1 - sy0);
 
-      // Fill
-      ctx.fillStyle = 'rgba(255, 200, 50, 0.08)';
-      ctx.fillRect(rx, ry, rw, rh);
-
-      // Border
+      // Border only — no fill (bounds must not tint the data)
       ctx.strokeStyle = '#ffc832';
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);

@@ -367,8 +367,7 @@ function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeig
   const rh = Math.abs(sy1 - sy0);
 
   ctx.save();
-  ctx.fillStyle = 'rgba(255, 200, 50, 0.08)';
-  ctx.fillRect(rx, ry, rw, rh);
+  // Bounds only — no fill (matches ROIOverlay; the shading tinted the data)
   ctx.strokeStyle = '#ffc832';
   ctx.lineWidth = 2 * dpr;
   ctx.setLineDash([6 * dpr, 4 * dpr]);
