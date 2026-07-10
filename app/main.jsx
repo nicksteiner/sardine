@@ -42,7 +42,7 @@ import {
   setEDLToken,
   validateEDLToken,
 } from '../src/utils/proxy.js';
-import { parseShareLink, buildShareLink, clearShareLinkParams } from '../src/utils/share-link.js';
+import { parseShareLink, buildShareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
@@ -698,17 +698,30 @@ function App() {
     setActiveViewer('main');
   }, [imageData]);
 
-  // Share-link support: ?cog=<url> or ?nisar=<url> auto-loads on mount, plus
-  // optional view-state params (cmap, min, max, db, stretch, gamma, pol, freq,
-  // comp, mode, c, z). See src/utils/share-link.js for the full schema.
+  // Deep-link support (W008): ?url=<remote .h5/.tif/.ntf> (type inferred from
+  // extension) or explicit ?cog=/?nisar=/?nitf= auto-loads on mount, plus
+  // optional render params in short (cmap, min, max, db, …) or long
+  // (colormap, contrastMin, contrastMax, useDecibels, …) form. See
+  // src/utils/deep-link.js for the full schema and docs/DEEP_LINKS.md.
   //
   // The recipient still needs to paste their own EDL token if the link points
   // at a DAAC URL — tokens never travel in share links.
   const urlCogTriggered = useRef(false);
   const [shareLinkPending, setShareLinkPending] = useState(false);
+  // Fields the deep link pinned explicitly. The load handlers auto-derive
+  // contrast / pol / freq / view-fit after data arrives, which would clobber
+  // the pinned values — each guarded site consumes its pin (one-shot) so the
+  // first post-load derivation is suppressed and later loads behave normally.
+  const deepLinkPins = useRef(new Set());
+  const consumeDeepLinkPin = useCallback((field) => deepLinkPins.current.delete(field), []);
   useEffect(() => {
     const { dataUrl, dataType, view } = parseShareLink();
     if (!dataUrl) return;
+
+    if (Number.isFinite(view.contrastMin) || Number.isFinite(view.contrastMax)) deepLinkPins.current.add('contrast');
+    if (view.selectedPolarization) deepLinkPins.current.add('pol');
+    if (view.selectedFrequency) deepLinkPins.current.add('freq');
+    if (Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)) deepLinkPins.current.add('view');
 
     // Apply view-state synchronously so the auto-loaded data renders with the
     // sharer's settings the first time the layer mounts.
@@ -2165,8 +2178,11 @@ function App() {
       if (gen !== loadGenRef.current) return; // stale load
       setImageData(data);
 
-      // Auto-calculate contrast limits from a sample
-      try {
+      // Auto-calculate contrast limits from a sample (skipped when a deep
+      // link pinned explicit contrastMin/Max — W008 guard)
+      if (consumeDeepLinkPin('contrast')) {
+        addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
+      } else try {
         addStatusLog('info', 'Calculating auto-contrast from sample data...');
 
         // Load a small sample from a middle overview for contrast calculation
@@ -2187,8 +2203,8 @@ function App() {
         console.warn('Could not auto-calculate contrast limits:', e);
       }
 
-      // Update view to fit bounds
-      if (data.bounds) {
+      // Update view to fit bounds (skipped when a deep link pinned c/z — W008 guard)
+      if (data.bounds && !consumeDeepLinkPin('view')) {
         const [minX, minY, maxX, maxY] = data.bounds;
         const centerX = (minX + maxX) / 2;
         const centerY = (minY + maxY) / 2;
@@ -2253,6 +2269,11 @@ function App() {
    */
   const autoFitIfNewScene = useCallback((newBounds) => {
     if (!newBounds) return;
+    // Deep link pinned an explicit center/zoom — keep it for the first load (W008 guard)
+    if (consumeDeepLinkPin('view')) {
+      prevBoundsRef.current = newBounds;
+      return;
+    }
     console.log('[SARdine] autoFitIfNewScene:', newBounds, 'prev:', prevBoundsRef.current);
     const prev = prevBoundsRef.current;
     if (prev) {
@@ -3049,14 +3070,19 @@ function App() {
       setNisarDatasets(datasets);
 
       if (datasets.length > 0) {
-        // Prefer frequency B when available
+        // Prefer frequency B when available (deep-link pins win — W008 guard)
         const preferB = datasets.find(d => d.frequency === 'B') || datasets[0];
-        setSelectedFrequency(preferB.frequency);
-        setSelectedPolarization(preferB.polarization);
+        if (!consumeDeepLinkPin('freq')) setSelectedFrequency(preferB.frequency);
+        if (!consumeDeepLinkPin('pol')) setSelectedPolarization(preferB.polarization);
 
-        // Apply auto-contrast immediately from metadata stats (before data loads)
+        // Apply auto-contrast immediately from metadata stats (before data
+        // loads). Peek — don't consume — the pin here: the load-stage
+        // auto-contrast in handleLoadRemoteNISAR consumes it so the pin
+        // survives until the raster actually renders (W008 guard).
         const firstStats = preferB.stats;
-        if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
+        if (deepLinkPins.current.has('contrast')) {
+          addStatusLog('info', 'Keeping deep-link contrast (metadata auto-contrast skipped)');
+        } else if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
           const meanDb = 10 * Math.log10(firstStats.mean_value);
           const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
           setContrastMin(Math.round(meanDb - 2 * stdDb));
@@ -3267,8 +3293,10 @@ function App() {
         addStatusLog('success', `Remote NISAR loaded: ${data.width}×${data.height}`,
           `URL: ${remoteUrl}`);
 
-        // Use embedded HDF5 statistics for auto-contrast (same as local file path)
-        if (data.stats && data.stats.mean_value !== undefined) {
+        // Use embedded HDF5 statistics for auto-contrast (same as local file
+        // path). Peek the deep-link pin — the background histogram below is
+        // the last auto-contrast in this flow and consumes it (W008 guard).
+        if (data.stats && data.stats.mean_value !== undefined && !deepLinkPins.current.has('contrast')) {
           const { mean_value, sample_stddev } = data.stats;
           if (mean_value > 0 && sample_stddev > 0) {
             const meanDb = 10 * Math.log10(mean_value);
@@ -3356,10 +3384,14 @@ function App() {
             );
             if (stats) {
               setHistogramData({ single: stats });
-              setContrastMin(Number(stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)));
-              setContrastMax(Number(stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)));
-              const unit = effectiveUseDecibels ? 'dB' : '';
-              addStatusLog('success', `Auto-contrast: ${stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)} to ${stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)} ${unit}`);
+              if (consumeDeepLinkPin('contrast')) {
+                addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
+              } else {
+                setContrastMin(Number(stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)));
+                setContrastMax(Number(stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)));
+                const unit = effectiveUseDecibels ? 'dB' : '';
+                addStatusLog('success', `Auto-contrast: ${stats.p2.toFixed(effectiveUseDecibels ? 1 : 3)} to ${stats.p98.toFixed(effectiveUseDecibels ? 1 : 3)} ${unit}`);
+              }
             }
           } catch (e) {
             addStatusLog('warning', 'Background histogram failed', e.message);
@@ -5523,16 +5555,22 @@ function App() {
             </div>
           </CollapsibleSection>
 
-          {/* Share link — only meaningful for remote sources (COG URL or
-              DAAC NISAR URL). Local files can't be shared via link. */}
-          {sharedRawUrl && (fileType === 'cog' || fileType === 'nisar' || fileType === 'nisar-gunw' || fileType === 'nitf') && (
+          {/* Share link — a URL exists only for remote sources (COG URL or
+              DAAC NISAR URL). For local files the button is shown disabled
+              with an explanatory tooltip (W008). */}
+          {(sharedRawUrl || imageData) && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
               <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
                 Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.
               </div>
               <div className="control-group" style={{ display: 'flex', gap: '6px' }}>
                 <button
+                  disabled={!sharedRawUrl}
+                  title={sharedRawUrl
+                    ? 'Copy a deep link that reproduces this view'
+                    : 'Local file — no URL exists to share. Load from a URL to enable deep links.'}
                   onClick={async () => {
+                    if (!sharedRawUrl) return;
                     try {
                       const link = buildShareLink({
                         dataUrl: sharedRawUrl,
