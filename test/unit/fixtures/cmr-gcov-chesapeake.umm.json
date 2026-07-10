@@ -1,0 +1,194 @@
+{
+ "hits": 20,
+ "items": [
+  {
+   "meta": {
+    "concept-id": "G4059047407-ASF",
+    "collection-concept-id": "C3622214170-ASF"
+   },
+   "umm": {
+    "GranuleUR": "NISAR_L2_PR_GCOV_010_162_A_021_4005_DHDH_A_20260120T101446_20260120T101521_X05010_N_F_J_001",
+    "TemporalExtent": {
+     "RangeDateTime": {
+      "BeginningDateTime": "2026-01-20T10:14:46.000000Z",
+      "EndingDateTime": "2026-01-20T10:15:21.999342Z"
+     }
+    },
+    "SpatialExtent": {
+     "GranuleLocalities": [
+      "Land",
+      "North America"
+     ],
+     "HorizontalSpatialDomain": {
+      "Geometry": {
+       "GPolygons": [
+        {
+         "Boundary": {
+          "Points": [
+           {
+            "Latitude": 37.82659,
+            "Longitude": -74.90906
+           },
+           {
+            "Latitude": 39.93324,
+            "Longitude": -75.72862
+           },
+           {
+            "Latitude": 39.20224,
+            "Longitude": -78.60313
+           },
+           {
+            "Latitude": 37.11711,
+            "Longitude": -77.70641
+           },
+           {
+            "Latitude": 37.82659,
+            "Longitude": -74.90906
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    },
+    "RelatedUrls": [
+     {
+      "Type": "GET DATA",
+      "URL": "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/NISAR_L2_GCOV_BETA_V1/NISAR_L2_PR_GCOV_010_162_A_021_4005_DHDH_A_20260120T101446_20260120T101521_X05010_N_F_J_001/NISAR_L2_PR_GCOV_010_162_A_021_4005_DHDH_A_20260120T101446_20260120T101521_X05010_N_F_J_001.h5"
+     },
+     {
+      "Type": "GET RELATED VISUALIZATION",
+      "URL": "https://nisar.asf.earthdatacloud.nasa.gov/BROWSE/NISAR_L2_GCOV_BETA_V1/NISAR_L2_PR_GCOV_010_162_A_021_4005_DHDH_A_20260120T101446_20260120T101521_X05010_N_F_J_001/NISAR_L2_PR_GCOV_010_162_A_021_4005_DHDH_A_20260120T101446_20260120T101521_X05010_N_F_J_001.png"
+     }
+    ]
+   }
+  },
+  {
+   "meta": {
+    "concept-id": "G4059048869-ASF",
+    "collection-concept-id": "C3622214170-ASF"
+   },
+   "umm": {
+    "GranuleUR": "NISAR_L2_PR_GCOV_010_098_D_069_4005_DHDH_A_20260116T000940_20260116T001015_X05010_N_F_J_001",
+    "TemporalExtent": {
+     "RangeDateTime": {
+      "BeginningDateTime": "2026-01-16T00:09:40.000000Z",
+      "EndingDateTime": "2026-01-16T00:10:15.999342Z"
+     }
+    },
+    "SpatialExtent": {
+     "GranuleLocalities": [
+      "Land",
+      "North America"
+     ],
+     "HorizontalSpatialDomain": {
+      "Geometry": {
+       "GPolygons": [
+        {
+         "Boundary": {
+          "Points": [
+           {
+            "Latitude": 40.0727,
+            "Longitude": -79.68143
+           },
+           {
+            "Latitude": 37.96471,
+            "Longitude": -80.49689
+           },
+           {
+            "Latitude": 37.26423,
+            "Longitude": -77.73216
+           },
+           {
+            "Latitude": 39.3497,
+            "Longitude": -76.83475
+           },
+           {
+            "Latitude": 40.0727,
+            "Longitude": -79.68143
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    },
+    "RelatedUrls": [
+     {
+      "Type": "GET DATA",
+      "URL": "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/NISAR_L2_GCOV_BETA_V1/NISAR_L2_PR_GCOV_010_098_D_069_4005_DHDH_A_20260116T000940_20260116T001015_X05010_N_F_J_001/NISAR_L2_PR_GCOV_010_098_D_069_4005_DHDH_A_20260116T000940_20260116T001015_X05010_N_F_J_001.h5"
+     },
+     {
+      "Type": "GET RELATED VISUALIZATION",
+      "URL": "https://nisar.asf.earthdatacloud.nasa.gov/BROWSE/NISAR_L2_GCOV_BETA_V1/NISAR_L2_PR_GCOV_010_098_D_069_4005_DHDH_A_20260116T000940_20260116T001015_X05010_N_F_J_001/NISAR_L2_PR_GCOV_010_098_D_069_4005_DHDH_A_20260116T000940_20260116T001015_X05010_N_F_J_001.png"
+     }
+    ]
+   }
+  },
+  {
+   "meta": {
+    "concept-id": "G4059055230-ASF",
+    "collection-concept-id": "C3622214170-ASF"
+   },
+   "umm": {
+    "GranuleUR": "NISAR_L2_PR_GCOV_010_090_A_021_4005_DHDH_A_20260115T102306_20260115T102341_X05010_N_F_J_001",
+    "TemporalExtent": {
+     "RangeDateTime": {
+      "BeginningDateTime": "2026-01-15T10:23:06.000000Z",
+      "EndingDateTime": "2026-01-15T10:23:41.999342Z"
+     }
+    },
+    "SpatialExtent": {
+     "GranuleLocalities": [
+      "Land",
+      "North America"
+     ],
+     "HorizontalSpatialDomain": {
+      "Geometry": {
+       "GPolygons": [
+        {
+         "Boundary": {
+          "Points": [
+           {
+            "Latitude": 37.87607,
+            "Longitude": -77.00366
+           },
+           {
+            "Latitude": 39.98108,
+            "Longitude": -77.8305
+           },
+           {
+            "Latitude": 39.2661,
+            "Longitude": -80.64533
+           },
+           {
+            "Latitude": 37.18021,
+            "Longitude": -79.75056
+           },
+           {
+            "Latitude": 37.87607,
+            "Longitude": -77.00366
+           }
+          ]
+         }
+        }
+       ]
+      }
+     }
+    },
+    "RelatedUrls": [
+     {
+      "Type": "GET DATA",
+      "URL": "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/NISAR_L2_GCOV_BETA_V1/NISAR_L2_PR_GCOV_010_090_A_021_4005_DHDH_A_20260115T102306_20260115T102341_X05010_N_F_J_001/NISAR_L2_PR_GCOV_010_090_A_021_4005_DHDH_A_20260115T102306_20260115T102341_X05010_N_F_J_001.h5"
+     },
+     {
+      "Type": "GET RELATED VISUALIZATION",
+      "URL": "https://nisar.asf.earthdatacloud.nasa.gov/BROWSE/NISAR_L2_GCOV_BETA_V1/NISAR_L2_PR_GCOV_010_090_A_021_4005_DHDH_A_20260115T102306_20260115T102341_X05010_N_F_J_001/NISAR_L2_PR_GCOV_010_090_A_021_4005_DHDH_A_20260115T102306_20260115T102341_X05010_N_F_J_001.png"
+     }
+    ]
+   }
+  }
+ ]
+}

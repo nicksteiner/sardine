@@ -63,6 +63,47 @@ https://<sardine-host>/?url=https://host/scene.tif&wkt=POLYGON%20((-91.4%2030.2%
 - COG sources need no fetch scoping (tile/overview reads are already
   viewport-driven); the region fit + ROI apply the same way.
 
+## Region-first links (W017)
+
+`bbox=` (or `wkt=`) **without any data param** is a valid link: the app resolves
+its own granule via client-side CMR spatial search over the NISAR GCOV
+collections (`src/utils/granule-resolve.js`) and feeds the winner through the
+same staging as an explicit `?nisar=` link — EDL token gate, W016 chunk scoping,
+and auto-load included. The region is the primary key; granule IDs are an
+implementation detail (they change across BETA → PROVISIONAL → VALIDATED
+reprocessing, coordinates don't).
+
+```
+https://<sardine-host>/?bbox=-77.48,38.90,-77.26,39.01
+https://<sardine-host>/?bbox=-77.48,38.90,-77.26,39.01&t=2026-01-01/2026-02-01&pol=HHHH
+https://<sardine-host>/?wkt=BBOX(-77.48,%2038.90,%20-77.26,%2039.01)&col=NISAR_L2_GCOV_BETA_V1
+```
+
+| Param | Meaning |
+|:------|:--------|
+| `t` | ISO acquisition date range `<start>/<end>`; either half optional (`t=2026-01-01/`, `t=/2026-02-01`). No slash = start-only. Full ISO datetimes pass through; date-only values span the whole day. |
+| `col` | CMR collection `short_name` override. Default try order: `NISAR_L2_GCOV_VALIDATED_V1` → `NISAR_L2_GCOV_PROVISIONAL_V1` → `NISAR_L2_GCOV_BETA_V1`; the first collection with hits wins (today only BETA exists — reprocessed products take precedence automatically once published). |
+
+Candidates are ranked by:
+
+1. **Region coverage %** — area(footprint ∩ bbox) / area(bbox), from the CMR
+   footprint polygon (ties within 0.5 points fall through);
+2. **full-frame** granules (`_N_F_` in the name) over partial frames;
+3. **dual-pol lean files** (`DHDH`) over other pol modes;
+4. **newest** acquisition.
+
+The ranked list is logged to the status window and the top candidate loads
+automatically. When the best coverage is below ~90% (or several granules
+near-tie), the log notes the ambiguity and how the tie was broken — pin a
+specific granule with `?nisar=<url>` (or narrow with `t=`/`col=`) to override.
+Zero hits produce a clear status-window error. Multi-granule mosaicking of a
+region that no single granule covers is out of scope (phase 2).
+
+CMR granule *search* is CORS-open and needs no auth; the resolved *data* URL
+still requires the recipient's own EDL token on hosted builds (same prompt as
+explicit links). "Copy share link" is unchanged: it emits the loaded granule
+URL plus `bbox=` — explicit beats resolved for reproducibility.
+
 ## Behavior notes
 
 - Params in the link override the loaders' post-load auto-derivation exactly once

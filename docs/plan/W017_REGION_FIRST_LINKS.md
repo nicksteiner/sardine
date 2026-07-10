@@ -1,7 +1,7 @@
 # W017 — Region-first deep links: ?bbox= without a granule resolves via CMR
 
 wave: 1 (release wrinkle 2, pre-W015)
-status: launched
+status: branch-ready
 blocked_by: [W016]
 branch: w017-region-first-links
 
@@ -68,3 +68,57 @@ don't). Optional `t=<start>/<end>` ISO date-range param filters acquisitions.
 - PR documents (checklist item, no browser automation — a concurrent puppeteer
   process may be running): `?bbox=-77.48,38.90,-77.26,39.01` alone resolves to the
   Chesapeake granule via live CMR (curl or Node fetch evidence acceptable).
+
+## Findings (2026-07-10, w017-region-first-links)
+
+Implemented as specced; no premise drift this time. Audit results and the
+judgment calls the order left open:
+
+- **cmr-client.js audit:** already parses UMM-G (GPolygons → GeoJSON ring,
+  `GET DATA` .h5 URL priority, NISAR granule-name fields incl. `polarization`
+  = parts[9] e.g. `DHDH`) — reused wholesale. It hardcoded global `fetch` and
+  note: it queries `granules.umm_json` (richer than the `granules.json` shape
+  quoted in this order — footprints under `SpatialExtent`, not `polygons`).
+  Added an injectable `fetchFn` param (3-line change) so the resolver stays
+  pure; also made `temporal` pass full ISO datetimes through instead of
+  unconditionally appending `T00:00:00Z` (was a latent bug for datetime input).
+- **Resolver** (`src/utils/granule-resolve.js`, pure): Sutherland–Hodgman
+  ring-vs-bbox clip + shoelace area for coverage; ranking coverage → `_N_F_`
+  full-frame → `DHDH` → newest, with coverage ties at ≤0.5 pct-points falling
+  through so float noise between repeat passes can't defeat the tie-breakers.
+  Coverage is computed in lon/lat degree space (ratio of same-space areas;
+  fine for ranking, documented in the module header).
+- **Collections:** `NISAR_L2_GCOV_VALIDATED_V1` / `_PROVISIONAL_V1` do not
+  exist in CMR yet — verified live 2026-07-10: 0 hits, **no error**, so the
+  VALIDATED → PROVISIONAL → BETA try order costs two ~200 ms searches today
+  and automatically prefers reprocessed products once published.
+- **Ambiguous-coverage UX choice:** took the status-log option. The ranked
+  top-5 list is always logged; coverage < 90% logs a warning
+  ("best candidate covers only N% — auto-loading …, pin with ?nisar="), a
+  near-tie (Δcoverage < 1 pt between #1 and #2) logs how the tie was broken.
+  In both cases the top candidate auto-loads. Populating the DataDiscovery
+  panel was not trivial (its results state lives inside the component) —
+  left for a follow-up if region links see real ambiguity in practice.
+- **Staging reuse:** the explicit-`?nisar=` branch of the mount effect was
+  extracted verbatim into a local `stageNisarUrl()`; both the explicit and
+  the region-resolved paths call it, so the hosted-build EDL gate
+  (`pendingNisar` + token-paste effect), token attach, W016 chunk scoping
+  (`deepLinkRoiRef`) and auto-load (`deepLinkAutoLoad`) behave identically.
+  Region-only links already set `deepLinkRoiRef`/`deepLinkAutoLoad` via the
+  shared W016 pin block — zero duplicated staging logic.
+- **Fixture bonus:** the trimmed live Chesapeake fixture
+  (`test/unit/fixtures/cmr-gcov-chesapeake.umm.json`) turned out to contain a
+  track-090 granule covering only 23.88% of the bbox — the real-data test now
+  proves coverage-beats-recency on actual CMR geometry, not just synthetics.
+- **Live evidence (Node fetch, no browser):**
+  `resolveGranulesForBbox([-77.48,38.90,-77.26,39.01])` → 20 candidates in
+  ~440 ms; top = `NISAR_L2_PR_GCOV_010_162_A_021_4005_DHDH_A_20260120T101446_…_N_F_J_001`
+  (100% coverage, full-frame, DHDH, newest). With
+  `dateRange 2025-12-01/2025-12-31` → 6 candidates, all December. Zero-hit
+  bbox+range → clear error naming bbox, range, and all three collections.
+- **Acceptance:** `npm test` full chain green (272 structural + W003/W006/W009
+  pipeline + 9/9 unit files; granule-resolve suite: 18 tests / 63 assertions,
+  global fetch stubbed to throw = zero network). `npm run build` green.
+- Out of scope confirmed: multi-granule mosaicking (phase 2), Sentinel-1,
+  Copy-Link "region link" variant (not trivial to make reproducible — explicit
+  granule + bbox already round-trips).

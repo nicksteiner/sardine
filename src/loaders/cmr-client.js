@@ -41,6 +41,7 @@ const CMR_SEARCH_URL = 'https://cmr.earthdata.nasa.gov/search/granules.umm_json'
  * @param {number}   [params.frame] - NISAR frame number
  * @param {number}   [params.pageSize=25] - Results per page
  * @param {number}   [params.pageNum=1] - Page number (1-based)
+ * @param {Function} [params.fetchFn] - Injectable fetch (for unit tests); defaults to global fetch
  * @returns {{ granules: Object[], hits: number }}
  */
 export async function searchGranules(params = {}) {
@@ -53,6 +54,7 @@ export async function searchGranules(params = {}) {
     frame,
     pageSize = 25,
     pageNum = 1,
+    fetchFn,
   } = params;
 
   const qs = new URLSearchParams();
@@ -67,8 +69,10 @@ export async function searchGranules(params = {}) {
   }
 
   if (dateStart || dateEnd) {
-    const start = dateStart ? `${dateStart}T00:00:00Z` : '';
-    const end = dateEnd ? `${dateEnd}T23:59:59Z` : '';
+    // Date-only values (YYYY-MM-DD) get the day's boundaries appended; full
+    // ISO datetimes (anything with a 'T') pass through untouched.
+    const start = dateStart ? (String(dateStart).includes('T') ? dateStart : `${dateStart}T00:00:00Z`) : '';
+    const end = dateEnd ? (String(dateEnd).includes('T') ? dateEnd : `${dateEnd}T23:59:59Z`) : '';
     qs.set('temporal', `${start},${end}`);
   }
 
@@ -86,7 +90,8 @@ export async function searchGranules(params = {}) {
   }
 
   const url = `${CMR_SEARCH_URL}?${qs.toString()}`;
-  const resp = await fetch(url, {
+  const doFetch = fetchFn || ((...args) => fetch(...args));
+  const resp = await doFetch(url, {
     headers: { 'Accept': 'application/vnd.nasa.cmr.umm_results+json' },
   });
 

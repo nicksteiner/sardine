@@ -42,6 +42,7 @@ import {
   validateEDLToken,
 } from '../src/utils/proxy.js';
 import { parseShareLink, buildShareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
+import { resolveGranulesForBbox } from '../src/utils/granule-resolve.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
@@ -713,6 +714,10 @@ function App() {
   //
   // The recipient still needs to paste their own EDL token if the link points
   // at a DAAC URL — tokens never travel in share links.
+  //
+  // W017: ?bbox=/?wkt= WITHOUT a data param resolves its own granule via CMR
+  // spatial search (granule-resolve.js) and feeds the winner through the same
+  // NISAR staging path (stageNisarUrl below). Optional t=/col= refine it.
   const urlCogTriggered = useRef(false);
   const [shareLinkPending, setShareLinkPending] = useState(false);
   // Fields the deep link pinned explicitly. The load handlers auto-derive
@@ -731,7 +736,10 @@ function App() {
   const handleLoadRemoteNISARRef = useRef(null);
   useEffect(() => {
     const { dataUrl, dataType, view } = parseShareLink();
-    if (!dataUrl) return;
+    // W017: spatial params ALONE are a valid link — the granule is resolved
+    // from the region via CMR below (region-first deep links).
+    const regionOnly = !dataUrl && Array.isArray(view.roiBbox);
+    if (!dataUrl && !regionOnly) return;
 
     if (Number.isFinite(view.contrastMin) || Number.isFinite(view.contrastMax)) deepLinkPins.current.add('contrast');
     if (view.selectedPolarization) deepLinkPins.current.add('pol');
@@ -764,6 +772,28 @@ function App() {
     if (Array.isArray(view.viewCenter)) setViewCenter(view.viewCenter);
     if (Number.isFinite(view.viewZoom)) setViewZoom(view.viewZoom);
 
+    // Shared NISAR staging (W008/W016): EDL-token gate on hosted builds, then
+    // the same handleRemoteFileSelect path used by the discovery UI. Both an
+    // explicit ?nisar=/?url= link and a W017 region-resolved URL end here so
+    // token attach + W016 auto-load/chunk-scoping behave identically.
+    const stageNisarUrl = (nisarUrl) => {
+      const pathOnly = nisarUrl.split('?')[0];
+      const name = pathOnly.split('/').pop() || 'shared-nisar';
+      if (isHostedBuild() && !getEDLToken()) {
+        setShareLinkPending(true);
+        addStatusLog?.('warning', 'Share link requires Earthdata Login — paste your token below to continue');
+        // Stash the pending URL on a ref so we can fire after the token is set.
+        urlCogTriggered.current = { pendingNisar: { url: nisarUrl, name } };
+      } else {
+        // Defer to the next tick so handleRemoteFileSelect is bound.
+        // Attach the stored EDL token — the dev proxy and direct fetches
+        // authenticate via the Authorization header, not the proxy URL.
+        setTimeout(() => {
+          handleRemoteFileSelectRef.current?.({ url: nisarUrl, name, size: 0, type: 'nisar', token: getEDLToken() });
+        }, 0);
+      }
+    };
+
     if (dataType === 'cog') {
       urlCogTriggered.current = true;
       setFileType('cog');
@@ -792,21 +822,46 @@ function App() {
       // DAAC URLs need an EDL token on hosted builds. If we have one already,
       // route through the same handler used by the discovery UI. If not, park
       // the URL in state and open the EDL panel so the user can paste a token.
-      const pathOnly = dataUrl.split('?')[0];
-      const name = pathOnly.split('/').pop() || 'shared-nisar';
-      if (isHostedBuild() && !getEDLToken()) {
-        setShareLinkPending(true);
-        addStatusLog?.('warning', 'Share link requires Earthdata Login — paste your token below to continue');
-        // Stash the pending URL on a ref so we can fire after the token is set.
-        urlCogTriggered.current = { pendingNisar: { url: dataUrl, name } };
-      } else {
-        // Defer to the next tick so handleRemoteFileSelect is bound.
-        // Attach the stored EDL token — the dev proxy and direct fetches
-        // authenticate via the Authorization header, not the proxy URL.
-        setTimeout(() => {
-          handleRemoteFileSelectRef.current?.({ url: dataUrl, name, size: 0, type: 'nisar', token: getEDLToken() });
-        }, 0);
-      }
+      stageNisarUrl(dataUrl);
+    } else if (regionOnly) {
+      // W017: region-first link — resolve the granule from the bbox via CMR
+      // spatial search, then feed the winner through the exact same staging
+      // as an explicit ?nisar= link (EDL gate + W016 auto-load included).
+      const bbox = view.roiBbox;
+      addStatusLog?.('info', `Region link: searching CMR for NISAR GCOV granules over [${bbox.join(', ')}]`,
+        view.dateRange ? `Date range: ${view.dateRange.start || '…'}/${view.dateRange.end || '…'}` : null);
+      (async () => {
+        try {
+          const candidates = await resolveGranulesForBbox(bbox, {
+            dateRange: view.dateRange || null,
+            collections: view.collection ? [view.collection] : undefined,
+          });
+          const top = candidates[0];
+          const listing = candidates.slice(0, 5).map((c, i) =>
+            `${i + 1}. ${c.granuleId} — ${c.coveragePct.toFixed(0)}% coverage`
+            + `${c.fullFrame ? ', full-frame' : ''}${c.polMode ? `, ${c.polMode}` : ''}`
+            + `${c.startTime ? `, ${String(c.startTime).slice(0, 10)}` : ''}`).join('\n');
+          addStatusLog?.('info', `Region link: ${candidates.length} candidate granule(s) ranked`, listing);
+          const nearTie = candidates.length > 1
+            && (top.coveragePct - candidates[1].coveragePct) < 1;
+          if (top.coveragePct < 90) {
+            addStatusLog?.('warning',
+              `Region link: best candidate covers only ${top.coveragePct.toFixed(0)}% of the region — auto-loading ${top.name}`,
+              'Pin a specific granule with ?nisar=<url> (or narrow with t=/col=) for a different pick');
+          } else if (nearTie) {
+            addStatusLog?.('info',
+              `Region link: multiple granules cover the region — picked ${top.name}`,
+              'Tie broken by full-frame > dual-pol (DHDH) > newest; pin with ?nisar=<url> to override');
+          } else {
+            addStatusLog?.('success',
+              `Region link: resolved to ${top.name} (${top.coveragePct.toFixed(0)}% coverage, ${top.collection})`);
+          }
+          stageNisarUrl(top.url);
+        } catch (e) {
+          addStatusLog?.('error', `Region link: granule resolution failed — ${e.message}`);
+          setError(`Region link: ${e.message}`);
+        }
+      })();
     }
 
     // Don't clear the params yet — keep them in the URL until the data has
