@@ -1,7 +1,7 @@
 # W007 — Wire the existing WebGPU histogram into the UI
 
 wave: 1
-status: branch-ready
+status: merged
 blocked_by: []
 branch: w007-gpu-histogram
 
