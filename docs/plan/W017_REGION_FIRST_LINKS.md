@@ -1,7 +1,7 @@
 # W017 — Region-first deep links: ?bbox= without a granule resolves via CMR
 
 wave: 1 (release wrinkle 2, pre-W015)
-status: branch-ready
+status: merged
 blocked_by: [W016]
 branch: w017-region-first-links
 

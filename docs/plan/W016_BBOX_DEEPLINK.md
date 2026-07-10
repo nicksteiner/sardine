@@ -1,7 +1,7 @@
 # W016 — Spatial subset in deep links: ?bbox= / ?wkt= loads only intersecting chunks
 
 wave: 1 (release wrinkle, pre-W015)
-status: branch-ready
+status: merged
 blocked_by: []
 branch: w016-bbox-deeplink
 
