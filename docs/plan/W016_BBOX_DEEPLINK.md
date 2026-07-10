@@ -1,7 +1,7 @@
 # W016 — Spatial subset in deep links: ?bbox= / ?wkt= loads only intersecting chunks
 
 wave: 1 (release wrinkle, pre-W015)
-status: launched
+status: branch-ready
 blocked_by: []
 branch: w016-bbox-deeplink
 
@@ -68,3 +68,65 @@ report will embed per finding.
 - PR documents a manual/headless check: `?url=<remote scene>&bbox=...` fetches a
   chunk count consistent with the AOI (log or network evidence), view opens on the
   AOI, ROI panel shows stats for it.
+
+## Findings
+
+Premise audit (before implementation, at base a25ebf2):
+
+- **`handleWktApply` does NOT touch the view** — it only maps WKT → pixel ROI via
+  `wktToROI` and calls `setROI` (the work order said it "already turns WKT → pixel
+  ROI + view"). The region view-fit therefore lives in the new `applyDeepLinkRoi`
+  (main.jsx), which reuses the same `reprojectBbox → roiIntersectsFile →
+  bboxToPixelRange → setROI + setWktInput` pathway plus the zoom conventions of the
+  existing fit sites (projected: `log2(1000/span)`; geographic: `log2(360/span)−1`).
+- **Remote NISAR raster load is user-initiated** (W008 known limit: multi-GB
+  auto-load was deliberately removed). A `?url=<h5>&bbox=` link streams metadata and
+  stages the region; the ROI/view/scoped-prefetch all fire on the first "Load
+  Dataset" click. COG deep links auto-load, so the region applies immediately there.
+- **`scopeBbox` cannot be "file-CRS bounds" as the work order suggested** — the
+  caller doesn't know the file CRS until `loadNISARGCOVFromUrl` has read the
+  projection dataset. The option takes WGS84 `[w,s,e,n]` and the loader reprojects
+  internally once bounds/CRS are known (pure helper `scopeBboxToChunkRange` in
+  roi-subset.js, unit-tested).
+- `prefetchOverviewChunks` at HEAD is the byte-budgeted overview-ladder entry-level
+  sampler (not a plain 8×8 grid); the scope clamps the ladder's chunk-grid range, so
+  budget/entry-level logic keeps working inside the region.
+
+Implementation notes:
+
+- Phase-2 refinement: tiles whose chunk range is fully outside the scope skip
+  background refinement; Phase-1 coarse render and zoomed-in `readRegion` reads are
+  untouched, so panning out of the region loads lazily (verified headlessly).
+- The post-load background histogram now samples the region bounds (not the full
+  scene) when a deep-link region is active — auto-contrast matches the AOI and the
+  sampling doesn't pull out-of-region chunks.
+- Copy Link emits `bbox=` for both 4326 and projected scenes: ROI pixel range →
+  `computeSubsetBounds` → `projectedToWGS84` (proj4 inverse already existed in
+  overture-loader.js), 5-dp precision.
+- `wkt=` keeps the original string in the ROI/WKT input; degenerate geometries
+  (zero-area, e.g. POINT) are rejected like malformed bboxes — warn, never throw.
+
+Acceptance evidence (2026-07-10):
+
+- `npm test` full chain green (structural + pipeline + 8/8 unit files, deep-link
+  30 passed, wkt+roi-subset 28 passed); `npm run build` clean.
+- Headless loader check (Node, synthetic 2048×2048 GCOV EPSG:32610, 64 chunks of
+  256×256, served over local HTTP Range): unscoped prefetch pulled all 64 overview
+  chunks (14.15 MB); with `bbox=` covering a 512×512 px AOI the loader logged
+  "Scope bbox → chunk range rows 2–4, cols 4–5 (6 of 64 chunks)" and prefetched
+  exactly those 6 (3.98 MB); `scopeChunkRange` matched the pure-math helper;
+  out-of-region `getTile` still returned data. 7/7 checks.
+- Browser check (puppeteer + vite dev :5199, same fixture): deep link
+  `/?url=…&bbox=-122.86994,45.06113,-122.80475,45.10731` → after "Load Dataset",
+  console shows the scoped prefetch (6 of 64), first tile bbox sits inside the AOI
+  (view fitted), WKT input reads `BBOX(-122.86994, 45.06113, -122.80475, 45.10731)`,
+  ROI profile computed, status shows "Deep-link region applied". 7/7 checks.
+  (Run completed before a concurrent browser-automation process was flagged on this
+  machine; not re-run afterward. A live-DAAC spot check remains a PR checklist item.)
+
+Known limits (in scope boundaries):
+
+- Fetch scoping applies to the single-band `loadNISARGCOVFromUrl` path only; RGB
+  composite / index deep links still get the ROI + view fit but prefetch full-scene
+  (work order scoped item 3 to `loadNISARGCOVFromUrl`).
+- NITF deep links ignore spatial params (no georeferenced ROI pathway there).

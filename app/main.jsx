@@ -12,7 +12,7 @@ import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
-import { computeSubsetBounds } from '../src/utils/roi-subset.js';
+import { computeSubsetBounds, reprojectBbox, bboxToPixelRange, roiIntersectsFile } from '../src/utils/roi-subset.js';
 import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
 import { getAvailableIndices, SAR_INDICES } from '../src/utils/sar-indices.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
@@ -713,6 +713,10 @@ function App() {
   // first post-load derivation is suppressed and later loads behave normally.
   const deepLinkPins = useRef(new Set());
   const consumeDeepLinkPin = useCallback((field) => deepLinkPins.current.delete(field), []);
+  // W016: deep-link spatial subset (?bbox=/?wkt=), staged until the raster
+  // loads. One-shot like the pins: applyDeepLinkRoi consumes it. The loader
+  // reads it (pre-consumption) to scope chunk prefetch to the region.
+  const deepLinkRoiRef = useRef(null);
   useEffect(() => {
     const { dataUrl, dataType, view } = parseShareLink();
     if (!dataUrl) return;
@@ -721,6 +725,14 @@ function App() {
     if (view.selectedPolarization) deepLinkPins.current.add('pol');
     if (view.selectedFrequency) deepLinkPins.current.add('freq');
     if (Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)) deepLinkPins.current.add('view');
+    if (Array.isArray(view.roiBbox)) {
+      deepLinkRoiRef.current = {
+        bbox: view.roiBbox,               // [w, s, e, n] WGS84
+        wkt: view.roiWkt || null,          // original WKT (polygon fidelity for the input)
+        // Explicit c/z in the link wins over the region fit.
+        fitView: !(Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)),
+      };
+    }
 
     // Apply view-state synchronously so the auto-loaded data renders with the
     // sharer's settings the first time the layer mounts.
@@ -1168,6 +1180,68 @@ function App() {
       addStatusLog('error', `WKT error: ${e.message}`);
     }
   }, [wktInput, imageData, addStatusLog]);
+
+  // W016: apply a deep-link ?bbox=/?wkt= region once the raster is loaded.
+  // Same pathway as handleWktApply (bbox → file CRS → pixel ROI → setROI +
+  // WKT input), plus a view fit to the region unless the link pinned explicit
+  // c/z. Takes the freshly-loaded data object directly (imageData state has
+  // not committed yet when the load handlers call this). One-shot: consumes
+  // deepLinkRoiRef so later loads behave normally (W008 pin pattern).
+  // Returns { bboxFileCrs } (clamped to the scene) or null on no-op/fallback.
+  const applyDeepLinkRoi = useCallback((data) => {
+    const pending = deepLinkRoiRef.current;
+    if (!pending || !data?.width || !data?.height || !data?.bounds) return null;
+    deepLinkRoiRef.current = null;
+    try {
+      const fileCrs = data.crs || 'EPSG:4326';
+      const bboxFileCrs = reprojectBbox(pending.bbox, fileCrs);
+      const fileBbox = data.worldBounds || data.bounds;
+      if (!roiIntersectsFile(bboxFileCrs, fileBbox)) {
+        addStatusLog('warning', 'Deep-link region does not intersect the scene — showing full scene',
+          `bbox ${pending.bbox.map(v => v.toFixed(4)).join(', ')} (WGS84)`);
+        return null;
+      }
+      const px = bboxToPixelRange(bboxFileCrs, {
+        worldBounds: fileBbox,
+        width: data.width,
+        height: data.height,
+        xCoords: data.xCoords || null,
+        yCoords: data.yCoords || null,
+      });
+      if (!px) {
+        addStatusLog('warning', 'Deep-link region maps to an empty pixel range — showing full scene');
+        return null;
+      }
+      wktSyncSource.current = 'wkt'; // prevent reverse-sync from overwriting the input
+      setROI({ left: px.startCol, top: px.startRow, width: px.numCols, height: px.numRows });
+      const [w, s, e, n] = pending.bbox;
+      setWktInput(pending.wkt || `BBOX(${w}, ${s}, ${e}, ${n})`);
+      setWktError(null);
+
+      // Clamp to the scene so a half-outside bbox still frames sensibly.
+      const clamped = [
+        Math.max(bboxFileCrs[0], fileBbox[0]),
+        Math.max(bboxFileCrs[1], fileBbox[1]),
+        Math.min(bboxFileCrs[2], fileBbox[2]),
+        Math.min(bboxFileCrs[3], fileBbox[3]),
+      ];
+      if (pending.fitView) {
+        const [minX, minY, maxX, maxY] = clamped;
+        setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
+        const maxSpan = Math.max(maxX - minX, maxY - minY) || 1;
+        // Same zoom conventions as the load handlers: projected → fit ~1000 px,
+        // geographic → degree-based formula (see handleLoadCOG / autoFitIfNewScene).
+        const isProjected = fileCrs && fileCrs !== 'EPSG:4326';
+        setViewZoom(isProjected ? Math.log2(1000 / maxSpan) : Math.log2(360 / maxSpan) - 1);
+      }
+      addStatusLog('success', `Deep-link region applied: ${px.numCols} × ${px.numRows} px ROI`,
+        `bbox ${pending.bbox.map(v => v.toFixed(4)).join(', ')} (WGS84)${pending.fitView ? ', view fitted to region' : ''}`);
+      return { bboxFileCrs: clamped };
+    } catch (e) {
+      addStatusLog('warning', `Deep-link region ignored: ${e.message}`);
+      return null;
+    }
+  }, [addStatusLog]);
 
   // WKT ROI: reverse-sync — when ROI changes via Shift+drag, populate WKT input
   useEffect(() => {
@@ -2249,6 +2323,12 @@ function App() {
           `Center: [${centerX.toFixed(4)}, ${centerY.toFixed(4)}], Zoom: ${zoom.toFixed(2)}, Span: ${maxSpan.toFixed(2)}`);
       }
 
+      // W016: deep-link ?bbox=/?wkt= — apply the region as ROI + fit the view
+      // to it (overrides the full-scene fit above in the same render commit).
+      // COG tile fetches are viewport-driven, so the region fit alone scopes
+      // network traffic — no loader change needed.
+      applyDeepLinkRoi(data);
+
       addStatusLog('success', 'COG loaded and ready to display');
     } catch (e) {
       setError(`Failed to load COG: ${e.message}`);
@@ -2258,7 +2338,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [cogUrl, useDecibels, addStatusLog, multiFileMode, multiFileModeType, fileList, bandNames]);
+  }, [cogUrl, useDecibels, addStatusLog, multiFileMode, multiFileModeType, fileList, bandNames, applyDeepLinkRoi]);
 
   // Auto-load COG when set via ?cog= URL parameter
   useEffect(() => {
@@ -3293,6 +3373,10 @@ function App() {
           polarization: selectedPolarization,
           _streamReader: handleRemoteFileSelect._cachedReader || null,
           fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+          // W016: deep-link region (WGS84) — scopes overview prefetch +
+          // Phase-2 refinement to the intersecting chunks. Read pre-
+          // consumption; applyDeepLinkRoi below consumes the ref.
+          scopeBbox: deepLinkRoiRef.current?.bbox || undefined,
         });
 
         // Progressive refinement: when background Phase 2 completes, bump version
@@ -3338,6 +3422,11 @@ function App() {
 
       // Auto-fit view only if this is a new scene (different track-frame)
       autoFitIfNewScene(data.bounds);
+
+      // W016: deep-link ?bbox=/?wkt= — apply the region as ROI + WKT input and
+      // refit the view to it (both state sets batch in this commit; the region
+      // fit wins over the full-scene fit above).
+      const dlRoi = applyDeepLinkRoi(data);
 
       // Auto-open OverviewMap when loading from CMR so user sees geographic context
       if (fileType === 'cmr') {
@@ -3400,7 +3489,11 @@ function App() {
             // Let the first-paint chunk prefetch finish before sampling —
             // histogram reads would compete with it for bandwidth.
             if (data._prefetchPromise) await data._prefetchPromise;
-            const [gMinX, gMinY, gMaxX, gMaxY] = data.bounds;
+            // Sample using world-coordinate bounds so getTile receives world-space
+            // bboxes. W016: when a deep-link region is active, sample the region
+            // instead of the full scene — contrast matches the AOI and the
+            // sampling doesn't pull out-of-region chunks.
+            const [gMinX, gMinY, gMaxX, gMaxY] = dlRoi?.bboxFileCrs || data.bounds;
             logHistogramPathOnce();
             let stats = null;
             if (data.mode === 'streaming') {
@@ -3445,7 +3538,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, logHistogramPathOnce]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, applyDeepLinkRoi, logHistogramPathOnce]);
 
   // Note: Auto-load removed — NISAR files are large (multi-GB), user clicks "Load" manually
   // after selecting a granule and reviewing the dataset/frequency/polarization options.
@@ -5613,6 +5706,25 @@ function App() {
                   onClick={async () => {
                     if (!sharedRawUrl) return;
                     try {
+                      // W016: active ROI → ?bbox= (WGS84). ROI pixel range →
+                      // file-CRS bounds → inverse-reproject when projected.
+                      let roiBbox;
+                      if (roi && imageData?.width && imageData?.height) {
+                        try {
+                          const fileBbox = imageData.worldBounds || imageData.bounds;
+                          const sub = computeSubsetBounds(
+                            { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+                            {
+                              worldBounds: fileBbox,
+                              width: imageData.width,
+                              height: imageData.height,
+                              xCoords: imageData.xCoords || null,
+                              yCoords: imageData.yCoords || null,
+                            });
+                          const crs = imageData.crs || 'EPSG:4326';
+                          roiBbox = crs === 'EPSG:4326' ? sub : projectedToWGS84(sub, crs);
+                        } catch { /* omit bbox from the link */ }
+                      }
                       const link = buildShareLink({
                         dataUrl: sharedRawUrl,
                         dataType: fileType === 'cog' ? 'cog'
@@ -5623,7 +5735,7 @@ function App() {
                           contrastMin, contrastMax, stretchMode, gamma,
                           selectedPolarization, selectedFrequency,
                           multiLook, compositeId, displayMode,
-                          viewCenter, viewZoom,
+                          viewCenter, viewZoom, roiBbox,
                         },
                       });
                       await navigator.clipboard.writeText(link);

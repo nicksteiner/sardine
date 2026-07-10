@@ -29,7 +29,7 @@
 import h5wasm from 'h5wasm';
 import { openH5ChunkFile, openH5ChunkUrl } from './h5chunk.js';
 import { wktToBbox, validateWKT } from '../utils/wkt.js';
-import { bboxToPixelRange, reprojectBbox, roiIntersectsFile, computeSubsetBounds } from '../utils/roi-subset.js';
+import { bboxToPixelRange, reprojectBbox, roiIntersectsFile, computeSubsetBounds, scopeBboxToChunkRange } from '../utils/roi-subset.js';
 import { loadMetadataCube } from '../utils/metadata-cube.js';
 import { normalizeS3Url } from '../utils/s3-url.js';
 import { createPersistentChunkCache } from './chunk-cache-idb.js';
@@ -4405,6 +4405,13 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     useTransferAcceleration = false,
     cloudfrontDomain,
     fetchHeaders,
+    // W016 deep-link spatial subset: [west, south, east, north] in EPSG:4326.
+    // (WGS84 because the file CRS isn't known until this loader reads the
+    // projection dataset — the bbox is reprojected internally.) Scopes
+    // prefetchOverviewChunks and Phase-2 refinement to the intersecting
+    // chunk range; getTile itself stays viewport-driven so panning out of
+    // the region still loads lazily.
+    scopeBbox = null,
   } = options;
 
   // Normalize S3 URIs and optionally apply Transfer Acceleration / CloudFront
@@ -4532,6 +4539,28 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
   // Chunk dimensions for per-chunk streaming access
   const chunkH = selectedDataset.chunkDims?.[0] || 512;
   const chunkW = selectedDataset.chunkDims?.[1] || 512;
+
+  // ── W016: deep-link spatial scope → chunk-grid range ──
+  // Resolved once here (bounds + CRS are now known); null means full-scene.
+  let scopeChunkRange = null;
+  if (scopeBbox) {
+    try {
+      scopeChunkRange = scopeBboxToChunkRange(scopeBbox, {
+        worldBounds, width, height, chunkH, chunkW,
+        xCoords: xCoords || null, yCoords: yCoords || null, crs,
+      });
+      if (scopeChunkRange) {
+        const { startCR, endCR, startCC, endCC } = scopeChunkRange;
+        console.log(`[NISAR Loader] Scope bbox → chunk range rows ${startCR}–${endCR}, cols ${startCC}–${endCC} `
+          + `(${(endCR - startCR + 1) * (endCC - startCC + 1)} of ${Math.ceil(height / chunkH) * Math.ceil(width / chunkW)} chunks)`);
+      } else {
+        console.warn('[NISAR Loader] scopeBbox does not intersect the scene — falling back to full-scene loading');
+      }
+    } catch (e) {
+      console.warn('[NISAR Loader] scopeBbox ignored:', e.message);
+      scopeChunkRange = null;
+    }
+  }
 
   // ── Mask dataset (NISAR spec §4.3.3) ──
   let maskDatasetId = null;
@@ -5074,7 +5103,15 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       const fineStrideR = Math.max(1, Math.ceil(totalCR / FINE_MAX));
       const fineStrideC = Math.max(1, Math.ceil(totalCC / FINE_MAX));
 
-      if (_refinementEnabled && !background
+      // W016: skip background Phase-2 refinement for tiles entirely outside
+      // the deep-link scope range. The coarse Phase-1 tile still renders (and
+      // zoomed-in views use direct readRegion), so panning out of the region
+      // keeps working lazily — it just doesn't trigger background chunk pulls.
+      const tileInScope = !scopeChunkRange
+        || !(endCR < scopeChunkRange.startCR || startCR > scopeChunkRange.endCR
+          || endCC < scopeChunkRange.startCC || startCC > scopeChunkRange.endCC);
+
+      if (_refinementEnabled && !background && tileInScope
           && (coarseStrideR > fineStrideR || coarseStrideC > fineStrideC)) {
         // Background refinement — deferred and abortable. Stats-sampling
         // (background) tiles never refine: they'd each schedule their own
@@ -5461,6 +5498,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     get identification() { return identification; },
     identificationReady,
     hasMask: maskDatasetId != null,
+    // W016: the resolved deep-link scope (inclusive chunk range), or null.
+    // Exposed for logging/verification — not consumed by the render path.
+    scopeChunkRange,
     /** Set a callback to be notified when a tile's refined data is ready. */
     set onRefine(fn) { _onRefine = fn; },
     get onRefine() { return _onRefine; },
@@ -5472,14 +5512,24 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     async prefetchOverviewChunks() {
       const totalCR = Math.ceil(height / chunkH);
       const totalCC = Math.ceil(width / chunkW);
+      // W016: when a deep-link scope bbox is active, prefetch only the
+      // chunk-grid range intersecting it — a small AOI on a 240×240 km
+      // granule then streams only its own chunks.
+      let pr0 = 0, pr1 = totalCR - 1, pc0 = 0, pc1 = totalCC - 1;
+      if (scopeChunkRange) {
+        pr0 = Math.max(pr0, scopeChunkRange.startCR);
+        pr1 = Math.min(pr1, scopeChunkRange.endCR);
+        pc0 = Math.max(pc0, scopeChunkRange.startCC);
+        pc1 = Math.min(pc1, scopeChunkRange.endCC);
+      }
       // Prefetch the overview-ladder ENTRY level only — the same grid the
       // first z0 tile will request, so first paint is instant from cache.
       // Higher ladder levels stream in via the tile refinement path.
       await streamReader._ensureChunkIndex?.(selectedDatasetId)?.catch?.(() => {});
-      const entryIdx = _ladderEntryIndex(0, totalCR - 1, 0, totalCC - 1);
+      const entryIdx = _ladderEntryIndex(pr0, pr1, pc0, pc1);
       const entryLevel = OVERVIEW_LADDER[entryIdx];
       const { rows, cols, strideR, strideC } =
-        _ladderCoords(0, totalCR - 1, 0, totalCC - 1, entryLevel);
+        _ladderCoords(pr0, pr1, pc0, pc1, entryLevel);
 
       const coords = [];
       for (const cr of rows) {
@@ -5489,7 +5539,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
       }
       _overviewSpent += _ladderUncachedBytes(rows, cols);
 
-      console.log(`[NISAR Loader] Prefetching ${coords.length} overview chunks (${totalCR}×${totalCC} grid, entry level ${entryLevel}×${entryLevel}, stride ${strideR}×${strideC})`);
+      console.log(`[NISAR Loader] Prefetching ${coords.length} overview chunks `
+        + `(${totalCR}×${totalCC} grid${scopeChunkRange ? `, scoped to rows ${pr0}–${pr1} cols ${pc0}–${pc1}` : ''}, `
+        + `entry level ${entryLevel}×${entryLevel}, stride ${strideR}×${strideC})`);
 
       const tasks = [];
       // Eagerly load the mask B-tree index in parallel

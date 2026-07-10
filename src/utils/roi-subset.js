@@ -175,6 +175,39 @@ export function computeSubsetBounds(pixelRange, fileMetadata) {
 }
 
 /**
+ * Map a WGS84 bbox to the inclusive chunk-coordinate range it intersects
+ * (W016 deep-link fetch scoping). Pure math: reproject the bbox to the file
+ * CRS, resolve it to a pixel range via the coordinate arrays (or linear
+ * interpolation), then divide by the chunk dimensions.
+ *
+ * @param {number[]} bbox4326 — [west, south, east, north] in EPSG:4326
+ * @param {Object} meta
+ * @param {number[]} meta.worldBounds — [minX, minY, maxX, maxY] in file CRS
+ * @param {number} meta.width — total pixel columns
+ * @param {number} meta.height — total pixel rows
+ * @param {number} meta.chunkH — chunk height in pixels
+ * @param {number} meta.chunkW — chunk width in pixels
+ * @param {Float64Array|Float32Array|null} [meta.xCoords] — x coordinate array (ascending)
+ * @param {Float64Array|Float32Array|null} [meta.yCoords] — y coordinate array (descending)
+ * @param {string} [meta.crs='EPSG:4326'] — file CRS
+ * @returns {{ startCR: number, endCR: number, startCC: number, endCC: number } | null}
+ *   inclusive chunk-row/col range, or null if the bbox doesn't intersect the file
+ */
+export function scopeBboxToChunkRange(bbox4326, meta) {
+  const { worldBounds, width, height, chunkH, chunkW, xCoords = null, yCoords = null, crs = 'EPSG:4326' } = meta;
+  if (!chunkH || !chunkW) return null;
+  const bboxFileCrs = reprojectBbox(bbox4326, crs);
+  const px = bboxToPixelRange(bboxFileCrs, { worldBounds, width, height, xCoords, yCoords });
+  if (!px) return null;
+  return {
+    startCR: Math.floor(px.startRow / chunkH),
+    endCR: Math.floor((px.startRow + px.numRows - 1) / chunkH),
+    startCC: Math.floor(px.startCol / chunkW),
+    endCC: Math.floor((px.startCol + px.numCols - 1) / chunkW),
+  };
+}
+
+/**
  * Quick check: does the ROI bbox intersect the file bbox?
  * Both must be in the same CRS.
  *
