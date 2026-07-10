@@ -162,8 +162,33 @@ function corsProxyPlugin() {
   };
 }
 
+/**
+ * Vite plugin: deep-link dev fix (W008). `?url` is a reserved Vite import
+ * query (`import x from './x?url'`), so the dev server rejects any page
+ * navigation carrying a `?url=` deep-link param with a 403 ("outside of Vite
+ * serving allow list"). Strip the query string from HTML navigation requests
+ * server-side before Vite's internal middlewares see it — the browser keeps
+ * the full URL, so the app still reads the params from location.search.
+ * Production builds serve static index.html and are unaffected.
+ */
+function deepLinkDevFixPlugin() {
+  return {
+    name: 'deep-link-dev-fix',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const q = req.url.indexOf('?');
+        if (q !== -1 && (req.headers.accept || '').includes('text/html')
+            && new URLSearchParams(req.url.slice(q + 1)).has('url')) {
+          req.url = req.url.slice(0, q);
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), corsProxyPlugin()],
+  plugins: [react(), corsProxyPlugin(), deepLinkDevFixPlugin()],
   base: './',   // Relative paths for JupyterHub proxy
   root: 'app',
   resolve: {
