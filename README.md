@@ -27,16 +27,15 @@
 
 ## 🚀 Try it now — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
 
-The hosted build runs entirely in your browser. **Four ways in:**
+The hosted build runs entirely in your browser. **Three ways in:**
 
 | | What you do | What you need |
 |---|---|---|
 | **Drag-and-drop** | Drop a `.tif`, NISAR `.h5`, NITF/SICD, or `.geojson` onto the page | A local file |
 | **Public URL** | Paste a public COG URL into "Direct URL" — Capella Open Data, Umbra Open Data, Sentinel-2 cogs, etc. | A CORS-friendly URL |
 | **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov/profile](https://urs.earthdata.nasa.gov/profile) → *Generate Token*, and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
-| **Deep link** | Open a URL like `?bbox=-74.26,40.49,-73.70,40.92&db=1` — SARdine finds the best NISAR granule covering that region via NASA CMR, streams **only the chunks inside it**, and renders with your settings. See [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md) | Coordinates (+ EDL token for DAAC data) |
 
-**Try a deep link — New York City in NISAR L-band** (paste your EDL token when prompted, then the rest is automatic):
+**Or just click — New York City in NISAR L-band** (paste your EDL token when prompted, then the rest is automatic):
 
 - **[NYC — all five boroughs](https://nicksteiner.github.io/sardine/?bbox=-74.26,40.49,-73.70,40.92&db=1&min=-18&max=4)** — resolves the best-coverage full-frame granule via CMR and streams only the NYC chunks. Harbor and rivers dark, street grid bright, urban double-bounce blazing.
 - **[Manhattan + the East River bridges](https://nicksteiner.github.io/sardine/?bbox=-74.03,40.68,-73.90,40.88&db=1&min=-18&max=4)** — a tighter region: Central Park's texture break, the bridges as bright lines over dark water.
