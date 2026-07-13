@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.7] - 2026-07-13 — Activity rail UI + EDL trust hardening + GPU track plan
+
+### Added
+- **Activity rail** — VS Code-style icon rail switches the control panel between
+  groups (one visible at a time; re-click collapses); on mobile (≤768px) it becomes
+  a bottom tab bar with the controls as a bottom sheet
+  (`src/components/ActivityRail.jsx`)
+- **Viewer context menu** — right-click/long-press menu on the viewer, driven by the
+  command-palette action registry (viewport clamping, keyboard navigation)
+  (`src/components/ContextMenu.jsx`)
+- **GPU audit + horizon report** (`docs/GPU_AUDIT_AND_HORIZON_2026-07.md`) and the
+  GPU-track work orders W018–W024 (capability probe, GPU export parity, subgroup
+  histogram, compute pyramid, shader module chain, wrapped-phase toolkit, ML
+  inference substrate); W012 gains a chunk-manifest interop component
+
+### Changed
+- **EDL token trust hardening** — self-host docs, in-UI disclosure, header transport
+- README: NYC deep-link examples for the hosted build
+
 ## [1.0.0-beta.6] - 2026-07-10 — Wave 0/1 work-order batch + DAAC demo hardening
 
 Executed as machine-verifiable work orders (`docs/plan/W001–W017`) by parallel
