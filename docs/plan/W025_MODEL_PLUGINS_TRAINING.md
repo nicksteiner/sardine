@@ -135,3 +135,52 @@ remote backend implementation beyond the stub.
   renders an overlay; ONNX demo net downloads once (IDB hit on second run),
   negotiates EP (webgpu or wasm), runs tiled, renders output; trained head
   round-trips save → load → identical predictions.
+
+## BUG REPORT — please fix (2026-07-13, from the GPU-track review session)
+
+**User-visible in the field right now**: classification histograms show NaNs
+and a two-valued output; histograms elsewhere in the app are fine. Reported
+by Nick against the live build (main @ 681d646 + your WIP). Diagnosed
+mechanism — a NaN-poisoned model is *silent* end to end:
+
+1. `computeStandardizer` (src/ml/trainer.js:41-57) sums features with **no
+   finite check**. One NaN/Inf sample → `mean[j] = NaN`; the guard at :55
+   (`!(std[j] > 1e-12)` is true for NaN) then sets `std = 1`, which **masks**
+   the poisoning instead of surfacing it. The persisted model carries
+   `mean: [NaN, ...]`.
+2. `predictLogistic` (src/ml/trainer.js:160-189) guards non-finite *inputs*
+   (label 255) but not a non-finite *model*: with NaN `mean`, every logit is
+   NaN, `NaN > -Infinity` never fires, so **every valid pixel gets class 0
+   and every invalid pixel gets 255 → a two-valued map**; the confidence
+   branch computes `exp(NaN)/NaN` → **NaN confidence for every pixel**.
+   That is exactly the reported symptom.
+3. NaN feeds exist by design in this line, so the poisoning path is live:
+   `applyTransform('dB')` maps non-positive → NaN (src/ml/registry.js:29),
+   and `applyHeadToClassifierData` (app/main.jsx:5730-5731) builds X with
+   NaN rows for invalid pixels. `datasetFromClassRegions` filters
+   `!valid[i]` (src/ml/dataset.js:36), but any current or future path that
+   standardizes/trains/evaluates on transform-output or unfiltered features
+   hits (1).
+
+**Requested fixes** (fail loud, not two-valued-quiet):
+- `computeStandardizer`: skip or throw on non-finite samples (throwing is
+  preferable — silently skipping changes n and hides label/feature bugs).
+- `trainLogistic` / `buildHeadManifest`: assert `mean`/`std`/`weights` are
+  all finite before returning/persisting; a manifest must never carry NaN
+  params.
+- `predictLogistic`: cheap model-validity assert (finite mean/std) at entry.
+- A unit test that trains on data containing one NaN row and asserts the
+  loud failure, plus one that loads a manifest with NaN mean and asserts
+  predict refuses.
+- Worth checking while in there: whether the ONNX/classical backends can
+  emit NaN into overlays/metrics from `applyTransform('dB')` bands
+  (NaN-in → what comes out of `runTiled` feathered blending?).
+
+Context that may help repro: symptom appeared in the classification
+histogram panel after head-fit/apply on a live scene. The scatter
+classifier's own extraction is NaN-clean (app/main.jsx:1197-1204 guards
+before dB), so the poisoning most likely entered via a train/eval path
+around the head-fit loop or your uncommitted onnx.js changes.
+
+— GPU-track session (Wave G1). Our review fix-pass did not touch src/ml/;
+this note is the only edit to your territory.

@@ -41,7 +41,17 @@ export function computeStandardizer(X, n, f) {
   const mean = new Float64Array(f);
   const std = new Float64Array(f);
   for (let i = 0; i < n; i++) {
-    for (let j = 0; j < f; j++) mean[j] += X[i * f + j];
+    for (let j = 0; j < f; j++) {
+      const v = X[i * f + j];
+      // Fail loud: one NaN/Inf sample would silently poison mean (and the
+      // std<=1e-12 guard would then mask it as std=1), producing a model
+      // that predicts a two-valued map with NaN confidence. Callers must
+      // filter invalid samples before training (dataset.js does).
+      if (!Number.isFinite(v)) {
+        throw new Error(`computeStandardizer: non-finite feature (sample ${i}, feature ${j}: ${v}) — filter invalid samples before training`);
+      }
+      mean[j] += v;
+    }
   }
   for (let j = 0; j < f; j++) mean[j] /= n || 1;
   for (let i = 0; i < n; i++) {
@@ -145,10 +155,34 @@ export function trainLogistic({
     history.push({ epoch, loss: epochLoss / n });
   }
 
+  // A trained model must never carry non-finite parameters (divergence
+  // from a hot learning rate would otherwise persist silently into
+  // manifests). Standardizer inputs are already checked; this catches
+  // optimization blow-ups.
+  for (let i = 0; i < W.length; i++) {
+    if (!Number.isFinite(W[i])) {
+      throw new Error(`trainLogistic: non-finite weight after training (index ${i}) — reduce learningRate or check labels`);
+    }
+  }
+
   return {
     weights: Array.from(W), mean, std,
     numClasses: C, numFeatures: f, seed, history,
   };
+}
+
+/** Throw unless every model parameter is finite. Cheap (≤ C×(f+1) + 2f). */
+export function assertModelFinite(model, context = 'model') {
+  const check = (arr, name) => {
+    for (let i = 0; i < arr.length; i++) {
+      if (!Number.isFinite(arr[i])) {
+        throw new Error(`${context}: non-finite ${name}[${i}] (${arr[i]}) — refusing a NaN-poisoned model`);
+      }
+    }
+  };
+  check(model.weights, 'weights');
+  check(model.mean, 'mean');
+  check(model.std, 'std');
 }
 
 /**
@@ -158,6 +192,7 @@ export function trainLogistic({
  * @returns {{labels: Uint8Array, confidence?: Float32Array}}
  */
 export function predictLogistic(model, X, n, { withConfidence = false } = {}) {
+  assertModelFinite(model, 'predictLogistic');
   const { weights, mean, std, numClasses: C, numFeatures: f } = model;
   const labels = new Uint8Array(n);
   const confidence = withConfidence ? new Float32Array(n) : null;

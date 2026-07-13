@@ -128,6 +128,13 @@ export function validateManifest(m) {
       if (C >= 2 && f >= 1 && p.weights.length !== C * (f + 1)) {
         fail(`weights length ${p.weights.length} ≠ classes×(bands+1) = ${C * (f + 1)}`);
       }
+      // A NaN-poisoned model predicts a silent two-valued map — refuse it
+      // here so a bad artifact can never register. (NaN serializes to null
+      // in JSON; Number.isFinite rejects both.)
+      for (const [name, arr] of [['weights', p.weights], ['mean', p.mean], ['std', p.std]]) {
+        const bad = arr.findIndex((v) => !Number.isFinite(v));
+        if (bad >= 0) { fail(`non-finite params.${name}[${bad}] — NaN-poisoned model refused`); break; }
+      }
     }
   }
   if (backend === 'onnx') {

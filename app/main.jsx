@@ -5475,10 +5475,14 @@ function App() {
   // and aren't supported yet — the layer just no-ops.
   const opticalPeekLayers = useMemo(() => {
     if (!opticalPeekEnabled || !imageData?.bounds) return [];
+    // maxZoom bounds the viewport-tracking detail atlas (W026). Esri serves
+    // deeper in metro areas but z19 (~0.3 m/px) is the broadly-available
+    // floor; past real coverage the layer overzoom-fills from parent tiles.
     const PROVIDERS = {
-      esri: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      osm: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      esri: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', maxZoom: 19 },
+      osm: { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maxZoom: 19 },
     };
+    const provider = PROVIDERS[opticalPeekProvider] || PROVIDERS.esri;
     // Two-bounds split for the OrthographicView pipeline:
     //   • `bounds` drives the quad geometry — must match the SAR layer's
     //     coord space, which is pixel-space [0, 0, W, H] for COG/NITF
@@ -5493,10 +5497,12 @@ function App() {
       bounds: imageData.bounds,
       geoBounds: imageData.worldBounds || imageData.bounds,
       crs: imageData.crs || 'EPSG:4326',
-      tileUrlTemplate: PROVIDERS[opticalPeekProvider] || PROVIDERS.esri,
+      tileUrlTemplate: provider.url,
+      maxZoom: provider.maxZoom,
       opacity: opticalPeekOpacity,
+      onStatus: (level, message) => addStatusLog(level, message),
     })];
-  }, [opticalPeekEnabled, opticalPeekProvider, opticalPeekOpacity, imageData?.bounds, imageData?.worldBounds, imageData?.crs]);
+  }, [opticalPeekEnabled, opticalPeekProvider, opticalPeekOpacity, imageData?.bounds, imageData?.worldBounds, imageData?.crs, addStatusLog]);
 
   // Build GeoJSON overlay layers from dropped files
   const geojsonOverlayLayers = useMemo(() => {

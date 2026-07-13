@@ -12,6 +12,7 @@
  */
 
 import { validateManifest, manifestDefaults, SARDINE_MODEL_SCHEMA_VERSION } from './manifest.js';
+import { assertModelFinite } from './trainer.js';
 import { runHeuristic } from './backends/heuristic.js';
 import { runClassical } from './backends/classical.js';
 import { runOnnx } from './backends/onnx.js';
@@ -94,6 +95,7 @@ export function createModelRegistry() {
 export function buildHeadManifest({ name, model, bands, transform = 'dB', classes, metrics, provenance = {}, software = 'SARdine' }) {
   if (bands.length !== model.numFeatures) throw new Error('bands[] must match model.numFeatures');
   if (classes.length !== model.numClasses) throw new Error('classes[] must match model.numClasses');
+  assertModelFinite(model, 'buildHeadManifest'); // a manifest must never persist NaN params
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'head';
   return {
     'sardine:model': SARDINE_MODEL_SCHEMA_VERSION,

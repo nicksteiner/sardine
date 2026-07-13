@@ -110,6 +110,25 @@ test('multi-channel in/out shapes', async () => {
   }
 });
 
+test('NaN input stays local: contaminates only its kernel/tile locality', async () => {
+  const w = 300, h = 220;
+  const img = randomImage(w, h, 21);
+  img[110 * w + 150] = NaN; // one bad pixel mid-raster
+  const out = await runTiled(boxBlurTileFn, img, w, h, { tileSize: 128, overlap: 16 });
+  // Within kernel radius of the bad pixel: NaN expected (blur ingests it)
+  assert.ok(Number.isNaN(out[110 * w + 150]));
+  // Far corners must stay finite — feathered blending must not smear NaN
+  // across tile seams (zero-weight writes are skipped, but nonzero-weight
+  // contamination is confined to the source tile's blur radius).
+  for (const p of [0, w - 1, (h - 1) * w, h * w - 1, 5 * w + 5]) {
+    assert.ok(Number.isFinite(out[p]), `far pixel ${p} contaminated`);
+  }
+  let nanCount = 0;
+  for (let i = 0; i < out.length; i++) if (!Number.isFinite(out[i])) nanCount++;
+  // 3×3 blur of one NaN pixel → at most a 3×3 patch per overlapping tile
+  assert.ok(nanCount <= 9 * 4, `NaN spread too far: ${nanCount} pixels`);
+});
+
 test('parameter validation', async () => {
   const img = randomImage(10, 10);
   await assert.rejects(runTiled(boxBlurTileFn, img, 10, 10, { tileSize: 32, overlap: 16 }), /overlap/);

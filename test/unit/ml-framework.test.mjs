@@ -16,7 +16,7 @@ import {
 import {
   runModel, applyTransform, createModelRegistry, buildHeadManifest, builtinManifests,
 } from '../../src/ml/registry.js';
-import { trainLogistic, evaluateModel, mulberry32 } from '../../src/ml/trainer.js';
+import { trainLogistic, evaluateModel, mulberry32, predictLogistic as predictLogisticImport } from '../../src/ml/trainer.js';
 import { datasetFromClassRegions, stratifiedSplit } from '../../src/ml/dataset.js';
 
 // ── fixtures ────────────────────────────────────────────────────────
@@ -205,6 +205,61 @@ test('remote backend fails with actionable guidance', async () => {
   await assert.rejects(
     () => runModel(remote, { bands: [b0], width: w, height: h }),
     /sardine-tuner\/agent/,
+  );
+});
+
+// ── NaN-poisoning defenses (W025 bug report, 2026-07-13) ────────────
+
+test('training on data with one non-finite sample fails loudly', () => {
+  const X = Float32Array.from([1, 2, 3, NaN, 5, 6, 7, 8]); // 4 samples × 2f
+  const y = Uint8Array.from([0, 1, 0, 1]);
+  assert.throws(
+    () => trainLogistic({ X, y, numClasses: 2, numFeatures: 2 }),
+    /non-finite feature \(sample 1, feature 1/,
+  );
+  const Xinf = Float32Array.from([1, 2, Infinity, 4]);
+  assert.throws(
+    () => trainLogistic({ X: Xinf, y: Uint8Array.from([0, 1]), numClasses: 2, numFeatures: 2 }),
+    /non-finite feature/,
+  );
+});
+
+test('predict refuses a NaN-poisoned model', () => {
+  const model = {
+    weights: [0.5, -0.5, 0, 0.1, 0.2, 0], mean: [NaN, 0], std: [1, 1],
+    numClasses: 2, numFeatures: 2,
+  };
+  assert.throws(
+    () => predictLogisticImport(model, Float32Array.from([1, 2]), 1),
+    /non-finite mean\[0\].*NaN-poisoned/,
+  );
+});
+
+test('validateManifest refuses non-finite classical params (incl. JSON null)', () => {
+  const { b0, b1, w, h } = syntheticScene(64, 32);
+  void b1; void w; void h; void b0;
+  const good = builtinManifests().find(m => m.id === 'water-threshold-db');
+  const m = JSON.parse(JSON.stringify(good));
+  m.id = 'poisoned';
+  m['sardine:backend'] = 'builtin-classical';
+  delete m['sardine:params'];
+  m['sardine:params'] = { weights: [0, 0, 0, 0], mean: [null, 0], std: [1, 1] }; // NaN → null via JSON
+  const v = validateManifest(m);
+  assert.equal(v.valid, false);
+  assert.match(v.errors.join(' '), /non-finite params\.mean\[0\].*NaN-poisoned/);
+});
+
+test('buildHeadManifest refuses to persist non-finite params', () => {
+  const model = {
+    weights: [0.1, 0.2, 0.3, 0.4, 0.5, NaN], mean: [0, 0], std: [1, 1],
+    numClasses: 2, numFeatures: 2, seed: 1,
+  };
+  assert.throws(
+    () => buildHeadManifest({
+      name: 'bad', model, bands: ['A', 'B'],
+      classes: [{ name: 'x' }, { name: 'y' }],
+    }),
+    /non-finite weights\[5\]/,
   );
 });
 

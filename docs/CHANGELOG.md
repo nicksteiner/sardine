@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.8] - 2026-07-13 — Optical peek detail atlas + ML NaN hardening
+
+### Added
+- **Optical peek detail atlas (W026)** — the optical overlay now tracks the
+  viewport: a second, screen-density-matched atlas rebuilds on debounced
+  pan/zoom up to the provider's max resolution (z19 ≈ 0.3 m/px), with parent-
+  tile overzoom fill where coverage ends, an LRU tile cache, bounded fetch
+  concurrency, and per-provider `maxZoom` (`src/layers/OpticalPeekLayer.js`,
+  `src/utils/optical-peek-math.js`, `test/unit/optical-peek-math.test.mjs`)
+
+### Fixed
+- **Optical peek mis-registration near invalid warp nodes** — hardware LINEAR
+  filtering blended the (-1,-1) invalid-node sentinel into wrong-but-positive
+  atlas UVs (and RG32F LINEAR needs an optional extension); the shader now
+  interpolates the warp manually via texelFetch and rejects cells touching an
+  invalid node
+- **Optical peek at polar latitudes / long-thin scenes** — grid nodes beyond
+  Web Mercator's ±85.05° are masked instead of requesting nonexistent tiles;
+  the atlas zoom now steps down to honor a per-axis tile cap so strip-shaped
+  scenes can't exceed the browser's max canvas dimension
+- **ML NaN-poisoned model guards (W025 hardening)** — training and inference now
+  refuse non-finite parameters at every gate: `computeStandardizer` throws on a
+  non-finite feature sample, `trainLogistic` throws on a diverged weight,
+  `predictLogistic`/`buildHeadManifest` assert finiteness before use, and
+  `validateManifest` rejects non-finite `weights`/`mean`/`std` (NaN serializes
+  to `null` in JSON, so a bad artifact could otherwise register and predict a
+  silent two-valued map) (`src/ml/trainer.js`, `src/ml/manifest.js`,
+  `src/ml/registry.js`)
+
 ## [1.0.0-beta.7] - 2026-07-13 — Activity rail UI + EDL trust hardening + GPU track plan
 
 ### Added
