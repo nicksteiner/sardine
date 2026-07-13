@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import https from 'node:https';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Vite plugin: CORS proxy for dev server.
@@ -251,10 +252,25 @@ export default defineConfig({
   plugins: [react(), corsProxyPlugin(), deepLinkDevFixPlugin()],
   base: './',   // Relative paths for JupyterHub proxy
   root: 'app',
+  // onnxruntime-web loads via lazy dynamic import (W025). Excluding it from
+  // the dep optimizer serves it straight from node_modules as ESM, so a dev
+  // server started before the dep was installed can't 404 on a stale
+  // .vite/deps hash after a restart.
+  optimizeDeps: {
+    exclude: ['onnxruntime-web'],
+  },
   resolve: {
     alias: {
       'sardine': '/src/index.js',
       '@src': '/src',
+      // Pin ORT to its ESM bundle file (absolute path — a bare-specifier
+      // alias would re-enter the package's exports map, which does not
+      // expose ./dist/*). The package's nested export conditions resolve
+      // to the UMD build under vite's dev server when the dep is excluded
+      // from optimization (empty namespace, no env/InferenceSession);
+      // pinning the exact .mjs sidesteps condition resolution in both
+      // dev and build.
+      'onnxruntime-web': fileURLToPath(new URL('./node_modules/onnxruntime-web/dist/ort.bundle.min.mjs', import.meta.url)),
     },
   },
   server: {

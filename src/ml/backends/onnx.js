@@ -29,7 +29,13 @@ const sessionCache = new Map(); // manifest.id → {session, ep}
 /** Lazy-load onnxruntime-web exactly once. */
 function loadOrt() {
   if (!ortModulePromise) {
-    ortModulePromise = import('onnxruntime-web').then((ort) => {
+    ortModulePromise = import('onnxruntime-web').then((mod) => {
+      // Namespace shape differs between bundled (named exports) and
+      // dev-served-without-interop (default export) — accept both.
+      const ort = mod?.env ? mod : (mod?.default?.env ? mod.default : mod);
+      if (!ort?.env || !ort?.InferenceSession) {
+        throw new Error('onnxruntime-web loaded but exports are unrecognized — check the installed package');
+      }
       // ORT's .wasm binaries are not bundled by vite; fetch them from the
       // pinned CDN matching the installed version. (Hosted + dev builds;
       // fully-offline deployments can override via ort.env.wasm.wasmPaths.)
