@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.9] - 2026-07-13 — Classification maps in comparison panels
+
+### Added
+- **Class-map rendering in the compare grid** — comparison panels now render
+  classification GeoTIFFs (integer land-cover/segmentation labels) with one
+  exact color per class. A new GPU path in `SARGPULayer`/`shaders.js` adds a
+  `classMode` uniform and a 256×1 RGBA palette texture: the fragment shader
+  NEAREST-samples the label, floors to a class index, and looks up its color in
+  the palette (bypassing dB/stretch/colormap; 0/NaN → transparent). The CPU
+  `SARBitmapLayer` gains a matching `createClassTexture` path with NEAREST
+  filtering for plain (non-COG) TIFs. Props thread through `SARViewer` →
+  `SARTileLayer` → `SARGPULayer` (`classMode`/`classPalette`/
+  `classPaletteEntries`)
+- **Embedded palette + class-name extraction** — `cog-loader.js` reads a palette
+  GeoTIFF's TIFF `ColorMap` (`extractColorTable`, 16-bit→8-bit) and class labels
+  from `GDAL_METADATA` (`extractClassNames`: indexed `CATEGORY_NAMES_<n>`,
+  `role="category"` sample items, and delimited `CLASS_NAMES` lists). Categorical
+  rasters are auto-detected (`looksCategorical` / presence of a color table) and
+  the compare panel enables class mode on load, with a **Classes** toggle to
+  override. Files without an embedded table fall back to deterministic `label`
+  colormap colors (`test/unit/class-map.test.mjs`)
+- **Per-panel class legend** — each class-map panel shows a collapsible legend
+  listing the classes present in the current view — color swatch + name (or
+  "Class N") — recomputed on pan/zoom by sampling the visible tiles
+
+### Fixed
+- **Class-boundary color fringing** — categorical COGs read overviews with
+  NEAREST resampling instead of bilinear, which was blending integer class
+  indices across boundaries and painting phantom classes along every edge
+- **Band description misread as a class name** — `extractClassNames` skips
+  `role="description"` items (a per-band raster title, not a class-0 label)
+
 ## [1.0.0-beta.8] - 2026-07-13 — Optical peek detail atlas + ML NaN hardening
 
 ### Added

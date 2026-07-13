@@ -52,6 +52,9 @@ export const SARViewer = forwardRef(function SARViewer({
   speckleKernelSize = 7,      // Speckle filter kernel size (3–11, odd)
   rgbSaturation = 1.0,        // RGB saturation boost (1.0 = neutral)
   colorblindMode = 'off',     // Colorblind-safe RGB remap ('off'|'deuteranopia'|'protanopia'|'tritanopia')
+  classMode = false,          // Render integer labels via an embedded class palette
+  classPalette = null,        // Uint8Array(256*3) packed RGB per class index (from GeoTIFF ColorMap)
+  classPaletteEntries = 0,    // Number of authored classes in classPalette
   showGrid = true,    // Show coordinate grid + corner coordinates
   opacity = 1,
   toneMapping, // Tone mapping configuration
@@ -254,6 +257,7 @@ export const SARViewer = forwardRef(function SARViewer({
     contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
     opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
     incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
+    classMode, classPalette, classPaletteEntries,
   });
   const [visualTick, setVisualTick] = useState(0);
   const rafRef = useRef(null);
@@ -282,12 +286,16 @@ export const SARViewer = forwardRef(function SARViewer({
       speckleKernelSize !== prev.speckleKernelSize ||
       rgbSaturation !== prev.rgbSaturation ||
       colorblindMode !== prev.colorblindMode ||
-      toneMapping !== prev.toneMapping
+      toneMapping !== prev.toneMapping ||
+      classMode !== prev.classMode ||
+      classPalette !== prev.classPalette ||
+      classPaletteEntries !== prev.classPaletteEntries
     );
     visualRef.current = {
       contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
       opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
       incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
+      classMode, classPalette, classPaletteEntries,
     };
     if (changed && !rafRef.current) {
       rafRef.current = requestAnimationFrame(() => {
@@ -295,7 +303,7 @@ export const SARViewer = forwardRef(function SARViewer({
         setVisualTick(t => t + 1);
       });
     }
-  }, [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping]);
+  }, [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping, classMode, classPalette, classPaletteEntries]);
 
   // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
@@ -342,6 +350,8 @@ export const SARViewer = forwardRef(function SARViewer({
           opacity: v.opacity,
           maskInvalid: v.maskInvalid,
           maskLayoverShadow: v.maskLayoverShadow,
+          classMode: v.classMode,
+          classPalette: v.classPalette,
         }),
       ];
     }
@@ -376,6 +386,9 @@ export const SARViewer = forwardRef(function SARViewer({
           rgbSaturation: v.rgbSaturation,
           colorblindMode: v.colorblindMode,
           pixelMode: medicalMode,
+          classMode: v.classMode,
+          classPalette: v.classPalette,
+          classPaletteEntries: v.classPaletteEntries,
         }),
       ];
     }

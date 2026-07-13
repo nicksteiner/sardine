@@ -13,6 +13,7 @@ import { SARViewer } from './SARViewer.jsx';
 import { loadLocalTIFs } from '../loaders/cog-loader.js';
 import { loadNISARGCOV, listNISARDatasets } from '../loaders/nisar-loader.js';
 import { autoContrastWithDbDetect, sampleViewportStats } from '../utils/stats.js';
+import { label as labelColor } from '../utils/colormap.js';
 
 /**
  * CompareGrid — load up to 4 GeoTIFF/COG files into an adaptive grid of GPU
@@ -37,6 +38,29 @@ const OVERLAY_CHIP_COLORS = ['#ffc800', '#00c8ff', '#ff64c8', '#64ff64', '#ff8c0
 
 let panelSeq = 0;
 const nextPanelId = () => `cmp-panel-${++panelSeq}`;
+
+/**
+ * Build a 256×3 packed-RGB class palette for a categorical raster.
+ *
+ * Prefers the GeoTIFF's embedded color table (authored land-cover colors,
+ * etc.). When absent, synthesizes distinct colors from the deterministic
+ * `label` colormap so any integer-class raster still renders one color per
+ * class. Index 0 stays black (background — masked to transparent in-shader).
+ *
+ * @param {{ entries:number, rgb:Uint8Array } | null} colorTable
+ * @returns {{ palette: Uint8Array, entries: number }}
+ */
+function buildClassPalette(colorTable) {
+  if (colorTable?.rgb) return { palette: colorTable.rgb, entries: colorTable.entries };
+  const palette = new Uint8Array(256 * 3);
+  for (let i = 1; i < 256; i++) {
+    const [r, g, b] = labelColor(i / 255);
+    palette[i * 3 + 0] = r;
+    palette[i * 3 + 1] = g;
+    palette[i * 3 + 2] = b;
+  }
+  return { palette, entries: 256 };
+}
 
 const H5_RE = /\.(h5|hdf5|he5)$/i;
 const TIF_RE = /\.(tif|tiff)$/i;
@@ -135,11 +159,22 @@ export const CompareGrid = forwardRef(function CompareGrid(
     async (file) => {
       const data = await loadLocalTIFs([file]);
       const { useDecibels, contrastLimits } = autoContrastWithDbDetect(data.data);
+      // Class-map rendering: auto-enable when the file has an embedded color
+      // table or its values look like integer labels. Palette prefers the
+      // embedded table, falling back to deterministic label colors.
+      const isCategorical = !!data.isCategorical;
+      const { palette, entries } = isCategorical
+        ? buildClassPalette(data.colorTable)
+        : { palette: null, entries: 0 };
       addPanel({
         id: nextPanelId(), name: file.name, kind: 'cog', file, source: data,
         contrastLimits, colormap: 'grayscale', useDecibels, stretchMode: 'linear', gamma: 1.0,
+        classMode: isCategorical, classPalette: palette, classPaletteEntries: entries,
+        hasClasses: isCategorical, hasColorTable: !!data.colorTable,
+        classNames: data.classNames || null, classLegend: null,
       });
-      onStatus('success', `Compare: added ${file.name} (${data.width}×${data.height})`);
+      const tag = isCategorical ? (data.colorTable ? ' [classes: color table]' : ' [classes]') : '';
+      onStatus('success', `Compare: added ${file.name} (${data.width}×${data.height})${tag}`);
     },
     [addPanel, onStatus]
   );
@@ -379,6 +414,117 @@ export const CompareGrid = forwardRef(function CompareGrid(
     [onStatus]
   );
 
+  // Compute a class-map panel's legend: the distinct integer class values
+  // PRESENT in the current view, each paired with its palette color and name
+  // (from the file's class table, else "Class N"). Samples a coarse tile grid
+  // over the visible world rectangle (same region math as autoStretchPanel) so
+  // the legend tracks pan/zoom and stays short. Stores `classLegend` on the
+  // panel; skipped for non-class panels.
+  const MAX_LEGEND_CLASSES = 24;
+  const computePanelLegend = useCallback(
+    async (id) => {
+      const panel = panelsRef.current.find((p) => p.id === id);
+      if (!panel?.classMode || !panel.source) return;
+
+      const pal = panel.classPalette;
+      const names = panel.classNames;
+      const buildLegend = (present) => {
+        const sorted = [...present].sort((a, b) => a - b);
+        const truncated = sorted.length > MAX_LEGEND_CLASSES;
+        const items = sorted.slice(0, MAX_LEGEND_CLASSES).map((cls) => ({
+          value: cls,
+          color: pal ? [pal[cls * 3], pal[cls * 3 + 1], pal[cls * 3 + 2]] : [128, 128, 128],
+          name: names?.[cls] || `Class ${cls}`,
+        }));
+        setPanels((prev) => prev.map((p) => (
+          p.id === id ? { ...p, classLegend: { items, truncated } } : p
+        )));
+      };
+
+      // Plain (non-COG) TIFs render via the bitmap path and expose no getTile —
+      // scan the full raster in memory instead (whole-scene, not viewport-scoped).
+      if (!panel.source.getTile && panel.source.data) {
+        const d = panel.source.data;
+        const present = new Set();
+        const step = Math.max(1, Math.floor(d.length / 65536));
+        for (let k = 0; k < d.length; k += step) {
+          const v = d[k];
+          if (v === 0 || Number.isNaN(v)) continue;
+          const cls = Math.round(v);
+          if (cls > 0 && cls <= 255) present.add(cls);
+        }
+        buildLegend(present);
+        return;
+      }
+      if (!panel.source.getTile || !panel.source.bounds) return;
+
+      const [bMinX, bMinY, bMaxX, bMaxY] = panel.source.bounds;
+      let rX = bMinX, rY = bMinY, rW = bMaxX - bMinX, rH = bMaxY - bMinY;
+
+      const viewer = panelRefs.current.get(id);
+      const vs = viewer?.getViewState?.();
+      const canvas = viewer?.getCanvas?.();
+      if (vs && Array.isArray(vs.target) && typeof vs.zoom === 'number' && canvas) {
+        const ppu = Math.pow(2, vs.zoom);
+        const halfW = (canvas.clientWidth || 900) / 2 / ppu;
+        const halfH = (canvas.clientHeight || 700) / 2 / ppu;
+        const [cx, cy] = vs.target;
+        const l = Math.max(bMinX, cx - halfW), r = Math.min(bMaxX, cx + halfW);
+        const t = Math.max(bMinY, cy - halfH), b = Math.min(bMaxY, cy + halfH);
+        if (r > l && b > t) { rX = l; rY = t; rW = r - l; rH = b - t; }
+      }
+
+      // Sample a 3×3 grid of tiles across the region; union the classes seen.
+      const present = new Set();
+      const NS = 3;
+      try {
+        for (let iy = 0; iy < NS; iy++) {
+          for (let ix = 0; ix < NS; ix++) {
+            const left = rX + (ix / NS) * rW;
+            const right = rX + ((ix + 1) / NS) * rW;
+            const top = rY + (iy / NS) * rH;
+            const bottom = rY + ((iy + 1) / NS) * rH;
+            const tile = await panel.source.getTile({
+              x: 0, y: 0, z: 0, bbox: { left, right, top, bottom },
+            });
+            const d = tile?.data;
+            if (!d) continue;
+            for (let k = 0; k < d.length; k++) {
+              const v = d[k];
+              if (v === 0 || Number.isNaN(v)) continue;      // background
+              const cls = Math.round(v);
+              if (cls > 0 && cls <= 255) present.add(cls);
+            }
+            if (present.size > MAX_LEGEND_CLASSES * 2) break; // enough to render + note overflow
+          }
+        }
+      } catch (e) {
+        // Legend is best-effort; leave whatever we had.
+        return;
+      }
+
+      buildLegend(present);
+    },
+    []
+  );
+
+  // Recompute legends when panels change (add/remove/toggle class mode) and,
+  // debounced, when the shared view changes. Keyed on things that alter which
+  // classes are visible or how they're colored.
+  const legendKey = panels
+    .map((p) => `${p.id}:${p.classMode ? 1 : 0}`)
+    .join('|');
+  useEffect(() => {
+    if (!syncViews && !legendKey) return;
+    const t = setTimeout(() => {
+      for (const p of panelsRef.current) {
+        if (p.classMode) computePanelLegend(p.id);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [legendKey, viewState, computePanelLegend]);
+
   // Vector overlay layers — WGS84 GeoJSON, rendered in lon/lat (no reprojection).
   // One set shared across all panels (each panel gets the same deck.gl layers).
   const overlayLayers = useMemo(() => {
@@ -599,6 +745,9 @@ const Panel = React.memo(function Panel({
         colormap={panel.colormap}
         stretchMode={panel.stretchMode}
         gamma={panel.gamma}
+        classMode={!!panel.classMode}
+        classPalette={panel.classPalette || null}
+        classPaletteEntries={panel.classPaletteEntries || 0}
         imageWidth={panel.source.sourceWidth || panel.source.width}
         imageHeight={panel.source.sourceHeight || panel.source.height}
         xCoords={panel.source.xCoords}
@@ -616,9 +765,60 @@ const Panel = React.memo(function Panel({
         onDataset={dataset}
         onRemove={remove}
       />
+      {panel.classMode && panel.classLegend && (
+        <ClassLegend legend={panel.classLegend} />
+      )}
     </div>
   );
 });
+
+/**
+ * Class-map legend overlay — bottom-left of a panel. Lists the classes present
+ * in the current view: a color swatch + name (or "Class N"). Collapsible so it
+ * doesn't obscure the imagery. Recomputed by the parent on pan/zoom.
+ */
+function ClassLegend({ legend }) {
+  const [open, setOpen] = useState(true);
+  const items = legend?.items || [];
+  if (items.length === 0) return null;
+
+  return (
+    <div style={legendStyle}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={legendHeaderStyle}
+        title={open ? 'Collapse legend' : 'Expand legend'}
+      >
+        <span>Classes ({items.length}{legend.truncated ? '+' : ''})</span>
+        <span style={{ opacity: 0.7 }}>{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div style={legendBodyStyle}>
+          {items.map((it) => (
+            <div key={it.value} style={legendRowStyle} title={`value ${it.value}`}>
+              <span
+                style={{
+                  width: 11, height: 11, flexShrink: 0, borderRadius: 2,
+                  border: '1px solid rgba(255,255,255,0.25)',
+                  background: `rgb(${it.color[0]},${it.color[1]},${it.color[2]})`,
+                }}
+              />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {it.name}
+              </span>
+            </div>
+          ))}
+          {legend.truncated && (
+            <div style={{ ...legendRowStyle, color: 'var(--text-muted, #9bb0d0)', fontStyle: 'italic' }}>
+              …more classes in view
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * Editable numeric readout — shows `value` but lets the user type a new one.
@@ -745,7 +945,26 @@ function PanelControls({ panel, onChange, onColormap, onAutoStretch, onDataset, 
         </div>
       )}
 
-      {/* Row 2 — colormap, stretch mode, dB */}
+      {/* Row 1c — class-map toggle (only for categorical rasters) */}
+      {panel.hasClasses && (
+        <div style={ctrlRowStyle}>
+          <label style={dbToggleStyle} title="Render integer labels via the class color palette">
+            <input
+              type="checkbox"
+              checked={!!panel.classMode}
+              onChange={(e) => onChange({ classMode: e.target.checked })}
+            />
+            Classes
+          </label>
+          <span style={{ fontSize: '0.6rem', color: 'var(--text-muted, #9bb0d0)' }}>
+            {panel.hasColorTable ? 'color table' : 'auto colors'}
+            {panel.classPaletteEntries ? ` · ${panel.classPaletteEntries}` : ''}
+          </span>
+        </div>
+      )}
+
+      {/* Row 2 — colormap, stretch mode, dB (continuous rendering; hidden in class mode) */}
+      {!panel.classMode && (
       <div style={ctrlRowStyle}>
         <select
           value={panel.colormap}
@@ -776,9 +995,10 @@ function PanelControls({ panel, onChange, onColormap, onAutoStretch, onDataset, 
           dB
         </label>
       </div>
+      )}
 
-      {/* Row 3 — gamma (only in gamma mode) */}
-      {panel.stretchMode === 'gamma' && (
+      {/* Row 3 — gamma (only in gamma mode; not in class mode) */}
+      {!panel.classMode && panel.stretchMode === 'gamma' && (
         <div style={ctrlRowStyle}>
           <span style={{ ...sliderLabelStyle, minWidth: '14px' }}>γ</span>
           <input
@@ -799,7 +1019,9 @@ function PanelControls({ panel, onChange, onColormap, onAutoStretch, onDataset, 
         </div>
       )}
 
-      {/* Row 4 — contrast min/max sliders + editable numbers + auto-stretch */}
+      {/* Row 4 — contrast min/max sliders + editable numbers + auto-stretch.
+          Irrelevant in class mode (labels map directly through the palette). */}
+      {!panel.classMode && (
       <div style={ctrlRowStyle}>
         <NumField
           value={lo}
@@ -840,11 +1062,57 @@ function PanelControls({ panel, onChange, onColormap, onAutoStretch, onDataset, 
           auto
         </button>
       </div>
+      )}
     </div>
   );
 }
 
 // ── styles ────────────────────────────────────────────────────────────────
+const legendStyle = {
+  position: 'absolute',
+  bottom: '8px',
+  left: '8px',
+  maxWidth: '46%',
+  background: 'rgba(15, 31, 56, 0.9)',
+  border: '1px solid var(--sardine-border, #1e3a5f)',
+  borderRadius: 'var(--radius-sm, 4px)',
+  color: 'var(--text-primary, #e8edf5)',
+  fontSize: '0.66rem',
+  fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+  zIndex: 1200,
+  overflow: 'hidden',
+};
+
+const legendHeaderStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: '8px',
+  width: '100%',
+  background: 'transparent',
+  border: 'none',
+  color: 'var(--text-primary, #e8edf5)',
+  padding: '3px 7px',
+  cursor: 'pointer',
+  fontSize: '0.66rem',
+  fontFamily: 'inherit',
+};
+
+const legendBodyStyle = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '2px',
+  padding: '2px 7px 5px',
+  maxHeight: '38vh',
+  overflowY: 'auto',
+};
+
+const legendRowStyle = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: '5px',
+};
+
 const pickButtonStyle = {
   background: 'var(--sardine-bg-raised, #0f1f38)',
   border: '1px solid var(--sardine-border, #1e3a5f)',

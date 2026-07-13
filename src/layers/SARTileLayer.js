@@ -45,6 +45,9 @@ export class SARTileLayer extends TileLayer {
       speckleFilterType = 'none',
       speckleKernelSize = 7,
       pixelMode = false,
+      classMode = false,
+      classPalette = null,
+      classPaletteEntries = 0,
       minZoom,
       maxZoom = 20,
       tileSize = 256,
@@ -95,7 +98,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode, classMode, classPalette, classPaletteEntries],
       },
 
       renderSubLayers: (subProps) => {
@@ -110,11 +113,15 @@ export class SARTileLayer extends TileLayer {
         // Mask data (if available from tile)
         const maskProps = tileData.mask ? { dataMask: tileData.mask, maskInvalid, maskLayoverShadow } : { maskInvalid: false, maskLayoverShadow: false };
 
-        // Speckle filter props — SARGPULayer handles filtering via WebGL2 FBO
+        // Speckle filter props — SARGPULayer handles filtering via WebGL2 FBO.
+        // Class-map props ride along here too (single-band only; ignored for RGB).
         const filterProps = {
           speckleFilterType,
           speckleKernelSize,
           pixelMode,
+          classMode,
+          classPalette,
+          classPaletteEntries,
         };
 
         // RGB composite mode - GPU accelerated (3x R32F textures)

@@ -400,6 +400,14 @@ uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=cbrt, 3=log, 4=gamma, 5=sigmoi
 uniform float uGamma;
 uniform bool uReverseColormap;
 
+// Class-map mode: sample amplitude as an integer class index and look up its
+// color in a 256×1 palette texture (the GeoTIFF's embedded ColorMap). Skips the
+// dB/stretch/colormap ramp entirely. uClassPaletteEntries = number of authored
+// classes; a palette texture must be bound (uClassPalette) when uClassMode > 0.
+uniform bool uClassMode;
+uniform sampler2D uClassPalette;
+uniform float uClassPaletteEntries;
+
 in vec2 vTexCoord;
 out vec4 fragColor;
 
@@ -408,6 +416,23 @@ ${glslColormaps}
 void main(void) {
   vec4 texel = texture(uTexture, vTexCoord);
   float amplitude = texel.r;
+
+  // ── Class-map mode: integer label → palette lookup ──
+  if (uClassMode) {
+    // 0 / NaN are background — render transparent (matches SAR nodata convention).
+    if (amplitude == 0.0 || isnan(amplitude)) {
+      fragColor = vec4(0.0);
+      DECKGL_FILTER_COLOR(fragColor, geometry);
+      return;
+    }
+    float idx = floor(amplitude + 0.5);           // nearest integer class
+    // Center-sample the palette texel for this class (256-wide palette texture).
+    float u = (idx + 0.5) / 256.0;
+    vec3 classColor = texture(uClassPalette, vec2(clamp(u, 0.0, 1.0), 0.5)).rgb;
+    fragColor = vec4(classColor, 1.0);
+    DECKGL_FILTER_COLOR(fragColor, geometry);
+    return;
+  }
 
   float value;
   if (uUseDecibels) {

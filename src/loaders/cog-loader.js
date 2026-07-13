@@ -2,6 +2,148 @@ import GeoTIFF, { fromUrl, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
 
 /**
+ * Extract a classification color table from a GeoTIFF's file directory.
+ *
+ * TIFF palette images (PhotometricInterpretation === 3) store a ColorMap tag:
+ * a flat array of 3·N 16-bit values laid out as [R0..R(N-1), G0..G(N-1),
+ * B0..B(N-1)], where N = 2^BitsPerSample (typically 256). Component values are
+ * 0–65535, so we scale to 0–255. Class index i → color (map[i], map[N+i],
+ * map[2N+i]).
+ *
+ * Returns null when the file is not a palette image (no embedded classes).
+ *
+ * @param {object} fileDirectory - geotiff.js image.getFileDirectory()
+ * @returns {{ entries: number, rgb: Uint8Array } | null}
+ *   rgb is a 256×3 packed Uint8Array (index i → rgb[i*3..i*3+2]); classes
+ *   beyond `entries` are zero-filled.
+ */
+export function extractColorTable(fileDirectory) {
+  const photometric = fileDirectory?.PhotometricInterpretation;
+  const colorMap = fileDirectory?.ColorMap;
+  // PhotometricInterpretation 3 = RGB palette. Some writers omit it but still
+  // emit a ColorMap, so accept a ColorMap on its own too.
+  if (!colorMap || !colorMap.length) return null;
+  if (photometric !== undefined && photometric !== 3) return null;
+
+  const n = Math.floor(colorMap.length / 3);
+  if (n < 2) return null;
+
+  // Detect 16-bit (0–65535) vs already-8-bit ColorMaps by peak value.
+  let peak = 0;
+  for (let i = 0; i < colorMap.length; i++) {
+    if (colorMap[i] > peak) peak = colorMap[i];
+  }
+  const scale = peak > 255 ? 255 / 65535 : 1;
+
+  const cap = Math.min(n, 256);
+  const rgb = new Uint8Array(256 * 3);
+  for (let i = 0; i < cap; i++) {
+    rgb[i * 3 + 0] = Math.round(colorMap[i] * scale);
+    rgb[i * 3 + 1] = Math.round(colorMap[n + i] * scale);
+    rgb[i * 3 + 2] = Math.round(colorMap[2 * n + i] * scale);
+  }
+  return { entries: cap, rgb };
+}
+
+/**
+ * Extract class names (index → label) from a GeoTIFF's GDAL_METADATA.
+ *
+ * GDAL writes category / class labels in a few shapes; we handle the common
+ * ones tolerantly and return whatever we can find:
+ *
+ *  1. A category list — one <Item> per class value, in order from 0:
+ *       <Item name="CATEGORY_NAMES_0">Water</Item> ...
+ *     or the newer sample= form:
+ *       <Item name="DESCRIPTION" sample="3">Forest</Item>
+ *  2. A single delimited item:
+ *       <Item name="CLASS_NAMES">Water,Forest,Urban</Item>   (comma/semicolon)
+ *
+ * @param {object} fileDirectory - geotiff.js image.getFileDirectory()
+ * @returns {Record<number,string> | null}  index → name, or null if none found
+ */
+export function extractClassNames(fileDirectory) {
+  const xml = fileDirectory?.GDAL_METADATA;
+  if (!xml || typeof xml !== 'string') return null;
+
+  const names = {};
+
+  // <Item name="..." [sample="N"]>label</Item> — attribute order varies, so
+  // capture the whole opening tag's attributes then the inner text.
+  const itemRe = /<Item\b([^>]*)>([\s\S]*?)<\/Item>/gi;
+  let m;
+  while ((m = itemRe.exec(xml)) !== null) {
+    const attrs = m[1];
+    const text = m[2].trim();
+    if (!text) continue;
+    const nameAttr = /\bname\s*=\s*"([^"]*)"/i.exec(attrs)?.[1] || '';
+    const roleAttr = (/\brole\s*=\s*"([^"]*)"/i.exec(attrs)?.[1] || '').toLowerCase();
+    const sampleAttr = /\bsample\s*=\s*"(\d+)"/i.exec(attrs)?.[1];
+
+    // A band DESCRIPTION (role="description") is per-band prose, NOT a class
+    // label — GDAL writes one per band with sample="0". Skip it so a raster's
+    // title doesn't masquerade as the name of class 0.
+    if (roleAttr === 'description') continue;
+
+    // Form 1a: CATEGORY_NAMES_<n> / CLASS_<n> / *_<n>
+    const idxSuffix = /_(\d+)\s*$/.exec(nameAttr);
+    if (/^(CATEGORY_NAMES?|CLASS(_NAMES?)?)/i.test(nameAttr) && idxSuffix) {
+      names[Number(idxSuffix[1])] = decodeXmlEntities(text);
+      continue;
+    }
+    // Form 1b: a genuine per-value category — either role="category", or a
+    // CATEGORY/CLASS-name key — carrying sample="N". Excludes bare DESCRIPTION.
+    if (sampleAttr !== undefined &&
+        (roleAttr === 'category' || /(CATEGORY|CLASS)[_ ]?NAMES?/i.test(nameAttr))) {
+      names[Number(sampleAttr)] = decodeXmlEntities(text);
+      continue;
+    }
+    // Form 2: single delimited CLASS_NAMES / CATEGORY_NAMES list
+    if (/^(CLASS_NAMES?|CATEGORY_NAMES?)$/i.test(nameAttr) && /[,;|]/.test(text)) {
+      text.split(/\s*[,;|]\s*/).forEach((label, i) => {
+        if (label) names[i] = decodeXmlEntities(label);
+      });
+      continue;
+    }
+  }
+
+  return Object.keys(names).length > 0 ? names : null;
+}
+
+/** Minimal XML entity decode for class labels (&amp; &lt; &gt; &quot; &apos;). */
+function decodeXmlEntities(s) {
+  return s
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/**
+ * Heuristic: does a raster look like an integer class map rather than
+ * continuous data? True when every sampled value is a small non-negative
+ * integer (≤ 255). Used only as a fallback hint when no embedded ColorMap is
+ * present — the user can always override via the panel's Classes toggle.
+ *
+ * @param {ArrayLike<number>} data - sample of pixel values
+ * @param {number} [maxSamples=4096]
+ * @returns {boolean}
+ */
+export function looksCategorical(data, maxSamples = 4096) {
+  if (!data || !data.length) return false;
+  const step = Math.max(1, Math.floor(data.length / maxSamples));
+  let seen = 0;
+  let maxVal = 0;
+  for (let i = 0; i < data.length; i += step) {
+    const v = data[i];
+    if (v === 0 || Number.isNaN(v)) continue; // nodata / background
+    if (v < 0 || v > 255 || v !== Math.round(v)) return false;
+    if (v > maxVal) maxVal = v;
+    seen++;
+  }
+  // Require some real data and a modest number of distinct-looking classes.
+  return seen > 0 && maxVal <= 255;
+}
+
+/**
  * Load a Cloud Optimized GeoTIFF (COG) and return a tile fetcher for deck.gl
  * @param {string} url - URL of the COG file (supports S3 URIs like s3://bucket/key or HTTPS URLs)
  * @returns {Promise<{getTile: Function, bounds: Array, crs: string, width: number, height: number}>}
@@ -601,6 +743,19 @@ export async function loadLocalTIF(file, onProgress) {
   let resolution = null;
   try { resolution = image.getResolution(); } catch (_) {}
 
+  // Classification color table: palette GeoTIFFs (PhotometricInterpretation 3)
+  // embed a ColorMap tag giving one RGB per class index. When present we render
+  // class maps with these authored colors; class detection also considers it.
+  let colorTable = null;
+  let classNames = null;
+  try {
+    const fd = image.getFileDirectory();
+    colorTable = extractColorTable(fd);
+    classNames = extractClassNames(fd);
+    if (colorTable) console.log(`[COG Loader] Embedded class color table: ${colorTable.entries} entries`);
+    if (classNames) console.log(`[COG Loader] Class names: ${Object.keys(classNames).length} labels`);
+  } catch (_) {}
+
   // GDAL_NODATA tag (e.g. -3.4028234663852886e+38 for float rasters). geotiff.js
   // does not mask these for us — we have to honour them ourselves or the
   // multilook accumulator averages sentinel values in with real data and
@@ -626,6 +781,15 @@ export async function loadLocalTIF(file, onProgress) {
     progress(85);
     console.log(`[COG Loader] Raster read: ${width}x${height} (${(fullData.byteLength / 1e6).toFixed(1)} MB)`);
   }
+
+  // Categorical detection: an embedded color table is definitive; otherwise,
+  // for plain TIFs (full data in memory) sniff whether values look like integer
+  // class labels. COGs without a color table stay continuous by default (the
+  // user can still enable Classes manually). Computed BEFORE getTile so class
+  // maps read overviews with NEAREST resampling — bilinear would blend integer
+  // class indices across boundaries, painting phantom classes along every edge.
+  const isCategorical = !!colorTable || (fullData ? looksCategorical(fullData) : false);
+  const tileResample = isCategorical ? 'nearest' : 'bilinear';
 
   // --- getTile: for COGs, read from overviews on demand ---
   // Uses bbox from deck.gl TileLayer which gives the exact world rectangle.
@@ -688,7 +852,7 @@ export async function loadLocalTIF(file, onProgress) {
         window: [ovLeft, ovTop, ovRight, ovBottom],
         width: tileSize,
         height: tileSize,
-        resampleMethod: 'bilinear',
+        resampleMethod: tileResample,
       });
       return { data: new Float32Array(rasters[0]), width: tileSize, height: tileSize };
     } catch (error) {
@@ -743,7 +907,7 @@ export async function loadLocalTIF(file, onProgress) {
 
   progress(100);
 
-  console.log(`[COG Loader] Local TIF ready: ${width}x${height}, isCOG=${isCOG}, crs=${crs}`);
+  console.log(`[COG Loader] Local TIF ready: ${width}x${height}, isCOG=${isCOG}, crs=${crs}, categorical=${isCategorical}`);
 
   return {
     ...(fullData ? { data: fullData } : {}),
@@ -765,6 +929,9 @@ export async function loadLocalTIF(file, onProgress) {
     isCOG,
     imageCount,
     nodata,
+    colorTable,      // {entries, rgb:Uint8Array(256*3)} | null
+    classNames,      // {index:number → name:string} | null (from GDAL_METADATA)
+    isCategorical,   // hint for auto-enabling class-map rendering
   };
 }
 

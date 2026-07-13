@@ -567,6 +567,21 @@ export class SARGPULayer extends Layer {
       }
     }
 
+    // Upload the class-map palette texture (256×1 RGBA) when classPalette changes.
+    // classPalette is a Uint8Array of length 256*3 (packed RGB per class index),
+    // built from the GeoTIFF's embedded ColorMap. Rebuilt only on identity change.
+    const { classPalette } = props;
+    if (classPalette && classPalette !== oldProps.classPalette) {
+      const texPal = this._createPaletteTexture(classPalette);
+      if (texPal) {
+        if (this.state.texturePalette) gl.deleteTexture(this.state.texturePalette);
+        this.setState({ texturePalette: texPal });
+      }
+    } else if (!classPalette && oldProps.classPalette && this.state.texturePalette) {
+      gl.deleteTexture(this.state.texturePalette);
+      this.setState({ texturePalette: null });
+    }
+
     // Upload coherence texture when dataCoherence changes
     const { dataCoherence, coherenceWidth, coherenceHeight } = props;
     const cohW = coherenceWidth || width;
@@ -617,10 +632,11 @@ export class SARGPULayer extends Layer {
       }
     }
 
-    // pixelMode toggle: re-set min/mag filters on existing amplitude textures
-    // without re-uploading. Mask stays NEAREST always.
-    if (props.pixelMode !== oldProps.pixelMode) {
-      const filter = props.pixelMode ? gl.NEAREST : gl.LINEAR;
+    // pixelMode / classMode toggle: re-set min/mag filters on existing amplitude
+    // textures without re-uploading. Mask stays NEAREST always; class mode forces
+    // NEAREST so integer labels aren't interpolated.
+    if (props.pixelMode !== oldProps.pixelMode || props.classMode !== oldProps.classMode) {
+      const filter = (props.pixelMode || props.classMode) ? gl.NEAREST : gl.LINEAR;
       const ampTextures = [
         this.state.texture, this.state.textureG, this.state.textureB,
         this.state.filteredTexture, this.state.filteredTextureG, this.state.filteredTextureB,
@@ -669,8 +685,9 @@ export class SARGPULayer extends Layer {
       // Set texture filtering parameters.
       // pixelMode=true forces NEAREST on amplitude textures (medical-imaging look:
       // crisp pixels, no bilinear haze). nearest=true is the always-NEAREST path
-      // for categorical data (mask).
-      const useNearest = nearest || this.props.pixelMode;
+      // for categorical data (mask). Class-map mode also requires NEAREST so
+      // integer labels aren't bilinearly blended into nonexistent classes.
+      const useNearest = nearest || this.props.pixelMode || this.props.classMode;
       const filter = useNearest ? gl.NEAREST : gl.LINEAR;
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
@@ -694,9 +711,47 @@ export class SARGPULayer extends Layer {
     }
   }
 
+  /**
+   * Create a 256×1 RGBA8 palette texture from a packed RGB Uint8Array
+   * (length 256*3). NEAREST-filtered so class-index lookups are exact.
+   * @param {Uint8Array} rgb - 256*3 packed RGB
+   * @returns {WebGLTexture|null}
+   */
+  _createPaletteTexture(rgb) {
+    const { gl } = this.context;
+    try {
+      const rgba = new Uint8Array(256 * 4);
+      for (let i = 0; i < 256; i++) {
+        rgba[i * 4 + 0] = rgb[i * 3 + 0] || 0;
+        rgba[i * 4 + 1] = rgb[i * 3 + 1] || 0;
+        rgba[i * 4 + 2] = rgb[i * 3 + 2] || 0;
+        rgba[i * 4 + 3] = 255;
+      }
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      const glErr = gl.getError();
+      if (glErr !== gl.NO_ERROR) {
+        console.error(`[SARGPULayer] GL error 0x${glErr.toString(16)} creating palette texture`);
+        gl.deleteTexture(texture);
+        return null;
+      }
+      return texture;
+    } catch (err) {
+      console.error('[SARGPULayer] Palette texture creation failed:', err);
+      return null;
+    }
+  }
+
   draw({ uniforms }) {
     const { model, texture, textureG, textureB, textureMask, textureCoherence,
             textureIncidence, texCorIono, texCorTropo, texCorSET, texCorRamp,
+            texturePalette,
             filteredTexture, filteredTextureG, filteredTextureB } = this.state;
 
     if (!model || !texture) return;
@@ -716,6 +771,8 @@ export class SARGPULayer extends Layer {
       rgbSaturation = 1.0,
       colorblindMode = 'off',
       mode = 'single',
+      classMode = false,
+      classPaletteEntries = 0,
       maskInvalid = false,
       maskLayoverShadow = false,
       useCoherenceMask = false,
@@ -778,6 +835,11 @@ export class SARGPULayer extends Layer {
         uGamma: gamma,
         uStretchMode: getStretchModeId(stretchMode),
         uMode: isRGB ? 1.0 : 0.0,
+        // Class-map mode: integer label → palette texture (unit 10). Only active
+        // in single-band mode with a palette texture bound.
+        uClassMode: (!isRGB && classMode && texturePalette) ? 1.0 : 0.0,
+        uClassPalette: 10,
+        uClassPaletteEntries: classPaletteEntries,
         uMaskInvalid: (maskInvalid && textureMask) ? 1.0 : 0.0,
         uMaskLayoverShadow: (maskLayoverShadow && textureMask) ? 1.0 : 0.0,
         uTextureMask: 3,
@@ -837,10 +899,17 @@ export class SARGPULayer extends Layer {
       if (texCorSET) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, texCorSET); }
       if (texCorRamp) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, texCorRamp); }
 
+      // Bind class-map palette texture to unit 10
+      if (texturePalette) {
+        gl.activeTexture(gl.TEXTURE10);
+        gl.bindTexture(gl.TEXTURE_2D, texturePalette);
+      }
+
       model.setUniforms(layerUniforms);
       model.draw();
 
       // Unbind textures
+      if (texturePalette) { gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, null); }
       if (texCorRamp) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, null); }
       if (texCorSET) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, null); }
       if (texCorTropo) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, null); }
@@ -897,6 +966,7 @@ export class SARGPULayer extends Layer {
       if (this.state.texCorTropo) gl.deleteTexture(this.state.texCorTropo);
       if (this.state.texCorSET) gl.deleteTexture(this.state.texCorSET);
       if (this.state.texCorRamp) gl.deleteTexture(this.state.texCorRamp);
+      if (this.state.texturePalette) gl.deleteTexture(this.state.texturePalette);
       // Clean up FBO-filtered textures
       if (this.state.filteredTexture) gl.deleteTexture(this.state.filteredTexture);
       if (this.state.filteredTextureG) gl.deleteTexture(this.state.filteredTextureG);
@@ -948,6 +1018,10 @@ SARGPULayer.defaultProps = {
   corRampHeight: { type: 'number', value: 0, min: 0 },
   corRamp: { type: 'boolean', value: false, compare: true },
   mode: { type: 'string', value: 'single', compare: true },  // 'single' or 'rgb'
+  // Class-map mode: render integer labels via an embedded palette (see shaders.js).
+  classMode: { type: 'boolean', value: false, compare: true },
+  classPalette: { type: 'object', value: null, compare: false },  // Uint8Array(256*3) | null
+  classPaletteEntries: { type: 'number', value: 0, min: 0, compare: true },
   width: { type: 'number', value: 256, min: 1 },
   height: { type: 'number', value: 256, min: 1 },
   bounds: { type: 'array', value: [-180, -90, 180, 90], compare: true },

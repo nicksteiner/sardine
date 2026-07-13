@@ -22,7 +22,7 @@ export const EXPORT_SIDECAR_VERSION = 1;
 // test/unit/export-sidecar.test.mjs, which fails on drift.
 // (A literal is used because JSON import attributes are not portable
 // across Vite 4 builds and Node >= 22 test runs.)
-export const SARDINE_VERSION = '1.0.0-beta.8';
+export const SARDINE_VERSION = '1.0.0-beta.9';
 
 /**
  * Infer the product type when the caller didn't supply one.
