@@ -30,6 +30,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   if (isCollapsed) {
     return (
       <div
+        className="status-pulltab"
         onClick={handleToggle}
         style={{
           position: 'fixed',
@@ -179,7 +180,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   });
 
   return (
-    <div style={containerStyle}>
+    <div className="status-window" style={containerStyle}>
       <div style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           {allTabs.map(t => (

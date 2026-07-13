@@ -57,6 +57,8 @@ import { ROIProfilePanel } from '../src/components/ROIProfilePanel.jsx';
 import { TransectProfilePanel } from '../src/components/TransectProfilePanel.jsx';
 import { ANNOTATION_COLORS, ANNOTATION_COLOR_KEYS } from '../src/utils/annotation-render.js';
 import { CommandPalette } from '../src/components/CommandPalette.jsx';
+import { ActivityRail } from '../src/components/ActivityRail.jsx';
+import { ContextMenu } from '../src/components/ContextMenu.jsx';
 import { ScrubNumber } from '../src/components/ScrubNumber.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
@@ -263,6 +265,16 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
     </div>
   );
 }
+
+// Activity rail groups — each id gates a cluster of control sections in the
+// panel (one group visible at a time, VS Code activity-bar style).
+const RAIL_GROUPS = [
+  { id: 'data', title: 'Data', icon: 'database' },
+  { id: 'display', title: 'Display', icon: 'sliders' },
+  { id: 'analysis', title: 'Analyze', icon: 'target' },
+  { id: 'layers', title: 'Layers', icon: 'layers' },
+  { id: 'export', title: 'Export', icon: 'share' },
+];
 
 /**
  * Compute a synthetic per-channel histogram using a log-normal model with
@@ -526,6 +538,14 @@ function App() {
   const [medicalMode, setMedicalMode] = useState(false);
   const [medicalInverted, setMedicalInverted] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  // Activity rail: which control-panel group is showing, whether the panel
+  // is visible at all (desktop collapse), and the mobile bottom-sheet detent.
+  const [activePanel, setActivePanel] = useState('data');
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  // Viewer context menu (right-click / long-press): {x, y} or null
+  const [contextMenu, setContextMenu] = useState(null);
   const [contrastMin, setContrastMin] = useState(-25);
   const [contrastMax, setContrastMax] = useState(0);
   const [gamma, setGamma] = useState(1.0);
@@ -5588,6 +5608,110 @@ function App() {
     handleReload, handleSaveFigure, handleSaveFigureWithOverlays, handleExportColorbar, addStatusLog,
   ]);
 
+  // ── Activity rail + viewer context menu ──────────────────────────
+  const handleRailSelect = useCallback((id) => {
+    if (id === activePanel && panelOpen) {
+      setPanelOpen(false);
+    } else {
+      setActivePanel(id);
+      setPanelOpen(true);
+    }
+  }, [activePanel, panelOpen]);
+
+  // First load: advance from Data to Display once a scene is on screen.
+  const railAutoAdvancedRef = useRef(false);
+  useEffect(() => {
+    if (imageData && !railAutoAdvancedRef.current) {
+      railAutoAdvancedRef.current = true;
+      setActivePanel(prev => (prev === 'data' ? 'display' : prev));
+    }
+    if (!imageData) railAutoAdvancedRef.current = false;
+  }, [imageData]);
+
+  // Context menu items come from the same registry as the command palette,
+  // plus viewer-specific extras. Gated by each action's `when`.
+  const contextMenuItems = useMemo(() => {
+    const pick = (id) => {
+      const a = paletteActions.find(x => x.id === id);
+      return a && (!a.when || a.when()) ? a : null;
+    };
+    const items = [];
+    if (imageData?.bounds) {
+      items.push({ id: 'ctx.fit', group: 'view', label: 'Fit view to data', run: fitToBounds });
+    }
+    const reload = pick('act.reload');
+    if (reload) items.push({ ...reload, group: 'view', label: 'Reload view' });
+    if (imageData) {
+      items.push({
+        id: 'ctx.arrow', group: 'annotate',
+        label: annotationMode === 'arrow' ? 'Annotate: stop arrow tool' : 'Annotate: arrow',
+        run: () => setAnnotationMode(m => (m === 'arrow' ? 'off' : 'arrow')),
+      });
+      items.push({
+        id: 'ctx.text', group: 'annotate',
+        label: annotationMode === 'text' ? 'Annotate: stop text tool' : 'Annotate: text label',
+        run: () => setAnnotationMode(m => (m === 'text' ? 'off' : 'text')),
+      });
+    }
+    if (roi) {
+      items.push({ id: 'ctx.roiClear', group: 'roi', label: 'Clear ROI', run: () => setROI(null) });
+      const cls = pick('mode.classifier');
+      if (cls) items.push({ ...cls, group: 'roi' });
+    }
+    for (const id of ['mode.histogram', 'mode.grid']) {
+      const a = pick(id);
+      if (a) items.push({ ...a, group: 'display' });
+    }
+    const fig = pick('act.figure');
+    if (fig) items.push({ ...fig, group: 'capture' });
+    const figO = pick('act.figureOverlays');
+    if (figO) items.push({ ...figO, group: 'capture' });
+    if (imageData) {
+      items.push({
+        id: 'ctx.copystate', group: 'clipboard', label: 'Copy render state', shortcut: 'Ctrl+C',
+        run: () => {
+          const json = JSON.stringify(serializeRenderState(), null, 2);
+          if (navigator.clipboard?.writeText) {
+            navigator.clipboard.writeText(json).then(
+              () => addStatusLog('success', 'Render state copied to clipboard'),
+              (err) => addStatusLog('error', 'Failed to copy render state', err && err.message),
+            );
+          } else {
+            addStatusLog('error', 'Clipboard API unavailable');
+          }
+        },
+      });
+    }
+    items.push({
+      id: 'ctx.palette', group: 'more', label: 'All commands…', shortcut: 'Ctrl+Shift+{',
+      run: () => setCommandPaletteOpen(true),
+    });
+    return items;
+  }, [paletteActions, imageData, roi, annotationMode, fitToBounds, serializeRenderState, addStatusLog]);
+
+  const handleViewerContextMenu = useCallback((e) => {
+    e.preventDefault();
+    setContextMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  // Long-press → context menu on touch devices (iOS Safari has no
+  // contextmenu event; Android fires both — the second set is a no-op).
+  const longPressTimerRef = useRef(null);
+  const handleViewerPointerDown = useCallback((e) => {
+    if (e.pointerType !== 'touch') return;
+    const { clientX, clientY } = e;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTimerRef.current = null;
+      setContextMenu({ x: clientX, y: clientY });
+    }, 550);
+  }, []);
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
   // NOTE: Duplicate block removed — all handlers defined above
   return (
     <div id="app"
@@ -5600,6 +5724,13 @@ function App() {
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         actions={paletteActions}
+      />
+      <ContextMenu
+        open={!!contextMenu}
+        x={contextMenu?.x ?? 0}
+        y={contextMenu?.y ?? 0}
+        items={contextMenuItems}
+        onClose={() => setContextMenu(null)}
       />
       {/* Drag-and-drop overlay */}
       {dragOver && (
@@ -5680,8 +5811,28 @@ function App() {
 
       {/* Main Layout */}
       <div className="main-layout">
-        {/* Controls Panel */}
-        <div className="controls-panel">
+        <ActivityRail
+          groups={RAIL_GROUPS}
+          active={activePanel}
+          open={panelOpen}
+          onSelect={handleRailSelect}
+          onPalette={() => setCommandPaletteOpen(true)}
+        />
+        {/* Controls Panel — one rail group visible at a time */}
+        <div className={`controls-panel${panelOpen ? '' : ' closed'}${sheetExpanded ? ' expanded' : ''}`}>
+          <button
+            className="sheet-handle"
+            aria-label={sheetExpanded ? 'Collapse panel' : 'Expand panel'}
+            onClick={() => setSheetExpanded(v => !v)}
+          />
+          {!imageData && (activePanel === 'analysis' || activePanel === 'export') && (
+            <div className="control-section" style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+              Load a scene to enable {activePanel === 'analysis'
+                ? 'ROI, annotation, and profile tools'
+                : 'export and share options'}.
+            </div>
+          )}
+          {activePanel === 'data' && (<>
           {/* Data Source Selection */}
           <CollapsibleSection title="Data Source">
             <div className="control-group">
@@ -5791,10 +5942,12 @@ function App() {
             </div>
           </CollapsibleSection>
 
+          </>)}
+
           {/* Share link — a URL exists only for remote sources (COG URL or
               DAAC NISAR URL). For local files the button is shown disabled
               with an explanatory tooltip (W008). */}
-          {(sharedRawUrl || imageData) && (
+          {activePanel === 'export' && (sharedRawUrl || imageData) && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
               <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
                 Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.
@@ -5854,6 +6007,7 @@ function App() {
             </CollapsibleSection>
           )}
 
+          {activePanel === 'data' && (<>
           {/* Local GeoTIFF Input */}
           {fileType === 'local-tif' && (
             <CollapsibleSection title="Load Local GeoTIFF">
@@ -6539,6 +6693,9 @@ function App() {
           )}
 
           {/* Current Session Status */}
+          </>)}
+
+          {/* Scene status card — pinned above every panel group */}
           {imageData && (
             <div style={{
               background: 'var(--sardine-bg-raised)',
@@ -6638,6 +6795,7 @@ function App() {
             </div>
           )}
 
+          {activePanel === 'layers' && (<>
           {/* Overture Maps Overlay */}
           <CollapsibleSection title="Overture Maps" defaultOpen={false}>
             <div className="control-group">
@@ -6764,7 +6922,10 @@ function App() {
             )}
           </CollapsibleSection>
 
+          </>)}
+
           {/* Display Settings */}
+          {activePanel === 'display' && (
           <CollapsibleSection title="Display">
 
             <div className="control-group">
@@ -6871,9 +7032,14 @@ function App() {
               </div>
             </div>
 
-            {/* Export settings */}
+          </CollapsibleSection>
+          )}
+
+          {/* Export settings */}
+          {activePanel === 'export' && imageData?.getExportStripe && (
+          <CollapsibleSection title="Export Settings">
             {imageData && imageData.getExportStripe && (
-              <div className="control-group" style={{ marginTop: '8px' }}>
+              <div className="control-group">
                 <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
                   Multilook Window (Export)
                 </label>
@@ -6929,9 +7095,14 @@ function App() {
               </div>
             )}
 
-            {/* ROI (Region of Interest) info */}
+          </CollapsibleSection>
+          )}
+
+          {/* ROI (Region of Interest) info */}
+          {activePanel === 'analysis' && imageData && (
+          <CollapsibleSection title="Region of Interest">
             {imageData && (
-              <div style={{ marginTop: '8px', fontSize: '0.75rem' }}>
+              <div style={{ fontSize: '0.75rem' }}>
                 {roi ? (
                   <div style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -7110,9 +7281,14 @@ function App() {
               </div>
             )}
 
-            {/* Export buttons */}
+          </CollapsibleSection>
+          )}
+
+          {/* Export buttons */}
+          {activePanel === 'export' && imageData && (
+          <CollapsibleSection title="Export">
             {imageData && (
-              <div style={{ marginTop: '8px' }}>
+              <div>
                 <div style={{ display: 'flex', gap: '6px' }}>
                 {imageData?.getExportStripe && (
                   <button
@@ -7211,8 +7387,15 @@ function App() {
                     />
                   )}
                 </div>
-                {/* Annotation toolbar — arrows + text labels baked into PNG export */}
-                <div className="control-group" style={{ marginTop: '6px' }}>
+              </div>
+            )}
+          </CollapsibleSection>
+          )}
+
+          {/* Annotation toolbar — arrows + text labels baked into PNG export */}
+          {activePanel === 'analysis' && imageData && (
+          <CollapsibleSection title="Annotate">
+                <div className="control-group">
                   <label style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)' }}>
                     Annotate
                     {annotations.length > 0 && (
@@ -7373,9 +7556,21 @@ function App() {
                     />
                   </div>
                 </div>
-              </div>
-            )}
-            {isRGBDisplayMode && compositeId && (
+          </CollapsibleSection>
+          )}
+
+          {/* ROI profile plots (toggle views from command palette) */}
+          {activePanel === 'analysis' && roi && activeViewer === 'main' && (
+            <CollapsibleSection title="ROI Profiles" defaultOpen={true}>
+              <ROIProfilePanel
+                profileData={roiProfile}
+                show={profileShow}
+                useDecibels={effectiveUseDecibels}
+              />
+            </CollapsibleSection>
+          )}
+
+          {activePanel === 'export' && isRGBDisplayMode && compositeId && (
               <div style={{ marginTop: '6px' }}>
                 <button
                   onClick={handleExportColorbar}
@@ -7385,10 +7580,10 @@ function App() {
                   Export Colorbar (PNG)
                 </button>
               </div>
-            )}
-          </CollapsibleSection>
+          )}
 
           {/* Histogram & Contrast */}
+          {activePanel === 'display' && (
           <CollapsibleSection title="Contrast">
             {/* Histogram scope toggle — shown when histogram exists, or always in RGB mode so
                 user can trigger the first computation via the Viewport/ROI buttons */}
@@ -7507,18 +7702,6 @@ function App() {
                 showHeader={false}
               />
             )}
-
-            {/* ROI profile plots — drawer panel (toggle views from command palette) */}
-            {roi && activeViewer === 'main' && (
-              <CollapsibleSection title="ROI Profiles" defaultOpen={true}>
-                <ROIProfilePanel
-                  profileData={roiProfile}
-                  show={profileShow}
-                  useDecibels={effectiveUseDecibels}
-                />
-              </CollapsibleSection>
-            )}
-
 
             {/* GUNW phase controls: LOS displacement toggle + symmetric range presets */}
             {nisarProductType === 'GUNW' && imageData && (
@@ -7906,6 +8089,7 @@ function App() {
               </div>
             )}
           </CollapsibleSection>
+          )}
 
           {/* NOTE: Tone Mapping UI hidden — feature only wired for SARTiledCOGLayer,
              not for HDF5/BitmapLayer/GPULayer paths. The implementation lives in
@@ -7916,7 +8100,15 @@ function App() {
         </div>
 
         {/* Viewer Container */}
-        <div className="viewer-container" style={{ '--bottom-dock': statusCollapsed ? '32px' : '310px' }}>
+        <div
+          className="viewer-container"
+          style={{ '--bottom-dock': statusCollapsed ? '32px' : '310px' }}
+          onContextMenu={handleViewerContextMenu}
+          onPointerDown={handleViewerPointerDown}
+          onPointerMove={cancelLongPress}
+          onPointerUp={cancelLongPress}
+          onPointerCancel={cancelLongPress}
+        >
           {loading && <div className="loading">{fileType === 'cmr' ? 'Streaming NISAR metadata from DAAC...' : 'Loading...'}</div>}
 
           {error && <div className="error">{error}</div>}
@@ -8335,7 +8527,7 @@ function App() {
       />
 
       {/* Footer */}
-      <footer style={{
+      <footer className="app-footer" style={{
         position: 'fixed',
         bottom: 0,
         left: 0,
