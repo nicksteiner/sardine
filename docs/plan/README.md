@@ -60,7 +60,25 @@ Wave 3 (vertical slice):    W011 flood workflow end-to-end (SAM assist + agent p
                                  + accept/reject + STAC-labeled export)
 Wave 4 (publish):           W012 h5chunk to npm, schemas as draft STAC extensions,
                                  public demo instance
+
+GPU track (from docs/GPU_AUDIT_AND_HORIZON_2026-07.md — runs parallel to Waves 2–4):
+Wave G1 (foundation):       W018 gpu-capability-probe   W019 gpu-export-parity
+                                │                        W021 compute-pyramid
+                            W020 subgroup-histogram (after W018)
+Wave G2 (differentiators):  W022 shader-module-chain (after W014 merge)
+                            W023 phase-toolkit-v1     W024 ml-inference-substrate
+                                                          │ (feeds W011 component 5)
 ```
+
+## GPU-track backlog (audited, not yet ordered)
+
+From `docs/GPU_AUDIT_AND_HORIZON_2026-07.md` §4 — write orders when their gates
+clear: **client-side evalscripts** (needs W010 sign-off + W022), **WGSL batched
+FFT → Goldstein filter → DCT browse-unwrap + SNAPHU-WASM** (after W023 proves
+the phase lane), **GPU mesh reprojection** (port `@developmentseed/
+raster-reproject`), **Viv-style N-channel compositor + lens**, **Neuroglancer-
+grade chunk prioritization**. Explicit do-NOT-do list (WebGPU render migration,
+GPU decompression, WebNN/TF.js, f16 power accumulation) is in the audit doc.
 
 ## sardine-agent API ground truth (do not invent APIs)
 

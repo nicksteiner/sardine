@@ -21,6 +21,13 @@ Convert internal artifacts into the platform layer other people build on.
    deep links to public NISAR granules; "View in SARdine" snippet for docs/papers.
    COOP/COEP headers if W006 workers need them (verify — plain Workers don't;
    SharedArrayBuffer would).
+4. **Chunk-manifest interop** (added 2026-07-13, from
+   docs/GPU_AUDIT_AND_HORIZON_2026-07.md §3) — h5chunk exports/imports its chunk
+   index as a kerchunk-JSON-style manifest (instant reopen of a granule, shareable
+   / precomputable server-side for the demo). Positions h5chunk as "kerchunk for
+   the browser" — the survey confirmed no one else does client-side HDF5
+   chunk-index streaming. Stretch: zarrita-based Zarr v3(+sharding) as a sibling
+   array backend behind the same loader interface.
 
 ## Acceptance criteria
 
