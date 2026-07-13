@@ -66,6 +66,11 @@ import { IncidenceScatter, sampleScatterData } from '../src/components/Incidence
 import { loadMetadataCube } from '../src/utils/metadata-cube.js';
 import { loadAllCorrections, CORRECTION_TYPES } from '../src/utils/phase-corrections.js';
 import { embedStateInPNG, extractStateFromPNG } from '../src/utils/png-state.js';
+import ModelPanel from '../src/components/ModelPanel.jsx';
+import { createModelRegistry, runModel, buildHeadManifest } from '../src/ml/registry.js';
+import { manifestDefaults, serializeManifest, deserializeManifest } from '../src/ml/manifest.js';
+import { trainLogistic, evaluateModel, predictLogistic } from '../src/ml/trainer.js';
+import { datasetFromClassRegions, stratifiedSplit } from '../src/ml/dataset.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -620,6 +625,20 @@ function App() {
   const [classifierData, setClassifierData] = useState(null); // {x: Float32Array, y: Float32Array, valid: Uint8Array, w, h}
   const [classifierBands, setClassifierBands] = useState({ x: 'HHHH', y: 'HVHV' });
   const [classificationMap, setClassificationMap] = useState(null); // Uint8Array per ROI pixel
+
+  // ── Model plugins (W025) ──────────────────────────────────────────
+  const modelRegistry = useMemo(() => createModelRegistry(), []);
+  const [modelListVersion, setModelListVersion] = useState(0);
+  const modelList = useMemo(() => modelRegistry.list(), [modelRegistry, modelListVersion]);
+  const [modelBusyId, setModelBusyId] = useState(null);
+  const [modelProgress, setModelProgress] = useState(null); // {phase, done, total}
+  const [modelRunInfo, setModelRunInfo] = useState(null);   // {id, ep, weightsFrom, elapsedMs}
+  const [modelPreview, setModelPreview] = useState(null);   // {before, after, width, height}
+  const [modelOverlay, setModelOverlay] = useState(null);   // {map, dims:{w,h}, regions}
+  const [headManifest, setHeadManifest] = useState(null);
+  const [headMetrics, setHeadMetrics] = useState(null);
+  const [liveFit, setLiveFit] = useState(false);
+  const modelAbortRef = useRef(null);
   const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
   const [incidenceRange, setIncidenceRange] = useState([0, 90]); // min/max incidence angle filter (degrees)
 
@@ -5608,6 +5627,190 @@ function App() {
     handleReload, handleSaveFigure, handleSaveFigureWithOverlays, handleExportColorbar, addStatusLog,
   ]);
 
+  // ── Model plugin handlers (W025) ──────────────────────────────────
+
+  // ROI band extraction for model runs — same getExportStripe path as the
+  // classifier, capped ~384 px on the long axis, returns LINEAR POWER
+  // (the registry applies the manifest's declared transform).
+  const extractRoiBandsForModel = useCallback(async (wantBands) => {
+    const sourceW = imageData.width;
+    const sourceH = imageData.height;
+    const ml = Math.max(1, Math.ceil(Math.max(roi.width, roi.height) / 384));
+    const startCol = Math.floor(Math.max(0, roi.left) / ml);
+    const startRow = Math.floor(Math.max(0, roi.top) / ml);
+    const endCol = Math.floor(Math.min(roi.left + roi.width, sourceW) / ml);
+    const endRow = Math.floor(Math.min(roi.top + roi.height, sourceH) / ml);
+    const exportW = Math.max(1, endCol - startCol);
+    const exportH = Math.max(1, endRow - startRow);
+    const result = await imageData.getExportStripe({
+      startRow, numRows: exportH, ml, exportWidth: exportW, startCol, numCols: exportW,
+    });
+    const names = Object.keys(result.bands);
+    const resolved = wantBands.map((b, i) => {
+      if (b === 'ACTIVE') return result.bands[selectedPolarization] ? selectedPolarization : names[0];
+      return result.bands[b] ? b : (names[i] ?? names[0]);
+    });
+    const bands = resolved.map((n) => result.bands[n]);
+    if (bands.some((b) => !b)) {
+      throw new Error(`bands unavailable: wanted [${wantBands.join(', ')}], scene has [${names.join(', ')}]`);
+    }
+    return { bands, width: exportW, height: exportH, resolved };
+  }, [imageData, roi, selectedPolarization]);
+
+  // classmap result → overlay {map (1-based), regions}; classes with
+  // color_hint 00000000 (e.g. "not water") stay undrawn; 255 = invalid.
+  const overlayFromClassmap = useCallback((result, classes) => {
+    const n = result.data.length;
+    const map = new Uint8Array(n);
+    const regions = [];
+    const valueToIdx = new Map();
+    for (const c of (classes || [])) {
+      if ((c.color_hint || '') === '00000000') { valueToIdx.set(c.value, 0); continue; }
+      regions.push({ name: c.name, color: `#${c.color_hint || '4ec9d4'}` });
+      valueToIdx.set(c.value, regions.length);
+    }
+    for (let i = 0; i < n; i++) {
+      const v = result.data[i];
+      map[i] = v === 255 ? 0 : (valueToIdx.get(v) ?? 0);
+    }
+    return { map, dims: { w: result.width, h: result.height }, regions };
+  }, []);
+
+  const handleRunModel = useCallback(async (manifest) => {
+    if (!imageData || !roi) {
+      addStatusLog('warning', 'Load a scene and Shift+drag an ROI before running a model');
+      return;
+    }
+    const ctrl = new AbortController();
+    modelAbortRef.current = ctrl;
+    setModelBusyId(manifest.id);
+    setModelProgress(null);
+    setModelRunInfo(null);
+    try {
+      const d = manifestDefaults(manifest);
+      const input = await extractRoiBandsForModel(d.bands);
+      const result = await runModel(manifest, input, {
+        signal: ctrl.signal,
+        onProgress: (phase, done, total) => setModelProgress({ phase, done, total }),
+      });
+      if (result.kind === 'classmap') {
+        setModelOverlay(overlayFromClassmap(result, d.classes));
+        setModelPreview(null);
+      } else if (result.kind === 'raster') {
+        setModelPreview({ before: input.bands[0], after: result.data, width: result.width, height: result.height });
+      }
+      setModelRunInfo({ id: manifest.id, ep: result.ep, weightsFrom: result.weightsFrom, elapsedMs: result.elapsedMs });
+      addStatusLog('success', `Model ran: ${manifest['mlm:name']}`,
+        `${Math.round(result.elapsedMs)} ms${result.ep ? ` · ${result.ep} EP` : ''}${result.weightsFrom ? ` · weights: ${result.weightsFrom}` : ''}`);
+    } catch (e) {
+      if (e?.name === 'AbortError') addStatusLog('info', `Model run canceled: ${manifest['mlm:name']}`);
+      else addStatusLog('error', `Model failed: ${manifest['mlm:name']}`, e.message);
+    } finally {
+      setModelBusyId(null);
+      setModelProgress(null);
+      modelAbortRef.current = null;
+    }
+  }, [imageData, roi, extractRoiBandsForModel, overlayFromClassmap, addStatusLog]);
+
+  const handleCancelModel = useCallback(() => { modelAbortRef.current?.abort(); }, []);
+
+  // Fast path for the live loop: predict directly on the classifier's
+  // already-extracted dB features — no re-extraction, milliseconds.
+  const applyHeadToClassifierData = useCallback((manifest) => {
+    if (!classifierData || !manifest) return;
+    const { x, y, valid, w, h } = classifierData;
+    const n = x.length;
+    const X = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      X[i * 2] = valid[i] ? x[i] : NaN;
+      X[i * 2 + 1] = valid[i] ? y[i] : NaN;
+    }
+    const classes = manifest['mlm:output'][0]['classification:classes'];
+    const model = {
+      weights: manifest['sardine:params'].weights,
+      mean: manifest['sardine:params'].mean,
+      std: manifest['sardine:params'].std,
+      numClasses: classes.length,
+      numFeatures: 2,
+    };
+    const { labels } = predictLogistic(model, X, n);
+    const regions = classes.map((c) => ({ name: c.name, color: `#${c.color_hint || '4ec9d4'}` }));
+    const map = new Uint8Array(n);
+    for (let i = 0; i < n; i++) map[i] = labels[i] === 255 ? 0 : labels[i] + 1;
+    setModelOverlay({ map, dims: { w, h }, regions });
+  }, [classifierData]);
+
+  const fitHeadFromLabels = useCallback((applyAfter = true) => {
+    if (!classifierData || classRegions.length < 2) return null;
+    try {
+      const ds = datasetFromClassRegions(classifierData, classRegions, { seed: 1337 });
+      const split = stratifiedSplit(
+        { X: ds.X, y: ds.y, n: ds.n, numFeatures: 2, numClasses: ds.numClasses },
+        { testFraction: 0.25, seed: 1337 });
+      const model = trainLogistic({
+        X: split.train.X, y: split.train.y,
+        numClasses: ds.numClasses, numFeatures: 2, seed: 1337,
+      });
+      const metrics = evaluateModel(model, split.test.X, split.test.y, split.test.n);
+      const manifest = buildHeadManifest({
+        name: `${classifierBands.x}/${classifierBands.y} head`,
+        model,
+        bands: [classifierBands.x, classifierBands.y],
+        transform: 'dB',
+        classes: classRegions.map((r) => ({ name: r.name, color: r.color })),
+        metrics,
+        provenance: {
+          scene: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
+          nTrain: split.train.n, nTest: split.test.n,
+        },
+      });
+      setHeadManifest(manifest);
+      setHeadMetrics(metrics);
+      try { modelRegistry.register(manifest); setModelListVersion((v) => v + 1); } catch { /* replace in place */ }
+      if (applyAfter) applyHeadToClassifierData(manifest);
+      return manifest;
+    } catch (e) {
+      addStatusLog('error', 'Head fit failed', e.message);
+      return null;
+    }
+  }, [classifierData, classRegions, classifierBands, fileType, nisarFile, cogUrl,
+    modelRegistry, applyHeadToClassifierData, addStatusLog]);
+
+  // Live loop: refit + repaint on label changes (classical head only).
+  useEffect(() => {
+    if (!liveFit || !classifierData || classRegions.length < 2) return undefined;
+    const t = setTimeout(() => { fitHeadFromLabels(true); }, 300);
+    return () => clearTimeout(t);
+  }, [liveFit, classifierData, classRegions, fitHeadFromLabels]);
+
+  const handleApplyHead = useCallback(() => {
+    if (!headManifest) return;
+    if (classifierData) applyHeadToClassifierData(headManifest);
+    else handleRunModel(headManifest);
+  }, [headManifest, classifierData, applyHeadToClassifierData, handleRunModel]);
+
+  const handleSaveHead = useCallback(() => {
+    if (!headManifest) return;
+    const blob = new Blob([serializeManifest(headManifest)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${headManifest.id}.sardine-model.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    addStatusLog('success', `Model saved: ${a.download}`, 'STAC-MLM-aligned manifest; loads back via "Load model…"');
+  }, [headManifest, addStatusLog]);
+
+  const handleLoadManifestFile = useCallback((file) => {
+    file.text().then((text) => {
+      const { manifest, warnings } = deserializeManifest(text);
+      const regWarnings = modelRegistry.register(manifest);
+      setModelListVersion((v) => v + 1);
+      for (const wmsg of [...warnings, ...regWarnings]) addStatusLog('warning', wmsg);
+      addStatusLog('success', `Model loaded: ${manifest['mlm:name']}`,
+        `${manifest['sardine:backend']} · ${manifest['mlm:tasks'].join(', ')}`);
+    }).catch((e) => addStatusLog('error', `Model load failed: ${file.name}`, e.message));
+  }, [modelRegistry, addStatusLog]);
+
   // ── Activity rail + viewer context menu ──────────────────────────
   const handleRailSelect = useCallback((id) => {
     if (id === activePanel && panelOpen) {
@@ -7559,6 +7762,39 @@ function App() {
           </CollapsibleSection>
           )}
 
+          {/* Model plugins (W025) — heuristic / ML / ONNX / remote as peers */}
+          {activePanel === 'analysis' && (
+            <CollapsibleSection title="Models" defaultOpen={true}>
+              <ModelPanel
+                models={modelList}
+                hasData={!!imageData}
+                hasRoi={!!roi}
+                busyId={modelBusyId}
+                progress={modelProgress}
+                runInfo={modelRunInfo}
+                onRun={handleRunModel}
+                onCancel={handleCancelModel}
+                overlayActive={!!modelOverlay}
+                onClearOverlay={() => setModelOverlay(null)}
+                preview={modelPreview}
+                canFit={!!classifierData && classRegions.length >= 2}
+                fitHint={!roi
+                  ? 'Shift+drag an ROI, open the classifier (C), draw ≥2 class regions.'
+                  : (!classifierOpen
+                    ? 'Open the classifier (C) and draw ≥2 class regions in feature space.'
+                    : 'Draw ≥2 class regions in the scatter plot — they become training labels.')}
+                liveFit={liveFit}
+                onLiveFitChange={setLiveFit}
+                onFit={() => fitHeadFromLabels(true)}
+                onApplyHead={handleApplyHead}
+                onSaveHead={handleSaveHead}
+                headManifest={headManifest}
+                headMetrics={headMetrics}
+                onLoadManifestFile={handleLoadManifestFile}
+              />
+            </CollapsibleSection>
+          )}
+
           {/* ROI profile plots (toggle views from command palette) */}
           {activePanel === 'analysis' && roi && activeViewer === 'main' && (
             <CollapsibleSection title="ROI Profiles" defaultOpen={true}>
@@ -8253,9 +8489,9 @@ function App() {
                   yCoords={imageData?.yCoords}
                   roiProfile={null}
                   profileShow={{ v: false, h: false, i: false }}
-                  classificationMap={classifierOpen ? classificationMap : null}
-                  classRegions={classRegions}
-                  classifierRoiDims={classifierRoiDims}
+                  classificationMap={modelOverlay ? modelOverlay.map : (classifierOpen ? classificationMap : null)}
+                  classRegions={modelOverlay ? modelOverlay.regions : classRegions}
+                  classifierRoiDims={modelOverlay ? modelOverlay.dims : classifierRoiDims}
                   mosaicLayers={gcovMosaicLayers}
                   medicalMode={medicalMode}
                   setContrastLimits={(lim) => {
