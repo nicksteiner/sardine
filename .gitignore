@@ -70,3 +70,4 @@ docs/local/**
 docs/local\ /
 docs/local\ /**
 /docs-internal/
+test/_*
