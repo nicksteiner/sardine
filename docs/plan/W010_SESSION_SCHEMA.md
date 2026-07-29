@@ -1,7 +1,7 @@
 # W010 — SARScene / RenderConfig / SessionState schemas (DESIGN GATE)
 
 wave: 2
-status: todo
+status: branch-ready — design doc + schemas + no-dep validator authored 2026-07-29; PI decisions rounds 1+2 encoded (see design doc §8); PR is the sign-off vehicle
 blocked_by: [W001, W004, W005]
 branch: w010-session-schema
 

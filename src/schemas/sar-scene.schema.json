@@ -1,0 +1,43 @@
+{
+  "$id": "sar-scene.schema.json",
+  "title": "SARScene",
+  "description": "W010: canonical loaded-scene descriptor. Replaces opaque LoadedSource.meta. identification is an OPAQUE pass-through (W005 rule).",
+  "type": "object",
+  "required": ["sardine:scene", "source", "productType", "crs", "bounds", "width", "height", "capabilities", "identification"],
+  "properties": {
+    "sardine:scene": { "const": 1 },
+    "source": {
+      "type": "object",
+      "required": ["href", "type"],
+      "properties": {
+        "href": { "type": "string" },
+        "type": { "enum": ["nisar", "cog", "nitf"] },
+        "sha256": { "type": "string" },
+        "sizeBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "productType": { "type": "string" },
+    "crs": { "type": "string" },
+    "bounds": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+    "bounds4326": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+    "width": { "type": "integer", "minimum": 1 },
+    "height": { "type": "integer", "minimum": 1 },
+    "gsd": { "type": "number" },
+    "datetime": {
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": { "start": { "type": "string" }, "end": { "type": "string" } }
+    },
+    "capabilities": {
+      "type": "object",
+      "properties": {
+        "frequencies": { "type": "array", "items": { "type": "string" } },
+        "polarizations": { "type": "object" },
+        "layers": { "type": "array", "items": { "type": "string" } },
+        "hasColorTable": { "type": "boolean" },
+        "classNames": { "type": "object" }
+      }
+    },
+    "identification": { "type": ["object", "null"] }
+  }
+}

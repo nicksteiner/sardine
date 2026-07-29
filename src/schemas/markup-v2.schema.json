@@ -1,0 +1,104 @@
+{
+  "$id": "markup-v2.schema.json",
+  "title": "SARdine markup v2",
+  "description": "W004 GeoJSON markup, schema version 2. Adds: observer enum (human|ai|insitu|model), confidence semantics P(label correct) — NEVER a training weight, class + collection-level declared vocabulary (sardine:classes / sardine:scheme), sardine:valid interval, adjudication object (reason REQUIRED when rejecting insitu/model labels), and the label-region kind (MultiPoint | Polygon | MultiPolygon — GeometryCollection excluded; sparse points consumed via masked loss; multipart polygons sampled area-weighted). v1 files import cleanly: all new fields optional; unknown-field pass-through unchanged. Legacy class-region (null-geometry, dB-feature-space) untouched.",
+  "type": "object",
+  "required": ["type", "features"],
+  "properties": {
+    "type": { "const": "FeatureCollection" },
+    "sardine:schema": { "const": 2 },
+    "sardine:crs": { "type": "string" },
+    "sardine:classes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Declared class vocabulary. Every label-region class MUST appear here (validator-enforced). Required whenever any label-region feature is present."
+    },
+    "sardine:scheme": {
+      "enum": ["nwi", "worldcover", "custom"],
+      "description": "Vocabulary scheme for sardine:classes — lets the trainer decide whether two sessions' classes are poolable before pooling them."
+    },
+    "features": { "type": "array", "items": { "$ref": "#/$defs/feature" } }
+  },
+  "$defs": {
+    "feature": {
+      "type": "object",
+      "required": ["type", "geometry", "properties"],
+      "properties": {
+        "type": { "const": "Feature" },
+        "id": { "type": ["string", "number"] },
+        "geometry": { "type": ["object", "null"] },
+        "properties": { "$ref": "#/$defs/props" }
+      },
+      "anyOf": [
+        {
+          "description": "label-region: geometry restricted to MultiPoint | Polygon | MultiPolygon (GeometryCollection excluded — unbounded for the sampler)",
+          "properties": {
+            "properties": {
+              "type": "object",
+              "required": ["sardine:kind"],
+              "properties": { "sardine:kind": { "const": "label-region" } }
+            },
+            "geometry": {
+              "type": "object",
+              "required": ["type"],
+              "properties": { "type": { "enum": ["MultiPoint", "Polygon", "MultiPolygon"] } }
+            }
+          }
+        },
+        {
+          "description": "all other kinds: geometry unconstrained (class-region legitimately has null geometry)",
+          "properties": {
+            "properties": {
+              "type": "object",
+              "required": ["sardine:kind"],
+              "properties": {
+                "sardine:kind": { "enum": ["annotation-arrow", "annotation-text", "roi", "transect", "class-region"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "props": {
+      "type": "object",
+      "required": ["sardine:kind", "sardine:schema", "observer", "method", "created"],
+      "properties": {
+        "sardine:kind": {
+          "enum": ["annotation-arrow", "annotation-text", "roi", "transect", "class-region", "label-region"]
+        },
+        "sardine:schema": { "const": 2 },
+        "label": { "type": ["string", "null"] },
+        "class": { "type": "string", "description": "training class name (label-region); must appear in collection-level sardine:classes" },
+        "observer": { "enum": ["human", "ai", "insitu", "model"] },
+        "method": { "type": "string" },
+        "created": { "type": "string" },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "P(label correct). Filtering/subsetting/reporting only — training reads class-conditional noise rates from calibration records, never this field. null = authoritative (human)."
+        },
+        "sardine:valid": {
+          "type": "object",
+          "required": ["start", "end"],
+          "properties": { "start": { "type": "string" }, "end": { "type": "string" } },
+          "description": "Label validity interval; training pair admissible only if acquisition datetime falls inside."
+        },
+        "adjudication": {
+          "type": "object",
+          "required": ["status"],
+          "properties": {
+            "status": { "enum": ["pending", "accepted", "edited", "rejected"] },
+            "by": { "type": "string" },
+            "at": { "type": "string" },
+            "reason": { "type": "string", "description": "REQUIRED (validator-enforced) when rejecting an insitu or model label — a stronger claim than rejecting an AI proposal, must be attributable." }
+          },
+          "description": "Absent = not subject to adjudication. Rejected features SURVIVE export as hard negatives. Adjudication of insitu/model labels is allowed but tallies into estimator:'adjudication' calibration rows — never pooled with audit-derived rates."
+        },
+        "sourceScene": { "type": "object" },
+        "style": { "type": "object" },
+        "measurements": { "type": "object", "description": "phase (rising/at_peak/recession/baseflow) lives here, not first-class" }
+      }
+    }
+  }
+}

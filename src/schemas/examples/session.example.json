@@ -1,0 +1,148 @@
+{
+  "sardine:session": 1,
+  "created": "2026-07-29T00:00:00Z",
+  "software": "SARdine 1.0.0-beta.9",
+  "scene": {
+    "sardine:scene": 1,
+    "source": {
+      "href": "https://d1mv8zhcvry6x4.cloudfront.net/NISAR_L2_GCOV_track114A165.h5",
+      "type": "nisar",
+      "sizeBytes": 1677721600
+    },
+    "productType": "GCOV",
+    "crs": "EPSG:32736",
+    "bounds": [399960, 7290240, 731160, 7621440],
+    "bounds4326": [32.1, -24.5, 35.3, -21.5],
+    "width": 16560,
+    "height": 16020,
+    "gsd": 20,
+    "datetime": { "start": "2026-01-29T03:41:00Z", "end": "2026-01-29T03:41:12Z" },
+    "capabilities": {
+      "frequencies": ["A"],
+      "polarizations": { "A": ["HHHH", "HVHV"] },
+      "layers": ["mask", "numberOfLooks"],
+      "hasColorTable": false
+    },
+    "identification": { "productType": "GCOV", "absoluteOrbitNumber": 1234 }
+  },
+  "renderConfig": {
+    "sardine:render_config": 1,
+    "displayMode": "single",
+    "compositeId": null,
+    "dataset": { "frequency": "A", "polarization": "HHHH" },
+    "colormap": "grayscale",
+    "colormapReversed": false,
+    "useDecibels": true,
+    "contrastMin": -25,
+    "contrastMax": 0,
+    "gamma": 1,
+    "stretchMode": "linear",
+    "rgb": { "contrastLimits": null, "saturation": 1 },
+    "colorblindMode": "none",
+    "multiLook": true,
+    "multiLookFactor": 4,
+    "masks": {
+      "invalid": true,
+      "layoverShadow": false,
+      "incidenceAngle": { "enabled": false, "min": 20, "max": 50 },
+      "coherence": { "enabled": false, "threshold": 0.4 }
+    },
+    "speckle": { "type": null, "kernelSize": 5 },
+    "gunw": { "losDisplacement": false, "verticalDisplacement": false }
+  },
+  "compare": [
+    {
+      "label": "S1 RTC (C-band)",
+      "scene": {
+        "sardine:scene": 1,
+        "source": {
+          "href": "https://example.org/d688/cogs/S1_RTC_20260129_limpopo.tif",
+          "type": "cog"
+        },
+        "productType": "COG",
+        "crs": "EPSG:32736",
+        "bounds": [399960, 7290240, 731160, 7621440],
+        "width": 16560,
+        "height": 16020,
+        "capabilities": { "hasColorTable": false },
+        "identification": null
+      }
+    }
+  ],
+  "view": {
+    "center": [33.7, -23.1],
+    "zoom": 9.5,
+    "aoi": { "bbox": [33.2, -23.6, 34.2, -22.6] }
+  },
+  "ui": { "showGrid": false, "histogramScope": "viewport" },
+  "markup": {
+    "type": "FeatureCollection",
+    "sardine:schema": 2,
+    "sardine:crs": "EPSG:32736",
+    "sardine:classes": ["open_water", "inundated_vegetation", "dry"],
+    "sardine:scheme": "custom",
+    "features": [
+      {
+        "type": "Feature",
+        "id": "lr-0706_05387440_0",
+        "geometry": {
+          "type": "Polygon",
+          "coordinates": [[[540100, 7391200], [540400, 7391200], [540400, 7391500], [540100, 7391500], [540100, 7391200]]]
+        },
+        "properties": {
+          "sardine:kind": "label-region",
+          "sardine:schema": 2,
+          "label": "gauge-wet PFO",
+          "class": "inundated_vegetation",
+          "observer": "insitu",
+          "method": "gauge-discharge",
+          "created": "2026-07-29T00:00:00Z",
+          "confidence": 0.81,
+          "sardine:valid": { "start": "2026-01-28T00:00:00Z", "end": "2026-01-31T00:00:00Z" },
+          "measurements": { "phase": "at_peak", "gauge_id": "05387440", "dist_to_gauge_km": 13.05 },
+          "sourceScene": { "file": "NISAR_L2_GCOV_track114A165.h5", "crs": "EPSG:32736" }
+        }
+      },
+      {
+        "type": "Feature",
+        "id": "prop-17",
+        "geometry": {
+          "type": "MultiPoint",
+          "coordinates": [[541000, 7392000], [541220, 7392140]]
+        },
+        "properties": {
+          "sardine:kind": "label-region",
+          "sardine:schema": 2,
+          "label": "open water proposal",
+          "class": "open_water",
+          "observer": "ai",
+          "method": "gpu-threshold",
+          "created": "2026-07-29T00:05:00Z",
+          "confidence": 0.93,
+          "sardine:valid": { "start": "2026-01-29T00:00:00Z", "end": "2026-01-30T00:00:00Z" },
+          "adjudication": { "status": "rejected", "by": "nsteiner", "at": "2026-07-29T00:10:00Z" },
+          "sourceScene": { "file": "NISAR_L2_GCOV_track114A165.h5", "crs": "EPSG:32736" }
+        }
+      }
+    ]
+  },
+  "analysisArtifacts": [
+    {
+      "id": "calib-gauge-2026-07",
+      "kind": "calibration-record",
+      "href": "https://example.org/d688/calibration/gauge_insitu_2026-07.sardine-calibration.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mediaType": "application/json",
+      "created": "2026-07-29T00:00:00Z",
+      "label": "gauge-audit precision calibration",
+      "derived_from": ["D286", "D557"]
+    },
+    {
+      "id": "head-water-v1",
+      "kind": "model",
+      "inline": { "mlm:name": "water-head-demo", "sardine:model": 2 },
+      "mediaType": "application/json",
+      "created": "2026-07-29T00:00:00Z"
+    }
+  ]
+}
