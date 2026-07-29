@@ -245,7 +245,7 @@ export async function exportFigure(glCanvas, options = {}) {
   // 0. User annotations (drawn on top of SAR pixels, below chrome)
   drawAnnotations(ctx, W, H, annotations, viewState, dpr);
 
-  const projected = isProjectedBounds(bounds);
+  const projected = isProjectedBounds(bounds, crs || null);
 
   // 1. Figure border
   drawBorder(ctx, W, H, s);
@@ -366,7 +366,7 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
 
   // 3. Draw the standard figure overlays (chrome scales with figure size)
   const s = makeScale(W, H);
-  const projected = isProjectedBounds(bounds);
+  const projected = isProjectedBounds(bounds, crs || null);
 
   drawBorder(ctx, W, H, s);
   drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s);
@@ -1826,7 +1826,7 @@ export async function exportFigureSideBySide(left, right, { format = 'png', them
       classLegend = null,
     } = opts;
 
-    const projected = isProjectedBounds(bounds);
+    const projected = isProjectedBounds(bounds, crs || null);
     // Chrome inside a panel scales to THAT panel's size.
     const s = makeScale(panelW, panelH);
 
@@ -1944,7 +1944,7 @@ export async function exportFigureGrid(panels, { format = 'png', theme = 'public
       classLegend = null,
     } = opts;
 
-    const projected = isProjectedBounds(bounds);
+    const projected = isProjectedBounds(bounds, crs || null);
     const s = makeScale(panelW, panelH); // panel chrome scales to the cell
 
     // Draw the captured image into its cell.

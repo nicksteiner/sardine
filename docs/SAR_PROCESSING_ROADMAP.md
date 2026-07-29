@@ -51,7 +51,8 @@ or GeoTIFF export.
 
 ### 1.2 Lee Filter (Adaptive)
 - Classic Lee (1980): uses local mean and variance within kernel window
-- Formula: `filtered = mean + K * (pixel - mean)` where `K = var / (var + noise_var)`
+- Formula: `filtered = mean + K * (pixel - mean)` where `K = clamp((var - noise_var) / var, 0, 1)` and `noise_var = mean² / ENL`
+- In a homogeneous region var ≈ noise_var so K → 0 (full smoothing); at strong edges/point targets K → 1
 - Noise variance estimated from equivalent number of looks (ENL)
 - **GPU approach:** Two shared-memory reductions per workgroup tile (sum, sum-of-squares)
 - Preserves edges better than boxcar while reducing speckle
@@ -60,7 +61,7 @@ or GeoTIFF export.
 ### 1.3 Enhanced Lee Filter
 - Extends Lee with coefficient of variation (Cv) thresholding
 - Three regimes: Cv < Cu (pure mean), Cu < Cv < Cmax (Lee), Cv > Cmax (no filter)
-- Cu from ENL: `Cu = 1/sqrt(ENL)`, Cmax typically ~1.7
+- Cu from ENL: `Cu = 1/sqrt(ENL)`, `Cmax = sqrt(1 + 2/ENL)` (Lopes et al. 1990)
 - Better preservation of point targets and strong scatterers
 
 ### 1.4 Refined Lee (Lee-Sigma)
@@ -80,7 +81,7 @@ or GeoTIFF export.
 - Maximum a posteriori filter assuming Gamma-distributed intensity
 - Better theoretical foundation than Lee for multi-look SAR
 - Uses ENL as shape parameter
-- Three regimes similar to Enhanced Lee but with Gamma statistics
+- Three regimes similar to Enhanced Lee but with Gamma statistics (here `Cmax = sqrt(2)*Cu = sqrt(2/ENL)`, the standard Gamma-MAP threshold)
 - **GPU approach:** Same workgroup tile pattern as Lee, different kernel math
 
 ### Filter Module API

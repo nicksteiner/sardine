@@ -394,6 +394,32 @@ export function multilookFloat32(data, rows, cols, ml) {
   return { data: out, width: outCols, height: outRows };
 }
 
+/**
+ * Multilook interleaved CFloat32 data and return the phase of the averaged
+ * complex value. Averaging re/im before atan2 is the correct way to look
+ * wrapped phase — averaging the wrapped angles directly creates artifacts
+ * at every ±π branch cut (e.g. +3.1 and −3.1 rad average to 0).
+ */
+export function multilookComplexPhase(data, rows, cols, ml) {
+  const outRows = Math.floor(rows / ml);
+  const outCols = Math.floor(cols / ml);
+  const out = new Float32Array(outRows * outCols);
+  for (let r = 0; r < outRows; r++) {
+    for (let c = 0; c < outCols; c++) {
+      let re = 0, im = 0, count = 0;
+      for (let dr = 0; dr < ml; dr++) {
+        for (let dc = 0; dc < ml; dc++) {
+          const i = (r * ml + dr) * cols + (c * ml + dc);
+          const vr = data[2 * i], vi = data[2 * i + 1];
+          if (!isNaN(vr) && !isNaN(vi)) { re += vr; im += vi; count++; }
+        }
+      }
+      out[r * outCols + c] = count > 0 ? Math.atan2(im, re) : NaN;
+    }
+  }
+  return { data: out, width: outCols, height: outRows };
+}
+
 // ─── Reader Entry Point ─────────────────────────────────────────────────
 
 /**

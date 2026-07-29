@@ -160,6 +160,11 @@ export const SAR_COMPOSITES = {
   'pauli-power': {
     name: 'Pauli (power)',
     description: 'Approx Pauli decomposition from power data',
+    // Hidden 2026-07-29: power-only approximation omits the Re(HHVV) cross
+    // term that carries the double-bounce/surface phase discrimination.
+    // See docs/RADAR_AUDIT_2026-07-29.md (D1). Re-enable with the full
+    // covariance formulation.
+    hidden: true,
     required: ['HHHH', 'HVHV', 'VVVV'],
     channels: {
       R: {
@@ -238,6 +243,11 @@ export const SAR_COMPOSITES = {
   'freeman-durden': {
     name: 'Freeman-Durden',
     description: 'Double-bounce / Volume / Surface decomposition',
+    // Hidden 2026-07-29: the volume model deviates from Freeman & Durden 1998
+    // (uses fv = 4·C22 / co-pol subtraction 2·C22 instead of fv = 3·C22 /
+    // subtraction 3·C22) and the surface/double-bounce split is a heuristic,
+    // not the published solution. See docs/RADAR_AUDIT_2026-07-29.md (C5).
+    hidden: true,
     required: ['HHHH', 'HVHV', 'VVVV'],
     requiredComplex: ['HHVV'],
     computeAll: true,
@@ -291,7 +301,7 @@ export function getAvailableComposites(availableDatasets) {
   const pols = new Set(availableDatasets.map(d => d.polarization));
 
   return Object.entries(SAR_COMPOSITES)
-    .filter(([, preset]) => preset.required.every(p => pols.has(p)))
+    .filter(([, preset]) => !preset.hidden && preset.required.every(p => pols.has(p)))
     .map(([id, preset]) => {
       // Flag composites that need complex (off-diagonal) terms not yet confirmed
       const needsComplex = preset.requiredComplex && preset.requiredComplex.length > 0;

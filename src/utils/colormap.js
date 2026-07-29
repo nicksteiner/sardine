@@ -30,13 +30,13 @@ export function grayscale(t) {
  * @returns {number[]} [r, g, b] values 0-255
  */
 export function viridis(t) {
-  const c0 = [0.2777, 0.0054, 0.334];
-  const c1 = [0.105, 0.6389, 0.7916];
-  const c2 = [-0.3308, 0.2149, 0.0948];
-  const c3 = [-4.6342, -5.7991, -19.3324];
-  const c4 = [6.2282, 14.1799, 56.6905];
-  const c5 = [4.7763, -13.7451, -65.353];
-  const c6 = [-5.4354, 4.6456, 26.3124];
+  const c0 = [0.277727, 0.005407, 0.334100];
+  const c1 = [0.105093, 1.404613, 1.384590];
+  const c2 = [-0.330862, 0.214848, 0.095095];
+  const c3 = [-4.634230, -5.799101, -19.332441];
+  const c4 = [6.228270, 14.179933, 56.690553];
+  const c5 = [4.776385, -13.745145, -65.353033];
+  const c6 = [-5.435456, 4.645853, 26.312435];
 
   t = Math.max(0, Math.min(1, t));
   const rgb = [0, 0, 0];
@@ -57,13 +57,13 @@ export function viridis(t) {
  * @returns {number[]} [r, g, b] values 0-255
  */
 export function inferno(t) {
-  const c0 = [0.0002, 0.0016, 0.0139];
-  const c1 = [0.1065, 0.0639, 0.2671];
-  const c2 = [0.9804, 0.5388, -0.1957];
-  const c3 = [-3.4496, -0.2218, -3.1556];
-  const c4 = [3.8558, -2.0792, 8.7339];
-  const c5 = [-1.4928, 1.8878, -8.0579];
-  const c6 = [-0.0003, 0.0009, 2.4578];
+  const c0 = [0.000219, 0.001651, -0.019481];
+  const c1 = [0.106513, 0.563956, 3.932712];
+  const c2 = [11.602493, -3.972854, -15.942394];
+  const c3 = [-41.703996, 17.436399, 44.354145];
+  const c4 = [77.162936, -33.402359, -81.807309];
+  const c5 = [-71.319428, 32.626064, 73.209520];
+  const c6 = [25.131126, -12.242669, -23.070325];
 
   t = Math.max(0, Math.min(1, t));
   const rgb = [0, 0, 0];
@@ -85,13 +85,13 @@ export function inferno(t) {
  */
 export function plasma(t) {
   // Matplotlib canonical polynomial coefficients (must match GPU shaders.js)
-  const c0 = [0.0590, 0.0298, 0.5270];
-  const c1 = [0.1836, 0.0965, 0.8355];
-  const c2 = [2.3213, 0.4316, -1.5074];
-  const c3 = [-11.2436, -0.0486, 4.0720];
-  const c4 = [17.5896, -1.1766, -7.6916];
-  const c5 = [-11.6096, 1.9411, 6.2390];
-  const c6 = [2.8642, -0.6177, -1.6442];
+  const c0 = [0.058732, 0.023337, 0.543340];
+  const c1 = [2.176515, 0.238383, 0.753960];
+  const c2 = [-2.689460, -7.455851, 3.110800];
+  const c3 = [6.130348, 42.346188, -28.518855];
+  const c4 = [-11.107436, -82.666311, 60.139848];
+  const c5 = [10.023066, 71.413618, -54.072187];
+  const c6 = [-3.658714, -22.931535, 18.191908];
 
   t = Math.max(0, Math.min(1, t));
   const rgb = [0, 0, 0];
@@ -121,8 +121,8 @@ export function magma(t) {
     [0.522, 0.139, 0.510],  // 0.375 - magenta
     [0.716, 0.215, 0.476],  // 0.500 - pink
     [0.890, 0.314, 0.395],  // 0.625 - coral
-    [0.987, 0.510, 0.350],  // 0.750 - salmon
-    [0.996, 0.745, 0.439],  // 0.875 - peach
+    [0.986, 0.530, 0.380],  // 0.750 - salmon
+    [0.997, 0.763, 0.530],  // 0.875 - peach
     [0.987, 0.991, 0.749],  // 1.000 - pale yellow
   ];
   const seg = t * 8;
@@ -147,14 +147,14 @@ export function cividis(t) {
   t = Math.max(0, Math.min(1, t));
   const stops = [
     [0.000, 0.135, 0.305],  // 0.000 - dark blue
-    [0.099, 0.210, 0.420],  // 0.125
-    [0.176, 0.286, 0.478],  // 0.250
-    [0.275, 0.357, 0.490],  // 0.375
-    [0.376, 0.431, 0.490],  // 0.500 - desaturated mid
-    [0.486, 0.510, 0.471],  // 0.625
-    [0.616, 0.604, 0.435],  // 0.750
-    [0.761, 0.706, 0.376],  // 0.875
-    [1.000, 0.835, 0.310],  // 1.000 - bright yellow
+    [0.102, 0.220, 0.436],  // 0.125
+    [0.263, 0.307, 0.423],  // 0.250
+    [0.380, 0.394, 0.435],  // 0.375
+    [0.487, 0.484, 0.471],  // 0.500 - desaturated mid
+    [0.607, 0.578, 0.464],  // 0.625
+    [0.733, 0.678, 0.425],  // 0.750
+    [0.867, 0.787, 0.346],  // 0.875
+    [0.996, 0.909, 0.218],  // 1.000 - bright yellow
   ];
   const seg = t * 8;
   const i = Math.min(Math.floor(seg), 7);
@@ -192,23 +192,23 @@ export function turbo(t) {
  * Batlow colormap - perceptually uniform sequential ramp from Crameri's
  * Scientific Colour Maps. The de-facto standard for SAR/geo sequential data
  * in modern publications. Colorblind-safe; print-safe in grayscale.
- * Goes: dark blue → green → yellow → tan → light pink.
- * 9-stop sample of Crameri batlow v8.0.
+ * Goes: dark blue → teal → olive → orange → pale lavender-pink.
+ * 9-stop sample of official Crameri batlow data.
  * @param {number} t - Value between 0 and 1
  * @returns {number[]} [r, g, b] values 0-255
  */
 export function batlow(t) {
   t = Math.max(0, Math.min(1, t));
   const stops = [
-    [0.0051, 0.0980, 0.3490],  // 0.000 - dark blue
-    [0.0863, 0.2235, 0.3686],  // 0.125
-    [0.1804, 0.3373, 0.3490],  // 0.250
-    [0.3137, 0.4275, 0.2902],  // 0.375
-    [0.5020, 0.4980, 0.2196],  // 0.500
-    [0.7059, 0.5333, 0.2196],  // 0.625
-    [0.8902, 0.5569, 0.3294],  // 0.750
-    [0.9804, 0.6275, 0.5333],  // 0.875
-    [0.9843, 0.7961, 0.7725],  // 1.000 - light pink
+    [0.005, 0.098, 0.350],  // 0.000 - dark blue
+    [0.067, 0.263, 0.378],  // 0.125
+    [0.132, 0.375, 0.380],  // 0.250
+    [0.300, 0.450, 0.301],  // 0.375
+    [0.508, 0.510, 0.195],  // 0.500
+    [0.750, 0.564, 0.209],  // 0.625
+    [0.948, 0.615, 0.422],  // 0.750
+    [0.993, 0.705, 0.705],  // 0.875
+    [0.981, 0.800, 0.981],  // 1.000 - pale lavender-pink
   ];
   const seg = t * 8;
   const i = Math.min(Math.floor(seg), 7);
@@ -237,7 +237,7 @@ export function phase(t) {
 
 /**
  * Twilight colormap - cyclic perceptually uniform (Matplotlib)
- * Symmetric: light lavender → cool purples → dark teal → warm reds → light lavender
+ * Symmetric: light lavender → cool blues → dark purple → warm reds → light lavender
  * Ideal for unwrapped phase or any cyclic quantity.
  * @param {number} t - Value between 0 and 1
  * @returns {number[]} [r, g, b] values 0-255
@@ -247,13 +247,13 @@ export function twilight(t) {
   // 9 key stops sampled from Matplotlib twilight (every 0.125)
   const stops = [
     [0.886, 0.850, 0.888],  // 0.000 - light lavender
-    [0.695, 0.625, 0.831],  // 0.125 - light purple
-    [0.418, 0.365, 0.733],  // 0.250 - medium purple
-    [0.196, 0.225, 0.558],  // 0.375 - dark blue-purple
-    [0.188, 0.329, 0.367],  // 0.500 - dark teal (nadir)
-    [0.394, 0.303, 0.262],  // 0.625 - dark brown
-    [0.610, 0.278, 0.225],  // 0.750 - brownish red
-    [0.769, 0.390, 0.382],  // 0.875 - salmon
+    [0.580, 0.707, 0.779],  // 0.125 - light blue-gray
+    [0.384, 0.460, 0.731],  // 0.250 - medium blue
+    [0.351, 0.167, 0.562],  // 0.375 - blue-violet
+    [0.186, 0.078, 0.215],  // 0.500 - dark purple (nadir)
+    [0.455, 0.117, 0.310],  // 0.625 - dark crimson
+    [0.697, 0.337, 0.322],  // 0.750 - brownish red
+    [0.800, 0.638, 0.534],  // 0.875 - warm tan
     [0.886, 0.850, 0.888],  // 1.000 - light lavender (cyclic)
   ];
   const seg = t * 8;
@@ -496,23 +496,24 @@ export function rdbu(t) {
  * romaO — cyclic perceptually uniform colormap from Crameri's Scientific
  * Colour Maps. The standard for wrapped interferometric phase display.
  * Bright, saturated, near-uniform luminance around the cycle, colorblind-safe.
- * Goes: red → orange → yellow → green → cyan → blue → magenta → red (cyclic).
- * Sampled from Crameri Scientific Colour Maps v8.0, romaO at every 1/8 cycle.
+ * Goes: mauve-brown → orange → yellow-green → pale green → cyan-blue →
+ * blue-violet → mauve-brown (cyclic).
+ * Sampled from official Crameri romaO data at every 1/8 cycle.
  * @param {number} t - Value between 0 and 1 (wraps at boundaries)
  * @returns {number[]} [r, g, b] values 0-255
  */
 export function romaO(t) {
   t = Math.max(0, Math.min(1, t));
   const stops = [
-    [0.451, 0.165, 0.075],  // 0.000 - deep red-brown
-    [0.682, 0.357, 0.090],  // 0.125 - burnt orange
-    [0.835, 0.620, 0.247],  // 0.250 - warm yellow
-    [0.769, 0.831, 0.518],  // 0.375 - pale yellow-green
-    [0.475, 0.733, 0.616],  // 0.500 - teal-green
-    [0.247, 0.514, 0.616],  // 0.625 - steel blue
-    [0.227, 0.302, 0.518],  // 0.750 - deep blue
-    [0.298, 0.157, 0.369],  // 0.875 - dark purple
-    [0.451, 0.165, 0.075],  // 1.000 - deep red-brown (cyclic seam)
+    [0.451, 0.223, 0.342],  // 0.000 - mauve-brown
+    [0.543, 0.266, 0.202],  // 0.125 - rust
+    [0.667, 0.456, 0.184],  // 0.250 - burnt orange
+    [0.809, 0.733, 0.395],  // 0.375 - warm yellow
+    [0.798, 0.883, 0.698],  // 0.500 - pale green
+    [0.549, 0.799, 0.811],  // 0.625 - light cyan
+    [0.328, 0.582, 0.753],  // 0.750 - cyan-blue
+    [0.346, 0.350, 0.574],  // 0.875 - blue-violet
+    [0.451, 0.223, 0.342],  // 1.000 - mauve-brown (cyclic seam)
   ];
   const seg = t * 8;
   const i = Math.min(Math.floor(seg), 7);

@@ -90,9 +90,11 @@ export async function loadCubeCorrections(streamReader, band, imageExtent) {
   const { bounds, width, height } = imageExtent;
   const [bMinX, bMinY, bMaxX, bMaxY] = bounds;
 
-  // Build coordinate arrays spanning the image (matching incidence angle loading)
-  const evalWidth = Math.min(512, width);
-  const evalHeight = Math.min(512, height);
+  // Build coordinate arrays spanning the image (matching incidence angle loading).
+  // Cap at 1024 samples per axis — on a large frame a 512 cap coarsens the
+  // correction to ~15 km/sample, below the native radarGrid cube resolution.
+  const evalWidth = Math.min(1024, width);
+  const evalHeight = Math.min(1024, height);
   const xCoords = new Float64Array(evalWidth);
   const yCoords = new Float64Array(evalHeight);
   for (let i = 0; i < evalWidth; i++) xCoords[i] = bMinX + (i / (evalWidth - 1)) * (bMaxX - bMinX);
@@ -131,13 +133,15 @@ export async function loadCubeCorrections(streamReader, band, imageExtent) {
  * @param {number} width - Image width
  * @param {number} height - Image height
  * @param {Object} [options]
- * @param {number} [options.coherenceThreshold=0.7] - Min coherence for fitting
+ * @param {number} [options.coherenceThreshold=0.4] - Min coherence for fitting
  * @param {number} [options.maxSamples=50000] - Max pixels for fitting (subsampled if larger)
  * @returns {{coefficients: {a: number, b: number, c: number}, ramp: Float32Array, nPixels: number}}
  */
 export function fitPlanarRamp(phaseData, coherenceData, width, height, options = {}) {
   const {
-    coherenceThreshold = 0.7,
+    // 0.4 keeps enough of an L-band scene over vegetation to fit the ramp;
+    // 0.7 rejects most valid pixels in low-coherence (vegetated) frames.
+    coherenceThreshold = 0.4,
     maxSamples = 50000,
   } = options;
 

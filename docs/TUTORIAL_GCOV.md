@@ -19,7 +19,7 @@ NISAR transmits L-band microwave pulses (wavelength ~24 cm) and records the echo
 | **Backscatter (σ⁰ or γ⁰)** | The fraction of radar energy scattered back toward the sensor, normalized by illuminated area. GCOV stores **γ⁰** (gamma-nought), which normalizes by the area projected perpendicular to the look direction, reducing terrain slope bias. |
 | **Covariance matrix** | A Hermitian matrix formed from the outer product of the scattering vector: C = ⟨k · k†⟩. Diagonal elements are real-valued backscatter powers; off-diagonal elements are complex cross-correlations between polarization channels. |
 | **Polarization** | The orientation of the radar's electric field. **HH** = transmit H, receive H. **HV** = transmit H, receive V (cross-pol). Cross-pol is sensitive to volume scattering (vegetation canopy). |
-| **Radiometric Terrain Correction (RTC)** | Compensates for the fact that slopes facing the radar appear brighter (foreshortening). RTC uses a DEM to compute the true scattering area per pixel and normalizes accordingly. |
+| **Radiometric Terrain Correction (RTC)** | Compensates for the fact that slopes facing the radar appear brighter — a projected-area / local-incidence-angle effect (distinct from foreshortening, which is the geometric range compression of those slopes). RTC uses a DEM to compute the true scattering area per pixel and normalizes accordingly. |
 | **Multilooking** | Averaging neighboring pixels to reduce speckle noise at the cost of spatial resolution. GCOV applies adaptive multilooking during processing; SARdine applies additional box-filter multilooking for display. |
 | **Decibels (dB)** | Logarithmic scale: dB = 10 · log₁₀(linear power). Backscatter spans several orders of magnitude, so dB compresses the range for visualization. Typical SAR backscatter: -30 dB (smooth water) to +10 dB (urban corner reflectors). |
 | **Speckle** | Granular noise inherent to coherent imaging. Not sensor noise — it arises from constructive/destructive interference of scatterers within a resolution cell. Multilooking and spatial filtering reduce it. |
@@ -49,7 +49,7 @@ Complex-valued cross-products between channels (e.g., HHVV = ⟨S_HH · S_VV*⟩
 
 | Layer | Purpose |
 |:------|:--------|
-| **numberOfLooks** | How many independent samples were averaged per pixel. More looks = less speckle. |
+| **numberOfLooks** | How many radar samples were averaged per pixel. More looks = less speckle. Contributing samples are correlated, so the equivalent number of looks (ENL, which governs speckle: σ/μ = 1/√ENL) is generally lower — don't feed numberOfLooks directly to ENL-based filters. |
 | **rtcGammaToSigmaFactor** | Multiply γ⁰ by this to get σ⁰ (sigma-nought), useful when comparing to legacy datasets. |
 | **mask** | Validity flags: shadow, layover, out-of-swath. |
 
@@ -118,10 +118,10 @@ Use the polarization selector to compare channels:
 
 | Color | Dominant channel | Scattering mechanism | Typical surface |
 |:------|:-----------------|:---------------------|:----------------|
-| **Red** | High HH, low HV | Surface/double-bounce | Bare soil, urban |
+| **Red** | High HH, low HV | Surface/double-bounce | Bare soil, urban, flooded vegetation (HH up, HV unchanged) |
 | **Green** | High HV | Volume scattering | Dense vegetation |
-| **Blue** | High HH/HV ratio | Strong co-pol dominance | Water, smooth surfaces |
-| **Yellow** | High HH + HV | Mixed surface + volume | Flooded vegetation |
+| **Blue** | High HH/HV ratio | Strong co-pol dominance | Smooth bare surfaces (open water is dark in all channels) |
+| **Yellow** | High HH + HV | Mixed surface + volume | Dense forest |
 | **Cyan** | High HV + high ratio | — | Unusual; check data |
 | **White** | All channels high | Very strong total backscatter | Urban corner reflectors |
 
@@ -129,7 +129,7 @@ Use the polarization selector to compare channels:
 
 **Why it works:** The Pauli basis decomposes the scattering matrix into three physically meaningful components: single-bounce (surface), double-bounce (dihedral), and volume scattering.
 
-**Requires:** Quad-pol data (HH, HV, VH, VV all available)
+**Requires:** Full covariance data — the four powers plus the complex HHVV term (`isFullCovariance == "True"`); the four polarization powers alone are not enough
 
 **Steps:**
 1. Load quad-pol GCOV
@@ -165,9 +165,9 @@ Use the polarization selector to compare channels:
 
 | Surface condition | HH (dB) | HV (dB) | HH/HV ratio |
 |:------------------|:---------|:---------|:-------------|
-| Open water | < -22 | < -28 | High |
-| Flooded vegetation (canopy over water) | ~ -12 | -18 to -12 | Very High (double-bounce enhancement) |
-| Flooded vegetation (emergent/sparse) | ~ -5 | -18 to -12 | Moderate |
+| Open water | < -22 | < -28 | High (noise-floor-dominated — not a reliable discriminator) |
+| Flooded vegetation (canopy over water) | -8 to -3 | -18 to -12 | Very High (double-bounce enhancement) |
+| Flooded vegetation (emergent/sparse) | ~ -5 | -18 to -12 | High |
 | Dry forest | -10 to -5 | -15 to -10 | Low-moderate |
 | Dry bare soil | -15 to -5 | -25 to -18 | High |
 

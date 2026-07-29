@@ -41,44 +41,44 @@ vec3 grayscale(float t) {
 
 // Viridis colormap lookup
 vec3 viridis(float t) {
-  const vec3 c0 = vec3(0.2777, 0.0054, 0.3340);
-  const vec3 c1 = vec3(0.1050, 0.6389, 0.7916);
-  const vec3 c2 = vec3(-0.3308, 0.2149, 0.0948);
-  const vec3 c3 = vec3(-4.6342, -5.7991, -19.3324);
-  const vec3 c4 = vec3(6.2282, 14.1799, 56.6905);
-  const vec3 c5 = vec3(4.7763, -13.7451, -65.3530);
-  const vec3 c6 = vec3(-5.4354, 4.6456, 26.3124);
+  const vec3 c0 = vec3(0.277727, 0.005407, 0.334100);
+  const vec3 c1 = vec3(0.105093, 1.404613, 1.384590);
+  const vec3 c2 = vec3(-0.330862, 0.214848, 0.095095);
+  const vec3 c3 = vec3(-4.634230, -5.799101, -19.332441);
+  const vec3 c4 = vec3(6.228270, 14.179933, 56.690553);
+  const vec3 c5 = vec3(4.776385, -13.745145, -65.353033);
+  const vec3 c6 = vec3(-5.435456, 4.645853, 26.312435);
 
   t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+  return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
 }
 
 // Inferno colormap lookup
 vec3 inferno(float t) {
-  const vec3 c0 = vec3(0.0002, 0.0016, 0.0139);
-  const vec3 c1 = vec3(0.1065, 0.0639, 0.2671);
-  const vec3 c2 = vec3(0.9804, 0.5388, -0.1957);
-  const vec3 c3 = vec3(-3.4496, -0.2218, -3.1556);
-  const vec3 c4 = vec3(3.8558, -2.0792, 8.7339);
-  const vec3 c5 = vec3(-1.4928, 1.8878, -8.0579);
-  const vec3 c6 = vec3(-0.0003, 0.0009, 2.4578);
+  const vec3 c0 = vec3(0.000219, 0.001651, -0.019481);
+  const vec3 c1 = vec3(0.106513, 0.563956, 3.932712);
+  const vec3 c2 = vec3(11.602493, -3.972854, -15.942394);
+  const vec3 c3 = vec3(-41.703996, 17.436399, 44.354145);
+  const vec3 c4 = vec3(77.162936, -33.402359, -81.807309);
+  const vec3 c5 = vec3(-71.319428, 32.626064, 73.209520);
+  const vec3 c6 = vec3(25.131126, -12.242669, -23.070325);
 
   t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+  return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
 }
 
 // Plasma colormap lookup (matplotlib canonical coefficients)
 vec3 plasma(float t) {
-  const vec3 c0 = vec3(0.0590, 0.0298, 0.5270);
-  const vec3 c1 = vec3(0.1836, 0.0965, 0.8355);
-  const vec3 c2 = vec3(2.3213, 0.4316, -1.5074);
-  const vec3 c3 = vec3(-11.2436, -0.0486, 4.0720);
-  const vec3 c4 = vec3(17.5896, -1.1766, -7.6916);
-  const vec3 c5 = vec3(-11.6096, 1.9411, 6.2390);
-  const vec3 c6 = vec3(2.8642, -0.6177, -1.6442);
+  const vec3 c0 = vec3(0.058732, 0.023337, 0.543340);
+  const vec3 c1 = vec3(2.176515, 0.238383, 0.753960);
+  const vec3 c2 = vec3(-2.689460, -7.455851, 3.110800);
+  const vec3 c3 = vec3(6.130348, 42.346188, -28.518855);
+  const vec3 c4 = vec3(-11.107436, -82.666311, 60.139848);
+  const vec3 c5 = vec3(10.023066, 71.413618, -54.072187);
+  const vec3 c6 = vec3(-3.658714, -22.931535, 18.191908);
 
   t = clamp(t, 0.0, 1.0);
-  return c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6)))));
+  return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
 }
 
 // Phase colormap (cyclic, for interferometry)
@@ -96,13 +96,13 @@ vec3 phaseColormap(float t) {
 vec3 twilightMap(float t) {
   t = clamp(t, 0.0, 1.0);
   const vec3 s0 = vec3(0.886, 0.850, 0.888);
-  const vec3 s1 = vec3(0.695, 0.625, 0.831);
-  const vec3 s2 = vec3(0.418, 0.365, 0.733);
-  const vec3 s3 = vec3(0.196, 0.225, 0.558);
-  const vec3 s4 = vec3(0.188, 0.329, 0.367);
-  const vec3 s5 = vec3(0.394, 0.303, 0.262);
-  const vec3 s6 = vec3(0.610, 0.278, 0.225);
-  const vec3 s7 = vec3(0.769, 0.390, 0.382);
+  const vec3 s1 = vec3(0.580, 0.707, 0.779);
+  const vec3 s2 = vec3(0.384, 0.460, 0.731);
+  const vec3 s3 = vec3(0.351, 0.167, 0.562);
+  const vec3 s4 = vec3(0.186, 0.078, 0.215);
+  const vec3 s5 = vec3(0.455, 0.117, 0.310);
+  const vec3 s6 = vec3(0.697, 0.337, 0.322);
+  const vec3 s7 = vec3(0.800, 0.638, 0.534);
   const vec3 s8 = vec3(0.886, 0.850, 0.888);
   float seg = t * 8.0;
   float i = floor(seg);
@@ -245,15 +245,15 @@ vec3 rdbuMap(float t) {
 // romaO cyclic — Crameri scientific colour map for wrapped interferograms
 vec3 romaOMap(float t) {
   t = clamp(t, 0.0, 1.0);
-  const vec3 r0 = vec3(0.451, 0.165, 0.075);
-  const vec3 r1 = vec3(0.682, 0.357, 0.090);
-  const vec3 r2 = vec3(0.835, 0.620, 0.247);
-  const vec3 r3 = vec3(0.769, 0.831, 0.518);
-  const vec3 r4 = vec3(0.475, 0.733, 0.616);
-  const vec3 r5 = vec3(0.247, 0.514, 0.616);
-  const vec3 r6 = vec3(0.227, 0.302, 0.518);
-  const vec3 r7 = vec3(0.298, 0.157, 0.369);
-  const vec3 r8 = vec3(0.451, 0.165, 0.075);
+  const vec3 r0 = vec3(0.451, 0.223, 0.342);
+  const vec3 r1 = vec3(0.543, 0.266, 0.202);
+  const vec3 r2 = vec3(0.667, 0.456, 0.184);
+  const vec3 r3 = vec3(0.809, 0.733, 0.395);
+  const vec3 r4 = vec3(0.798, 0.883, 0.698);
+  const vec3 r5 = vec3(0.549, 0.799, 0.811);
+  const vec3 r6 = vec3(0.328, 0.582, 0.753);
+  const vec3 r7 = vec3(0.346, 0.350, 0.574);
+  const vec3 r8 = vec3(0.451, 0.223, 0.342);
   float seg = t * 8.0;
   float i = floor(seg);
   float s = seg - i;
@@ -278,8 +278,8 @@ vec3 magma(float t) {
   const vec3 m3 = vec3(0.522, 0.139, 0.510);
   const vec3 m4 = vec3(0.716, 0.215, 0.476);
   const vec3 m5 = vec3(0.890, 0.314, 0.395);
-  const vec3 m6 = vec3(0.987, 0.510, 0.350);
-  const vec3 m7 = vec3(0.996, 0.745, 0.439);
+  const vec3 m6 = vec3(0.986, 0.530, 0.380);
+  const vec3 m7 = vec3(0.997, 0.763, 0.530);
   const vec3 m8 = vec3(0.987, 0.991, 0.749);
   float seg = t * 8.0;
   float i = floor(seg);
@@ -300,14 +300,14 @@ vec3 magma(float t) {
 vec3 cividisMap(float t) {
   t = clamp(t, 0.0, 1.0);
   const vec3 v0 = vec3(0.000, 0.135, 0.305);
-  const vec3 v1 = vec3(0.099, 0.210, 0.420);
-  const vec3 v2 = vec3(0.176, 0.286, 0.478);
-  const vec3 v3 = vec3(0.275, 0.357, 0.490);
-  const vec3 v4 = vec3(0.376, 0.431, 0.490);
-  const vec3 v5 = vec3(0.486, 0.510, 0.471);
-  const vec3 v6 = vec3(0.616, 0.604, 0.435);
-  const vec3 v7 = vec3(0.761, 0.706, 0.376);
-  const vec3 v8 = vec3(1.000, 0.835, 0.310);
+  const vec3 v1 = vec3(0.102, 0.220, 0.436);
+  const vec3 v2 = vec3(0.263, 0.307, 0.423);
+  const vec3 v3 = vec3(0.380, 0.394, 0.435);
+  const vec3 v4 = vec3(0.487, 0.484, 0.471);
+  const vec3 v5 = vec3(0.607, 0.578, 0.464);
+  const vec3 v6 = vec3(0.733, 0.678, 0.425);
+  const vec3 v7 = vec3(0.867, 0.787, 0.346);
+  const vec3 v8 = vec3(0.996, 0.909, 0.218);
   float seg = t * 8.0;
   float i = floor(seg);
   float s = seg - i;
@@ -335,15 +335,15 @@ vec3 turboMap(float t) {
 // Batlow — Crameri sequential perceptually uniform (9-stop sample)
 vec3 batlowMap(float t) {
   t = clamp(t, 0.0, 1.0);
-  const vec3 b0 = vec3(0.0051, 0.0980, 0.3490);
-  const vec3 b1 = vec3(0.0863, 0.2235, 0.3686);
-  const vec3 b2 = vec3(0.1804, 0.3373, 0.3490);
-  const vec3 b3 = vec3(0.3137, 0.4275, 0.2902);
-  const vec3 b4 = vec3(0.5020, 0.4980, 0.2196);
-  const vec3 b5 = vec3(0.7059, 0.5333, 0.2196);
-  const vec3 b6 = vec3(0.8902, 0.5569, 0.3294);
-  const vec3 b7 = vec3(0.9804, 0.6275, 0.5333);
-  const vec3 b8 = vec3(0.9843, 0.7961, 0.7725);
+  const vec3 b0 = vec3(0.005, 0.098, 0.350);
+  const vec3 b1 = vec3(0.067, 0.263, 0.378);
+  const vec3 b2 = vec3(0.132, 0.375, 0.380);
+  const vec3 b3 = vec3(0.300, 0.450, 0.301);
+  const vec3 b4 = vec3(0.508, 0.510, 0.195);
+  const vec3 b5 = vec3(0.750, 0.564, 0.209);
+  const vec3 b6 = vec3(0.948, 0.615, 0.422);
+  const vec3 b7 = vec3(0.993, 0.705, 0.705);
+  const vec3 b8 = vec3(0.981, 0.800, 0.981);
   float seg = t * 8.0;
   float i = floor(seg);
   float s = seg - i;

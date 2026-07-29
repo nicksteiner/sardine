@@ -1,5 +1,7 @@
 # H-Alpha (Cloude-Pottier) Decomposition Implementation Plan
 
+> **Status (2026-07-29)**: Polarimetric decomposition features are parked and hidden from the UI pending correctness fixes — see [RADAR_AUDIT_2026-07-29.md](RADAR_AUDIT_2026-07-29.md).
+
 ## Overview
 
 H-Alpha decomposition is a model-free polarimetric decomposition that characterizes scattering through eigenanalysis of the coherency matrix. It provides three parameters:
@@ -54,12 +56,12 @@ Where A is the unitary basis change matrix (lexicographic → Pauli):
 
 ```
        [1   0   1]
-A = 1/√2 [√2  0  -√2]
-       [0   2   0]
+A = 1/√2 [1   0  -1]
+       [0   √2  0]
 ```
 
 **Input**: Covariance matrix C3 elements:
-- Diagonal: c11 (HH), c22 (HV), c33 (VV)
+- Diagonal: c11 (HH), c22 (2·HV — GCOV does not apply the √2 cross-pol factor in symmetrization, so c22 = 2·HVHV), c33 (VV)
 - Off-diagonal complex: c12, c13, c23 (real + imaginary parts)
 
 **Output**: 3×3 coherency matrix T3 (Hermitian, complex)
@@ -94,7 +96,7 @@ function computeHAlpha(c11, c22, c33, c13re, c13im) {
   // Build coherency matrix T3 from covariance C3
   // Note: Need all 6 covariance terms for full decomposition
   // For NISAR GCOV, we have: HHHH, HVHV, VVVV, HHVV (complex)
-  // Missing: HHVH, VVVH — approximate or set to 0 (monostatic assumption)
+  // Missing: HHVH, VVVH — set to 0 (reflection-symmetry assumption)
 
   const C3 = {
     c11, c22, c33,
@@ -141,7 +143,7 @@ function computeHAlphaRGB(bands) {
 
   for (let i = 0; i < n; i++) {
     const c11 = hh[i];
-    const c22 = hv[i];
+    const c22 = 2 * hv[i];  // lexicographic C3: c22 = 2·HVHV (GCOV omits the √2 factor)
     const c33 = vv[i];
     const c13re = re ? re[i] : 0;
     const c13im = im ? im[i] : 0;
@@ -208,8 +210,8 @@ const { values } = eigenDecomposition3x3(H_test);
 - Select "H-α-A (Cloude-Pottier)" composite
 - Expected visualization:
   - **High entropy (red)**: Heterogeneous areas (urban, forest)
-  - **High alpha (green)**: Volume scattering (vegetation)
-  - **High anisotropy (blue)**: Oriented targets (buildings, rows)
+  - **Mid alpha (green, α≈45°)**: Volume scattering (vegetation); α→90° indicates double-bounce
+  - **Anisotropy (blue)**: A = (λ2−λ3)/(λ2+λ3), relative weight of secondary mechanisms — meaningful mainly at moderate/high entropy
 
 ## Challenges & Considerations
 
@@ -223,8 +225,8 @@ NISAR GCOV provides only diagonal terms (HHHH, HVHV, VVVV) and HHVV (complex).
 
 **Impact**:
 - Full coherency matrix cannot be built exactly
-- **Solution**: Monostatic radar assumption → VH ≈ HV, so HHVH ≈ HHVV*, VVVH ≈ 0
-- Or: Set missing terms to 0 (approximation for distributed targets)
+- Reciprocity (VH = HV) only equates HHVH with HHHV — it does not zero these terms
+- **Solution**: Set the co×cross correlation terms to 0 — the separate *reflection-symmetry* assumption, valid for distributed natural targets
 
 ### Numerical Stability
 

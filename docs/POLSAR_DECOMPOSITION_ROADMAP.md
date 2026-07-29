@@ -3,6 +3,8 @@
 Roadmap for full-covariance polarimetric decompositions in SARdine, targeting
 NISAR GCOV quad-pol products with `isFullCovariance = true`.
 
+> **Status (2026-07-29)**: Polarimetric decomposition features are parked and hidden from the UI pending correctness fixes — see [RADAR_AUDIT_2026-07-29.md](RADAR_AUDIT_2026-07-29.md).
+
 ## Current State
 
 **Implemented:**
@@ -17,8 +19,10 @@ NISAR GCOV quad-pol products with `isFullCovariance = true`.
 
 **Key data fact:** NISAR GCOV quad-pol provides HHHH, HVHV, VVVV (diagonal, real)
 plus HHVV, HHHV, HHVH, HVVH, HVVV, VHVV (off-diagonal, complex). The loader
-de-interleaves complex terms into `_re`/`_im` pairs. Missing terms (HHHV, VHVV)
-can be approximated via the monostatic reciprocity assumption (VH ≈ HV).
+de-interleaves complex terms into `_re`/`_im` pairs. Reciprocity (VH = HV) only
+equates terms containing VH with their HV counterparts (e.g. HHVH = HHHV);
+zeroing the remaining co×cross terms is the separate reflection-symmetry
+assumption (valid for distributed natural targets).
 
 ---
 
@@ -42,7 +46,7 @@ Jacobi rotation method for 3×3 Hermitian matrices:
 
 Build T3 = A · C3 · A† where A is the Pauli basis change matrix.
 Input: 6 unique covariance terms (3 real diagonal + 3 complex off-diagonal).
-For missing terms (HHHV, VHVV): default to 0 or use reciprocity approximation.
+For missing terms (HHHV, VHVV): default to 0 (reflection-symmetry assumption).
 
 ### 1.3 Implement computeAlphaAngle
 

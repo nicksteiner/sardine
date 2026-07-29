@@ -44,12 +44,20 @@ const SAR_BANDS = ['LSAR', 'SSAR'];
 /**
  * Diagonal (real-valued) covariance terms — backscatter power.
  * Type: Float32, Shape: (length, width), units: gamma0 (linear).
+ *
+ * Linear-pol terms come from H/V-transmit modes; RHRH/RVRV come from NISAR's
+ * compact-pol mode (circular transmit) — a granule carries one mode or the
+ * other, never both, and compact-pol backscatter has a different dynamic
+ * range than linear co-pol, so linear defaults (dB range, composites) should
+ * not be assumed for them.
  */
-const DIAGONAL_TERMS = ['HHHH', 'HVHV', 'VHVH', 'VVVV', 'RHRH', 'RVRV'];
+const LINEAR_DIAGONAL_TERMS = ['HHHH', 'HVHV', 'VHVH', 'VVVV'];
+const COMPACT_DIAGONAL_TERMS = ['RHRH', 'RVRV'];
+const DIAGONAL_TERMS = [...LINEAR_DIAGONAL_TERMS, ...COMPACT_DIAGONAL_TERMS];
 
 /**
  * Off-diagonal (complex-valued) covariance terms.
- * Type: CFloat32, Shape: (length, width).
+ * Type: CFloat32, Shape: (length, width). RHRV is compact-pol.
  * Present only when isFullCovariance = true.
  */
 const OFFDIAG_TERMS = ['HHHV', 'HHVH', 'HHVV', 'HVVH', 'HVVV', 'VHVV', 'RHRV'];
@@ -1499,7 +1507,12 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   }));
 
   // ── Mask dataset (NISAR spec §4.3.3) ──
-  // uint8 layer with same grid/chunks as data: 0=invalid, 1-5=valid, 255=fill
+  // uint8 layer with same grid/chunks as data. Rendering convention (shared
+  // with SARGPULayer + createRGBTexture): 0=invalid, 1=valid (unflagged),
+  // 2-254=valid but geometry-flagged (hidden only when the user enables
+  // "mask layover/shadow"), 255=fill.
+  // TODO: verify per-code meanings against the NISAR GCOV product spec mask
+  // table before treating individual codes (water/layover/shadow) differently.
   let maskDatasetId = null;
   try {
     const maskId = streamReader.findDatasetByPath(paths.mask(activeFreq));
@@ -3296,7 +3309,12 @@ export async function loadNISARRGBComposite(fileOrUrl, options = {}) {
   });
 
   // ── Mask dataset (NISAR spec §4.3.3) ──
-  // uint8 layer with same grid/chunks as data: 0=invalid, 1-5=valid, 255=fill
+  // uint8 layer with same grid/chunks as data. Rendering convention (shared
+  // with SARGPULayer + createRGBTexture): 0=invalid, 1=valid (unflagged),
+  // 2-254=valid but geometry-flagged (hidden only when the user enables
+  // "mask layover/shadow"), 255=fill.
+  // TODO: verify per-code meanings against the NISAR GCOV product spec mask
+  // table before treating individual codes (water/layover/shadow) differently.
   let maskDatasetId = null;
   try {
     const maskId = streamReader.findDatasetByPath(paths.mask(activeFreq));
@@ -4315,6 +4333,10 @@ async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A'
     console.log(`[NISAR Loader]   ${i}: ${m.id} mean=${m.mean.toExponential(3)} (${m.meanDb.toFixed(1)} dB)`);
   });
 
+  // Last-resort guess. Power ordering separates co-pol from cross-pol
+  // (typically 6-12 dB apart) but CANNOT distinguish HH from VV — that
+  // ordering is scene-dependent (VV > HH over most vegetation and bare soil
+  // at L-band; HH > VV over sea ice). The HH/VV labels below are unverified.
   if (means.length >= 4) {
     polMap['HHHH'] = means[0].id;
     polMap['VVVV'] = means[1].id;
@@ -4326,10 +4348,11 @@ async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A'
     polMap['HVHV'] = means[2].id;
   } else if (means.length === 2) {
     const dbDiff = means[0].meanDb - means[1].meanDb;
-    // Strongest signal is always co-pol (HHHH)
+    // Stronger signal is co-pol (cross-pol runs 6-12 dB below co-pol)
     polMap['HHHH'] = means[0].id;
-    // If power gap > 3 dB, weaker is cross-pol (HVHV); otherwise second co-pol (VVVV)
-    polMap[dbDiff > 3 ? 'HVHV' : 'VVVV'] = means[1].id;
+    // Gap > 6 dB → cross-pol. Smaller gaps are within the normal HH/VV
+    // spread for many surfaces, so assume a second co-pol instead.
+    polMap[dbDiff > 6 ? 'HVHV' : 'VVVV'] = means[1].id;
   } else if (means.length === 1) {
     polMap['HHHH'] = means[0].id;
   }

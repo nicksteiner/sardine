@@ -199,11 +199,10 @@ fn filterMain(
   // Noise variance from ENL: σ²_noise = mean² / ENL
   let noiseVar = (localMean * localMean) / max(params.enl, 1.0);
 
-  // Lee weight: K = var / (var + noiseVar)
+  // Lee (1980) multiplicative-speckle weight: K = (var - noiseVar) / var
   // When var >> noiseVar: K→1 (keep pixel, likely edge/target)
-  // When var ≈ noiseVar: K→0.5 (partial filtering)
-  // When var << noiseVar: K→0 (pure mean, homogeneous area)
-  let K = select(localVar / (localVar + noiseVar), 0.0, localVar + noiseVar == 0.0);
+  // When var ≈ noiseVar: K→0 (pure mean — a homogeneous area is all speckle)
+  let K = select(clamp((localVar - noiseVar) / localVar, 0.0, 1.0), 0.0, localVar <= 0.0);
 
   // filtered = mean + K * (center - mean)
   let filtered = localMean + K * (center - localMean);
@@ -265,8 +264,8 @@ fn filterMain(
   let Cv = select(sqrt(localVar) / localMean, 0.0, localMean <= 0.0);
 
   // Thresholds from ENL
-  let Cu = 1.0 / sqrt(max(params.enl, 1.0));  // noise Cv
-  let Cmax = sqrt(2.0) * Cu;                   // max Cv for filtering
+  let Cu = 1.0 / sqrt(max(params.enl, 1.0));         // noise Cv
+  let Cmax = sqrt(1.0 + 2.0 / max(params.enl, 1.0)); // max Cv (Lopes et al. 1990)
 
   var filtered: f32;
   if (Cv <= Cu) {
@@ -278,7 +277,7 @@ fn filterMain(
   } else {
     // Intermediate: standard Lee weighting
     let noiseVar = (localMean * localMean) / max(params.enl, 1.0);
-    let K = select(localVar / (localVar + noiseVar), 0.0, localVar + noiseVar == 0.0);
+    let K = select(clamp((localVar - noiseVar) / localVar, 0.0, 1.0), 0.0, localVar <= 0.0);
     filtered = localMean + K * (center - localMean);
   }
 
@@ -446,7 +445,7 @@ fn filterMain(
     if (discriminant < 0.0) {
       // Fallback: use Lee filter when discriminant is negative
       let noiseVar = (localMean * localMean) / ENL;
-      let K = select(localVar / (localVar + noiseVar), 0.0, localVar + noiseVar == 0.0);
+      let K = select(clamp((localVar - noiseVar) / localVar, 0.0, 1.0), 0.0, localVar <= 0.0);
       filtered = localMean + K * (center - localMean);
     } else {
       filtered = (A * localMean + sqrt(discriminant)) / (2.0 * alpha);
@@ -536,8 +535,7 @@ function cpuLee(data, width, height, halfK, enl) {
       const mean = sum / count;
       const variance = Math.max(sumSq / count - mean * mean, 0);
       const noiseVar = (mean * mean) / Math.max(enl, 1);
-      const denom = variance + noiseVar;
-      const K = denom > 0 ? variance / denom : 0;
+      const K = variance > 0 ? Math.max(0, Math.min(1, (variance - noiseVar) / variance)) : 0;
       out[idx] = Math.max(mean + K * (center - mean), 0);
     }
   }
@@ -547,7 +545,7 @@ function cpuLee(data, width, height, halfK, enl) {
 function cpuEnhancedLee(data, width, height, halfK, enl) {
   const out = new Float32Array(data.length);
   const Cu = 1 / Math.sqrt(Math.max(enl, 1));
-  const Cmax = Math.sqrt(2) * Cu;
+  const Cmax = Math.sqrt(1 + 2 / Math.max(enl, 1));
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
@@ -573,8 +571,7 @@ function cpuEnhancedLee(data, width, height, halfK, enl) {
         out[idx] = center;
       } else {
         const noiseVar = (mean * mean) / Math.max(enl, 1);
-        const denom = variance + noiseVar;
-        const K = denom > 0 ? variance / denom : 0;
+        const K = variance > 0 ? Math.max(0, Math.min(1, (variance - noiseVar) / variance)) : 0;
         out[idx] = Math.max(mean + K * (center - mean), 0);
       }
     }
@@ -661,8 +658,7 @@ function cpuGammaMap(data, width, height, halfK, enl) {
         const discriminant = mean * mean * A * A + 4 * alpha * ENL * center * mean;
         if (discriminant < 0) {
           const noiseVar = (mean * mean) / ENL;
-          const denom = variance + noiseVar;
-          const K = denom > 0 ? variance / denom : 0;
+          const K = variance > 0 ? Math.max(0, Math.min(1, (variance - noiseVar) / variance)) : 0;
           out[idx] = Math.max(mean + K * (center - mean), 0);
         } else {
           out[idx] = Math.max((A * mean + Math.sqrt(discriminant)) / (2 * alpha), 0);

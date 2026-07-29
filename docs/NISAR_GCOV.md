@@ -2,7 +2,7 @@
 
 > JPL D-102274 Rev E, November 8, 2024, Version 1.2.1
 > Author: Gustavo H. X. Shiroma, NASA JPL
-> See also: [NISAR_PRODUCTS.md](NISAR_PRODUCTS.md) for cross-product reference
+> See also: [NISAR_GUNW.md](NISAR_GUNW.md) for the companion interferometric product
 
 ## 1. Product Overview
 
@@ -159,7 +159,7 @@ Only upper-triangular terms stored (Hermitian matrix).
 |:--------|:-----|:------|:------|:----------|:------------|
 | `numberOfLooks` | Float32 | (L, W) | 1 | NaN | Adaptive multilook count per pixel |
 | `rtcGammaToSigmaFactor` | Float32 | (L, W) | 1 | NaN | sigma0 = gamma0 * factor |
-| `mask` | UByte | (L, W) | 1 | 255 | 3-digit validity mask (see [NISAR_PRODUCTS.md](NISAR_PRODUCTS.md)) |
+| `mask` | UByte | (L, W) | 1 | 255 | 3-digit validity mask (see Rendering Guide below) |
 
 ### 3.4 Polarimetric Covariance Matrix
 
@@ -180,7 +180,7 @@ C3 = [ HHHV    HVHV    HVVV* ]
 
 ### Projection
 
-GCOV uses **projected coordinates in meters** (UTM or Polar Stereographic). See [NISAR_PRODUCTS.md](NISAR_PRODUCTS.md) for EPSG table.
+GCOV uses **projected coordinates in meters** (UTM or Polar Stereographic). The per-frame EPSG code is stored in the `projection` dataset (see coordinate arrays below).
 
 ### Coordinate arrays
 
@@ -219,16 +219,16 @@ Depends on RSLC range bandwidth:
 | Off-diagonal phase | `atan2(i, r)` | Cyclic: `phase` | [-pi, pi] | |
 | numberOfLooks | Linear | Sequential | [0, max] | |
 | rtcGammaToSigmaFactor | Linear | Sequential | [0, 2] | |
-| mask | Categorical | Discrete | 0-155 | See mask encoding |
+| mask | Categorical | Discrete | 0-255 | See mask encoding |
 
 ### NaN/Zero masking
 
-GCOV uses NaN as FillValue for Float32, 255 for UByte mask. Additionally, power values of exactly 0 indicate shadow/nodata:
+GCOV uses NaN as FillValue for Float32, 255 for UByte mask. Additionally, power values of exactly 0 indicate zero illuminated area (shadow, layover exclusion, or no contributing samples):
 
 ```javascript
 // Pixel is nodata if:
 //   isNaN(value)       — FillValue
-//   value === 0        — shadow / no backscatter
+//   value === 0        — zero illuminated area (shadow, layover exclusion, no samples)
 //   mask === 0         — invalid/partially focused
 //   mask === 255       — outside acquisition bounds
 ```
@@ -241,7 +241,7 @@ GCOV diagonal terms support polarimetric RGB composites:
 |:-------|:--|:--|:--|:---------|
 | Dual-pol-H | HHHH | HVHV | HHHH/HVHV | Land cover (dual-H mode) |
 | Dual-pol-V | VVVV | HVHV | VVVV/HVHV | Land cover (dual-V mode) |
-| Pauli | HHHH-VVVV | HVHV | HHHH+VVVV | Scattering mechanism decomposition |
+| Pauli (power approximation, no phase) | HHHH-VVVV | HVHV | HHHH+VVVV | Scattering mechanism proxy — true Pauli needs Re(HHVV): R = (HHHH+VVVV-2*Re(HHVV))/2, B = (HHHH+VVVV+2*Re(HHVV))/2 |
 | Quad-pol | HHHH | HVHV | VVVV | Full-pol land cover |
 
 ## 6. h5chunk Adaptation

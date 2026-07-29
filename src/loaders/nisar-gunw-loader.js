@@ -22,6 +22,7 @@ import {
   extractCoordinatesAtPath,
   getRenderMode,
   extractPhaseFromComplex,
+  multilookComplexPhase,
   multilookFloat32,
   openNISARReader,
 } from './nisar-product.js';
@@ -455,15 +456,15 @@ export async function loadNISARGUNW(file, options = {}) {
     if (!region) return null;
     let data = region.data || region;
 
-    // Handle complex data
-    if (renderMode.isComplex && renderMode.transform === 'complexPhase') {
-      data = extractPhaseFromComplex(data, srcNumRows, srcNumCols);
-    }
-
     let outputData;
-    if (ml > 1) {
-      const mlResult = multilookFloat32(data, srcNumRows, srcNumCols, ml);
-      outputData = mlResult.data;
+    if (renderMode.isComplex && renderMode.transform === 'complexPhase') {
+      // Multilook in the complex domain, then take the phase — averaging
+      // already-wrapped phase creates artifacts at ±π branch cuts.
+      outputData = ml > 1
+        ? multilookComplexPhase(data, srcNumRows, srcNumCols, ml).data
+        : extractPhaseFromComplex(data, srcNumRows, srcNumCols);
+    } else if (ml > 1) {
+      outputData = multilookFloat32(data, srcNumRows, srcNumCols, ml).data;
     } else {
       outputData = data;
     }
@@ -532,9 +533,15 @@ export async function loadNISARGUNW(file, options = {}) {
       if (!region) return null;
       let data = region.data || region;
 
-      // Handle complex data: extract phase
       if (renderMode.isComplex && renderMode.transform === 'complexPhase') {
-        data = extractPhaseFromComplex(data, nRows, nCols);
+        if (windowSize <= 1) return Math.atan2(data[1], data[0]);
+        // Average complex samples, then take the phase (wrapped-phase safe)
+        let re = 0, im = 0, count = 0;
+        for (let i = 0; i < data.length; i += 2) {
+          const vr = data[i], vi = data[i + 1];
+          if (!isNaN(vr) && !isNaN(vi)) { re += vr; im += vi; count++; }
+        }
+        return count > 0 ? Math.atan2(im, re) : NaN;
       }
 
       if (windowSize <= 1) return data[0];

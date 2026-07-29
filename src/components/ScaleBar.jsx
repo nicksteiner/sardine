@@ -1,17 +1,18 @@
 import React, { useMemo } from 'react';
+import { isProjectedBounds } from '../utils/geo-overlays.js';
 
 /**
  * Scale bar overlay showing map scale
  * Displays a simple line with distance
  */
-export function ScaleBar({ viewState, bounds }) {
+export function ScaleBar({ viewState, bounds, epsg = null }) {
   const scaleInfo = useMemo(() => {
     if (!viewState || !bounds) {
       return null;
     }
 
     // Check if this is projected coordinates (meters)
-    const isProjected = Math.abs(bounds[0]) > 180 || Math.abs(bounds[2]) > 180;
+    const isProjected = isProjectedBounds(bounds, epsg);
 
     if (!isProjected) {
       return null; // Only show for projected coordinates
@@ -48,7 +49,7 @@ export function ScaleBar({ viewState, bounds }) {
     }
 
     return { pixels: scalePixels, label };
-  }, [viewState, bounds]);
+  }, [viewState, bounds, epsg]);
 
   if (!scaleInfo) {
     return null;

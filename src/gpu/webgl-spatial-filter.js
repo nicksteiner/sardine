@@ -95,24 +95,23 @@ void main() {
 
     } else if (uFilterType == 2) {
       // ─── Lee adaptive ───
+      // Lee (1980) multiplicative-speckle weight: K = (var - noiseVar) / var
       float noiseVar = (localMean * localMean) / max(uENL, 1.0);
-      float denom = localVar + noiseVar;
-      float K = denom > 0.0 ? localVar / denom : 0.0;
+      float K = localVar > 0.0 ? clamp((localVar - noiseVar) / localVar, 0.0, 1.0) : 0.0;
       filtered = localMean + K * (center - localMean);
 
     } else if (uFilterType == 3) {
       // ─── Enhanced Lee (Cv thresholding) ───
       float Cv = localMean > 0.0 ? sqrt(localVar) / localMean : 0.0;
       float Cu = 1.0 / sqrt(max(uENL, 1.0));
-      float Cmax = sqrt(2.0) * Cu;
+      float Cmax = sqrt(1.0 + 2.0 / max(uENL, 1.0)); // Lopes et al. 1990
       if (Cv <= Cu) {
         filtered = localMean;
       } else if (Cv >= Cmax) {
         filtered = center;
       } else {
         float noiseVar = (localMean * localMean) / max(uENL, 1.0);
-        float denom = localVar + noiseVar;
-        float K = denom > 0.0 ? localVar / denom : 0.0;
+        float K = localVar > 0.0 ? clamp((localVar - noiseVar) / localVar, 0.0, 1.0) : 0.0;
         filtered = localMean + K * (center - localMean);
       }
 
@@ -156,8 +155,7 @@ void main() {
         if (disc < 0.0) {
           // Fallback: Lee filter when discriminant is negative
           float noiseVar = (localMean * localMean) / ENL;
-          float denom = localVar + noiseVar;
-          float K = denom > 0.0 ? localVar / denom : 0.0;
+          float K = localVar > 0.0 ? clamp((localVar - noiseVar) / localVar, 0.0, 1.0) : 0.0;
           filtered = localMean + K * (center - localMean);
         } else {
           filtered = (A * localMean + sqrt(disc)) / (2.0 * a);

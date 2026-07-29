@@ -40,6 +40,7 @@ export class SARTileLayer extends TileLayer {
       coherenceMaskMode = 0,
       incidenceAngleData = null,
       verticalDisplacement = false,
+      valueScale = 1.0, // unit conversion, e.g. λ/4π for phase(rad) → LOS meters
       correctionLayers = null, // {ionosphere, troposphereWet, ...} each {data, width, height}
       enabledCorrections = null, // Set of enabled correction keys
       speckleFilterType = 'none',
@@ -98,7 +99,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode, classMode, classPalette, classPaletteEntries, opacity],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode, classMode, classPalette, classPaletteEntries, opacity],
       },
 
       renderSubLayers: (subProps) => {
@@ -271,6 +272,7 @@ export class SARTileLayer extends TileLayer {
             gamma,
             stretchMode,
             opacity,
+            valueScale,
             ...maskProps,
             ...filterProps,
             ...cohProps,

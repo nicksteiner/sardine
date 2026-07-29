@@ -2,7 +2,7 @@
 
 > JPL D-102272 Rev E, November 8, 2024, Version 1.2.1
 > Authors: Virginia Brancato, Jungkyo Jung, Xiaodong Huang, Heresh Fattahi
-> See also: [NISAR_PRODUCTS.md](NISAR_PRODUCTS.md) for cross-product reference
+> See also: [NISAR_GCOV.md](NISAR_GCOV.md) for the companion backscatter product
 
 ## 1. Product Overview
 
@@ -144,7 +144,7 @@ Path: `/science/{band}/GUNW/grids/frequencyA/unwrappedInterferogram/{pol}/`
 | Dataset | Type | Shape | Units | FillValue | Description |
 |:--------|:-----|:------|:------|:----------|:------------|
 | `unwrappedPhase` | Float32 | (L, W) | radians | NaN | Continuous displacement phase. LOS displacement = phase * wavelength / (4*pi). NISAR L-band wavelength ~ 0.2384 m. |
-| `coherenceMagnitude` | Float32 | (L, W) | 1 | NaN | Normalized interferometric coherence [0, 1]. >0.5 = reliable phase. |
+| `coherenceMagnitude` | Float32 | (L, W) | 1 | NaN | Normalized interferometric coherence [0, 1]. >0.7 reliable; 0.3-0.7 usable with caution; <0.3 unreliable. |
 | `connectedComponents` | UInt16 | (L, W) | label | 65535 | Phase unwrapping connected component labels. Different components may have 2*pi ambiguities. 0 = invalid. |
 | `ionospherePhaseScreen` | Float32 | (L, W) | radians | NaN | Estimated ionospheric phase from split-spectrum. NOT subtracted from unwrappedPhase by default. |
 | `ionospherePhaseScreenUncertainty` | Float32 | (L, W) | radians | NaN | Uncertainty of ionosphere estimate. |
@@ -153,7 +153,7 @@ Shared mask at group level:
 
 | Dataset | Type | Shape | Units | FillValue | Description |
 |:--------|:-----|:------|:------|:----------|:------------|
-| `mask` | UByte | (L, W) | 1 | 255 | 3-digit validity mask (see [NISAR_PRODUCTS.md](NISAR_PRODUCTS.md)) |
+| `mask` | UByte | (L, W) | 1 | 255 | 3-digit validity mask (see Rendering Guide below and [NISAR_GCOV.md](NISAR_GCOV.md)) |
 
 ### 3.2 Wrapped Interferogram Group (20 m posting)
 
@@ -180,7 +180,7 @@ Path: `/science/{band}/GUNW/grids/frequencyA/pixelOffsets/{pol}/`
 
 ### Projection
 
-GUNW uses **projected coordinates in meters** (UTM or Polar Stereographic). See [NISAR_PRODUCTS.md](NISAR_PRODUCTS.md) for EPSG table.
+GUNW uses **projected coordinates in meters** (UTM or Polar Stereographic). The per-frame EPSG code is stored in each group's `projection` dataset (see coordinate arrays below).
 
 ### Coordinate arrays
 
@@ -225,7 +225,7 @@ Each group has its own `xCoordinates`, `yCoordinates`, and `projection`. When sw
 | `slantRangeOffset` | Linear | Diverging | Symmetric around 0 | Units = meters |
 | `alongTrackOffset` | Linear | Diverging | Symmetric around 0 | Units = meters |
 | `correlationSurfacePeak` | Linear | Sequential | [0, 1] | Quality metric |
-| `mask` | Categorical | Discrete | 0-155 | See mask encoding |
+| `mask` | Categorical | Discrete | 0-255 | See mask encoding |
 
 ### Key difference from GCOV
 
@@ -252,7 +252,7 @@ SARdine implements this per-pixel correction using the incidence angle grid from
 
 **Important caveats:**
 - This assumes **purely vertical motion**. Real-world displacement often has horizontal components (e.g., tectonic fault slip, glacier flow).
-- The correction amplifies noise at steep incidence angles: cos(30°) = 0.87 gives 1.15× amplification, but cos(50°) = 0.64 gives 1.56× amplification.
+- The correction amplifies noise at shallow (large) incidence angles: cos(30°) = 0.87 gives 1.15× amplification, but cos(50°) = 0.64 gives 1.56× amplification.
 - For proper 3D decomposition, combine ascending and descending pass observations using the full LOS unit vectors (`losUnitVectorX/Y`).
 - The `verticalDisplacement` toggle in SARdine requires `LOS Displacement` mode to be active first.
 

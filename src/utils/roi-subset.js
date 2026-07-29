@@ -54,15 +54,35 @@ export function reprojectBbox(bbox4326, fileCrs) {
   if (epsg === 4326) return bbox4326;
 
   const [west, south, east, north] = bbox4326;
-  const [e1, n1] = wgs84ToProjectedPoint(west, south, fileCrs);
-  const [e2, n2] = wgs84ToProjectedPoint(east, north, fileCrs);
 
-  return [
-    Math.min(e1, e2),
-    Math.min(n1, n2),
-    Math.max(e1, e2),
-    Math.max(n1, n2),
-  ];
+  // A lat/lon rectangle maps to a curved quadrilateral in a projected CRS
+  // (UTM meridian convergence, polar stereographic, ...), so the projected
+  // extrema can lie anywhere along the edges — not at the corners. Sample
+  // densified points along all four edges and take the envelope; two-corner
+  // sampling under-estimates the bbox and clips data at the E/W margins.
+  const N_EDGE = 10;
+  let minE = Infinity, minN = Infinity, maxE = -Infinity, maxN = -Infinity;
+  for (let i = 0; i <= N_EDGE; i++) {
+    const fx = i / N_EDGE;
+    const lon = west + fx * (east - west);
+    const lat = south + fx * (north - south);
+    const pts = [
+      wgs84ToProjectedPoint(lon, south, fileCrs),  // south edge
+      wgs84ToProjectedPoint(lon, north, fileCrs),  // north edge
+      wgs84ToProjectedPoint(west, lat, fileCrs),   // west edge
+      wgs84ToProjectedPoint(east, lat, fileCrs),   // east edge
+    ];
+    for (const [e, n] of pts) {
+      if (!Number.isFinite(e) || !Number.isFinite(n)) continue;
+      if (e < minE) minE = e;
+      if (e > maxE) maxE = e;
+      if (n < minN) minN = n;
+      if (n > maxN) maxN = n;
+    }
+  }
+  if (!Number.isFinite(minE)) return bbox4326;
+
+  return [minE, minN, maxE, maxN];
 }
 
 /**

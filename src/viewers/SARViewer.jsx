@@ -46,6 +46,8 @@ export const SARViewer = forwardRef(function SARViewer({
   coherenceMaskMode = 0,       // 0=below min, 1=outside [min,max]
   incidenceAngleData = null,   // {data, width, height} for angle masking / vertical displacement
   verticalDisplacement = false, // GUNW: divide LOS by cos(θ) for vertical component
+  valueScale = 1.0,             // GUNW: unit conversion, e.g. λ/4π for phase(rad) → LOS meters
+  epsg = null,                  // dataset EPSG code — drives m-vs-° labeling of overlays
   correctionLayers = null,       // GUNW: {ionosphere, troposphereWet, ...} each {data, w, h}
   enabledCorrections = null,     // GUNW: Set of enabled correction keys
   speckleFilterType = 'none', // Speckle filter type ('none' | 'boxcar' | 'lee' | etc.)
@@ -257,7 +259,7 @@ export const SARViewer = forwardRef(function SARViewer({
   const visualRef = useRef({
     contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
     opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
-    incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
+    incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
     classMode, classPalette, classPaletteEntries,
   });
   const [visualTick, setVisualTick] = useState(0);
@@ -281,6 +283,7 @@ export const SARViewer = forwardRef(function SARViewer({
       coherenceMaskMode !== prev.coherenceMaskMode ||
       incidenceAngleData !== prev.incidenceAngleData ||
       verticalDisplacement !== prev.verticalDisplacement ||
+      valueScale !== prev.valueScale ||
       correctionLayers !== prev.correctionLayers ||
       enabledCorrections !== prev.enabledCorrections ||
       speckleFilterType !== prev.speckleFilterType ||
@@ -295,7 +298,7 @@ export const SARViewer = forwardRef(function SARViewer({
     visualRef.current = {
       contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
       opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
-      incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
+      incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
       classMode, classPalette, classPaletteEntries,
     };
     if (changed && !rafRef.current) {
@@ -304,7 +307,7 @@ export const SARViewer = forwardRef(function SARViewer({
         setVisualTick(t => t + 1);
       });
     }
-  }, [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping, classMode, classPalette, classPaletteEntries]);
+  }, [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping, classMode, classPalette, classPaletteEntries]);
 
   // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
@@ -380,6 +383,7 @@ export const SARViewer = forwardRef(function SARViewer({
           coherenceMaskMode: v.coherenceMaskMode,
           incidenceAngleData: v.incidenceAngleData,
           verticalDisplacement: v.verticalDisplacement,
+          valueScale: v.valueScale,
           correctionLayers: v.correctionLayers,
           enabledCorrections: v.enabledCorrections,
           speckleFilterType: v.speckleFilterType,
@@ -535,7 +539,7 @@ export const SARViewer = forwardRef(function SARViewer({
         useDecibels={useDecibels}
         show={profileShow}
       />
-      {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} />}
+      {showGrid && <CoordinateGrid viewState={viewState} bounds={bounds} epsg={epsg} />}
       <AnnotationOverlay
         viewState={viewState}
         bounds={bounds}
@@ -554,7 +558,7 @@ export const SARViewer = forwardRef(function SARViewer({
         currentOverview={loadingStatus.currentOverview}
         totalOverviews={loadingStatus.totalOverviews}
       />
-      <ScaleBar viewState={viewState} bounds={bounds} />
+      <ScaleBar viewState={viewState} bounds={bounds} epsg={epsg} />
       {/* Zoom-to-extent / Home button */}
       {bounds && (bounds[2] - bounds[0]) > 0 && (
         <button

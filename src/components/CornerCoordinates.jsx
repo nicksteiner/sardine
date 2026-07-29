@@ -12,7 +12,7 @@ import {
  * Style: --sardine-bg-raised + --sardine-border + radius-md, 80% alpha
  * Text:  --sardine-cyan, JetBrains Mono 0.6rem
  */
-export function CornerCoordinates({ viewState, bounds }) {
+export function CornerCoordinates({ viewState, bounds, epsg = null }) {
   const corners = useMemo(() => {
     if (!viewState || !bounds) return null;
 
@@ -27,7 +27,7 @@ export function CornerCoordinates({ viewState, bounds }) {
 
   if (!viewState || !bounds) return null;
 
-  const projected = isProjectedBounds(bounds);
+  const projected = isProjectedBounds(bounds, epsg);
 
   // We'll use a ResizeObserver-free approach: put invisible absolutely-
   // positioned elements at each corner and compute coords from viewState

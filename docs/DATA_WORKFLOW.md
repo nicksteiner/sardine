@@ -96,9 +96,9 @@ NISAR_L2_PR_GCOV_001_005_A_219_4020_SHNA_A_20250211T010938_20250211T011006_D0050
 │       │       │   ├── VHVH          ← |VH|² (if quad-pol)
 │       │       │   ├── VVVV          ← |VV|² (if quad-pol)
 │       │       │   ├── listOfPolarizations
-│       │       │   ├── xCoordinates  ← longitude array
-│       │       │   └── yCoordinates  ← latitude array
-│       │       └── frequencyB/       ← S-band (if available)
+│       │       │   ├── xCoordinates  ← easting array (m)
+│       │       │   └── yCoordinates  ← northing array (m)
+│       │       └── frequencyB/       ← second sub-band of the same radar (if available; S-band is a separate SSAR/ root)
 │       │           └── ...
 │       └── metadata/
 │           └── processingInformation/
@@ -111,7 +111,7 @@ Key details:
 - **Chunk size**: ~2–10 MiB per chunk (cloud-optimized)
 - **Compression**: Deflate + shuffle
 - **Dtype**: Float32 (power values, always ≥ 0)
-- **Grid**: EPSG:4326, geographic lat/lon
+- **Grid**: UTM or Polar Stereographic in meters (per-frame EPSG)
 - **Typical size**: 2–8 GB per file (depends on coverage and polarizations)
 - **Typical dimensions**: ~16000 × 16000 pixels per polarization
 
@@ -160,7 +160,7 @@ For the HiFLOWS operational team:
 ```
 1. New GCOV arrives for flood-prone region
 2. Open in SARdine → auto-detects, renders
-3. Switch to VV polarization (best for flood detection)
+3. Switch to HH polarization (preferred for flood detection: darker open water, strongest double-bounce over flooded vegetation — NISAR's standard land mode is HH+HV, so VV usually isn't in the file)
 4. Adjust contrast to emphasize dark returns (water)
 5. Enable flood mask overlay (threshold at ~-15 dB)
 6. Export flood extent as GeoJSON polygon

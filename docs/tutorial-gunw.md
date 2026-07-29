@@ -21,7 +21,7 @@ A SAR satellite transmits microwave pulses and records the reflected signal. Eac
 | **Interferogram** | The pixel-by-pixel phase difference between reference and secondary |
 | **Wrapped phase** | Raw phase difference, confined to [-π, +π] — one full cycle ("fringe") = half a wavelength of ground motion along the line-of-sight |
 | **Unwrapped phase** | Continuous phase after resolving 2π ambiguities — directly proportional to displacement |
-| **Coherence** | A measure [0, 1] of how stable the scattering surface is between acquisitions. High coherence (>0.5) = reliable phase measurement |
+| **Coherence** | A measure [0, 1] of how stable the scattering surface is between acquisitions. >0.7 = reliable phase; 0.3-0.7 usable with caution; <0.3 unreliable (see Workflow 3) |
 | **Line-of-Sight (LOS)** | The direction from the satellite to the ground. InSAR measures displacement projected onto this direction |
 | **Temporal baseline** | Time between the two acquisitions (days) |
 | **Perpendicular baseline** | Spatial separation of satellite orbits, perpendicular to LOS (meters) |
@@ -94,8 +94,8 @@ GUNW file
 
 1. **Load the unwrapped phase layer** — `unwrappedPhase` at 80 m posting
 2. **Apply a diverging colormap** (e.g., `RdBu` or `coolwarm`) centered on zero
-   - Blue = motion toward the satellite (uplift or westward motion on descending passes)
-   - Red = motion away from the satellite (subsidence or eastward motion)
+   - The displayed sign (which color means motion toward vs. away from the satellite) follows the product's phase sign convention — check the granule metadata before interpreting
+   - For right-looking SAR, ascending passes look approximately east and descending passes look approximately west, so the same horizontal ground motion produces opposite LOS signs on the two geometries
 3. **Convert phase to LOS displacement**:
    ```
    LOS_displacement_m = unwrappedPhase × λ / (4π)
@@ -189,7 +189,7 @@ GUNW file
 3. **Corrected phase** = `unwrappedPhase - ionospherePhaseScreen`
 4. **Check uncertainty** via `ionospherePhaseScreenUncertainty`
 
-**Background**: The ionosphere is a layer of charged particles 80-1000 km above Earth. It introduces a frequency-dependent phase delay. At L-band (1.2 GHz), ionospheric effects can be significant — adding fringes that mimic ground deformation. NISAR uses **split-spectrum** processing: separating the signal into sub-bands to estimate and remove the dispersive ionospheric component.
+**Background**: The ionosphere is a layer of charged particles 80-1000 km above Earth. It introduces a frequency-dependent phase delay. At L-band (1.2575 GHz), ionospheric effects can be significant — adding fringes that mimic ground deformation. NISAR uses **split-spectrum** processing: separating the signal into sub-bands to estimate and remove the dispersive ionospheric component.
 
 **When to apply**: Always check the ionosphere layer. If it shows strong gradients (especially at low/equatorial latitudes or during geomagnetic storms), subtract it. Note: the ionosphere phase screen is **not** subtracted from `unwrappedPhase` by default — you must apply the correction yourself.
 
@@ -270,7 +270,7 @@ The `radarGrid` group contains `wetTroposphericPhaseScreen` and `hydrostaticTrop
 | 1 radian of phase | λ/(4π) ≈ 1.9 cm LOS displacement |
 | LOS → vertical conversion | divide by cos(θ); ×1.15 at 30°, ×1.41 at 45° |
 | Typical precision | ~1-2 cm for coherence > 0.5 |
-| Maximum measurable gradient | ~1 fringe per pixel (11.9 cm / 80 m ≈ 0.15%) |
+| Maximum measurable gradient | half a fringe (π) per pixel: ~6 cm / 80 m ≈ 0.075% |
 | Repeat cycle | 12 days |
 
 ### L-band vs C-band
@@ -279,7 +279,7 @@ NISAR uses L-band (λ ≈ 24 cm), which differs significantly from C-band missio
 
 - **L-band penetrates vegetation**: Maintains coherence over forests and agricultural areas where C-band decorrelates
 - **Longer wavelength = larger fringe spacing**: One L-band fringe = 11.9 cm vs 2.8 cm for C-band. Fewer fringes for the same displacement → easier to unwrap, but less sensitive to small signals
-- **Stronger ionospheric effects**: Phase delay scales as 1/frequency, so L-band sees ~4x more ionospheric contamination than C-band
+- **Stronger ionospheric effects**: Ionospheric phase delay scales as 1/frequency, so L-band sees ~4.3x more ionospheric phase than C-band; expressed as equivalent LOS displacement the contamination scales as 1/f², roughly 18x more than C-band
 
 ---
 

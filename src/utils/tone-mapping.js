@@ -466,15 +466,23 @@ const COLOR_RAMPS = {
 };
 
 function generateViridisLUT() {
-  // Simplified viridis approximation
+  // Matplotlib viridis polynomial fit (matches utils/colormap.js)
+  const c0 = [0.277727, 0.005407, 0.334100];
+  const c1 = [0.105093, 1.404613, 1.384590];
+  const c2 = [-0.330862, 0.214848, 0.095095];
+  const c3 = [-4.634230, -5.799101, -19.332441];
+  const c4 = [6.228270, 14.179933, 56.690553];
+  const c5 = [4.776385, -13.745145, -65.353033];
+  const c6 = [-5.435456, 4.645853, 26.312435];
   const lut = [];
   for (let i = 0; i < 256; i++) {
     const t = i / 255;
-    lut.push([
-      Math.round(255 * (0.267 + t * (0.329 + t * (-0.448 + t * 0.852)))),
-      Math.round(255 * (0.004 + t * (0.873 + t * (-0.558 + t * 0.681)))),
-      Math.round(255 * (0.329 + t * (0.694 + t * (-1.138 + t * 0.772))))
-    ]);
+    const rgb = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      const v = c0[k] + t * (c1[k] + t * (c2[k] + t * (c3[k] + t * (c4[k] + t * (c5[k] + t * c6[k])))));
+      rgb[k] = Math.round(Math.max(0, Math.min(1, v)) * 255);
+    }
+    lut.push(rgb);
   }
   return lut;
 }

@@ -15,7 +15,7 @@ import {
  * Positioning uses the deck.gl OrthographicView affine:
  *   pixel = (world − center) × 2^zoom + canvasSize/2
  */
-export function CoordinateGrid({ viewState, bounds, width, height }) {
+export function CoordinateGrid({ viewState, bounds, width, height, epsg = null }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -32,7 +32,7 @@ export function CoordinateGrid({ viewState, bounds, width, height }) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
 
-    const projected = isProjectedBounds(bounds);
+    const projected = isProjectedBounds(bounds, epsg);
     const extent = computeVisibleExtent(viewState, w, h);
     const ppu = extent.pixelsPerUnit;
 

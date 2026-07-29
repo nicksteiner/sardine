@@ -83,6 +83,7 @@ uniform float uCoherenceThreshold;  // Lower threshold (mask below this)
 uniform float uCoherenceThresholdMax;  // Upper threshold (mask above this, for range mode)
 uniform float uCoherenceMaskMode;  // 0 = mask below min, 1 = mask outside [min,max]
 uniform float uVerticalDisplacement;  // > 0.5 = divide by cos(incidence angle)
+uniform float uValueScale;  // unit conversion, e.g. λ/4π for phase(rad) → LOS meters
 // Per-correction enable flags (> 0.5 = subtract this correction)
 uniform float uCorIono;
 uniform float uCorTropo;
@@ -271,6 +272,11 @@ void main() {
         }
       }
     }
+
+    // Unit conversion (e.g. unwrapped phase in radians → LOS meters via λ/4π).
+    // Must run after the phase corrections above (those are in radians) and
+    // before the vertical cos(θ) projection below (which expects meters).
+    amplitude = amplitude * uValueScale;
 
     // Vertical displacement: divide LOS by cos(θ) to get vertical component
     // Incidence angle is a full-extent grid — remap UV like cube corrections
@@ -800,6 +806,7 @@ export class SARGPULayer extends Layer {
       coherenceThresholdMax = 1.0,
       coherenceMaskMode = 0,
       verticalDisplacement = false,
+      valueScale = 1.0,
       corIono = false,
       corTropo = false,
       corSET = false,
@@ -870,6 +877,7 @@ export class SARGPULayer extends Layer {
         uCoherenceMaskMode: coherenceMaskMode,
         uTextureCoherence: 4,
         uVerticalDisplacement: (verticalDisplacement && textureIncidence) ? 1.0 : 0.0,
+        uValueScale: Number.isFinite(valueScale) && valueScale !== 0 ? valueScale : 1.0,
         uTextureIncidence: 5,
         // Individual phase correction textures
         uCorIono: (corIono && texCorIono) ? 1.0 : 0.0,

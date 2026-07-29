@@ -13,7 +13,7 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.0--beta.10-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.11-orange)](https://github.com/nicksteiner/sardine/releases)
 [![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
@@ -27,9 +27,9 @@
 
 > **This project is under active development.** Some features are experimental or incomplete. Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
 
-## 🚀 Try it now — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
+## Live demo — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
 
-The hosted build runs entirely in your browser. **Three ways in:**
+The hosted build runs entirely in your browser. Three ways to load data:
 
 | | What you do | What you need |
 |---|---|---|
@@ -39,7 +39,7 @@ The hosted build runs entirely in your browser. **Three ways in:**
 
 **Or just click — New York City in NISAR L-band** (paste your EDL token when prompted, then the rest is automatic):
 
-- **[NYC — all five boroughs](https://nicksteiner.github.io/sardine/?bbox=-74.26,40.49,-73.70,40.92&db=1&min=-18&max=4)** — resolves the best-coverage full-frame granule via CMR and streams only the NYC chunks. Harbor and rivers dark, street grid bright, urban double-bounce blazing.
+- **[NYC — all five boroughs](https://nicksteiner.github.io/sardine/?bbox=-74.26,40.49,-73.70,40.92&db=1&min=-18&max=4)** — resolves the best-coverage full-frame granule via CMR and streams only the NYC chunks. Harbor and rivers dark, street grid bright, strong urban double-bounce.
 - **[Manhattan + the East River bridges](https://nicksteiner.github.io/sardine/?bbox=-74.03,40.68,-73.90,40.88&db=1&min=-18&max=4)** — a tighter region: Central Park's texture break, the bridges as bright lines over dark water.
 - **[NYC, December 2025 only](https://nicksteiner.github.io/sardine/?bbox=-74.26,40.49,-73.70,40.92&t=2025-12-01/2025-12-31&db=1&min=-18&max=4)** — same place, time-bounded: `t=` filters acquisitions, so links can cite a place *and* a period.
 
@@ -56,9 +56,9 @@ NASA DAACs don't send CORS headers, so the hosted build relays data requests thr
 
 ## What It Is
 
-SARdine is a browser-native exploration and visualization GUI for NISAR HDF5 data. Drop in a file, explore the data, and export a figure or georeferenced dataset — no install beyond a web browser, no Python, no server.
+SARdine is a browser-native exploration and visualization GUI for NISAR HDF5 data. Drop in a file, explore the data, and export a figure or a georeferenced dataset. Everything runs in the browser; there is nothing to install.
 
-It reads NISAR L2 GCOV HDF5 (`.h5`) directly using a custom JavaScript HDF5 reader (`h5chunk`). Rendering happens entirely on the GPU via WebGL2 shaders: dB scaling, colormaps, contrast stretching, and polarimetric composites all run at 60 fps. GCOV/GUNW files are 2–8 GB but only viewport-intersecting chunks are ever read.
+It reads NISAR L2 GCOV HDF5 (`.h5`) directly using a custom JavaScript HDF5 reader (`h5chunk`). Rendering runs on the GPU via WebGL2 shaders: dB scaling, colormaps, contrast stretching, and RGB composites stay interactive while panning and zooming. GCOV/GUNW files are 2–8 GB but only viewport-intersecting chunks are ever read.
 
 ---
 
@@ -68,7 +68,7 @@ It reads NISAR L2 GCOV HDF5 (`.h5`) directly using a custom JavaScript HDF5 read
 Drop in a large NISAR file and pan/zoom through it at full resolution. Switch polarizations (HH, HV, VV), adjust contrast with the live histogram, and apply stretch modes (linear, sqrt, gamma, sigmoid).
 
 **Make publication-ready figures**
-Enable the dual-pol RGB composite for multi-channel decomposition. Export a georeferenced figure PNG with scale bar, corner coordinates, and colorbar. Export scatter plots and histograms as publication SVGs.
+Enable the dual-pol RGB composite to map polarization channels to color. Export a georeferenced figure PNG with scale bar, corner coordinates, and colorbar. Export scatter plots and histograms as publication SVGs.
 
 **Classify and map land cover**
 Draw an ROI, open the 2D feature space scatter (e.g. HH dB vs HV dB), define class regions by drawing rectangles, and see the classification overlay on the map in real time. Filter by incidence angle range (NISAR HDF5 only).
@@ -80,7 +80,7 @@ Draw an ROI and export a subregion as a raw Float32 GeoTIFF (linear power, with 
 Load multiple dates for ROI time series plotting, or compose a multi-date RGB composite for change detection visualization.
 
 **Stream from S3**
-Paste a presigned URL and stream directly from a bucket — same workflow, no download required. Chunk decompression runs in a Web Worker pool, and a persistent IndexedDB cache makes repeat visits to the same scene near-instant.
+Paste a presigned URL and stream directly from a bucket — same workflow, no download required. Chunk decompression runs in a Web Worker pool, and a persistent IndexedDB cache speeds up repeat visits to the same scene.
 
 **Share exactly what you see**
 **Copy Link** captures the data source, render settings, and active ROI as a URL. A link with just a `bbox` resolves its own granule via NASA CMR (newest, best-coverage, full-frame first) and loads only the region — coordinates outlive granule IDs across reprocessing campaigns. See [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md).
@@ -168,7 +168,7 @@ Links carrying a region auto-load (the fetch is bounded); plain granule links st
 
 ### Tutorial 1 — RGB Composite
 
-RGB mode assigns polarimetric channels to color, making land cover patterns immediately visible. The most common case is a dual-pol file (HH + HV), which gives you two independent channels — SARdine fills the third using a ratio.
+RGB mode assigns polarization channels to color, which makes land cover patterns easier to see. The most common case is a dual-pol file (HH + HV), which gives you two independent channels — SARdine fills the third using a ratio.
 
 **You need:** A NISAR GCOV file with at least two polarizations (e.g. `HHHH` and `HVHV`).
 
@@ -239,7 +239,7 @@ SARdine supports two time series workflows: plotting backscatter over time for a
 
 #### Multi-Date RGB Mosaic (Change Detection)
 
-This workflow assigns each of three acquisition dates to a color channel (R, G, B). Pixels that appear white have not changed; colored pixels changed between dates. Magenta/cyan artifacts often indicate flood extent or phenological change.
+This workflow assigns each of three acquisition dates to a color channel (R, G, B). Pixels that appear white have not changed; colored pixels changed between dates. Magenta or cyan patches often indicate flooding or vegetation change.
 
 1. In **Mode**, select **RGB Composite** → **Preset: Multi-Date**
 2. In the **Red channel** slot, load your earliest date
@@ -325,7 +325,7 @@ File/URL → h5chunk → Chunks → GPU Texture → GLSL Shader → Screen
                                    dB scale → stretch → colormap → contrast
 ```
 
-`h5chunk` is a pure JavaScript HDF5 chunk reader — no GDAL, no WASM, no server. It parses the HDF5 superblock, object headers, and B-tree to build a chunk index, then fetches only the chunks intersecting the current viewport via `File.slice()` (local) or HTTP Range (remote). Chunks are decompressed (deflate + shuffle) into Float32Arrays and uploaded directly as WebGL2 textures. The fragment shader handles the rest.
+`h5chunk` is a pure JavaScript HDF5 chunk reader. It parses the HDF5 superblock, object headers, and B-tree to build a chunk index, then fetches only the chunks intersecting the current viewport via `File.slice()` (local) or HTTP Range (remote). Chunks are decompressed (deflate + shuffle) into Float32Arrays and uploaded directly as WebGL2 textures. The fragment shader handles the rest.
 
 GCOV and GUNW products are supported. GUNW (interferometric phase and coherence) is developmental.
 

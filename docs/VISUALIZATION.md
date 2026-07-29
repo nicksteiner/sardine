@@ -170,7 +170,7 @@ When WebGL2 is unavailable, `createRGBTexture()` performs the same pipeline on t
 
 | Context | Method | Effective looks |
 | :------ | :----- | :-------------- |
-| On-screen (overview zoom) | Chunk sub-sampling, nSub=4–8 | 16–64 per output pixel |
+| On-screen (overview zoom) | Chunk sub-sampling, nSub=4–8 | 1 (decimation — no averaging, ENL unchanged) |
 | On-screen (full zoom) | Direct chunk pixels | 1 (raw resolution) |
 | Export (raw) | Exact ml×ml box-filter | ml² |
 | Export (rendered) | ml×ml box-filter + 3×3 smooth | ~ml²×9 |
@@ -191,7 +191,7 @@ The 3×3 smooth on rendered exports compensates for the noise amplification in r
 
 All exports include:
 - Proper GeoTIFF tags (ModelTiepointTag, ModelPixelScaleTag)
-- CRS via GeoKeyDirectoryTag (EPSG:4326 for NISAR)
+- CRS via GeoKeyDirectoryTag (per-frame UTM/Polar Stereographic EPSG for NISAR)
 - Full-resolution multilook (configurable ml factor)
 
 ### Figure Export

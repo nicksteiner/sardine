@@ -8058,8 +8058,11 @@ function App() {
                       onChange={(e) => {
                         const toLOS = e.target.checked;
                         setLosDisplacement(toLOS);
-                        // λ = 0.2384m (NISAR L-band), d = phase * λ/(4π)
-                        const scale = 0.2384 / (4 * Math.PI);
+                        // d = phase · λ/(4π). The rendered data is converted by the
+                        // same factor via the valueScale layer prop; here we convert
+                        // the user-facing contrast limits between rad and m.
+                        const lambda = gunwDatasets?.metadata?.wavelength || 0.2384;
+                        const scale = lambda / (4 * Math.PI);
                         if (toLOS) {
                           // radians → meters
                           setContrastMin(Number((contrastMin * scale).toFixed(4)));
@@ -8103,7 +8106,7 @@ function App() {
                 <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
                   <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', width: '100%', marginBottom: '2px' }}>Range Presets</span>
                   {(() => {
-                    const scale = losDisplacement ? 0.2384 / (4 * Math.PI) : 1;
+                    const scale = losDisplacement ? (gunwDatasets?.metadata?.wavelength || 0.2384) / (4 * Math.PI) : 1;
                     const unit = losDisplacement ? 'm' : 'rad';
                     const presets = [
                       { label: String.fromCharCode(0xB1) + String.fromCharCode(0x03C0), val: Math.PI },
@@ -8166,7 +8169,16 @@ function App() {
                     setEnabledCorrections(next);
                     resetContrast();
                   };
-                  const availableKeys = Object.keys(CORRECTION_TYPES).filter(k => !!correctionLayers[k]);
+                  // Corrections the ISCE3 processor already subtracted from the
+                  // unwrapped phase — subtracting again would double-correct.
+                  const gm = gunwDatasets?.metadata || {};
+                  const isApplied = (v) => v === true || v === 1 || String(v).toLowerCase() === 'true';
+                  const alreadyApplied = new Set();
+                  if (isApplied(gm.appliedIonosphereCorrection)) alreadyApplied.add('ionosphere');
+                  if (isApplied(gm.appliedTroposphereCorrection)) { alreadyApplied.add('troposphereWet'); alreadyApplied.add('troposphereHydrostatic'); }
+                  if (isApplied(gm.appliedSolidEarthTidesCorrection)) alreadyApplied.add('solidEarthTides');
+                  const appliedTitle = 'Already applied by the processor — applying again would double-correct';
+                  const availableKeys = Object.keys(CORRECTION_TYPES).filter(k => !!correctionLayers[k] && !alreadyApplied.has(k));
                   const allEnabled = availableKeys.length > 0 && availableKeys.every(k => enabledCorrections.has(k));
                   return (
                     <div style={{ marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
@@ -8180,26 +8192,34 @@ function App() {
                       {/* Ionosphere — same-grid correction */}
                       {correctionLayers.ionosphere && (
                         <div style={{ marginBottom: '3px' }}>
-                          <button style={btnStyle(enabledCorrections.has('ionosphere'))} onClick={() => toggle('ionosphere')}>
-                            Ionosphere
+                          <button style={btnStyle(enabledCorrections.has('ionosphere'))} onClick={() => toggle('ionosphere')}
+                            disabled={alreadyApplied.has('ionosphere')}
+                            title={alreadyApplied.has('ionosphere') ? appliedTitle : undefined}>
+                            Ionosphere{alreadyApplied.has('ionosphere') ? ' (applied)' : ''}
                           </button>
                         </div>
                       )}
                       {/* Metadata cube corrections */}
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
                         {correctionLayers.troposphereWet && (
-                          <button style={btnStyle(enabledCorrections.has('troposphereWet'))} onClick={() => toggle('troposphereWet')}>
-                            Tropo (Wet)
+                          <button style={btnStyle(enabledCorrections.has('troposphereWet'))} onClick={() => toggle('troposphereWet')}
+                            disabled={alreadyApplied.has('troposphereWet')}
+                            title={alreadyApplied.has('troposphereWet') ? appliedTitle : undefined}>
+                            Tropo (Wet){alreadyApplied.has('troposphereWet') ? ' (applied)' : ''}
                           </button>
                         )}
                         {correctionLayers.troposphereHydrostatic && (
-                          <button style={btnStyle(enabledCorrections.has('troposphereHydrostatic'))} onClick={() => toggle('troposphereHydrostatic')}>
-                            Tropo (Hydro)
+                          <button style={btnStyle(enabledCorrections.has('troposphereHydrostatic'))} onClick={() => toggle('troposphereHydrostatic')}
+                            disabled={alreadyApplied.has('troposphereHydrostatic')}
+                            title={alreadyApplied.has('troposphereHydrostatic') ? appliedTitle : undefined}>
+                            Tropo (Hydro){alreadyApplied.has('troposphereHydrostatic') ? ' (applied)' : ''}
                           </button>
                         )}
                         {correctionLayers.solidEarthTides && (
-                          <button style={btnStyle(enabledCorrections.has('solidEarthTides'))} onClick={() => toggle('solidEarthTides')}>
-                            Solid Earth Tides
+                          <button style={btnStyle(enabledCorrections.has('solidEarthTides'))} onClick={() => toggle('solidEarthTides')}
+                            disabled={alreadyApplied.has('solidEarthTides')}
+                            title={alreadyApplied.has('solidEarthTides') ? appliedTitle : undefined}>
+                            Solid Earth Tides{alreadyApplied.has('solidEarthTides') ? ' (applied)' : ''}
                           </button>
                         )}
                       </div>
@@ -8572,9 +8592,11 @@ function App() {
                   coherenceMaskMode={useIncidenceAngleMask ? 1 : 0}
                   incidenceAngleData={useIncidenceAngleMask ? incidenceAngleGrid : (verticalDisplacement ? gunwIncidenceAngleGrid : null)}
                   verticalDisplacement={verticalDisplacement}
+                  valueScale={losDisplacement ? (gunwDatasets?.metadata?.wavelength || 0.2384) / (4 * Math.PI) : 1}
+                  epsg={imageData?.epsg ?? imageData?.crs ?? null}
                   correctionLayers={correctionLayers}
                   enabledCorrections={enabledCorrections}
-                  speckleFilterType={speckleFilterType}
+                  speckleFilterType={nisarProductType === 'GUNW' ? 'none' : speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
                   rgbSaturation={rgbSaturation}
                   colorblindMode={colorblindMode}

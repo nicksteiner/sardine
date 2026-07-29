@@ -28,8 +28,20 @@ export { FONTS, _getTheme as getTheme };
 /**
  * Determine whether bounds represent projected coordinates (meters) or
  * geographic coordinates (degrees).
+ *
+ * Pass the dataset's EPSG code when known — the magnitude heuristic
+ * misclassifies projected scenes whose eastings happen to fall within
+ * ±180 (e.g. polar stereographic near the pole, small UTM subsets), which
+ * silently disables the scale bar and mislabels coordinates as degrees.
+ *
+ * @param {number[]} bounds — [minX, minY, maxX, maxY]
+ * @param {number|string|null} [epsg] — EPSG code if known (e.g. 32610, "EPSG:3031")
  */
-export function isProjectedBounds(bounds) {
+export function isProjectedBounds(bounds, epsg = null) {
+  if (epsg != null) {
+    const code = typeof epsg === 'string' ? parseInt(epsg.replace(/^EPSG:/i, ''), 10) : epsg;
+    if (Number.isFinite(code)) return code !== 4326;
+  }
   if (!bounds) return false;
   return Math.abs(bounds[0]) > 180 || Math.abs(bounds[2]) > 180;
 }
