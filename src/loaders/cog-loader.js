@@ -705,12 +705,28 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
  */
 export async function loadLocalTIF(file, onProgress) {
   const progress = onProgress || (() => {});
-  console.log('[COG Loader] Loading local TIF:', file.name, `(${(file.size / 1e6).toFixed(1)} MB)`);
-  progress(5);
 
-  const arrayBuffer = await file.arrayBuffer();
-  progress(15);
-  const tiff = await fromArrayBuffer(arrayBuffer);
+  // Accept either a local File object or a URL string. URL sources open with
+  // geotiff.js fromUrl (HTTP Range) so COGs stream on demand; everything after
+  // the open — bbox, CRS, color table / class names, categorical detection —
+  // is source-agnostic and shared. This is what lets ?compare= panels and any
+  // URL-backed COG carry class-map rendering, not just dropped files.
+  const isUrl = typeof file === 'string';
+  const displayName = isUrl ? file.split(/[?#]/)[0].split('/').pop() || file : file.name;
+
+  let tiff;
+  if (isUrl) {
+    console.log('[COG Loader] Loading TIF from URL:', file);
+    progress(5);
+    tiff = await fromUrl(normalizeS3Url(file));
+    progress(20);
+  } else {
+    console.log('[COG Loader] Loading local TIF:', file.name, `(${(file.size / 1e6).toFixed(1)} MB)`);
+    progress(5);
+    const arrayBuffer = await file.arrayBuffer();
+    progress(15);
+    tiff = await fromArrayBuffer(arrayBuffer);
+  }
   const image = await tiff.getImage();
   progress(25);
 
@@ -899,7 +915,7 @@ export async function loadLocalTIF(file, onProgress) {
    */
   async function readFullData() {
     if (fullData) return fullData;
-    console.log(`[COG Loader] Reading full raster for ${file.name}...`);
+    console.log(`[COG Loader] Reading full raster for ${displayName}...`);
     const rasters = await image.readRasters();
     fullData = new Float32Array(rasters[0]);
     return fullData;

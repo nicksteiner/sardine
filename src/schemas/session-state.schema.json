@@ -1,0 +1,78 @@
+{
+  "$id": "session-state.schema.json",
+  "title": "SessionState",
+  "description": "W010: the .sardine-session.json save/load format. Deep links, PNG embedding, and the clipboard are projections of this object. v1 is single-scene (compare-grid PENDING-PI).",
+  "type": "object",
+  "required": ["sardine:session", "created", "software", "scene", "renderConfig", "view"],
+  "properties": {
+    "sardine:session": { "const": 1 },
+    "created": { "type": "string" },
+    "software": { "type": "string" },
+    "scene": { "$ref": "./sar-scene.schema.json" },
+    "renderConfig": { "$ref": "./render-config.schema.json" },
+    "view": {
+      "type": "object",
+      "required": ["center", "zoom"],
+      "properties": {
+        "center": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+        "zoom": { "type": "number" },
+        "aoi": {
+          "type": "object",
+          "properties": {
+            "bbox": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
+            "wkt": { "type": "string" }
+          }
+        }
+      }
+    },
+    "compare": {
+      "type": "array",
+      "maxItems": 4,
+      "description": "Compare-grid panels, write-now/restore-later: serializer WRITES whenever compare mode is active; a loader that cannot restore it warns, loads the primary scene, and does not fail.",
+      "items": {
+        "type": "object",
+        "required": ["scene"],
+        "properties": {
+          "label": { "type": ["string", "null"] },
+          "scene": { "$ref": "./sar-scene.schema.json" },
+          "renderConfig": { "$ref": "./render-config.schema.json" }
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "description": "Non-normative viewer prefs; viewers may ignore.",
+      "properties": {
+        "showGrid": { "type": "boolean" },
+        "pixelExplorer": { "type": "boolean" },
+        "pixelWindowSize": { "type": "number" },
+        "showHistogramOverlay": { "type": "boolean" },
+        "histogramScope": { "type": "string" }
+      }
+    },
+    "markup": { "$ref": "./markup-v2.schema.json" },
+    "analysisArtifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "mediaType"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "enum": ["model", "mask", "figure", "roi-profile", "training-bundle", "calibration-record"] },
+          "href": { "type": "string" },
+          "sha256": { "type": "string" },
+          "sizeBytes": { "type": "integer", "minimum": 0 },
+          "inline": { "type": "object", "description": "serialized size <= 100 KB, validator-enforced" },
+          "mediaType": { "type": "string" },
+          "created": { "type": "string" },
+          "label": { "type": "string" },
+          "derived_from": { "type": "array", "items": { "type": "string" } }
+        },
+        "anyOf": [
+          { "required": ["href"] },
+          { "required": ["inline"] }
+        ]
+      }
+    }
+  }
+}

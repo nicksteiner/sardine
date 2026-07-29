@@ -22,10 +22,16 @@
  *   GET <worker>/                            → { ok: true, version }
  *
  * Validation helper (used by SARdine "Test token" button):
- *   GET <worker>/whoami                      → forwards to urs.earthdata.nasa.gov/api/users/user
+ *   GET <worker>/whoami                      → forwards to urs.earthdata.nasa.gov/api/users/<uid>
  */
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
+
+// EDL's /api/users/<uid> endpoint rejects bearer-token requests that don't
+// also name a registered EDL application via ?client_id=. Any app the user
+// has authorized works; this is ASF Vertex's public client id, which every
+// ASF DAAC user has approved. Override if you run your own EDL app.
+const EDL_CLIENT_ID = 'BO_n7nTIlMljdvU6kRRB3g';
 
 // Browser origins allowed to talk to this Worker. Suffix-matched.
 // Empty array = wildcard (development).
@@ -223,9 +229,27 @@ async function handleProxy(request, url) {
   return followRedirect(request, target, init, MAX_REDIRECTS);
 }
 
+/** Pull the uid out of an EDL JWT payload — no signature check, EDL does that. */
+function tokenUid(token) {
+  try {
+    const b64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(b64)).uid || null;
+  } catch { return null; }
+}
+
 async function handleWhoami(request, url) {
   const token = extractToken(request, url);
   if (!token) return jsonResponse(request, 401, { error: 'Missing Earthdata Login token' });
+
+  // EDL requires the username in the path (there is no "current user" alias)
+  // and a client_id query param — a bare bearer request gets invalid_token.
+  const uid = tokenUid(token);
+  if (!uid) {
+    return jsonResponse(request, 400, {
+      error: 'Token is not a decodable EDL JWT',
+      hint: 'Generate a user token at https://urs.earthdata.nasa.gov/profile',
+    });
+  }
 
   const upstreamHeaders = new Headers({
     'Authorization': `Bearer ${token}`,
@@ -233,10 +257,10 @@ async function handleWhoami(request, url) {
     'User-Agent': 'SARdine-EDL-Proxy/' + VERSION,
   });
 
-  const upstream = await fetch('https://urs.earthdata.nasa.gov/api/users/user', {
-    method: 'GET',
-    headers: upstreamHeaders,
-  });
+  const upstream = await fetch(
+    `https://urs.earthdata.nasa.gov/api/users/${encodeURIComponent(uid)}?client_id=${EDL_CLIENT_ID}`,
+    { method: 'GET', headers: upstreamHeaders },
+  );
 
   const text = await upstream.text();
 

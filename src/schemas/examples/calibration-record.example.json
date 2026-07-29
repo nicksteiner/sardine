@@ -1,0 +1,28 @@
+{
+  "sardine:calibration": 1,
+  "id": "gauge_insitu_2026-07",
+  "created": "2026-07-29T00:00:00Z",
+  "estimated_by": { "kind": "directive", "ref": "D557" },
+  "scope": {
+    "observer": "insitu",
+    "method": "gauge-discharge",
+    "region": "HUC4 0706/0712/0809",
+    "campaign": "2024 water year"
+  },
+  "direction": "true_given_label",
+  "estimator": "audit",
+  "classes": ["open_water", "inundated_vegetation", "dry"],
+  "rates": [
+    { "given": "open_water", "outcome": "open_water", "rate": 0.78, "n": 1580, "ci95": [0.74, 0.82] },
+    { "given": "open_water", "outcome": "dry", "rate": 0.22, "n": 1580 },
+    { "given": "inundated_vegetation", "outcome": "inundated_vegetation", "rate": 0.62, "n": 1057, "ci95": [0.55, 0.69] },
+    { "given": "inundated_vegetation", "outcome": "dry", "rate": 0.38, "n": 1057 },
+    { "given": "dry", "outcome": "dry", "rate": 0.97, "n": 61605, "ci95": [0.96, 0.98] },
+    { "given": "dry", "outcome": "open_water", "rate": 0.03, "n": 61605 }
+  ],
+  "estimation": {
+    "procedure": "gauge-blocked precision calibration vs OPERA DSWx open-water agreement, divided by validated open-water accuracy; PFO discounted per detection-rate audit",
+    "data_ref": "output/opera_wetland_eval/evaluation_sites.parquet + d286_gauge_discharge.parquet",
+    "date": "2026-07-29"
+  }
+}

@@ -1,0 +1,37 @@
+<!doctype html><html><head><meta charset="utf-8"><title>compare visual</title></head><body>
+<script type="module">
+import { exportFigureGrid } from '/src/utils/figure-export.js';
+
+function fakePanel(tint, w = 520, h = 400) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  // Diagonal swath: imagery in the middle, TRANSPARENT nodata in the corners
+  // (mimics a real SAR scene edge). The figure background must show through.
+  g.clearRect(0, 0, w, h);
+  g.save();
+  g.beginPath();
+  g.moveTo(w*0.18, 0); g.lineTo(w, 0); g.lineTo(w*0.82, h); g.lineTo(0, h); g.closePath();
+  g.clip();
+  const grad = g.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, tint[0]); grad.addColorStop(1, tint[1]);
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 9000; i++) { const x = Math.random()*w|0, y = Math.random()*h|0, v = Math.random()*80|0; g.fillStyle = `rgba(${v},${v},${v},0.25)`; g.fillRect(x,y,1,1); }
+  g.restore();
+  return c;
+}
+const bounds = [500000, 4000000, 510400, 4008000];
+const vs = { target: [505200, 4004000], zoom: -3 };
+const opt = (name) => ({ colormap: 'viridis', contrastLimits: [-22,-2], useDecibels: true, viewState: vs, bounds, filename: name, crs: 'EPSG:32610', polarization: 'HHHH', wgs84Bounds: null, annotations: [] });
+async function uri(blob){ const b=await blob.arrayBuffer(); let s=''; const u=new Uint8Array(b); for(let i=0;i<u.length;i++)s+=String.fromCharCode(u[i]); return 'data:image/png;base64,'+btoa(s); }
+
+const panels = [
+  { canvas: fakePanel(['#20303a','#c8c0a8']), options: opt('HH 2021') },
+  { canvas: fakePanel(['#2a2438','#c0b8d0']), options: opt('HV 2021') },
+  { canvas: fakePanel(['#1a3028','#b8c8b0']), options: opt('HH 2023') },
+  { canvas: fakePanel(['#302020','#d0b8b0']), options: opt('HV 2023') },
+];
+const out = {};
+out['compare_publication'] = await uri(await exportFigureGrid(panels, { format: 'png', theme: 'publication' }));
+window.__CMP__ = out;
+console.log('done');
+</script></body></html>

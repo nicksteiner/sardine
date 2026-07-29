@@ -45,6 +45,7 @@ const KEYS = {
   cog: 'cog',
   nisar: 'nisar',
   nitf: 'nitf',       // also matches ?sicd= (SICD-in-NITF is the common case)
+  compare: 'compare', // multi-panel: comma-separated COG URLs (each opt. "label~url")
   // Rendering
   cmap: 'cmap',
   rev: 'rev',         // reverse colormap (0/1)
@@ -92,6 +93,40 @@ function num(v) {
 function bool(v) {
   if (v == null) return null;
   return v === '1' || v === 'true';
+}
+
+/**
+ * Parse the ?compare= value into an ordered list of panel sources.
+ *
+ * Grammar: comma-separated entries, each either a bare URL or `label~url`
+ * (the `~` separates an optional human label from the URL; `~` is URL-safe and
+ * never appears in a scheme, so it can't collide with `https://`). Commas
+ * inside URLs must be percent-encoded (%2C) — bare commas always split.
+ * Capped at 4 (CompareGrid's MAX_PANELS); extras dropped with a warning.
+ *
+ * @returns {Array<{url:string,label:(string|null)}>} (empty if none valid)
+ */
+function parseCompareList(raw) {
+  if (!raw) return [];
+  const out = [];
+  for (const part of String(raw).split(',')) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const tilde = seg.indexOf('~');
+    let label = null, url = seg;
+    if (tilde >= 0) { label = seg.slice(0, tilde).trim() || null; url = seg.slice(tilde + 1).trim(); }
+    if (!url) continue;
+    // Decode a comma that was percent-encoded by the serializer to survive the
+    // comma-split (URLSearchParams already decoded the outer layer, so only the
+    // literal `%2C` sentinel remains). Guard against malformed sequences.
+    if (url.indexOf('%2C') >= 0 || url.indexOf('%2c') >= 0) url = url.replace(/%2c/gi, ',');
+    out.push({ url, label });
+  }
+  if (out.length > 4) {
+    console.warn(`[deep-link] compare= has ${out.length} panels; capping at 4.`);
+    out.length = 4;
+  }
+  return out;
 }
 
 /** Get a param by its short key, falling back to the long-form alias. */
@@ -212,7 +247,12 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
   const col = p.get(KEYS.col);
   if (col) view.collection = col;
 
-  return { dataUrl, dataType, view };
+  // Multi-panel compare (?compare=): an ordered list of COG URLs opened as a
+  // synced 4-panel grid. Independent of the single-source params above; when
+  // present, main.jsx opens compare mode and seeds panels from this list.
+  const compare = parseCompareList(p.get(KEYS.compare));
+
+  return { dataUrl, dataType, view, compare };
 }
 
 /**
@@ -267,6 +307,37 @@ export function buildShareLink({ baseUrl, dataUrl, dataType, view = {} }) {
     p.set(KEYS.bbox, view.roiBbox.map(v => Math.round(v * 1e5) / 1e5).join(','));
   }
 
+  return `${base}?${p.toString()}`;
+}
+
+/**
+ * Build a multi-panel compare share URL from an ordered list of panel sources.
+ * Inverse of parseCompareList: emits `?compare=label~url,label~url,...` with
+ * commas inside URLs percent-encoded so they don't split. Labels are omitted
+ * when absent. Caps at 4 panels.
+ *
+ * @param {Object} opts
+ * @param {string} [opts.baseUrl]
+ * @param {Array<string|{url:string,label?:string}>} opts.panels
+ * @returns {string} full share URL
+ */
+export function buildCompareLink({ baseUrl, panels }) {
+  const list = (panels || []).slice(0, 4).map((e) => (typeof e === 'string' ? { url: e } : e))
+    .filter((e) => e && e.url);
+  if (list.length === 0) throw new Error('buildCompareLink: at least one panel URL is required');
+
+  const base = baseUrl || (typeof window !== 'undefined'
+    ? `${window.location.origin}${window.location.pathname}`
+    : 'https://nicksteiner.github.io/sardine/');
+
+  const value = list.map(({ url, label }) => {
+    const safeUrl = String(url).replace(/,/g, '%2C');
+    return label ? `${String(label).replace(/[,~]/g, ' ').trim()}~${safeUrl}` : safeUrl;
+  }).join(',');
+
+  // Set via URLSearchParams so the value is properly encoded once.
+  const p = new URLSearchParams();
+  p.set(KEYS.compare, value);
   return `${base}?${p.toString()}`;
 }
 

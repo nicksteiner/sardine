@@ -1,0 +1,128 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>SVG export browser test</title></head>
+<body>
+<div id="out">running…</div>
+<script type="module">
+import {
+  exportFigure,
+  exportFigureWithOverlays,
+  exportRGBColorbar,
+  exportFigureSideBySide,
+  exportFigureGrid,
+} from '/src/utils/figure-export.js';
+
+const log = [];
+const results = [];
+function record(name, ok, detail) { results.push({ name, ok, detail }); log.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`); }
+
+// Build a synthetic "gl canvas": a real canvas painted with a gradient so the
+// embedded base <image> is non-trivial.
+function fakeGlCanvas(w = 640, h = 480) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, '#204060'); grad.addColorStop(1, '#a0c0e0');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  return c;
+}
+
+// Projected bounds (metres) so the scale bar + coordinate grid draw.
+const bounds = [500000, 4000000, 510000, 4008000];
+const viewState = { target: [505000, 4004000], zoom: -3 };
+
+const baseOpts = {
+  colormap: 'viridis',
+  contrastLimits: [-25, 0],
+  useDecibels: true,
+  viewState,
+  bounds,
+  filename: 'nisar_gcov_test.h5',
+  crs: 'EPSG:32610',
+  polarization: 'HHHH',
+  wgs84Bounds: null, // skip the async Bing inset (network) in this smoke test
+  annotations: [],
+};
+
+// Parse + basic render validation via DOMParser + <img> decode.
+async function validateSVGBlob(name, blob) {
+  if (!blob) { record(name, false, 'null blob'); return null; }
+  if (blob.type.indexOf('svg') === -1) { record(name, false, `wrong type ${blob.type}`); return null; }
+  const text = await blob.text();
+  // 1. Parses as XML with no parsererror.
+  const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+  const perr = doc.querySelector('parsererror');
+  if (perr) { record(name + ' (xml)', false, perr.textContent.slice(0, 120)); return text; }
+  record(name + ' (xml)', true);
+  // 2. Has editable vector chrome (text + at least one embedded image).
+  const nText = doc.querySelectorAll('text').length;
+  const nImg = doc.querySelectorAll('image').length;
+  const nVec = doc.querySelectorAll('rect,path,line').length;
+  record(name + ' (vector chrome)', nText > 0 && nVec > 0, `text=${nText} vec=${nVec} img=${nImg}`);
+  record(name + ' (embedded base)', nImg > 0, `images=${nImg}`);
+  // 3. Actually renders: decode as an <img>.
+  const url = URL.createObjectURL(blob);
+  const okDecode = await new Promise((res) => {
+    const im = new Image();
+    im.onload = () => res(true);
+    im.onerror = () => res(false);
+    im.src = url;
+  });
+  URL.revokeObjectURL(url);
+  record(name + ' (renders)', okDecode);
+  return text;
+}
+
+try {
+  // 1. Plain figure → SVG (publication + dark themes)
+  await validateSVGBlob('exportFigure svg publication', await exportFigure(fakeGlCanvas(), { ...baseOpts, format: 'svg', theme: 'publication' }));
+  await validateSVGBlob('exportFigure svg dark', await exportFigure(fakeGlCanvas(), { ...baseOpts, format: 'svg', theme: 'dark' }));
+  // large export → chrome must scale (no exception, still valid)
+  await validateSVGBlob('exportFigure svg large', await exportFigure(fakeGlCanvas(3200, 2280), { ...baseOpts, format: 'svg', theme: 'publication' }));
+
+  // 2. Figure with overlays (ROI) → SVG
+  await validateSVGBlob('exportFigureWithOverlays svg', await exportFigureWithOverlays(fakeGlCanvas(), {
+    ...baseOpts, format: 'svg',
+    roi: { left: 100, top: 100, width: 200, height: 150 },
+    imageWidth: 640, imageHeight: 480,
+  }));
+
+  // 3. Side-by-side → SVG
+  await validateSVGBlob('exportFigureSideBySide svg', await exportFigureSideBySide(
+    { canvas: fakeGlCanvas(), options: baseOpts },
+    { canvas: fakeGlCanvas(), options: baseOpts },
+    { format: 'svg' },
+  ));
+
+  // 4. Grid (4 panels) → SVG
+  await validateSVGBlob('exportFigureGrid svg', await exportFigureGrid([
+    { canvas: fakeGlCanvas(), options: baseOpts },
+    { canvas: fakeGlCanvas(), options: baseOpts },
+    { canvas: fakeGlCanvas(), options: baseOpts },
+    { canvas: fakeGlCanvas(), options: baseOpts },
+  ], { format: 'svg' }));
+
+  // 5. RGB colorbar → SVG (needs a real composite id)
+  const cb = await exportRGBColorbar({
+    compositeId: 'pauli-power', contrastLimits: { R: [-20, 0], G: [-25, -5], B: [-20, 0] },
+    useDecibels: true, stretchMode: 'linear', gamma: 1, format: 'svg',
+  });
+  await validateSVGBlob('exportRGBColorbar svg', cb);
+
+  // 6. PNG parity — the same call in png mode still returns a PNG blob.
+  const png = await exportFigure(fakeGlCanvas(), { ...baseOpts, format: 'png' });
+  record('exportFigure png parity', png && png.type === 'image/png', png ? png.type : 'null');
+
+} catch (e) {
+  record('EXCEPTION', false, e.message + '\n' + (e.stack || ''));
+}
+
+const allOk = results.every((r) => r.ok);
+document.getElementById('out').textContent = log.join('\n');
+window.__SVG_TEST__ = { allOk, results, log };
+console.log(log.join('\n'));
+console.log(allOk ? 'ALL PASS' : 'SOME FAILED');
+</script>
+</body>
+</html>

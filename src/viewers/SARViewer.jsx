@@ -63,7 +63,8 @@ export const SARViewer = forwardRef(function SARViewer({
   onViewStateChange,
   initialViewState,
   style = {},
-  extraLayers = [],   // Additional deck.gl layers (e.g., Overture overlay)
+  extraLayers = [],   // Additional deck.gl layers, ABOVE the raster (Overture, ROI, GeoJSON)
+  underlayLayers = [], // deck.gl layers BELOW the raster (e.g. optical-peek basemap)
   roi = null,         // ROI rectangle { left, top, width, height } in image pixels
   onROIChange,        // Callback when ROI changes via Shift+drag
   transectEnabled = false, // Free profile-line tool armed
@@ -436,10 +437,13 @@ export const SARViewer = forwardRef(function SARViewer({
 
   const allLayers = useMemo(() => {
     const baseLayers = layers;
-    // Mosaic secondaries render below the primary so primary-anchored
-    // overlays (ROI, pixel explorer) keep working as before.
-    return [...secondaryMosaicLayers, ...baseLayers, ...extraLayers];
-  }, [layers, secondaryMosaicLayers, extraLayers]);
+    // Layer z-order (deck.gl paints later layers on top):
+    //   underlayLayers  → below the SAR/class raster (e.g. optical basemap "peek")
+    //   secondaryMosaic → below the primary
+    //   baseLayers      → the SAR/class raster
+    //   extraLayers     → above the raster (overlays: ROI, Overture, GeoJSON)
+    return [...underlayLayers, ...secondaryMosaicLayers, ...baseLayers, ...extraLayers];
+  }, [layers, secondaryMosaicLayers, extraLayers, underlayLayers]);
 
   const views = useMemo(
     () =>
@@ -585,7 +589,9 @@ export const SARViewer = forwardRef(function SARViewer({
           </svg>
         </button>
       )}
-      {!medicalMode && (
+      {/* Continuous colormap colorbar — meaningless for class maps, whose
+          discrete legend is rendered separately (CompareGrid ClassLegend). */}
+      {!medicalMode && !classMode && (
         <ColorbarOverlay
           colormap={colormap}
           reverseColormap={reverseColormap}

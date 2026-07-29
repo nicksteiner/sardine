@@ -385,7 +385,7 @@ export function generateClassMapSVG(classificationMap, roiDims, classRegions) {
 <rect width="${W}" height="${H}" fill="#fff"/>
 <text x="${margin.left}" y="${margin.top - 3}" font-size="8" font-weight="600" fill="#000">Classification Map</text>
 <image x="${margin.left}" y="${margin.top}" width="${imgW}" height="${imgH}"
-       href="${pngDataUri}" image-rendering="pixelated"/>
+       xlink:href="${pngDataUri}" href="${pngDataUri}" image-rendering="pixelated"/>
 <rect x="${margin.left}" y="${margin.top}" width="${imgW}" height="${imgH}"
       fill="none" stroke="#000" stroke-width="0.5"/>
 ${legend}

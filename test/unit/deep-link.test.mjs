@@ -9,6 +9,7 @@ import { suite } from './harness.mjs';
 import {
   parseShareLink,
   buildShareLink,
+  buildCompareLink,
   inferDataTypeFromUrl,
 } from '../../src/utils/deep-link.js';
 
@@ -373,6 +374,58 @@ test('W017: t=/col= are harmless alongside an explicit data URL', () => {
   assert.equal(dataType, 'nisar');
   assert.deepEqual(view.dateRange, { start: '2026-01-01', end: null });
   assert.equal(view.collection, 'X');
+});
+
+// ---------------------------------------------------------------------------
+// Multi-panel compare (?compare=)
+// ---------------------------------------------------------------------------
+
+const C1 = 'https://d.example.com/a.tif';
+const C2 = 'https://d.example.com/b.tif';
+
+test('compare= parses a comma-separated URL list into ordered panels', () => {
+  const { compare } = parseShareLink(`?compare=${C1},${C2}`);
+  assert.equal(compare.length, 2);
+  assert.equal(compare[0].url, C1);
+  assert.equal(compare[0].label, null);
+  assert.equal(compare[1].url, C2);
+});
+
+test('compare= supports label~url entries', () => {
+  const { compare } = parseShareLink('?compare=C%20vs%20Planet~https://d/a.tif,L%20vs%20Planet~https://d/b.tif');
+  assert.equal(compare[0].label, 'C vs Planet');
+  assert.equal(compare[0].url, 'https://d/a.tif');
+  assert.equal(compare[1].label, 'L vs Planet');
+});
+
+test('compare= caps at 4 panels (warns)', () => {
+  const origWarn = console.warn; console.warn = () => {};
+  try {
+    const { compare } = parseShareLink('?compare=https://d/1.tif,https://d/2.tif,https://d/3.tif,https://d/4.tif,https://d/5.tif');
+    assert.equal(compare.length, 4);
+  } finally { console.warn = origWarn; }
+});
+
+test('no compare= → compare is an empty array', () => {
+  assert.deepEqual(parseShareLink(`?url=${encodeURIComponent(COG_URL)}`).compare, []);
+});
+
+test('buildCompareLink round-trips through parseShareLink', () => {
+  const link = buildCompareLink({ baseUrl: BASE, panels: [{ url: C1, label: 'C' }, { url: C2, label: 'L' }] });
+  const { compare } = parseShareLink('?' + link.split('?')[1]);
+  assert.equal(compare.length, 2);
+  assert.equal(compare[0].url, C1);
+  assert.equal(compare[0].label, 'C');
+  assert.equal(compare[1].url, C2);
+  assert.equal(compare[1].label, 'L');
+});
+
+test('buildCompareLink percent-encodes commas inside URLs so they do not split', () => {
+  const withComma = 'https://d.example.com/scene,v2.tif';
+  const link = buildCompareLink({ baseUrl: BASE, panels: [withComma, C2] });
+  const { compare } = parseShareLink('?' + link.split('?')[1]);
+  assert.equal(compare.length, 2, 'comma in URL must not create a third panel');
+  assert.equal(compare[0].url, withComma);
 });
 
 await run();

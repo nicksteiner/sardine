@@ -1,0 +1,76 @@
+{
+  "$id": "render-config.schema.json",
+  "title": "RenderConfig",
+  "description": "W010: versioned display state. Superset of serializeRenderState v1 minus viewport/UI (those live in SessionState.view / .ui). Readers apply fields with per-field type checks (applyRenderState pattern).",
+  "type": "object",
+  "required": ["sardine:render_config"],
+  "properties": {
+    "sardine:render_config": { "const": 1 },
+    "displayMode": { "enum": ["single", "composite"] },
+    "compositeId": { "type": ["string", "null"] },
+    "dataset": {
+      "type": "object",
+      "properties": {
+        "frequency": { "type": ["string", "null"] },
+        "polarization": { "type": ["string", "null"] }
+      }
+    },
+    "colormap": { "type": "string" },
+    "colormapReversed": { "type": "boolean" },
+    "useDecibels": { "type": "boolean" },
+    "contrastMin": { "type": "number" },
+    "contrastMax": { "type": "number" },
+    "gamma": { "type": "number" },
+    "stretchMode": { "enum": ["linear", "sqrt", "gamma", "sigmoid"] },
+    "rgb": {
+      "type": "object",
+      "properties": {
+        "contrastLimits": { "type": ["object", "null"] },
+        "saturation": { "type": "number" }
+      }
+    },
+    "colorblindMode": { "type": "string" },
+    "multiLook": { "type": "boolean" },
+    "multiLookFactor": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "ADVISORY/DERIVED: the effective looks at save time. Output only — records what was actually shown (published figures must not silently diverge if the auto-selection heuristic changes). Never read back as a control; multiLook (boolean) is the control surface."
+    },
+    "masks": {
+      "type": "object",
+      "properties": {
+        "invalid": { "type": "boolean" },
+        "layoverShadow": { "type": "boolean" },
+        "incidenceAngle": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "min": { "type": "number" },
+            "max": { "type": "number" }
+          }
+        },
+        "coherence": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "threshold": { "type": "number" }
+          }
+        }
+      }
+    },
+    "speckle": {
+      "type": "object",
+      "properties": {
+        "type": { "type": ["string", "null"] },
+        "kernelSize": { "type": "number" }
+      }
+    },
+    "gunw": {
+      "type": "object",
+      "properties": {
+        "losDisplacement": { "type": "boolean" },
+        "verticalDisplacement": { "type": "boolean" }
+      }
+    }
+  }
+}
