@@ -36,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **W012a design doc** — `sardine-figure` STAC extension for self-describing
   class-map figure COGs with deep-link resolution
 - **README hero is now a live deep link** — the front-page screenshot opens the
-  equivalent view streamed from the ASF archive: CMR resolves a dual-pol NISAR
-  GCOV granule over the Amazon floodplain and renders the HH/HV composite
+  equivalent view streamed from the ASF archive: CMR resolves a NISAR GCOV
+  granule over the Amazon floodplain and streams the single-pol HH backscatter
+  for the region (kept single-pol deliberately — the lightest first-click load)
 
 ### Fixed
 - **EDL proxy `/whoami` rejected valid tokens** — Earthdata Login's user API

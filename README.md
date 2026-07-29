@@ -19,9 +19,9 @@
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
 [![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
 
-[![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?bbox=-63.55,-3.6,-62.55,-2.6&mode=rgb&comp=dual-pol-h&db=1)
+[![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?bbox=-63.55,-3.6,-62.55,-2.6&pol=HHHH&db=1&min=-18&max=0)
 
-*▲ Click the screenshot to open this view **live**: it resolves a dual-pol NISAR GCOV granule over the Amazon floodplain from the ASF archive via CMR and streams it into your browser as an HH/HV composite (paste your free [Earthdata token](https://urs.earthdata.nasa.gov/profile) when prompted).*
+*▲ Click the screenshot to open this view **live**: it resolves a NISAR GCOV granule over the Amazon floodplain from the ASF archive via CMR and streams just the HH backscatter for the region into your browser (paste your free [Earthdata token](https://urs.earthdata.nasa.gov/profile) when prompted).*
 
 </div>
 
