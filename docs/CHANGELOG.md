@@ -119,7 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Viewer context menu** — right-click/long-press menu on the viewer, driven by the
   command-palette action registry (viewport clamping, keyboard navigation)
   (`src/components/ContextMenu.jsx`)
-- **GPU audit + horizon report** (`docs/GPU_AUDIT_AND_HORIZON_2026-07.md`) and the
+- **GPU audit + horizon report** (internal notes: `docs-internal/GPU_AUDIT_AND_HORIZON_2026-07.md`) and the
   GPU-track work orders W018–W024 (capability probe, GPU export parity, subgroup
   histogram, compute pyramid, shader module chain, wrapped-phase toolkit, ML
   inference substrate); W012 gains a chunk-manifest interop component
@@ -130,10 +130,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0-beta.6] - 2026-07-10 — Wave 0/1 work-order batch + DAAC demo hardening
 
-Executed as machine-verifiable work orders (`docs/plan/W001–W017`) by parallel
-worktree agents against acceptance criteria; strategy in `docs/PLATFORM_REVIEW.md`.
+Executed as machine-verifiable work orders (internal work orders W001–W017) by parallel
+worktree agents against acceptance criteria; strategy in the internal platform review.
 Also merges the July WIP feature set. (The ATBD/SPA demo-apps line — D582/D106 —
-is deferred to the next release; see `docs/plan/W014_ASF_DEMO_INTEGRATION.md`.)
+is deferred to the next release; tracked internally as W014.)
 
 ### Added
 - **Region-first deep links** (W017) — `?bbox=w,s,e,n` (or `wkt=`) with no granule

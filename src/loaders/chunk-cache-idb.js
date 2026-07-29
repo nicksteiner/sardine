@@ -1,7 +1,7 @@
 /**
  * IndexedDB-backed L2 chunk cache (W009).
  *
- * Layered cache design (docs/CHUNKING_USABILITY_REVIEW.md gap 3):
+ * Layered cache design (docs-internal/CHUNKING_USABILITY_REVIEW.md gap 3):
  *
  *     L1  in-memory Map (per-loader, volatile)     — nisar-loader.js
  *     L2  IndexedDB (this module, survives reload) — ~200 MB LRU

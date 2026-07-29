@@ -98,9 +98,9 @@ sardine/
 └── CLAUDE.md                   # This file
 ```
 
-**Working conventions:** implementation work is tracked as work orders in `docs/plan/`
+**Working conventions:** implementation work is tracked as work orders in `docs-internal/plan/` (kept out of the public repo)
 (one order → one branch → runnable acceptance criteria; findings appended on premise
-drift). Read `docs/plan/README.md` before starting roadmap work — it also records the
+drift). Read `docs-internal/plan/README.md` before starting roadmap work — it also records the
 sardine-agent API ground truth and naming collisions (e.g. `{file}.sardine.json` is
 reserved).
 
@@ -237,8 +237,9 @@ downloadBuffer(buffer, 'export.tif');
 
 ## Roadmap
 
-The living roadmap is `docs/plan/` (work orders with acceptance criteria) driven by
-the strategy in `docs/PLATFORM_REVIEW.md`. Snapshot:
+The living roadmap is `docs-internal/plan/` (work orders with acceptance criteria) driven
+by the strategy in `docs-internal/PLATFORM_REVIEW.md`; both are local-only, excluded from
+the public repo. Snapshot:
 
 ### Shipped
 - COG viewer with dB scaling, colormaps, contrast sliders
@@ -260,7 +261,7 @@ the strategy in `docs/PLATFORM_REVIEW.md`. Snapshot:
 - ASF DAAC demo capacity — SPA shell + ATBD apps (/inundation with ASF auto-stack,
   /crop, /disturbance) on the D582/D106 line; integration tracked as W014
 
-### Next (see docs/plan/)
+### Next (see docs-internal/plan/)
 - W010 SARScene/RenderConfig/SessionState schema (design gate) → main-app store
   extraction
 - W011 flood vertical slice: GPU threshold + AI proposals + accept/reject

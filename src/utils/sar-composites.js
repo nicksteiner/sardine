@@ -162,7 +162,7 @@ export const SAR_COMPOSITES = {
     description: 'Approx Pauli decomposition from power data',
     // Hidden 2026-07-29: power-only approximation omits the Re(HHVV) cross
     // term that carries the double-bounce/surface phase discrimination.
-    // See docs/RADAR_AUDIT_2026-07-29.md (D1). Re-enable with the full
+    // See docs-internal/RADAR_AUDIT_2026-07-29.md (D1). Re-enable with the full
     // covariance formulation.
     hidden: true,
     required: ['HHHH', 'HVHV', 'VVVV'],
@@ -246,7 +246,7 @@ export const SAR_COMPOSITES = {
     // Hidden 2026-07-29: the volume model deviates from Freeman & Durden 1998
     // (uses fv = 4·C22 / co-pol subtraction 2·C22 instead of fv = 3·C22 /
     // subtraction 3·C22) and the surface/double-bounce split is a heuristic,
-    // not the published solution. See docs/RADAR_AUDIT_2026-07-29.md (C5).
+    // not the published solution. See docs-internal/RADAR_AUDIT_2026-07-29.md (C5).
     hidden: true,
     required: ['HHHH', 'HVHV', 'VVVV'],
     requiredComplex: ['HHVV'],
