@@ -1386,7 +1386,7 @@ check('SARViewer renders secondaries below primary', () => {
   // Primary-anchored overlays (ROI, pixel explorer) only target the primary,
   // so secondaries must render below the primary tile layer.
   assertContains(viewerSrcForMosaic,
-    '[...secondaryMosaicLayers, ...baseLayers, ...extraLayers]',
+    '...secondaryMosaicLayers, ...baseLayers, ...extraLayers]',
     'render order');
 });
 

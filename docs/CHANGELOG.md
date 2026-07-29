@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-beta.10] - 2026-07-29 — Vector figure export, compare deep links, EDL whoami fix
+
+### Added
+- **Editable-vector SVG figure export** — figure export can now emit SVG
+  alongside PNG. A canvas-command recorder (`svg-recorder.js`) captures the
+  figure chrome (scale bar, coordinate grid, colorbar, labels) as real vector
+  text and paths with the rendered raster embedded, so exported figures stay
+  editable in Illustrator/Inkscape. Both formats share one draw path via a
+  common render-target seam in `figure-export.js`
+- **Figure style presets** (`figure-style.js`) — exported figures get a house
+  style separate from the app's dark UI theme: `publication` (default — warm
+  white ground, near-black ink, hairline open chrome, halo text casing) and
+  `dark` (the legacy on-screen look for slides/projectors). Chrome now scales
+  with figure size (`makeScale`) instead of devicePixelRatio
+- **Multi-panel compare deep links** — `?compare=` takes up to 4 comma-separated
+  COG URLs (each optionally `label~url`) and opens them as a synced compare
+  grid. `cog-loader` now accepts URL sources directly (geotiff.js `fromUrl`,
+  HTTP Range), and the class-map palette/label pipeline works for remote COGs,
+  not just dropped files
+- **Geographic co-registration in the compare grid** — panels re-frame their
+  render quads into geographic bounds, so files with different resolutions or
+  extents co-register under the shared view (same-CRS overlap; no reprojection).
+  Scale bar and coordinate overlays become geographically correct in compare
+  mode. Class panels seed their legend from embedded class names the instant
+  they load, plus optical peek support in compare panels
+- **W010 design gate** — `SESSION_SCHEMA.md` + JSON Schemas for
+  SARScene/RenderConfig/SessionState with a no-dependency validator (the
+  contract for the main-app store extraction)
+- **W012a design doc** — `sardine-figure` STAC extension for self-describing
+  class-map figure COGs with deep-link resolution
+- **README hero is now a live deep link** — the front-page screenshot opens the
+  equivalent view streamed from the ASF archive: CMR resolves a dual-pol NISAR
+  GCOV granule over the Amazon floodplain and renders the HH/HV composite
+
+### Fixed
+- **EDL proxy `/whoami` rejected valid tokens** — Earthdata Login's user API
+  now requires the username in the path (no `/api/users/user` alias) and a
+  `client_id` query param; bare bearer requests get `invalid_token`. The Worker
+  (v0.1.1) decodes the uid from the JWT payload and calls
+  `/api/users/<uid>?client_id=…`, so the "Test token" button validates fresh
+  tokens again. Requires a `wrangler deploy` of `sardine-edl-proxy`
+
 ## [1.0.0-beta.9] - 2026-07-13 — Classification maps in comparison panels
 
 ### Added

@@ -10,9 +10,11 @@ import React, {
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { COORDINATE_SYSTEM } from '@deck.gl/core';
 import { SARViewer } from './SARViewer.jsx';
+import { OpticalPeekLayer } from '../layers/OpticalPeekLayer.js';
 import { loadLocalTIFs } from '../loaders/cog-loader.js';
 import { loadNISARGCOV, listNISARDatasets } from '../loaders/nisar-loader.js';
 import { autoContrastWithDbDetect, sampleViewportStats } from '../utils/stats.js';
+import { reprojectBbox } from '../utils/roi-subset.js';
 import { label as labelColor } from '../utils/colormap.js';
 
 /**
@@ -62,8 +64,102 @@ function buildClassPalette(colorTable) {
   return { palette, entries: 256 };
 }
 
+/**
+ * Build an initial class legend from the GeoTIFF's embedded class names +
+ * palette, so a class panel shows its legend the instant it loads (before the
+ * viewport tile-scan runs). Returns null when there are no class names.
+ * @param {{[index:number]:string}|null} classNames
+ * @param {Uint8Array|null} palette  256×3 packed RGB
+ */
+function seedLegendFromNames(classNames, palette) {
+  if (!classNames) return null;
+  const values = Object.keys(classNames)
+    .map(Number)
+    .filter((v) => Number.isFinite(v) && v > 0 && v <= 255)
+    .sort((a, b) => a - b);
+  if (values.length === 0) return null;
+  const items = values.map((cls) => ({
+    value: cls,
+    color: palette ? [palette[cls * 3], palette[cls * 3 + 1], palette[cls * 3 + 2]] : [128, 128, 128],
+    name: classNames[cls] || `Class ${cls}`,
+  }));
+  return { items, truncated: false };
+}
+
 const H5_RE = /\.(h5|hdf5|he5)$/i;
 const TIF_RE = /\.(tif|tiff)$/i;
+
+/**
+ * Re-frame a loaded source so its deck.gl render quad lives in GEOGRAPHIC
+ * coordinates (the file's geoBounds / worldBounds) instead of its own pixel
+ * grid ([0,0,W,H]).
+ *
+ * WHY: every SARdine source renders into `bounds` = [0,0,width,height] — pixel
+ * space — and its getTile() interprets the incoming deck.gl bbox as pixel
+ * coordinates. That is fine for a single viewer (the pixel grid IS the world),
+ * but CompareGrid shares ONE viewState across panels. When two files cover the
+ * same ground at different resolutions (e.g. 20 m @5490² vs 10 m @10980²), their
+ * pixel boxes differ in size, so the shared view overlays a 10980-wide box on a
+ * 5490-wide box and the panels do not co-register.
+ *
+ * The fix: give each panel a geographic render frame (same CRS + real extent =
+ * true overlap) and wrap getTile so the geo-bbox deck.gl now passes is mapped
+ * back to the panel's own pixel-space bbox before hitting the underlying loader.
+ * All overlays (ScaleBar, ROIOverlay, CoordinateGrid, legend/auto-stretch region
+ * math) read `bounds` + imageWidth/Height with a linear pixel↔world map, so they
+ * keep working unchanged — and the ScaleBar/coords become geographically correct.
+ *
+ * Panels still only visually co-register where their footprints overlap AND
+ * share a CRS; mismatched CRS is not reprojected (documented limitation).
+ *
+ * @param {object} source  loadLocalTIF/loadNISARGCOV result
+ * @returns {object} same source with geographic `bounds` + wrapped getTile,
+ *   or the source unchanged if it has no usable geo extent.
+ */
+function geoFrameSource(source) {
+  const geo = source?.worldBounds || source?.geoBounds;
+  const w = source?.sourceWidth || source?.width;
+  const h = source?.sourceHeight || source?.height;
+  if (!geo || geo.length !== 4 || !(w > 0) || !(h > 0)) return source;
+
+  const [gMinX, gMinY, gMaxX, gMaxY] = geo;
+  const gSpanX = gMaxX - gMinX;
+  const gSpanY = gMaxY - gMinY;
+  // Degenerate extent (missing georeferencing) — leave in pixel space.
+  if (!(Math.abs(gSpanX) > 0) || !(Math.abs(gSpanY) > 0)) return source;
+
+  const origGetTile = source.getTile;
+  const wrappedGetTile = origGetTile
+    ? async (params) => {
+        const bbox = params?.bbox;
+        // Only geo bboxes carry left/right/top/bottom (OrthographicView). Map
+        // each geo edge to the panel's pixel-space world rectangle, where the
+        // underlying getTile expects: X ∈ [0,width] (columns) and world-Y ∈
+        // [0,height] running bottom→top (it flips to rows via height - Y).
+        if (bbox && bbox.left !== undefined) {
+          const gx0 = Math.min(bbox.left, bbox.right);
+          const gx1 = Math.max(bbox.left, bbox.right);
+          const gy0 = Math.min(bbox.top, bbox.bottom);
+          const gy1 = Math.max(bbox.top, bbox.bottom);
+          const pxbbox = {
+            left: ((gx0 - gMinX) / gSpanX) * w,
+            right: ((gx1 - gMinX) / gSpanX) * w,
+            bottom: ((gy0 - gMinY) / gSpanY) * h,
+            top: ((gy1 - gMinY) / gSpanY) * h,
+          };
+          return origGetTile({ ...params, bbox: pxbbox });
+        }
+        return origGetTile(params);
+      }
+    : origGetTile;
+
+  return {
+    ...source,
+    getTile: wrappedGetTile,
+    bounds: [gMinX, gMinY, gMaxX, gMaxY], // geographic render frame (shared)
+    pixelBounds: [0, 0, w, h],            // original pixel extent (for reference)
+  };
+}
 
 /**
  * dB auto-contrast from NISAR metadata stats (mean ± 2·std), matching
@@ -78,8 +174,29 @@ function nisarAutoContrast(stats) {
   return [-25, 0];
 }
 
-/** Fit a viewState to the union of panel bounds (assumes ~1000px viewport). */
-function fitViewState(panels) {
+/** Build a viewState centred on a world-coordinate rect (assumes ~1000px viewport). */
+function viewStateForRect(minX, minY, maxX, maxY) {
+  const maxSpan = Math.max(maxX - minX, maxY - minY) || 1;
+  return {
+    target: [(minX + maxX) / 2, (minY + maxY) / 2],
+    zoom: Math.log2(1000 / maxSpan),
+    minZoom: -15,
+    maxZoom: 25,
+  };
+}
+
+/**
+ * Fit a viewState to the union of panel bounds (assumes ~1000px viewport).
+ *
+ * When `bbox4326` is given (?bbox=/?wkt= deep link), fit to that region instead:
+ * it is reprojected from WGS84 into the panels' CRS (panels render in their
+ * file's CRS after geoFrameSource), then intersected with the scene so an
+ * off-scene bbox falls back to the full extent rather than an empty view.
+ *
+ * @param {Array} panels
+ * @param {number[]|null} [bbox4326] — [west, south, east, north] in EPSG:4326
+ */
+function fitViewState(panels, bbox4326 = null) {
   const withBounds = panels.filter((p) => p.source?.bounds);
   if (withBounds.length === 0) return null;
 
@@ -91,15 +208,24 @@ function fitViewState(panels) {
     maxX = Math.max(maxX, c);
     maxY = Math.max(maxY, d);
   }
-  const centerX = (minX + maxX) / 2;
-  const centerY = (minY + maxY) / 2;
-  const maxSpan = Math.max(maxX - minX, maxY - minY) || 1;
-  return {
-    target: [centerX, centerY],
-    zoom: Math.log2(1000 / maxSpan),
-    minZoom: -15,
-    maxZoom: 25,
-  };
+
+  if (Array.isArray(bbox4326) && bbox4326.length === 4) {
+    // All panels share a CRS in practice (mixed-CRS grids don't co-register
+    // anyway); take it from the first panel that reports one.
+    const crs = withBounds.find((p) => p.source?.crs)?.source.crs || 'EPSG:4326';
+    try {
+      const [rMinX, rMinY, rMaxX, rMaxY] = reprojectBbox(bbox4326, crs);
+      // Clamp to the scene — a bbox that misses entirely would zoom to nowhere.
+      const cMinX = Math.max(rMinX, minX), cMaxX = Math.min(rMaxX, maxX);
+      const cMinY = Math.max(rMinY, minY), cMaxY = Math.min(rMaxY, maxY);
+      if (cMaxX > cMinX && cMaxY > cMinY) return viewStateForRect(cMinX, cMinY, cMaxX, cMaxY);
+      console.warn('[CompareGrid] bbox= does not intersect the panels — showing full extent.');
+    } catch (e) {
+      console.warn(`[CompareGrid] Could not reproject bbox= to ${crs}: ${e.message}`);
+    }
+  }
+
+  return viewStateForRect(minX, minY, maxX, maxY);
 }
 
 /** Grid template (cols, rows) for n panels. */
@@ -110,7 +236,8 @@ function gridTemplate(n) {
 }
 
 export const CompareGrid = forwardRef(function CompareGrid(
-  { initialFiles = null, onStatus = () => {}, onExport = null, style = {} },
+  { initialFiles = null, initialUrls = null, initialBbox = null, onStatus = () => {}, onExport = null,
+    figureTheme = 'publication', onFigureThemeChange = null, style = {} },
   ref
 ) {
   // panel: {id, name, source, contrastLimits, colormap, useDecibels, stretchMode, gamma}
@@ -157,8 +284,10 @@ export const CompareGrid = forwardRef(function CompareGrid(
   /** Load one GeoTIFF/COG as a panel. */
   const loadCOGPanel = useCallback(
     async (file) => {
-      const data = await loadLocalTIFs([file]);
-      const { useDecibels, contrastLimits } = autoContrastWithDbDetect(data.data);
+      const raw = await loadLocalTIFs([file]);
+      const { useDecibels, contrastLimits } = autoContrastWithDbDetect(raw.data);
+      // Re-frame into geographic coords so panels co-register across resolutions.
+      const data = geoFrameSource(raw);
       // Class-map rendering: auto-enable when the file has an embedded color
       // table or its values look like integer labels. Palette prefers the
       // embedded table, falling back to deterministic label colors.
@@ -177,6 +306,71 @@ export const CompareGrid = forwardRef(function CompareGrid(
       onStatus('success', `Compare: added ${file.name} (${data.width}×${data.height})${tag}`);
     },
     [addPanel, onStatus]
+  );
+
+  /**
+   * Load one GeoTIFF/COG panel from a URL (?compare= deep links). Reuses the
+   * same loadLocalTIFs machinery — which now accepts URL strings — so URL
+   * panels carry the identical class-map path (embedded color table / class
+   * names) as dropped files. `label` overrides the derived filename.
+   */
+  const loadUrlPanel = useCallback(
+    async (url, label) => {
+      const raw = await loadLocalTIFs([url]);
+      const name = label || url.split(/[?#]/)[0].split('/').pop() || url;
+      const { useDecibels, contrastLimits } = autoContrastWithDbDetect(raw.data);
+      // Re-frame into geographic coords so panels co-register across resolutions.
+      const data = geoFrameSource(raw);
+      const isCategorical = !!data.isCategorical;
+      const { palette, entries } = isCategorical
+        ? buildClassPalette(data.colorTable)
+        : { palette: null, entries: 0 };
+      addPanel({
+        id: nextPanelId(), name, kind: 'cog', file: null, url, source: data,
+        contrastLimits, colormap: 'grayscale', useDecibels, stretchMode: 'linear', gamma: 1.0,
+        classMode: isCategorical, classPalette: palette, classPaletteEntries: entries,
+        hasClasses: isCategorical, hasColorTable: !!data.colorTable,
+        classNames: data.classNames || null,
+        // Seed the legend from the file's own class names so it renders
+        // immediately; the viewport scan later refines it to visible classes.
+        classLegend: seedLegendFromNames(data.classNames, palette),
+      });
+      const tag = isCategorical ? (data.colorTable ? ' [classes: color table]' : ' [classes]') : '';
+      onStatus('success', `Compare: added ${name}${tag}`);
+    },
+    [addPanel, onStatus]
+  );
+
+  /**
+   * Load 1+ COG URLs, each as its own panel (cap MAX_PANELS). Each entry may be
+   * a bare URL string or `{ url, label }`.
+   */
+  const loadUrls = useCallback(
+    async (entries) => {
+      const list = Array.from(entries || []);
+      if (list.length === 0) return;
+      setLoading(true);
+      try {
+        for (const entry of list) {
+          const url = typeof entry === 'string' ? entry : entry?.url;
+          const label = typeof entry === 'string' ? null : entry?.label;
+          if (!url) continue;
+          if (panelRefs.current.size >= MAX_PANELS) {
+            onStatus('info', `Compare grid full — skipped ${label || url}`);
+            continue;
+          }
+          try {
+            onStatus('info', `Compare: loading ${label || url}`);
+            await loadUrlPanel(url, label);
+          } catch (e) {
+            onStatus('error', `Compare: failed ${label || url}`, e.message);
+          }
+        }
+      } finally {
+        setLoading(false);
+      }
+    },
+    [onStatus, loadUrlPanel]
   );
 
   /** Load one NISAR .h5 as a panel — auto-picks the first freq/pol dataset. */
@@ -286,9 +480,11 @@ export const CompareGrid = forwardRef(function CompareGrid(
     [loadFiles, loadGeoJSONFiles, onStatus]
   );
 
-  // Load any files handed in at mount.
+  // Load any files or URLs handed in at mount. URLs come from ?compare= deep
+  // links; files from a drag/drop-into-compare open.
   useEffect(() => {
     if (initialFiles && initialFiles.length) loadFiles(initialFiles);
+    if (initialUrls && initialUrls.length) loadUrls(initialUrls);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -296,16 +492,30 @@ export const CompareGrid = forwardRef(function CompareGrid(
   // is added or removed (boundsKey changes only on add/remove, not on pan/zoom
   // since each panel's bounds are stable). This guarantees a newly added file
   // is brought into view rather than left off-screen.
+  //
+  // A deep-link ?bbox= scopes the fits during the link's initial load only.
+  // Panels load sequentially, so this effect fires once per panel — the bbox
+  // must survive every one of those fits (consuming it on the first would let
+  // panels 2..N re-fit to the union and undo the zoom). `bboxConsumed` flips
+  // when the initial load finishes, after which adds/removes fit the union as
+  // usual and never yank the user back to the link's bbox.
+  const bboxConsumed = useRef(false);
   const boundsKey = panels.map((p) => p.source?.bounds?.join(',')).join('|');
   useEffect(() => {
     if (panels.length === 0) {
       setViewState(null);
       return;
     }
-    const fit = fitViewState(panels);
+    const bbox = bboxConsumed.current ? null : initialBbox;
+    const fit = fitViewState(panels, bbox);
     if (fit) setViewState(fit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boundsKey]);
+
+  // Retire the deep-link bbox once the initial load settles.
+  useEffect(() => {
+    if (!loading && panels.length > 0) bboxConsumed.current = true;
+  }, [loading, panels.length]);
 
   const handleViewStateChange = useCallback(
     (panelId) =>
@@ -681,15 +891,50 @@ export const CompareGrid = forwardRef(function CompareGrid(
             + Add panel
           </button>
         )}
+        {onExport && onFigureThemeChange && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginLeft: '4px' }}
+               title="Figure style for export. Publication = light/open (paper). Presentation = dark (slides).">
+            {[['publication', 'Publication'], ['dark', 'Presentation']].map(([val, lbl], i) => (
+              <button
+                key={val}
+                type="button"
+                onClick={() => onFigureThemeChange(val)}
+                style={{
+                  ...addButtonStyle,
+                  padding: '3px 8px',
+                  fontWeight: figureTheme === val ? 600 : 400,
+                  borderColor: figureTheme === val ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)',
+                  color: figureTheme === val ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--text-muted)',
+                  background: figureTheme === val ? 'var(--sardine-cyan-bg, transparent)' : 'transparent',
+                  borderTopRightRadius: i === 0 ? 0 : undefined, borderBottomRightRadius: i === 0 ? 0 : undefined,
+                  borderTopLeftRadius: i === 1 ? 0 : undefined, borderBottomLeftRadius: i === 1 ? 0 : undefined,
+                  borderLeft: i === 1 ? 'none' : undefined,
+                }}
+              >
+                {lbl}
+              </button>
+            ))}
+          </div>
+        )}
         {onExport && (
-          <button
-            type="button"
-            onClick={onExport}
-            style={{ ...addButtonStyle, borderColor: 'var(--sardine-cyan, #4ec9d4)', color: 'var(--sardine-cyan, #4ec9d4)' }}
-            title="Export all panels as one PNG"
-          >
-            Export PNG
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => onExport('png')}
+              style={{ ...addButtonStyle, borderColor: 'var(--sardine-cyan, #4ec9d4)', color: 'var(--sardine-cyan, #4ec9d4)' }}
+              title="Export all panels as one flattened PNG"
+            >
+              Export PNG
+            </button>
+            <button
+              type="button"
+              onClick={() => onExport('svg')}
+              style={{ ...addButtonStyle, borderColor: 'var(--sardine-cyan, #4ec9d4)', color: 'var(--sardine-cyan, #4ec9d4)' }}
+              title="Export all panels as one SVG — panel images embedded, chrome editable vector"
+            >
+              Export SVG
+            </button>
+          </>
         )}
         {loading && <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>loading…</span>}
         <input
@@ -733,6 +978,23 @@ const Panel = React.memo(function Panel({
   const dataset = useCallback((f, p) => onDataset(id, f, p), [onDataset, id]);
   const remove = useCallback(() => onRemove(id), [onRemove, id]);
 
+  // Optical Peek: Esri World Imagery rendered UNDER this panel's SAR/class
+  // raster (so class labels sit over real ground). Per-panel toggle; same
+  // two-bounds recipe as the main viewer (bounds = quad coord space,
+  // geoBounds = geographic extent for the proj4 atlas warp).
+  const underlayLayers = useMemo(() => {
+    if (!panel.opticalPeek || !panel.source?.bounds) return [];
+    return [new OpticalPeekLayer({
+      id: `optical-peek-${id}`,
+      bounds: panel.source.bounds,
+      geoBounds: panel.source.worldBounds || panel.source.geoBounds || panel.source.bounds,
+      crs: panel.source.crs || 'EPSG:4326',
+      tileUrlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      maxZoom: 19,
+      opacity: 1.0,
+    })];
+  }, [id, panel.opticalPeek, panel.source]);
+
   return (
     <div style={{ position: 'relative', overflow: 'hidden', background: 'var(--sardine-bg, #030201)' }}>
       <SARViewer
@@ -755,8 +1017,26 @@ const Panel = React.memo(function Panel({
         initialViewState={viewState || undefined}
         onViewStateChange={vsCb}
         extraLayers={extraLayers}
+        underlayLayers={underlayLayers}
+        // Auto-dim the raster when optical peek is on so the imagery shows
+        // through the (otherwise opaque) class/SAR raster.
+        opacity={panel.opticalPeek ? 0.6 : 1}
         showGrid={false}
       />
+      {/* Optical Peek toggle — upper-right. Esri imagery under the raster. */}
+      <button
+        type="button"
+        onClick={() => change({ opticalPeek: !panel.opticalPeek })}
+        style={{
+          ...opticalToggleStyle,
+          background: panel.opticalPeek ? 'rgba(78,201,212,0.85)' : 'var(--overlay-bg)',
+          color: panel.opticalPeek ? '#0a1628' : 'var(--text-muted, #9bb0d0)',
+          borderColor: panel.opticalPeek ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)',
+        }}
+        title={panel.opticalPeek ? 'Hide optical basemap' : 'Show Esri optical imagery under this panel'}
+      >
+        ◎ optical
+      </button>
       <PanelControls
         panel={panel}
         onChange={change}
@@ -1070,10 +1350,12 @@ function PanelControls({ panel, onChange, onColormap, onAutoStretch, onDataset, 
 // ── styles ────────────────────────────────────────────────────────────────
 const legendStyle = {
   position: 'absolute',
+  // Bottom-RIGHT: the scale bar lives at bottom-left (ScaleBar.jsx) and the
+  // panel label at top — right keeps the class legend clear of both.
   bottom: '8px',
-  left: '8px',
+  right: '8px',
   maxWidth: '46%',
-  background: 'rgba(15, 31, 56, 0.9)',
+  background: 'var(--overlay-bg)',
   border: '1px solid var(--sardine-border, #1e3a5f)',
   borderRadius: 'var(--radius-sm, 4px)',
   color: 'var(--text-primary, #e8edf5)',
@@ -1124,6 +1406,20 @@ const pickButtonStyle = {
   fontSize: '0.8rem',
 };
 
+// Optical Peek toggle — pinned to the panel's upper-right corner.
+const opticalToggleStyle = {
+  position: 'absolute',
+  top: '6px',
+  right: '6px',
+  zIndex: 1300,
+  border: '1px solid var(--sardine-border, #1e3a5f)',
+  borderRadius: 'var(--radius-sm, 4px)',
+  padding: '2px 8px',
+  fontSize: '0.62rem',
+  fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+  cursor: 'pointer',
+};
+
 const panelLabelStyle = {
   position: 'absolute',
   top: '6px',
@@ -1132,7 +1428,7 @@ const panelLabelStyle = {
   display: 'flex',
   flexDirection: 'column',
   gap: '4px',
-  background: 'rgba(15, 31, 56, 0.88)',
+  background: 'var(--overlay-bg)',
   border: '1px solid var(--sardine-border, #1e3a5f)',
   color: 'var(--text-primary, #e8edf5)',
   padding: '4px 6px',
@@ -1215,7 +1511,7 @@ const toolbarStyle = {
   display: 'flex',
   alignItems: 'center',
   gap: '12px',
-  background: 'rgba(15, 31, 56, 0.92)',
+  background: 'var(--overlay-bg)',
   border: '1px solid var(--sardine-border, #1e3a5f)',
   borderRadius: 'var(--radius-sm, 4px)',
   padding: '5px 12px',
@@ -1249,7 +1545,7 @@ const dropHintStyle = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  background: 'rgba(3, 15, 30, 0.55)',
+  background: 'var(--overlay-bg)',
   border: '2px dashed var(--sardine-cyan, #4ec9d4)',
   color: 'var(--sardine-cyan, #4ec9d4)',
   fontFamily: 'var(--font-mono, monospace)',
@@ -1275,7 +1571,7 @@ const overlayChipStyle = {
   display: 'flex',
   alignItems: 'center',
   gap: '5px',
-  background: 'rgba(15, 31, 56, 0.92)',
+  background: 'var(--overlay-bg)',
   border: '1px solid var(--sardine-border, #1e3a5f)',
   borderRadius: 'var(--radius-sm, 4px)',
   padding: '2px 6px',

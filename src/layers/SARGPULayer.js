@@ -98,6 +98,14 @@ uniform float uMaxB;
 uniform float uSaturation;  // RGB saturation multiplier (1.0 = no change)
 uniform float uColorblindMode;  // 0=off, 1=deuteranopia, 2=protanopia, 3=tritanopia
 
+// Class-map mode: sample amplitude as an integer class index and look up its
+// color in a 256×1 palette texture (the GeoTIFF's embedded ColorMap). Skips
+// the dB/stretch/colormap ramp entirely. Bound to texture unit 10 (see draw()).
+uniform float uClassMode;          // > 0.5 = class-map lookup instead of ramp
+uniform sampler2D uClassPalette;   // 256×1 RGBA palette, one texel per class index
+uniform float uClassPaletteEntries; // authored class count (unused in shader; for parity)
+uniform float uOpacity;            // layer opacity multiplier (1.0 = fully opaque)
+
 in vec2 vTexCoord;
 out vec4 fragColor;
 
@@ -142,6 +150,18 @@ ${glslColormaps}
 // ─── Main ────────────────────────────────────────────────────────────
 
 void main() {
+  // ── Class-map mode: integer label → palette lookup (before any ramp) ──
+  if (uClassMode > 0.5) {
+    float amp = texture(uTexture, vTexCoord).r;
+    // 0 / NaN are background — transparent (SAR nodata convention).
+    if (amp == 0.0 || isnan(amp)) { fragColor = vec4(0.0); return; }
+    float idx = floor(amp + 0.5);                 // nearest integer class
+    float u = (idx + 0.5) / 256.0;                // center-sample the 256-wide palette
+    vec3 classColor = texture(uClassPalette, vec2(clamp(u, 0.0, 1.0), 0.5)).rgb;
+    fragColor = vec4(classColor, uOpacity);
+    return;
+  }
+
   if (uMode > 0.5) {
     // ── RGB composite mode: 3 separate R32F textures ──
     float ampR = texture(uTexture, vTexCoord).r;
@@ -208,7 +228,7 @@ void main() {
       }
     }
 
-    fragColor = vec4(rgb, alpha);
+    fragColor = vec4(rgb, alpha * uOpacity);
   } else {
     // ── Single-band mode: R32F texture + colormap ──
     float amplitude = texture(uTexture, vTexCoord).r;
@@ -339,7 +359,7 @@ void main() {
       }
     }
 
-    fragColor = vec4(rgb, alpha);
+    fragColor = vec4(rgb, alpha * uOpacity);
   }
 }
 `;
@@ -840,6 +860,7 @@ export class SARGPULayer extends Layer {
         uClassMode: (!isRGB && classMode && texturePalette) ? 1.0 : 0.0,
         uClassPalette: 10,
         uClassPaletteEntries: classPaletteEntries,
+        uOpacity: (typeof this.props.opacity === 'number') ? this.props.opacity : 1.0,
         uMaskInvalid: (maskInvalid && textureMask) ? 1.0 : 0.0,
         uMaskLayoverShadow: (maskLayoverShadow && textureMask) ? 1.0 : 0.0,
         uTextureMask: 3,

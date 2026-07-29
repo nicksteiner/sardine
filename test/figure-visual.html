@@ -1,0 +1,58 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>figure visual</title></head><body>
+<script type="module">
+import { exportFigure, exportRGBColorbar } from '/src/utils/figure-export.js';
+
+// Synthetic SAR-ish base: a speckled gradient so the figure has real content.
+function fakeGlCanvas(w = 900, h = 640) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, w, h);
+  grad.addColorStop(0, '#2a2a2a'); grad.addColorStop(0.5, '#8a8a7a'); grad.addColorStop(1, '#e8e4d0');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  // speckle
+  for (let i = 0; i < 24000; i++) {
+    const x = Math.floor(Math.random() * w), y = Math.floor(Math.random() * h);
+    const v = Math.floor(Math.random() * 90);
+    g.fillStyle = `rgba(${v},${v},${v},0.25)`; g.fillRect(x, y, 1, 1);
+  }
+  // a "water body" dark blob
+  g.fillStyle = 'rgba(20,30,45,0.85)'; g.beginPath(); g.ellipse(w*0.62, h*0.55, w*0.14, h*0.10, 0.3, 0, 7); g.fill();
+  return c;
+}
+
+const bounds = [500000, 4000000, 512000, 4008500];
+const viewState = { target: [506000, 4004250], zoom: -4 };
+const base = {
+  colormap: 'viridis', contrastLimits: [-22, -2], useDecibels: true,
+  viewState, bounds, filename: 'NISAR_L2_GCOV_147_055.h5', crs: 'EPSG:32610',
+  polarization: 'HHHH', wgs84Bounds: null, annotations: [],
+};
+
+async function toDataUri(blob) {
+  const buf = await blob.arrayBuffer();
+  let bin = ''; const bytes = new Uint8Array(buf);
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return 'data:image/png;base64,' + btoa(bin);
+}
+
+const out = {};
+out['fig_publication'] = await toDataUri(await exportFigure(fakeGlCanvas(), { ...base, theme: 'publication', format: 'png' }));
+out['fig_large'] = await toDataUri(await exportFigure(fakeGlCanvas(3200, 2280), { ...base, theme: 'publication', format: 'png' }));
+out['fig_dark']        = await toDataUri(await exportFigure(fakeGlCanvas(), { ...base, theme: 'dark', format: 'png' }));
+
+const cbOpts = { compositeId: 'pauli-power', contrastLimits: { R: [-18,-2], G: [-24,-6], B: [-18,-2] }, useDecibels: true, stretchMode: 'linear', gamma: 1 };
+out['colorbar_publication'] = await toDataUri(await exportRGBColorbar({ ...cbOpts, theme: 'publication', format: 'png' }));
+out['colorbar_dark']        = await toDataUri(await exportRGBColorbar({ ...cbOpts, theme: 'dark', format: 'png' }));
+
+// RGB composite figure to show the corrected legend swatches
+out['fig_rgb_publication'] = await toDataUri(await exportFigure(fakeGlCanvas(), {
+  ...base, theme: 'publication', format: 'png',
+  compositeId: 'pauli-power',
+  contrastLimits: { R: [-18,-2], G: [-24,-6], B: [-18,-2] },
+}));
+
+window.__FIG__ = out;
+console.log('done');
+</script>
+</body></html>

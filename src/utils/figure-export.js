@@ -14,6 +14,8 @@
  */
 
 import { getColormap } from './colormap.js';
+import { SVGRecorder, svgToBlob } from './svg-recorder.js';
+import { setFigureStyle, getFigureStyle, makeScale } from './figure-style.js';
 import { createStretchFn } from './stretch.js';
 import { SAR_COMPOSITES, COLORBLIND_MATRICES } from './sar-composites.js';
 import { drawHistogramCanvas } from '../components/HistogramOverlay.jsx';
@@ -107,6 +109,97 @@ export function buildAttribution({ vendor, year, processor } = {}) {
  * @param {string}   [options.polarization]    - Polarization label for histogram title
  * @returns {Promise<Blob>} PNG blob
  */
+/**
+ * Build a render target for either PNG or SVG output. Both branches expose the
+ * same Canvas2D surface (`ctx`), so the figure draw* helpers are written once
+ * and run against whichever target the caller asks for.
+ *
+ *   - 'png' → offscreen <canvas> 2D context; finish() → PNG Blob
+ *   - 'svg' → SVGRecorder; finish() → SVG Blob with editable vector chrome and
+ *             the SAR base image + raster insets embedded as <image> layers
+ *
+ * @param {number} W device-pixel width
+ * @param {number} H device-pixel height
+ * @param {'png'|'svg'} format
+ * @param {object} [opts]
+ * @param {string} [opts.background] background fill (SVG only; canvas is transparent by default)
+ * @returns {{ ctx: (CanvasRenderingContext2D|SVGRecorder), finish: () => Promise<Blob> }}
+ */
+function makeTarget(W, H, format, { background = null } = {}) {
+  if (format === 'svg') {
+    const rec = new SVGRecorder(W, H);
+    const S = getFigureStyle();
+    rec.halo = S.halo || null;
+    rec.haloWidthEm = S.haloWidthEm || 0;
+    return {
+      ctx: rec,
+      finish: async () => svgToBlob(rec.toSVG({ background })),
+    };
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  installHaloText(ctx);
+  if (background) { ctx.fillStyle = background; ctx.fillRect(0, 0, W, H); }
+  return {
+    ctx,
+    finish: () => new Promise((resolve) => canvas.toBlob(resolve, 'image/png')),
+  };
+}
+
+/**
+ * Wrap a Canvas 2D context's fillText so every text draw gets a map-label halo
+ * (white casing) when the active figure style defines one. Drawing the halo as
+ * a stroke UNDER the fill — with round joins — matches the SVG paint-order path
+ * and the modern soft-casing look. No-op when the style has no halo (dark).
+ * Applied once per context so all draw* helpers get halos for free.
+ */
+function installHaloText(ctx) {
+  const rawFill = ctx.fillText.bind(ctx);
+  ctx.fillText = function (text, x, y, maxWidth) {
+    const S = getFigureStyle();
+    if (S.halo && S.haloWidthEm > 0) {
+      // Font size from the current ctx.font (e.g. "600 15px 'Space Grotesk'").
+      const m = /(\d+(?:\.\d+)?)px/.exec(this.font);
+      const size = m ? parseFloat(m[1]) : 12;
+      // A translucent halo must composite the WHOLE stroke at its alpha via
+      // globalAlpha — NOT bake the alpha into strokeStyle. strokeText overlaps
+      // itself on curves and between glyphs; a per-pixel-transparent stroke then
+      // accumulates and darkens at those overlaps (uneven, "broken" halo). Using
+      // an OPAQUE stroke under a layer-wide globalAlpha makes it composite once.
+      const { rgb, alpha } = splitCss(S.halo);
+      const prevStroke = this.strokeStyle, prevWidth = this.lineWidth,
+            prevJoin = this.lineJoin, prevMiter = this.miterLimit,
+            prevAlpha = this.globalAlpha;
+      this.globalAlpha = prevAlpha * alpha;
+      this.strokeStyle = rgb;                                  // opaque
+      this.lineWidth = Math.max(1, size * S.haloWidthEm * 2);  // *2: straddles the glyph edge
+      this.lineJoin = 'round';
+      this.miterLimit = 2;
+      if (maxWidth != null) this.strokeText(text, x, y, maxWidth);
+      else this.strokeText(text, x, y);
+      this.globalAlpha = prevAlpha;
+      this.strokeStyle = prevStroke; this.lineWidth = prevWidth;
+      this.lineJoin = prevJoin; this.miterLimit = prevMiter;
+    }
+    if (maxWidth != null) rawFill(text, x, y, maxWidth);
+    else rawFill(text, x, y);
+  };
+}
+
+/** Split a css color into an opaque rgb string + separate alpha [0..1]. */
+function splitCss(css) {
+  const s = String(css).trim();
+  const m = s.match(/^rgba?\(([^)]+)\)$/i);
+  if (m) {
+    const p = m[1].split(',').map((v) => v.trim());
+    const a = p.length > 3 ? parseFloat(p[3]) : 1;
+    return { rgb: `rgb(${p[0]},${p[1]},${p[2]})`, alpha: isFinite(a) ? a : 1 };
+  }
+  return { rgb: s, alpha: 1 };
+}
+
 export async function exportFigure(glCanvas, options = {}) {
   const {
     colormap = 'grayscale',
@@ -124,22 +217,30 @@ export async function exportFigure(glCanvas, options = {}) {
     wgs84Bounds = null,
     attribution = null,
     annotations = [],
+    classMode = false,
+    classPalette = null,
+    classNames = null,
+    classLegend = null,
+    format = 'png',
+    theme = 'publication',
   } = options;
 
+  const S = setFigureStyle(theme);
   const W = glCanvas.width;
   const H = glCanvas.height;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d');
+  // Target is either a real 2D context (PNG) or an SVGRecorder (SVG). Both
+  // implement the same Canvas2D surface, so every draw* helper below is shared.
+  const { ctx, finish } = makeTarget(W, H, format, { background: S.background });
 
-  // Draw the WebGL canvas content
+  // Draw the WebGL canvas content (embedded as <image> in the SVG path)
   ctx.drawImage(glCanvas, 0, 0);
 
-  // DPR-aware sizing
+  // Chrome scales with FIGURE SIZE (not dpr) so labels/bars stay proportional
+  // at any export resolution. dpr is still used for sub-canvas overlays that do
+  // their own logical-pixel math (annotations, histogram/location insets).
   const dpr = window.devicePixelRatio || 1;
-  const s = (v) => Math.round(v * dpr);
+  const s = makeScale(W, H);
 
   // 0. User annotations (drawn on top of SAR pixels, below chrome)
   drawAnnotations(ctx, W, H, annotations, viewState, dpr);
@@ -159,16 +260,17 @@ export async function exportFigure(glCanvas, options = {}) {
   drawScaleBar(ctx, W, H, viewState, bounds, projected, s);
 
   // 5. Legend (top-right)
-  if (compositeId) {
+  if (classMode) {
+    drawClassLegend(ctx, W, H, { classPalette, classNames, classLegend }, s);
+  } else if (compositeId) {
     drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
     drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
   }
 
   // 6. Metadata panel (bottom-right)
-  drawMetadata(ctx, W, H, {
-    filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
-  }, s);
+  // Metadata box (SOURCE/CRS/SCALE/…) intentionally omitted from exports — it
+  // clutters the figure. Provenance lives in the {output}.tif.json sidecar.
 
   // 7. SARdine branding (top-left)
   drawBranding(ctx, W, H, s);
@@ -186,9 +288,7 @@ export async function exportFigure(glCanvas, options = {}) {
   // 10. Attribution strip (bottom edge, drawn last to sit on top)
   drawAttributionStrip(ctx, W, H, attribution, s);
 
-  return new Promise((resolve) => {
-    canvas.toBlob(resolve, 'image/png');
-  });
+  return finish();
 }
 
 /**
@@ -230,18 +330,22 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     wgs84Bounds = null,
     attribution = null,
     annotations = [],
+    classMode = false,
+    classPalette = null,
+    classNames = null,
+    classLegend = null,
+    format = 'png',
+    theme = 'publication',
   } = options;
 
+  const S = setFigureStyle(theme);
   const W = glCanvas.width;
   const H = glCanvas.height;
   const dpr = window.devicePixelRatio || 1;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d');
+  const { ctx, finish } = makeTarget(W, H, format, { background: S.background });
 
-  // 1. Draw the WebGL canvas content (base layer)
+  // 1. Draw the WebGL canvas content (base layer; embedded as <image> for SVG)
   ctx.drawImage(glCanvas, 0, 0);
 
   // 1.5 User annotations (above SAR pixels, below ROI/profile/chrome)
@@ -260,8 +364,8 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     drawProfileOverlays(ctx, W, H, roi, profileData, profileShow, viewState, bounds, imageWidth, imageHeight, useDecibels, dpr);
   }
 
-  // 3. Draw the standard figure overlays
-  const s = (v) => Math.round(v * dpr);
+  // 3. Draw the standard figure overlays (chrome scales with figure size)
+  const s = makeScale(W, H);
   const projected = isProjectedBounds(bounds);
 
   drawBorder(ctx, W, H, s);
@@ -269,15 +373,16 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   drawCornerCoordinates(ctx, W, H, viewState, projected, s);
   drawScaleBar(ctx, W, H, viewState, bounds, projected, s);
 
-  if (compositeId) {
+  if (classMode) {
+    drawClassLegend(ctx, W, H, { classPalette, classNames, classLegend }, s);
+  } else if (compositeId) {
     drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
     drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
   }
 
-  drawMetadata(ctx, W, H, {
-    filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
-  }, s);
+  // Metadata box (SOURCE/CRS/SCALE/…) intentionally omitted from exports — it
+  // clutters the figure. Provenance lives in the {output}.tif.json sidecar.
   drawBranding(ctx, W, H, s);
 
   // Histogram inset (top-left, below branding)
@@ -293,9 +398,7 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   // Attribution strip (bottom edge, drawn last)
   drawAttributionStrip(ctx, W, H, attribution, s);
 
-  return new Promise((resolve) => {
-    canvas.toBlob(resolve, 'image/png');
-  });
+  return finish();
 }
 
 // ── Overlay drawing helpers (Canvas 2D, not SVG) ────────────────────────────
@@ -573,10 +676,12 @@ function drawProfileOverlays(ctx, W, H, roi, profileData, show, viewState, bound
 // ── 1. Figure border ────────────────────────────────────────────────────────
 
 function drawBorder(ctx, W, H, s) {
-  ctx.strokeStyle = THEME.border;
-  ctx.lineWidth = s(2);
-  ctx.setLineDash([s(8), s(4)]);
-  ctx.strokeRect(s(1), s(1), W - s(2), H - s(2));
+  const S = getFigureStyle();
+  if (S.borderStyle === 'none') return; // modern figures breathe to the edge
+  ctx.strokeStyle = S.borderColor;
+  ctx.lineWidth = s(1);
+  if (S.borderStyle === 'dashed') ctx.setLineDash([s(8), s(4)]);
+  ctx.strokeRect(s(0.5), s(0.5), W - s(1), H - s(1));
   ctx.setLineDash([]);
 }
 
@@ -595,13 +700,14 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
   const dx = niceInterval(extent.width, 3);
   const dy = niceInterval(extent.height, 3);
 
-  // Gridlines — sparse, subtle dashed lines
-  ctx.strokeStyle = 'rgba(30, 58, 95, 0.20)';
-  ctx.lineWidth = s(0.5);
-  ctx.setLineDash([s(6), s(6)]);
+  const S = getFigureStyle();
 
-  const tickFontSize = s(10);
-  const tickPad = s(5);
+  // Gridlines — barely-there hairlines, solid (dashes read as busy on a figure).
+  ctx.strokeStyle = S.gridLine;
+  ctx.lineWidth = s(0.5);
+
+  const tickFontSize = s(12);
+  const tickPad = s(6);
 
   // Vertical gridlines
   const xStart = Math.ceil(extent.minX / dx) * dx;
@@ -613,11 +719,10 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
     ctx.lineTo(px, H);
     ctx.stroke();
 
-    // Tick label at bottom
+    // Tick label at bottom (mono numerics)
     ctx.save();
-    ctx.setLineDash([]);
-    ctx.font = `${tickFontSize}px ${FONT_MONO}`;
-    ctx.fillStyle = 'rgba(90, 112, 153, 0.50)';
+    ctx.font = `${tickFontSize}px ${S.fontNumeric}`;
+    ctx.fillStyle = S.inkMuted;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillText(formatTickValue(wx, projected), px, H - tickPad);
@@ -634,18 +739,15 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
     ctx.lineTo(W, py);
     ctx.stroke();
 
-    // Tick label at left
+    // Tick label at left (mono numerics)
     ctx.save();
-    ctx.setLineDash([]);
-    ctx.font = `${tickFontSize}px ${FONT_MONO}`;
-    ctx.fillStyle = 'rgba(90, 112, 153, 0.50)';
+    ctx.font = `${tickFontSize}px ${S.fontNumeric}`;
+    ctx.fillStyle = S.inkMuted;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.fillText(formatTickValue(wy, projected), tickPad, py);
     ctx.restore();
   }
-
-  ctx.setLineDash([]);
 }
 
 // ── 3. Corner coordinates ───────────────────────────────────────────────────
@@ -659,15 +761,17 @@ function drawCornerCoordinates(ctx, W, H, viewState, projected, s) {
     { wx: extent.maxX, wy: extent.minY, align: 'right', baseline: 'bottom', px: W - s(10), py: H - s(10) },
   ];
 
-  const fontSize = s(9);
+  const fontSize = s(11);
   const pad = s(5);
   const lineH = s(12);
+
+  const S = getFigureStyle();
 
   for (const c of corners) {
     const line1 = formatCoord(c.wy, projected, 'y');
     const line2 = formatCoord(c.wx, projected, 'x');
 
-    ctx.font = `${fontSize}px ${FONT_MONO}`;
+    ctx.font = `${fontSize}px ${S.fontNumeric}`;
     const tw = Math.max(ctx.measureText(line1).width, ctx.measureText(line2).width);
 
     const pillW = tw + pad * 2;
@@ -675,17 +779,17 @@ function drawCornerCoordinates(ctx, W, H, viewState, projected, s) {
     const pillX = c.align === 'left' ? c.px : c.px - pillW;
     const pillY = c.baseline === 'top' ? c.py : c.py - pillH;
 
-    // Pill background
-    ctx.fillStyle = 'rgba(15, 31, 56, 0.80)';
-    roundRect(ctx, pillX, pillY, pillW, pillH, s(THEME.radiusMd));
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
-    ctx.lineWidth = s(1);
-    ctx.stroke();
+    // Optional panel behind the text (dark style only; publication is open).
+    if (S.panelFill) {
+      ctx.fillStyle = S.panelFill;
+      roundRect(ctx, pillX, pillY, pillW, pillH, s(S.radius));
+      ctx.fill();
+      if (S.panelStroke) { ctx.strokeStyle = S.panelStroke; ctx.lineWidth = s(1); ctx.stroke(); }
+    }
 
-    // Text
-    ctx.fillStyle = THEME.cyan;
-    ctx.font = `${fontSize}px ${FONT_MONO}`;
+    // Text (mono numerics, soft ink)
+    ctx.fillStyle = S.inkSoft;
+    ctx.font = `${fontSize}px ${S.fontNumeric}`;
     ctx.textAlign = c.align;
     ctx.textBaseline = 'top';
     const textX = c.align === 'left' ? pillX + pad : pillX + pillW - pad;
@@ -702,34 +806,37 @@ function drawScaleBar(ctx, W, H, viewState, bounds, projected, s) {
   const ppu = Math.pow(2, viewState.zoom || 0);
   const { barPixels, label } = computeScaleBar(ppu, s(150));
 
-  const barH = s(4);
-  const fontSize = s(11);
+  const S = getFigureStyle();
+
+  const barH = s(3);
+  const fontSize = s(12);
   const pad = s(8);
   const x = s(16);
   const y = H - s(16);
 
-  // Panel pill background
-  const bgW = barPixels + pad * 2;
-  const bgH = barH + fontSize + pad * 3;
+  // Optional panel behind the bar (dark style only; publication is open).
+  if (S.panelFill) {
+    const bgW = barPixels + pad * 2;
+    const bgH = barH + fontSize + pad * 3;
+    ctx.fillStyle = S.panelFill;
+    roundRect(ctx, x - pad, y - bgH, bgW, bgH + pad, s(S.radius));
+    ctx.fill();
+    if (S.panelStroke) { ctx.strokeStyle = S.panelStroke; ctx.lineWidth = s(1); ctx.stroke(); }
+  }
 
-  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
-  roundRect(ctx, x - pad, y - bgH, bgW, bgH + pad, s(THEME.radiusSm));
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
-  ctx.lineWidth = s(1);
-  ctx.stroke();
+  // Bar — accent fill with end caps (classic map scale bar, square not rounded)
+  ctx.fillStyle = S.accent;
+  ctx.fillRect(x, y - barH, barPixels, barH);
+  // subtle end ticks for a crisper read
+  ctx.fillRect(x, y - barH - s(2), s(1), barH + s(2));
+  ctx.fillRect(x + barPixels - s(1), y - barH - s(2), s(1), barH + s(2));
 
-  // Cyan bar
-  ctx.fillStyle = THEME.cyan;
-  roundRect(ctx, x, y - barH, barPixels, barH, s(2));
-  ctx.fill();
-
-  // Label
-  ctx.font = `500 ${fontSize}px ${FONT_MONO}`;
-  ctx.fillStyle = THEME.textSecondary;
+  // Label (mono numeric distance)
+  ctx.font = `500 ${fontSize}px ${S.fontNumeric}`;
+  ctx.fillStyle = S.inkSoft;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'bottom';
-  ctx.fillText(label, x + barPixels / 2, y - barH - s(4));
+  ctx.fillText(label, x + barPixels / 2, y - barH - s(5));
 }
 
 // ── 5a. RGB legend ──────────────────────────────────────────────────────────
@@ -741,7 +848,10 @@ function drawScaleBar(ctx, W, H, viewState, bounds, projected, s) {
  */
 function colorblindChannelColors(colorblindMode) {
   const matrix = COLORBLIND_MATRICES[colorblindMode];
-  if (!matrix) return CHANNEL_COLORS;
+  // No colorblind remap → legend swatches follow the display guns (R/G/B) per
+  // the active figure style, NOT the app's brand channel colors. A magenta
+  // swatch labeled "R" on a red-gun composite would misinform the reader.
+  if (!matrix) return getFigureStyle().channelColors;
   const clamp = v => Math.max(0, Math.min(255, Math.round(v * 255)));
   const toRgb = (r, g, b) => `rgb(${clamp(r)},${clamp(g)},${clamp(b)})`;
   // matrix rows = output channels, columns = input channels
@@ -763,24 +873,24 @@ function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, c
     { key: 'B', color: channelColors.B },
   ];
 
-  const fontSize = s(11);
-  const titleFontSize = s(12);
-  const swatchSize = s(12);
+  const S = getFigureStyle();
+  const fontSize = s(12);
+  const titleFontSize = s(13);
+  const swatchSize = s(11);
   const lineHeight = s(18);
   const pad = s(10);
-
-  // Measure width
-  ctx.font = `bold ${titleFontSize}px ${FONT_MONO}`;
-  let maxWidth = ctx.measureText(title).width;
 
   const labels = channels.map(({ key }) => {
     const chDef = preset?.channels?.[key];
     const label = chDef?.label || chDef?.dataset || key;
     const limStr = formatLimit(contrastLimits, key, useDecibels);
-    return `${label} ${limStr}`;
+    return `${label}  ${limStr}`;
   });
 
-  ctx.font = `${fontSize}px ${FONT_MONO}`;
+  // Measure width
+  ctx.font = `600 ${titleFontSize}px ${S.fontTitle}`;
+  let maxWidth = ctx.measureText(title).width;
+  ctx.font = `${fontSize}px ${S.fontLabel}`;
   for (const l of labels) {
     maxWidth = Math.max(maxWidth, ctx.measureText(l).width + swatchSize + s(8));
   }
@@ -790,36 +900,38 @@ function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, c
   const boxX = W - s(20) - boxW;
   const boxY = s(20);
 
-  // Background
-  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
-  roundRect(ctx, boxX, boxY, boxW, boxH, s(THEME.radiusMd));
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
-  ctx.lineWidth = s(1);
-  ctx.stroke();
+  // Optional plate (dark style only; publication legend floats open).
+  if (S.panelFill) {
+    ctx.fillStyle = S.panelFill;
+    roundRect(ctx, boxX, boxY, boxW, boxH, s(S.radius));
+    ctx.fill();
+    if (S.panelStroke) { ctx.strokeStyle = S.panelStroke; ctx.lineWidth = s(1); ctx.stroke(); }
+  }
 
-  // Title
-  ctx.fillStyle = THEME.textPrimary;
-  ctx.font = `bold ${titleFontSize}px ${FONT_MONO}`;
+  // Title (display grotesk)
+  ctx.fillStyle = S.ink;
+  ctx.font = `600 ${titleFontSize}px ${S.fontTitle}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillText(title, boxX + pad, boxY + pad);
 
   // Channels
-  let cy = boxY + pad + titleFontSize + s(6);
+  let cy = boxY + pad + titleFontSize + s(8);
   for (let i = 0; i < channels.length; i++) {
     const { color } = channels[i];
 
-    // Swatch
+    // Swatch — square, thin hairline keeps it crisp on any ground.
     ctx.fillStyle = color;
-    roundRect(ctx, boxX + pad, cy + s(1), swatchSize, swatchSize, s(2));
-    ctx.fill();
+    ctx.fillRect(boxX + pad, cy + s(1), swatchSize, swatchSize);
+    ctx.strokeStyle = S.hairline;
+    ctx.lineWidth = s(0.5);
+    ctx.strokeRect(boxX + pad + s(0.25), cy + s(1.25), swatchSize - s(0.5), swatchSize - s(0.5));
 
-    // Label
-    ctx.fillStyle = THEME.textSecondary;
-    ctx.font = `${fontSize}px ${FONT_MONO}`;
+    // Label (sans; short dB range reads fine here)
+    ctx.fillStyle = S.inkSoft;
+    ctx.font = `${fontSize}px ${S.fontLabel}`;
     ctx.textBaseline = 'top';
-    ctx.fillText(labels[i], boxX + pad + swatchSize + s(6), cy);
+    ctx.fillText(labels[i], boxX + pad + swatchSize + s(7), cy);
 
     cy += lineHeight;
   }
@@ -828,49 +940,136 @@ function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, c
 // ── 5b. Colormap bar ────────────────────────────────────────────────────────
 
 function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s) {
+  const S = getFigureStyle();
   const [min, max] = Array.isArray(contrastLimits) ? contrastLimits : [0, 1];
-  const unit = useDecibels ? ' dB' : '';
+  const unitLabel = useDecibels ? 'dB' : 'linear';
   const colormapFunc = getColormap(colormapName);
 
-  const barW = s(20);
-  const barH = s(150);
-  const pad = s(10);
-  const fontSize = s(11);
-  const boxW = barW + pad * 2 + s(50);
-  const boxH = barH + pad * 2 + fontSize * 2 + s(8);
-  const boxX = W - s(20) - boxW;
-  const boxY = s(20);
+  const barW = s(14);
+  const barH = s(160);
+  const fontSize = s(12);
+  // Right margin leaves room for the rotated unit caption to the RIGHT of the bar.
+  const margin = s(34);
+  // Right-aligned vertical bar; numeric labels sit to the LEFT of the ramp, open (no box).
+  const barX = W - margin - barW;
+  const barY = s(28);
 
-  // Background
-  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
-  roundRect(ctx, boxX, boxY, boxW, boxH, s(THEME.radiusMd));
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
-  ctx.lineWidth = s(1);
-  ctx.stroke();
+  // Optional plate (dark style only).
+  if (S.panelFill) {
+    const pad = s(10);
+    const boxX = barX - s(56) - pad;
+    const boxY = barY - fontSize - pad;
+    const boxW = (W - margin) - boxX + pad;
+    const boxH = barH + fontSize * 2 + pad * 2 + s(10);
+    ctx.fillStyle = S.panelFill;
+    roundRect(ctx, boxX, boxY, boxW, boxH, s(S.radius));
+    ctx.fill();
+    if (S.panelStroke) { ctx.strokeStyle = S.panelStroke; ctx.lineWidth = s(1); ctx.stroke(); }
+  }
 
-  // Max label
-  ctx.fillStyle = THEME.textSecondary;
-  ctx.font = `${fontSize}px ${FONT_MONO}`;
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText(`${max.toFixed(1)}${unit}`, boxX + pad, boxY + pad);
-
-  // Gradient bar
-  const gradX = boxX + pad;
-  const gradY = boxY + pad + fontSize + s(4);
-
+  // Gradient ramp (top = max)
   for (let y = 0; y < barH; y++) {
     const t = 1 - y / barH;
     const rgb = colormapFunc(t);
     ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-    ctx.fillRect(gradX, gradY + y, barW, 1);
+    ctx.fillRect(barX, barY + y, barW, 1);
+  }
+  // Thin frame around the ramp (hairline, square).
+  ctx.strokeStyle = S.hairline;
+  ctx.lineWidth = s(0.75);
+  ctx.strokeRect(barX + s(0.5), barY + s(0.5), barW - s(1), barH - s(1));
+
+  // End tick + numeric labels (mono), left of the bar.
+  const labelX = barX - s(6);
+  ctx.fillStyle = S.ink;
+  ctx.font = `${fontSize}px ${S.fontNumeric}`;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(max.toFixed(1), labelX, barY);
+  ctx.fillText(min.toFixed(1), labelX, barY + barH);
+  // midpoint tick label for orientation
+  ctx.fillStyle = S.inkMuted;
+  ctx.fillText(((min + max) / 2).toFixed(1), labelX, barY + barH / 2);
+
+  // Unit caption (sans), rotated up the right side of the bar.
+  ctx.save();
+  ctx.translate(barX + barW + s(12), barY + barH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = S.inkSoft;
+  ctx.font = `${s(11)}px ${S.fontLabel}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(unitLabel, 0, 0);
+  ctx.restore();
+}
+
+// ── 5c. Class-map legend (discrete swatches) ─────────────────────────────────
+
+/**
+ * Draw a discrete class legend for a class-map panel: one color swatch + name
+ * per class. Replaces the continuous colormap bar (drawColormapBar), which is
+ * meaningless for integer labels. Colors come from the panel's classPalette
+ * (256×3 packed RGB); names from classNames (index → label). `legend.items`
+ * (already computed for the live view) is preferred when present.
+ */
+function drawClassLegend(ctx, W, H, { classPalette, classNames, classLegend }, s) {
+  // Prefer the already-computed live legend items; else derive from classNames.
+  let items = Array.isArray(classLegend?.items) ? classLegend.items : null;
+  if (!items && classNames) {
+    items = Object.keys(classNames)
+      .map(Number)
+      .filter((v) => Number.isFinite(v) && v > 0 && v <= 255)
+      .sort((a, b) => a - b)
+      .map((cls) => ({
+        value: cls,
+        color: classPalette
+          ? [classPalette[cls * 3], classPalette[cls * 3 + 1], classPalette[cls * 3 + 2]]
+          : [128, 128, 128],
+        name: classNames[cls] || `Class ${cls}`,
+      }));
+  }
+  if (!items || items.length === 0) return;
+
+  const MAX = 16;
+  const truncated = items.length > MAX || !!classLegend?.truncated;
+  const shown = items.slice(0, MAX);
+
+  const S = getFigureStyle();
+  const fontSize = s(12);
+  const rowH = fontSize + s(7);
+  const swatch = fontSize;
+  const pad = s(10);
+  const boxW = pad * 2 + swatch + s(7) + s(150);
+  const boxH = pad * 2 + rowH * (shown.length + (truncated ? 1 : 0));
+  const boxX = W - s(20) - boxW;
+  const boxY = s(20);
+
+  if (S.panelFill) {
+    ctx.fillStyle = S.panelFill;
+    roundRect(ctx, boxX, boxY, boxW, boxH, s(S.radius));
+    ctx.fill();
+    if (S.panelStroke) { ctx.strokeStyle = S.panelStroke; ctx.lineWidth = s(1); ctx.stroke(); }
   }
 
-  // Min label
-  ctx.fillStyle = THEME.textSecondary;
+  ctx.font = `${fontSize}px ${S.fontLabel}`;
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillText(`${min.toFixed(1)}${unit}`, boxX + pad, gradY + barH + s(4));
+  let cy = boxY + pad;
+  for (const it of shown) {
+    const [r, g, b] = it.color || [128, 128, 128];
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(boxX + pad, cy, swatch, swatch);
+    ctx.strokeStyle = S.hairline;
+    ctx.lineWidth = s(0.5);
+    ctx.strokeRect(boxX + pad + s(0.25), cy + s(0.25), swatch - s(0.5), swatch - s(0.5));
+    ctx.fillStyle = S.inkSoft;
+    ctx.fillText(it.name || `Class ${it.value}`, boxX + pad + swatch + s(7), cy);
+    cy += rowH;
+  }
+  if (truncated) {
+    ctx.fillStyle = S.inkMuted;
+    ctx.fillText('…', boxX + pad + swatch + s(7), cy);
+  }
 }
 
 // ── 6. Metadata panel ───────────────────────────────────────────────────────
@@ -966,21 +1165,22 @@ function drawMetadata(ctx, W, H, meta, s) {
 // ── 7. Branding ─────────────────────────────────────────────────────────────
 
 function drawBranding(ctx, W, H, s) {
-  const fontSize = s(20);
-  ctx.font = `bold ${fontSize}px ${FONT_MONO}`;
+  const S = getFigureStyle();
+  if (!S.branding) return; // off by default for figures
+
+  const fontSize = s(18);
+  ctx.font = `600 ${fontSize}px ${S.fontTitle}`;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
 
   const x = s(14);
   const y = s(12);
 
-  // "SAR" in cyan
-  ctx.fillStyle = THEME.cyan;
+  ctx.fillStyle = S.accent;
   const sarW = ctx.measureText('SAR').width;
   ctx.fillText('SAR', x, y);
 
-  // "dine" in primary
-  ctx.fillStyle = THEME.textPrimary;
+  ctx.fillStyle = S.ink;
   ctx.fillText('dine', x + sarW, y);
 }
 
@@ -1014,38 +1214,47 @@ function drawAnnotations(ctx, W, H, annotations, viewState, dpr) {
  */
 function drawAttributionStrip(ctx, W, H, text, s) {
   if (!text) return;
+  const S = getFigureStyle();
 
-  const padX = s(14);
-  const padY = s(7);
   const margin = s(12);
-  let fontSize = s(11);
-  ctx.font = `${fontSize}px ${FONT_MONO}`;
-  let textW = ctx.measureText(text).width;
-  const maxTextW = W - margin * 2 - padX * 2;
+  let fontSize = s(10);
+
+  // Editorial micro-credit: letter-spaced, quiet, bottom-right — not a badge.
+  const label = String(text);
+  if ('letterSpacing' in ctx) { try { ctx.letterSpacing = `${s(0.5)}px`; } catch (_) {} }
+  ctx.font = `${fontSize}px ${S.fontLabel}`;
+
+  const maxTextW = W - margin * 2;
+  let textW = ctx.measureText(label).width;
   if (textW > maxTextW) {
-    const shrunk = Math.max(s(8), Math.floor(fontSize * (maxTextW / textW)));
-    fontSize = shrunk;
-    ctx.font = `${fontSize}px ${FONT_MONO}`;
-    textW = ctx.measureText(text).width;
+    fontSize = Math.max(s(8), Math.floor(fontSize * (maxTextW / textW)));
+    ctx.font = `${fontSize}px ${S.fontLabel}`;
+    textW = ctx.measureText(label).width;
   }
 
-  const pillW = Math.min(W - margin * 2, textW + padX * 2);
-  const pillH = fontSize + padY * 2;
-  const x0 = Math.round((W - pillW) / 2);
-  const y0 = H - pillH - margin;
-
-  // Pill background (matches SARdine panel style)
-  ctx.fillStyle = 'rgba(10, 22, 40, 0.92)';
-  ctx.strokeStyle = THEME.cyan;
-  ctx.lineWidth = s(1);
-  roundRect(ctx, x0, y0, pillW, pillH, s(4));
-  ctx.fill();
-  ctx.stroke();
-
-  ctx.fillStyle = THEME.textPrimary;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, x0 + pillW / 2, y0 + pillH / 2 + s(1));
+  if (S.panelFill) {
+    // Dark style keeps a subtle plate so the credit stays legible over imagery.
+    const padX = s(10), padY = s(5);
+    const pillW = Math.min(W - margin * 2, textW + padX * 2);
+    const pillH = fontSize + padY * 2;
+    const x0 = W - margin - pillW;
+    const y0 = H - pillH - margin;
+    ctx.fillStyle = S.panelFill;
+    roundRect(ctx, x0, y0, pillW, pillH, s(S.radius));
+    ctx.fill();
+    if (S.panelStroke) { ctx.strokeStyle = S.panelStroke; ctx.lineWidth = s(1); ctx.stroke(); }
+    ctx.fillStyle = S.inkSoft;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x0 + pillW - padX, y0 + pillH / 2 + s(1));
+  } else {
+    // Publication: bare quiet credit, bottom-right.
+    ctx.fillStyle = S.inkMuted;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(label, W - margin, H - margin);
+  }
+  if ('letterSpacing' in ctx) { try { ctx.letterSpacing = '0px'; } catch (_) {} }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1074,20 +1283,23 @@ function drawHistogramInset(ctx, W, H, opts, dpr) {
   const { histogramData, compositeId, contrastLimits, useDecibels, polarization } = opts;
   const mode = (histogramData.R || histogramData.G || histogramData.B) ? 'rgb' : 'single';
 
-  const s = (v) => Math.round(v * dpr);
+  const S = getFigureStyle();
+  const s = makeScale(W, H); // box/border scale with the figure, like other chrome
   const insetW = Math.min(s(400), Math.round(W * 0.35));
   const insetH = Math.min(s(240), Math.round(H * 0.3));
   const pad = s(12);
   const ix = pad;
-  const iy = s(44); // below SARdine branding badge
+  const iy = pad; // branding is off by default → sit at top-left margin
 
   ctx.save();
 
-  // Background with rounded border
+  // The histogram readout keeps its own dark mini-panel (a self-contained
+  // inset), but the frame follows the figure accent so it belongs to the figure.
+  // Square corners in publication; subtle round in dark.
   ctx.fillStyle = 'rgba(10, 22, 40, 0.94)';
-  ctx.strokeStyle = 'rgba(78, 201, 212, 0.2)';
+  ctx.strokeStyle = S.id === 'publication' ? S.hairline : 'rgba(78, 201, 212, 0.25)';
   ctx.lineWidth = dpr;
-  roundRect(ctx, ix, iy, insetW, insetH, s(6));
+  roundRect(ctx, ix, iy, insetW, insetH, s(S.radius));
   ctx.fill();
   ctx.stroke();
 
@@ -1222,7 +1434,7 @@ async function _fetchBingTiles(wgs84Bounds, targetW, targetH) {
  */
 async function drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr) {
   if (!wgs84Bounds) return;
-  const s = (v) => Math.round(v * dpr);
+  const s = makeScale(W, H); // inset scales with the figure
   const insetW = Math.min(s(195), Math.round(W * 0.22));
   const insetH = Math.round(insetW * 0.70);
   const margin = s(14);
@@ -1298,16 +1510,16 @@ async function drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr) {
   const rY = dstY + (cy0 - srcY) * scale;
   const rW = sceneW * scale;
   const rH = sceneH * scale;
-  ctx.strokeStyle = THEME.cyan;
+  ctx.strokeStyle = getFigureStyle().accent;
   ctx.lineWidth = s(1.5);
   ctx.strokeRect(rX, rY, rW, rH);
 
-  // Attribution strip
+  // Attribution strip (kept dark — sits over a photographic thumbnail)
   const attrH = s(12);
   ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
   ctx.fillRect(ix, iy + insetH - attrH, insetW, attrH);
   ctx.fillStyle = 'rgba(220, 230, 240, 0.75)';
-  ctx.font = `${s(8)}px ${FONT_MONO}`;
+  ctx.font = `${s(8)}px ${getFigureStyle().fontLabel}`;
   ctx.textAlign = 'right';
   ctx.textBaseline = 'bottom';
   ctx.fillText('© Bing Maps', ix + insetW - s(4), iy + insetH - s(2));
@@ -1354,11 +1566,14 @@ export function exportRGBColorbar(options = {}) {
     stretchMode = 'linear',
     gamma = 1.0,
     colorblindMode = 'off',
+    format = 'png',
+    theme = 'publication',
   } = options;
 
   const preset = SAR_COMPOSITES[compositeId];
   if (!preset) return Promise.resolve(null);
 
+  const S = setFigureStyle(theme);
   const dpr = window.devicePixelRatio || 1;
   const s = (v) => Math.round(v * dpr);
 
@@ -1371,39 +1586,39 @@ export function exportRGBColorbar(options = {}) {
   const apexLabelH = s(20);
   const baseLabelH = s(22);
   const rangeTableH = s(56);
-  const canvasW = triSide + pad * 2 + s(60);   // extra room for base labels
+  // Reserve generous room on both sides so the base vertex labels
+  // ("G: …" left, "B: …" right) never clip against the canvas edge.
+  const sideRoom = s(90);
+  const canvasW = triSide + sideRoom * 2;
   const canvasH = titleH + apexLabelH + triH + baseLabelH + rangeTableH + pad * 2;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = canvasW;
-  canvas.height = canvasH;
-  const ctx = canvas.getContext('2d');
+  const { ctx, finish } = makeTarget(canvasW, canvasH, format, { background: S.background });
 
-  // Background
-  ctx.fillStyle = THEME.bg;
-  ctx.fillRect(0, 0, canvasW, canvasH);
+  // Background (SVG bg via makeTarget; canvas needs the explicit fill)
+  if (format !== 'svg') {
+    ctx.fillStyle = S.background;
+    ctx.fillRect(0, 0, canvasW, canvasH);
+  }
 
-  // Border
-  ctx.strokeStyle = THEME.border;
-  ctx.lineWidth = s(1);
-  roundRect(ctx, s(1), s(1), canvasW - s(2), canvasH - s(2), s(THEME.radiusMd));
-  ctx.stroke();
+  // Optional frame (publication is open, no frame).
+  if (S.borderStyle !== 'none') {
+    ctx.strokeStyle = S.borderColor;
+    ctx.lineWidth = s(0.75);
+    ctx.strokeRect(s(0.5), s(0.5), canvasW - s(1), canvasH - s(1));
+  }
 
-  // ── Title row ──
+  // ── Title row: composite name (display grotesk), no branding wordmark ──
   let y = pad;
-  ctx.font = `bold ${s(13)}px ${FONT_MONO}`;
+  ctx.font = `600 ${s(14)}px ${S.fontTitle}`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillStyle = THEME.cyan;
-  const sarTextW = ctx.measureText('SAR').width;
-  ctx.fillText('SAR', pad, y);
-  ctx.fillStyle = THEME.textPrimary;
-  ctx.fillText('dine', pad + sarTextW, y);
+  ctx.fillStyle = S.ink;
+  ctx.fillText(preset.name, pad, y);
 
-  ctx.fillStyle = THEME.textSecondary;
-  ctx.font = `${s(11)}px ${FONT_MONO}`;
+  ctx.fillStyle = S.inkMuted;
+  ctx.font = `${s(10)}px ${S.fontLabel}`;
   ctx.textAlign = 'right';
-  ctx.fillText(preset.name, canvasW - pad, y + s(2));
+  ctx.fillText('RGB composite', canvasW - pad, y + s(3));
   ctx.textAlign = 'left';
 
   y += titleH;
@@ -1416,13 +1631,16 @@ export function exportRGBColorbar(options = {}) {
   const vB = [cx + triSide / 2, triTop + triH];
 
   // ── Render triangle via ImageData + barycentric interpolation ──
+  // Drawn to its own temp canvas (not the target ctx) so it works for both PNG
+  // and SVG: for SVG it becomes one embedded <image> layer while the triangle
+  // outline, labels, and range table stay editable vector.
   const bboxX0 = Math.floor(vG[0]);
   const bboxX1 = Math.ceil(vB[0]);
   const bboxY0 = Math.floor(vR[1]);
   const bboxY1 = Math.ceil(vG[1]);
   const imgW = bboxX1 - bboxX0;
   const imgH = bboxY1 - bboxY0;
-  const imgData = ctx.getImageData(bboxX0, bboxY0, imgW, imgH);
+  const imgData = new ImageData(imgW, imgH);
   const px = imgData.data;
 
   // Pre-compute barycentric denominator
@@ -1467,11 +1685,15 @@ export function exportRGBColorbar(options = {}) {
     }
   }
 
-  ctx.putImageData(imgData, bboxX0, bboxY0);
+  const triCanvas = document.createElement('canvas');
+  triCanvas.width = imgW;
+  triCanvas.height = imgH;
+  triCanvas.getContext('2d').putImageData(imgData, 0, 0);
+  ctx.drawImage(triCanvas, bboxX0, bboxY0);
 
-  // Triangle outline
-  ctx.strokeStyle = THEME.border;
-  ctx.lineWidth = s(1.5);
+  // Triangle outline (hairline)
+  ctx.strokeStyle = S.hairline;
+  ctx.lineWidth = s(1);
   ctx.beginPath();
   ctx.moveTo(vR[0], vR[1]);
   ctx.lineTo(vG[0], vG[1]);
@@ -1490,8 +1712,8 @@ export function exportRGBColorbar(options = {}) {
   const labelG = chDefs.G?.label || chDefs.G?.dataset || 'G';
   const labelB = chDefs.B?.label || chDefs.B?.dataset || 'B';
 
-  const labelFont = `bold ${s(11)}px ${FONT_MONO}`;
-  const subFont = `${s(10)}px ${FONT_MONO}`;
+  const labelFont = `600 ${s(11)}px ${S.fontLabel}`;
+  const subFont = `${s(10)}px ${S.fontNumeric}`;
   const cbColors = colorblindChannelColors(colorblindMode);
 
   // R — above apex
@@ -1531,15 +1753,13 @@ export function exportRGBColorbar(options = {}) {
     ctx.fillText(ch, rangeX, y);
 
     ctx.font = subFont;
-    ctx.fillStyle = THEME.textMuted;
+    ctx.fillStyle = S.inkMuted;
     ctx.fillText(`${minStr} – ${maxStr}${unit}`, rangeX + s(18), y + s(1));
 
     y += s(16);
   }
 
-  return new Promise((resolve) => {
-    canvas.toBlob(resolve, 'image/png');
-  });
+  return finish();
 }
 
 /**
@@ -1552,9 +1772,10 @@ export function exportRGBColorbar(options = {}) {
  * @param {Object} right - { canvas: HTMLCanvasElement, options: Object }
  * @returns {Promise<Blob>} PNG blob
  */
-export async function exportFigureSideBySide(left, right) {
+export async function exportFigureSideBySide(left, right, { format = 'png', theme = 'publication' } = {}) {
+  const S = setFigureStyle(theme);
   const dpr = window.devicePixelRatio || 1;
-  const divider = Math.round(3 * dpr);
+  const divider = Math.round(2 * dpr);
 
   const lW = left.canvas.width;
   const lH = left.canvas.height;
@@ -1565,14 +1786,15 @@ export async function exportFigureSideBySide(left, right) {
   const H = Math.max(lH, rH);
   const W = lW + divider + rW;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d');
+  const BG = S.background;
+  const { ctx, finish } = makeTarget(W, H, format, { background: BG });
 
-  // Background fill (in case panels are shorter than H)
-  ctx.fillStyle = '#0a1628';
-  ctx.fillRect(0, 0, W, H);
+  // Background fill (in case panels are shorter than H). SVG bg comes from
+  // makeTarget; the canvas path needs the explicit fill.
+  if (format !== 'svg') {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+  }
 
   // Draw left panel
   ctx.drawImage(left.canvas, 0, 0);
@@ -1580,12 +1802,8 @@ export async function exportFigureSideBySide(left, right) {
   // Draw right panel
   ctx.drawImage(right.canvas, lW + divider, 0);
 
-  // Divider
-  ctx.fillStyle = 'rgba(30, 58, 95, 0.80)';
-  ctx.fillRect(lW, 0, divider, H);
-
-  // Draw overlays for each panel into their respective clip regions
-  const s = (v) => Math.round(v * dpr);
+  // Divider/frame scales to the whole figure.
+  const s = makeScale(W, H);
 
   async function drawPanel(opts, offsetX, panelW, panelH) {
     const {
@@ -1602,9 +1820,15 @@ export async function exportFigureSideBySide(left, right) {
       identification = null,
       colorblindMode = 'off',
       wgs84Bounds = null,
+      classMode = false,
+      classPalette = null,
+      classNames = null,
+      classLegend = null,
     } = opts;
 
     const projected = isProjectedBounds(bounds);
+    // Chrome inside a panel scales to THAT panel's size.
+    const s = makeScale(panelW, panelH);
 
     ctx.save();
     ctx.translate(offsetX, 0);
@@ -1612,20 +1836,20 @@ export async function exportFigureSideBySide(left, right) {
     ctx.rect(0, 0, panelW, panelH);
     ctx.clip();
 
-    drawBorder(ctx, panelW, panelH, s);
+    // Border/divider drawn once after both panels (see below).
     drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s);
     drawCornerCoordinates(ctx, panelW, panelH, viewState, projected, s);
     drawScaleBar(ctx, panelW, panelH, viewState, bounds, projected, s);
 
-    if (compositeId) {
+    if (classMode) {
+      drawClassLegend(ctx, panelW, panelH, { classPalette, classNames, classLegend }, s);
+    } else if (compositeId) {
       drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s, colorblindMode);
     } else {
       drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s);
     }
 
-    drawMetadata(ctx, panelW, panelH, {
-      filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
-    }, s);
+    // Metadata box omitted from exports (see note in exportFigure).
     drawBranding(ctx, panelW, panelH, s);
 
     if (histogramData) {
@@ -1642,9 +1866,16 @@ export async function exportFigureSideBySide(left, right) {
   await drawPanel(left.options,  0,          lW, lH);
   await drawPanel(right.options, lW + divider, rW, rH);
 
-  return new Promise((resolve) => {
-    canvas.toBlob(resolve, 'image/png');
-  });
+  // Single hairline divider between panels; outer frame only if the style asks.
+  ctx.fillStyle = S.hairline;
+  ctx.fillRect(lW, 0, divider, H);
+  if (S.borderStyle !== 'none') {
+    ctx.strokeStyle = S.borderColor;
+    ctx.lineWidth = divider;
+    ctx.strokeRect(divider / 2, divider / 2, W - divider, H - divider);
+  }
+
+  return finish();
 }
 
 /**
@@ -1658,19 +1889,20 @@ export async function exportFigureSideBySide(left, right) {
  * @param {Array<{canvas: HTMLCanvasElement, options: Object}>} panels
  * @returns {Promise<Blob>} PNG blob
  */
-export async function exportFigureGrid(panels) {
+export async function exportFigureGrid(panels, { format = 'png', theme = 'publication' } = {}) {
   const valid = (panels || []).filter((p) => p && p.canvas);
   if (valid.length === 0) return null;
   if (valid.length === 1) {
     // Single panel — defer to the standard figure export.
-    return exportFigure(valid[0].canvas, valid[0].options);
+    return exportFigure(valid[0].canvas, { ...valid[0].options, format, theme });
   }
   if (valid.length === 2) {
-    return exportFigureSideBySide(valid[0], valid[1]);
+    return exportFigureSideBySide(valid[0], valid[1], { format, theme });
   }
 
+  const S = setFigureStyle(theme);
   const dpr = window.devicePixelRatio || 1;
-  const divider = Math.round(3 * dpr);
+  const divider = Math.round(2 * dpr);
 
   // 3 or 4 panels → 2×2 grid. Uniform cell = largest panel dimensions.
   const cols = 2;
@@ -1681,15 +1913,15 @@ export async function exportFigureGrid(panels) {
   const W = cols * cellW + (cols - 1) * divider;
   const H = rows * cellH + (rows - 1) * divider;
 
-  const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d');
+  const BG = S.background;
+  const { ctx, finish } = makeTarget(W, H, format, { background: BG });
 
-  ctx.fillStyle = '#0a1628';
-  ctx.fillRect(0, 0, W, H);
+  if (format !== 'svg') {
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+  }
 
-  const s = (v) => Math.round(v * dpr);
+  const s = makeScale(W, H); // seams/frame scale to the whole grid
 
   async function drawPanel(opts, offsetX, offsetY, panelW, panelH, srcCanvas) {
     const {
@@ -1706,9 +1938,14 @@ export async function exportFigureGrid(panels) {
       identification = null,
       colorblindMode = 'off',
       wgs84Bounds = null,
+      classMode = false,
+      classPalette = null,
+      classNames = null,
+      classLegend = null,
     } = opts;
 
     const projected = isProjectedBounds(bounds);
+    const s = makeScale(panelW, panelH); // panel chrome scales to the cell
 
     // Draw the captured image into its cell.
     ctx.drawImage(srcCanvas, offsetX, offsetY);
@@ -1719,20 +1956,22 @@ export async function exportFigureGrid(panels) {
     ctx.rect(0, 0, panelW, panelH);
     ctx.clip();
 
-    drawBorder(ctx, panelW, panelH, s);
+    // No per-cell dashed border in grid mode — a single clean divider + outer
+    // frame is drawn once after all panels (see below). Doubled dashed borders
+    // at interior seams read as noise.
     drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s);
     drawCornerCoordinates(ctx, panelW, panelH, viewState, projected, s);
     drawScaleBar(ctx, panelW, panelH, viewState, bounds, projected, s);
 
-    if (compositeId) {
+    if (classMode) {
+      drawClassLegend(ctx, panelW, panelH, { classPalette, classNames, classLegend }, s);
+    } else if (compositeId) {
       drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s, colorblindMode);
     } else {
       drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s);
     }
 
-    drawMetadata(ctx, panelW, panelH, {
-      filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification,
-    }, s);
+    // Metadata box omitted from exports (see note in exportFigure).
     drawBranding(ctx, panelW, panelH, s);
 
     if (histogramData) {
@@ -1766,14 +2005,17 @@ export async function exportFigureGrid(panels) {
     );
   }
 
-  // Dividers between cells.
-  ctx.fillStyle = 'rgba(30, 58, 95, 0.80)';
-  ctx.fillRect(cellW, 0, divider, H);          // vertical
-  ctx.fillRect(0, cellH, W, divider);          // horizontal
+  // Hairline seams between cells; outer frame only if the style asks for one.
+  ctx.fillStyle = S.hairline;
+  ctx.fillRect(cellW, 0, divider, H);          // vertical seam
+  ctx.fillRect(0, cellH, W, divider);          // horizontal seam
+  if (S.borderStyle !== 'none') {
+    ctx.strokeStyle = S.borderColor;
+    ctx.lineWidth = divider;
+    ctx.strokeRect(divider / 2, divider / 2, W - divider, H - divider);
+  }
 
-  return new Promise((resolve) => {
-    canvas.toBlob(resolve, 'image/png');
-  });
+  return finish();
 }
 
 /**

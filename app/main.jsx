@@ -451,6 +451,8 @@ function App() {
   // Compare grid — up to 4 GeoTIFFs in an adaptive grid, synced pan/zoom.
   const [compareMode, setCompareMode] = useState(false);
   const [compareInitialFiles, setCompareInitialFiles] = useState(null); // files to seed the grid on open
+  const [compareInitialUrls, setCompareInitialUrls] = useState(null); // ?compare= URLs to seed the grid on open
+  const [compareInitialBbox, setCompareInitialBbox] = useState(null); // ?bbox=/?wkt= WGS84 region to fit the grid to
   const compareGridRef = useRef(null);
 
   // GUNW phase corrections — individual layers uploaded to GPU as separate textures
@@ -559,6 +561,10 @@ function App() {
   // Attribution stamp for PNG exports. Processor defaults to Nick Steiner but
   // any user can override; both vendor and processor persist in localStorage.
   const [attributionEnabled, setAttributionEnabled] = useState(false);
+  // Figure export theme: 'publication' (light, default) or 'dark' (presentation).
+  const [figureTheme, setFigureTheme] = useState(() => {
+    try { return localStorage.getItem('sardine.figureTheme') || 'publication'; } catch { return 'publication'; }
+  });
   const [attributionVendor, setAttributionVendor] = useState(() => {
     try { return localStorage.getItem('sardine.attribution.vendor') || ''; } catch { return ''; }
   });
@@ -774,7 +780,23 @@ function App() {
   const deepLinkAutoLoad = useRef(false);
   const handleLoadRemoteNISARRef = useRef(null);
   useEffect(() => {
-    const { dataUrl, dataType, view } = parseShareLink();
+    const { dataUrl, dataType, view, compare } = parseShareLink();
+
+    // Multi-panel compare link (?compare=): open the synced grid and seed its
+    // panels from the URL list. Same-origin/CORS-friendly COG URLs load
+    // directly; others route through the shared proxy so hosted builds work.
+    if (Array.isArray(compare) && compare.length > 0) {
+      setCompareInitialUrls(compare.map(({ url, label }) => ({ url: proxyUrlShared(url), label })));
+      // ?bbox=/?wkt= apply to compare links too — the grid reprojects the WGS84
+      // bbox into each panel's CRS and fits the shared view to it. Without this
+      // the region params parse fine and are then silently dropped.
+      if (Array.isArray(view.roiBbox)) setCompareInitialBbox(view.roiBbox);
+      setCompareMode(true);
+      addStatusLog?.('info',
+        `Opening ${compare.length}-panel compare from link${Array.isArray(view.roiBbox) ? ' (zoomed to bbox)' : ''}`);
+      return;
+    }
+
     // W017: spatial params ALONE are a valid link — the granule is resolved
     // from the region via CMR below (region-first deep links).
     const regionOnly = !dataUrl && Array.isArray(view.roiBbox);
@@ -2322,9 +2344,11 @@ function App() {
       return;
     }
 
-    // Validate URL format
+    // Validate URL format. Resolve against the page origin so root-relative
+    // paths (e.g. same-origin `/data/...` served by the dev proxy or a
+    // co-hosted Pages build) are accepted, not just absolute http(s) URLs.
     try {
-      new URL(cogUrl);
+      new URL(cogUrl, window.location.origin);
     } catch {
       setError('Invalid URL format. Please enter a valid HTTP(S) URL.');
       addStatusLog('error', `Invalid URL: ${cogUrl}`);
@@ -4978,7 +5002,11 @@ function App() {
   }, [imageData, viewCenter, viewZoom, activeViewer, roiTSBounds, roiTSFrames, roiTSIndex, addStatusLog]);
 
   // Save current view as PNG figure with overlays
-  const handleSaveFigure = useCallback(async () => {
+  const handleSaveFigure = useCallback(async (fmt) => {
+    // Callable as an event handler (arg is an Event) or with an explicit
+    // 'png'|'svg' string; anything that isn't the literal 'svg' means PNG.
+    const format = fmt === 'svg' ? 'svg' : 'png';
+    const ext = format;
     // Compare grid mode — stitch all panels into one figure.
     if (compareMode && compareGridRef.current) {
       const gridPanels = compareGridRef.current.getPanels();
@@ -5002,12 +5030,18 @@ function App() {
             bounds: p.source?.bounds,
             filename: p.name,
             crs: p.source?.crs || '',
+            // Class-map panels: export a discrete class legend instead of the
+            // continuous dB colorbar (which is meaningless for labels).
+            classMode: !!p.classMode,
+            classPalette: p.classPalette || null,
+            classNames: p.classNames || null,
+            classLegend: p.classLegend || null,
           },
         }));
-        const blob = await exportFigureGrid(panelSpecs);
+        const blob = await exportFigureGrid(panelSpecs, { format, theme: figureTheme });
         const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        downloadBlob(blob, `sardine_compare_${ts}.png`);
-        addStatusLog('success', 'Compare grid figure saved');
+        downloadBlob(blob, `sardine_compare_${ts}.${ext}`);
+        addStatusLog('success', `Compare grid figure saved (${ext.toUpperCase()})`);
         ready.forEach((p) => p.viewer.redraw?.());
       } catch (e) {
         addStatusLog('error', 'Compare grid export failed', e.message);
@@ -5091,15 +5125,19 @@ function App() {
         blob = await exportFigureSideBySide(
           { canvas: glCanvas, options: mainOpts },
           { canvas: secondaryCanvas, options: secondaryOpts },
+          { format, theme: figureTheme },
         );
       } else {
-        blob = await exportFigure(glCanvas, mainOpts);
+        blob = await exportFigure(glCanvas, { ...mainOpts, format, theme: figureTheme });
       }
 
-      blob = await embedStateInPNG(blob, serializeViewerState());
+      // State embedding is a PNG-only feature (iTXt chunk); SVG ships as-is.
+      if (format !== 'svg') {
+        blob = await embedStateInPNG(blob, serializeViewerState());
+      }
 
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const figName = `sardine_figure_${ts}.png`;
+      const figName = `sardine_figure_${ts}.${ext}`;
       downloadBlob(blob, figName);
       addStatusLog('success', `Figure saved: ${figName}`);
 
@@ -5110,10 +5148,12 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [compareMode, colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
+  }, [compareMode, colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
-  const handleSaveFigureWithOverlays = useCallback(async () => {
+  const handleSaveFigureWithOverlays = useCallback(async (fmt) => {
+    const format = fmt === 'svg' ? 'svg' : 'png';
+    const ext = format;
     if (!viewerRef.current) {
       addStatusLog('error', 'Viewer not ready');
       return;
@@ -5165,7 +5205,13 @@ function App() {
       const secondaryCanvas = secondaryRef?.current?.getCanvas();
 
       let blob;
-      if (secondaryCanvas) {
+      // The secondary-panel export stitches two rendered bitmaps on a canvas —
+      // inherently raster. For SVG we keep the main panel (ROI/profile/class
+      // overlays remain editable vector) and omit the secondary panel.
+      if (secondaryCanvas && format === 'svg') {
+        addStatusLog('info', 'SVG: secondary panel omitted (main panel + overlays only)');
+      }
+      if (secondaryCanvas && format !== 'svg') {
         const secondaryVS = secondaryRef.current.getViewState();
         const isTS = secondaryRef === roiTSViewerRef;
         const secondaryOpts = isTS ? {
@@ -5196,6 +5242,7 @@ function App() {
         };
         // For the main panel, use exportFigureWithOverlays to capture ROI/profile overlays;
         // for the secondary panel use plain exportFigure (no ROI drawn there).
+        // Raster-only path (PNG): stitches two bitmaps, so it is skipped for SVG.
         const [mainBlob, secondBlob] = await Promise.all([
           exportFigureWithOverlays(glCanvas, mainOpts),
           exportFigure(secondaryCanvas, secondaryOpts),
@@ -5221,13 +5268,16 @@ function App() {
         sCtx.drawImage(rBmp, lBmp.width + divider, 0);
         blob = await new Promise((resolve) => stitchCanvas.toBlob(resolve, 'image/png'));
       } else {
-        blob = await exportFigureWithOverlays(glCanvas, mainOpts);
+        blob = await exportFigureWithOverlays(glCanvas, { ...mainOpts, format, theme: figureTheme });
       }
 
-      blob = await embedStateInPNG(blob, serializeViewerState());
+      // State embedding is a PNG-only feature (iTXt chunk); SVG ships as-is.
+      if (format !== 'svg') {
+        blob = await embedStateInPNG(blob, serializeViewerState());
+      }
 
       const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const figName = `sardine_figure_${ts}.png`;
+      const figName = `sardine_figure_${ts}.${ext}`;
       downloadBlob(blob, figName);
       addStatusLog('success', `Figure with overlays saved: ${figName}`);
 
@@ -5237,7 +5287,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations]);
+  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -5343,7 +5393,8 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleSaveFigure, handleSaveFigureWithOverlays, roi, serializeRenderState, applyRenderState, addStatusLog, imageData]);
 
-  const handleExportColorbar = useCallback(async () => {
+  const handleExportColorbar = useCallback(async (fmt) => {
+    const format = fmt === 'svg' ? 'svg' : 'png';
     if (!isRGBDisplayMode || !compositeId) {
       addStatusLog('error', 'Colorbar export requires RGB composite mode');
       return;
@@ -5357,6 +5408,8 @@ function App() {
         stretchMode,
         gamma,
         colorblindMode,
+        format,
+        theme: figureTheme,
       });
 
       if (!blob) {
@@ -5364,14 +5417,14 @@ function App() {
         return;
       }
 
-      const filename = `colorbar_${compositeId}.png`;
+      const filename = `colorbar_${compositeId}.${format}`;
       downloadBlob(blob, filename);
       addStatusLog('success', `Colorbar saved: ${filename}`);
     } catch (e) {
       addStatusLog('error', 'Colorbar export failed', e.message);
       console.error('Colorbar export error:', e);
     }
-  }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, isRGBDisplayMode, colorblindMode, addStatusLog]);
+  }, [compositeId, effectiveContrastLimits, useDecibels, stretchMode, gamma, isRGBDisplayMode, colorblindMode, addStatusLog, figureTheme]);
 
   // Reload/restart current rendering — full data + state refresh
   const handleReload = useCallback(async () => {
@@ -6274,7 +6327,7 @@ function App() {
                 <button
                   className={compareMode ? 'btn-primary' : 'btn-secondary'}
                   onClick={() => {
-                    if (compareMode) { setCompareMode(false); setCompareInitialFiles(null); }
+                    if (compareMode) { setCompareMode(false); setCompareInitialFiles(null); setCompareInitialUrls(null); }
                     else document.getElementById('compare-grid-input').click();
                   }}
                   style={{ width: '100%' }}
@@ -7510,12 +7563,24 @@ function App() {
                       : `Export ${roi ? 'ROI ' : ''}GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
                   </button>
                 )}
-                <button
-                  onClick={roi ? handleSaveFigureWithOverlays : handleSaveFigure}
-                  style={{ flex: 1 }}
-                >
-                  Save Figure (PNG)
-                </button>
+                {/* Save Figure — PNG (flattened) or SVG (embedded raster base
+                    + editable vector chrome for Illustrator/Inkscape). */}
+                <div style={{ flex: 1, display: 'flex' }}>
+                  <button
+                    onClick={() => (roi ? handleSaveFigureWithOverlays('png') : handleSaveFigure('png'))}
+                    title="Save figure as a flattened PNG"
+                    style={{ flex: 1, borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                  >
+                    Save Figure (PNG)
+                  </button>
+                  <button
+                    onClick={() => (roi ? handleSaveFigureWithOverlays('svg') : handleSaveFigure('svg'))}
+                    title="Save figure as SVG — SAR image embedded, chrome (scale bar, labels, legend, grid) editable vector"
+                    style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none', paddingLeft: '10px', paddingRight: '10px' }}
+                  >
+                    SVG
+                  </button>
+                </div>
                 <button
                   onClick={handleSaveFigureGeoTIFF}
                   title="Save current viewport as georeferenced GeoTIFF"
@@ -7529,6 +7594,32 @@ function App() {
                     <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
                   </div>
                 )}
+                {/* Figure style — publication (light) vs presentation (dark). */}
+                <div className="control-group" style={{ marginTop: '8px' }}>
+                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
+                      Figure style
+                    </label>
+                    <div style={{ display: 'flex' }}>
+                      {[['publication', 'Publication'], ['dark', 'Presentation']].map(([val, lbl], i) => (
+                        <button
+                          key={val}
+                          onClick={() => { setFigureTheme(val); try { localStorage.setItem('sardine.figureTheme', val); } catch {} }}
+                          className={figureTheme === val ? '' : 'btn-secondary'}
+                          style={{
+                            fontSize: '0.68rem', padding: '3px 10px',
+                            borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
+                            borderTopRightRadius: i === 0 ? 0 : undefined, borderBottomRightRadius: i === 0 ? 0 : undefined,
+                            borderLeft: i === 0 ? undefined : 'none',
+                            fontWeight: figureTheme === val ? 600 : 400,
+                          }}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
                 <div className="control-group" style={{ marginTop: '6px' }}>
                   <div className="control-row">
                     <input
@@ -7813,13 +7904,22 @@ function App() {
           )}
 
           {activePanel === 'export' && isRGBDisplayMode && compositeId && (
-              <div style={{ marginTop: '6px' }}>
+              <div style={{ marginTop: '6px', display: 'flex' }}>
                 <button
-                  onClick={handleExportColorbar}
+                  onClick={() => handleExportColorbar('png')}
                   className="btn-secondary"
-                  style={{ width: '100%', fontSize: '0.7rem', padding: '4px 8px' }}
+                  title="Export the ternary RGB colorbar as PNG"
+                  style={{ flex: 1, fontSize: '0.7rem', padding: '4px 8px', borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
                 >
                   Export Colorbar (PNG)
+                </button>
+                <button
+                  onClick={() => handleExportColorbar('svg')}
+                  className="btn-secondary"
+                  title="Export the colorbar as SVG — triangle embedded, labels and range table editable vector"
+                  style={{ fontSize: '0.7rem', padding: '4px 10px', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }}
+                >
+                  SVG
                 </button>
               </div>
           )}
@@ -8375,7 +8475,7 @@ function App() {
           {compareMode && (
             <div style={{ position: 'relative', width: '100%', height: '100%' }}>
               <button
-                onClick={() => { setCompareMode(false); setCompareInitialFiles(null); }}
+                onClick={() => { setCompareMode(false); setCompareInitialFiles(null); setCompareInitialUrls(null); }}
                 style={{
                   position: 'absolute', top: '8px', right: '8px', zIndex: 2000,
                   background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
@@ -8388,8 +8488,12 @@ function App() {
               <CompareGrid
                 ref={compareGridRef}
                 initialFiles={compareInitialFiles}
+                initialUrls={compareInitialUrls}
+                initialBbox={compareInitialBbox}
                 onStatus={(level, msg, detail) => addStatusLog(level, msg, detail)}
                 onExport={handleSaveFigure}
+                figureTheme={figureTheme}
+                onFigureThemeChange={(t) => { setFigureTheme(t); try { localStorage.setItem('sardine.figureTheme', t); } catch {} }}
               />
             </div>
           )}
