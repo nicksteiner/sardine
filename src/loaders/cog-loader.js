@@ -1360,6 +1360,51 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
     return { bands, width: tileSize, height: tileSize, compositeId };
   }
 
+  // Full-resolution ml×ml box-averaged read of all bands — the shared export
+  // contract (raw GeoTIFF export, ROI profiles, scatter classifier, W025
+  // model runs). Mirrors the single-band local-TIF getExportStripe, extended
+  // to one Float32Array per polarization.
+  async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
+    const outCols = numCols || exportWidth;
+    const srcLeft = startCol * ml;
+    const srcTop = startRow * ml;
+    const srcRight = Math.min(width, (startCol + outCols) * ml);
+    const srcBottom = Math.min(height, (startRow + numRows) * ml);
+    const srcW = srcRight - srcLeft;
+    const srcH = srcBottom - srcTop;
+    const bands = {};
+    if (srcW <= 0 || srcH <= 0) {
+      polNames.forEach((pol) => { bands[pol] = new Float32Array(outCols * numRows); });
+      return { bands, width: outCols, height: numRows };
+    }
+    await Promise.all(polNames.map(async (pol, bi) => {
+      const rasters = await bandMeta[bi].image.readRasters({ window: [srcLeft, srcTop, srcRight, srcBottom] });
+      const src = rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]);
+      const out = new Float32Array(outCols * numRows);
+      for (let r = 0; r < numRows; r++) {
+        for (let c = 0; c < outCols; c++) {
+          let sum = 0, cnt = 0;
+          const r0 = r * ml, c0 = c * ml;
+          for (let dr = 0; dr < ml && r0 + dr < srcH; dr++) {
+            for (let dc = 0; dc < ml && c0 + dc < srcW; dc++) {
+              const v = src[(r0 + dr) * srcW + (c0 + dc)];
+              if (!isNaN(v) && v !== 0) { sum += v; cnt++; }
+            }
+          }
+          out[r * outCols + c] = cnt > 0 ? sum / cnt : NaN;
+        }
+      }
+      bands[pol] = out;
+    }));
+    return { bands, width: outCols, height: numRows };
+  }
+
+  async function getPixelValue(row, col) {
+    if (row < 0 || row >= height || col < 0 || col >= width) return NaN;
+    const rasters = await bandMeta[0].image.readRasters({ window: [col, row, col + 1, row + 1] });
+    return new Float32Array(rasters[0])[0];
+  }
+
   // Per-band stats from one full-extent overview read each: cheap, and enough
   // for the app's mean±2σ initial per-channel contrast.
   const bandStats = {};
@@ -1400,6 +1445,8 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
   return {
     getRGBTile,
     getTile: getRGBTile,
+    getExportStripe,
+    getPixelValue,
     bounds,
     worldBounds,
     crs,
