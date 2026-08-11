@@ -223,6 +223,9 @@ export async function exportFigure(glCanvas, options = {}) {
     classLegend = null,
     format = 'png',
     theme = 'publication',
+    gridMode = 'lines',
+    colorbarLabel = '',
+    reverseColormap = false,
   } = options;
 
   const S = setFigureStyle(theme);
@@ -251,7 +254,7 @@ export async function exportFigure(glCanvas, options = {}) {
   drawBorder(ctx, W, H, s);
 
   // 2. Coordinate grid + tick labels
-  drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s);
+  drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s, gridMode);
 
   // 3. Corner coordinates
   drawCornerCoordinates(ctx, W, H, viewState, projected, s);
@@ -265,7 +268,7 @@ export async function exportFigure(glCanvas, options = {}) {
   } else if (compositeId) {
     drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
-    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
+    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap);
   }
 
   // 6. Metadata panel (bottom-right)
@@ -336,6 +339,9 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     classLegend = null,
     format = 'png',
     theme = 'publication',
+    gridMode = 'lines',
+    colorbarLabel = '',
+    reverseColormap = false,
   } = options;
 
   const S = setFigureStyle(theme);
@@ -369,7 +375,7 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   const projected = isProjectedBounds(bounds, crs || null);
 
   drawBorder(ctx, W, H, s);
-  drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s);
+  drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s, gridMode);
   drawCornerCoordinates(ctx, W, H, viewState, projected, s);
   drawScaleBar(ctx, W, H, viewState, bounds, projected, s);
 
@@ -378,7 +384,7 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   } else if (compositeId) {
     drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
-    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s);
+    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap);
   }
 
   // Metadata box (SOURCE/CRS/SCALE/…) intentionally omitted from exports — it
@@ -687,8 +693,13 @@ function drawBorder(ctx, W, H, s) {
 
 // ── 2. Coordinate grid ─────────────────────────────────────────────────────
 
-function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
+function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s, gridMode = 'lines') {
   if (!viewState || !bounds) return;
+  if (gridMode === 'off') return;
+  // 'ticks' keeps the labels + short edge tick marks but drops the
+  // full-length gridlines that cross the image.
+  const linesOn = gridMode !== 'ticks';
+  const tickLen = s(8);
 
   const extent = computeVisibleExtent(viewState, W, H);
   const ppu = extent.pixelsPerUnit;
@@ -703,8 +714,9 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
   const S = getFigureStyle();
 
   // Gridlines — barely-there hairlines, solid (dashes read as busy on a figure).
-  ctx.strokeStyle = S.gridLine;
-  ctx.lineWidth = s(0.5);
+  // Edge ticks (no crossing lines) get real ink so they stay readable.
+  ctx.strokeStyle = linesOn ? S.gridLine : S.hairline;
+  ctx.lineWidth = linesOn ? s(0.5) : s(1);
 
   const tickFontSize = s(12);
   const tickPad = s(6);
@@ -715,8 +727,13 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
     const px = toX(wx);
     if (px < s(2) || px > W - s(2)) continue;
     ctx.beginPath();
-    ctx.moveTo(px, 0);
-    ctx.lineTo(px, H);
+    if (linesOn) {
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, H);
+    } else {
+      ctx.moveTo(px, H - tickLen);
+      ctx.lineTo(px, H);
+    }
     ctx.stroke();
 
     // Tick label at bottom (mono numerics)
@@ -735,8 +752,13 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s) {
     const py = toY(wy);
     if (py < s(2) || py > H - s(2)) continue;
     ctx.beginPath();
-    ctx.moveTo(0, py);
-    ctx.lineTo(W, py);
+    if (linesOn) {
+      ctx.moveTo(0, py);
+      ctx.lineTo(W, py);
+    } else {
+      ctx.moveTo(0, py);
+      ctx.lineTo(tickLen, py);
+    }
     ctx.stroke();
 
     // Tick label at left (mono numerics)
@@ -939,10 +961,10 @@ function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, c
 
 // ── 5b. Colormap bar ────────────────────────────────────────────────────────
 
-function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s) {
+function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s, labelOverride = '', reversed = false) {
   const S = getFigureStyle();
   const [min, max] = Array.isArray(contrastLimits) ? contrastLimits : [0, 1];
-  const unitLabel = useDecibels ? 'dB' : 'linear';
+  const unitLabel = labelOverride || (useDecibels ? 'dB' : 'linear');
   const colormapFunc = getColormap(colormapName);
 
   const barW = s(14);
@@ -967,10 +989,10 @@ function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s
     if (S.panelStroke) { ctx.strokeStyle = S.panelStroke; ctx.lineWidth = s(1); ctx.stroke(); }
   }
 
-  // Gradient ramp (top = max)
+  // Gradient ramp (top = max; reversed flips the ramp to match the display)
   for (let y = 0; y < barH; y++) {
-    const t = 1 - y / barH;
-    const rgb = colormapFunc(t);
+    const t0 = 1 - y / barH;
+    const rgb = colormapFunc(reversed ? 1 - t0 : t0);
     ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     ctx.fillRect(barX, barY + y, barW, 1);
   }
@@ -1824,6 +1846,9 @@ export async function exportFigureSideBySide(left, right, { format = 'png', them
       classPalette = null,
       classNames = null,
       classLegend = null,
+      gridMode = 'lines',
+      colorbarLabel = '',
+      reverseColormap = false,
     } = opts;
 
     const projected = isProjectedBounds(bounds, crs || null);
@@ -1837,7 +1862,7 @@ export async function exportFigureSideBySide(left, right, { format = 'png', them
     ctx.clip();
 
     // Border/divider drawn once after both panels (see below).
-    drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s);
+    drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s, gridMode);
     drawCornerCoordinates(ctx, panelW, panelH, viewState, projected, s);
     drawScaleBar(ctx, panelW, panelH, viewState, bounds, projected, s);
 
@@ -1846,7 +1871,7 @@ export async function exportFigureSideBySide(left, right, { format = 'png', them
     } else if (compositeId) {
       drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s, colorblindMode);
     } else {
-      drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s);
+      drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap);
     }
 
     // Metadata box omitted from exports (see note in exportFigure).
@@ -1942,6 +1967,9 @@ export async function exportFigureGrid(panels, { format = 'png', theme = 'public
       classPalette = null,
       classNames = null,
       classLegend = null,
+      gridMode = 'lines',
+      colorbarLabel = '',
+      reverseColormap = false,
     } = opts;
 
     const projected = isProjectedBounds(bounds, crs || null);
@@ -1959,7 +1987,7 @@ export async function exportFigureGrid(panels, { format = 'png', theme = 'public
     // No per-cell dashed border in grid mode — a single clean divider + outer
     // frame is drawn once after all panels (see below). Doubled dashed borders
     // at interior seams read as noise.
-    drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s);
+    drawCoordinateGrid(ctx, panelW, panelH, viewState, bounds, projected, s, gridMode);
     drawCornerCoordinates(ctx, panelW, panelH, viewState, projected, s);
     drawScaleBar(ctx, panelW, panelH, viewState, bounds, projected, s);
 
@@ -1968,7 +1996,7 @@ export async function exportFigureGrid(panels, { format = 'png', theme = 'public
     } else if (compositeId) {
       drawRGBLegend(ctx, panelW, panelH, compositeId, contrastLimits, useDecibels, s, colorblindMode);
     } else {
-      drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s);
+      drawColormapBar(ctx, panelW, panelH, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap);
     }
 
     // Metadata box omitted from exports (see note in exportFigure).

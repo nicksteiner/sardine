@@ -51,7 +51,7 @@ export const PUBLICATION = Object.freeze({
   inkSoft:    '#000000', // (kept black — halo makes graying unnecessary)
   inkMuted:   '#000000',
   hairline:   '#1a1c22', // axes / colorbar frame — near-black hairline
-  gridLine:   'rgba(0,0,0,0.10)', // subtle coordinate grid
+  gridLine:   'rgba(0,0,0,0.06)', // barely-there coordinate grid
   accent:     '#0f766e', // deep teal — scale bar, active marks (one accent only)
 
   // Text halo (label casing). halo=null disables it (dark preset). Modern soft
@@ -90,7 +90,7 @@ export const DARK_FIGURE = Object.freeze({
   inkSoft:    '#8fa4c4',
   inkMuted:   '#5a7099',
   hairline:   '#1e3a5f',
-  gridLine:   'rgba(30, 58, 95, 0.20)',
+  gridLine:   'rgba(30, 58, 95, 0.14)',
   accent:     '#4ec9d4',
 
   // Dark preset uses subtle panels for legibility instead of halos.
@@ -147,12 +147,12 @@ export function getFigureStyle() {
 // — not off a small nominal reference, which left labels tiny on big canvases.
 //
 // Target: the ~12px "body" chrome size should land at short-edge / BODY_DIVISOR.
-// BODY_DIVISOR = 28 → body ≈ 3.6% of the short edge: comfortable, readable map
-// labels on a full-screen export (e.g. 1080px-tall figure → ~39px body). The
-// per-tier sizes (tick 12 · title 13 · branding 18 …) scale together from this,
-// their ratios already close to a golden progression.
+// BODY_DIVISOR = 32 → body ≈ 3.1% of the short edge: readable but restrained —
+// the imagery, not the chrome, should carry the figure (was 28 / 3.6%, which
+// read a touch heavy). The per-tier sizes (tick 12 · title 13 · branding 18 …)
+// scale together from this, their ratios already close to a golden progression.
 const BODY_NOMINAL = 12;   // the reference "body" px used throughout draw* helpers
-const BODY_DIVISOR = 28;   // body text = shortEdge / 28  (~3.6% of short edge)
+const BODY_DIVISOR = 32;   // body text = shortEdge / 32  (~3.1% of short edge)
 
 // Reference short-edge at which the nominal 12px renders 1:1.
 const NOMINAL_SHORT_EDGE = BODY_NOMINAL * BODY_DIVISOR; // = 336

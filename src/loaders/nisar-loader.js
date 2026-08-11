@@ -1835,6 +1835,17 @@ async function loadNISARGCOVStreaming(file, options = {}) {
               // Final level: point-sample at full tileSize resolution
               const allLevels = levels.filter(g => g < Math.min(totalCR, totalCC));
 
+              // Decode budget per refinement level. A full-res 10 m GCOV spans
+              // thousands of chunks at full-scene zoom (74×74 = 5,476 for a
+              // 7 GB granule); inflating them all to point-sample a screen-
+              // resolution texture chokes the tab (each decoded chunk is ~1 MB
+              // Float32, and the batch fetch materializes the whole level at
+              // once). Stop the ladder when a level would need more than this
+              // many uncached chunks — the adaptive lvlSubN below extracts
+              // full tile resolution from the chunks the budget allows, and
+              // zoomed-in tiles span fewer chunks so they still refine fully.
+              const REFINE_CHUNK_BUDGET = 512;
+
               for (const gridMax of allLevels) {
                 if (_pendingRefinement !== refinementId) return; // cancelled
                 const strR = Math.max(1, Math.ceil(totalCR / gridMax));
@@ -1851,6 +1862,10 @@ async function loadNISARGCOVStreaming(file, options = {}) {
                     if (!chunkCache.has(`${cr},${cc}`)) uncached.push([cr, cc]);
                   }
                 }
+                if (uncached.length > REFINE_CHUNK_BUDGET) {
+                  console.log(`[NISAR Loader] Refinement level ${gridMax} skipped: ${uncached.length} chunks > budget ${REFINE_CHUNK_BUDGET} (zoom in to refine further)`);
+                  return;
+                }
                 if (uncached.length > 0) {
                   if (streamReader.readChunksBatch) {
                     const bm = await streamReader.readChunksBatch(selectedDatasetId, uncached);
@@ -1866,9 +1881,18 @@ async function loadNISARGCOVStreaming(file, options = {}) {
                   }
                 }
 
-                // Build mosaic at this level
+                // Build mosaic at this level. Samples per chunk axis adapt so
+                // the mosaic approaches tile resolution even when the chunk
+                // grid is sparse: once a chunk is decoded, taking 16×16 block
+                // means from it costs almost nothing next to the inflate, so
+                // quality shouldn't be capped by chunk COUNT (the old fixed 4
+                // wasted big-granule decodes on 4×4 samples each).
                 const lvlGR = rows.length, lvlGC = cols.length;
-                const lvlSubN = 4;
+                const lvlSubN = Math.max(4, Math.min(
+                  Math.min(chunkH, chunkW),                       // ≥1 px per block
+                  Math.ceil(tileSize / Math.max(lvlGR, lvlGC)),   // ≈ tile resolution
+                  32,                                             // texture-size cap
+                ));
                 const lvlBH = Math.floor(chunkH / lvlSubN);
                 const lvlBW = Math.floor(chunkW / lvlSubN);
                 const lvlW = lvlGC * lvlSubN, lvlH = lvlGR * lvlSubN;
@@ -1960,6 +1984,10 @@ async function loadNISARGCOVStreaming(file, options = {}) {
               const finalUncached = [];
               for (const key of neededChunks) {
                 if (!chunkCache.has(key)) finalUncached.push(key.split(',').map(Number));
+              }
+              if (finalUncached.length > REFINE_CHUNK_BUDGET) {
+                console.log(`[NISAR Loader] Final refinement skipped: ${finalUncached.length} chunks > budget ${REFINE_CHUNK_BUDGET} (zoom in for full res)`);
+                return;
               }
               if (finalUncached.length > 0) {
                 if (streamReader.readChunksBatch) {

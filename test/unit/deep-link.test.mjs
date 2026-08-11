@@ -226,6 +226,36 @@ test('buildShareLink throws without dataUrl/dataType', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Local-file state links: ?file= + render params, no data URL
+// ---------------------------------------------------------------------------
+
+test('local-file state link round-trips filename + render state', () => {
+  const link = buildShareLink({
+    baseUrl: BASE,
+    localFile: 'scene_hh.tif',
+    view: { colormap: 'rdbu', contrastMin: -20, contrastMax: 0, viewCenter: [-150.1, 61.2], viewZoom: 3 },
+  });
+  const u = new URL(link);
+  assert.equal(u.searchParams.get('file'), 'scene_hh.tif');
+  assert.equal(u.searchParams.has('url'), false);
+
+  const parsed = parseShareLink(u.search);
+  assert.equal(parsed.localFile, 'scene_hh.tif');
+  assert.equal(parsed.dataUrl, null);
+  assert.equal(parsed.view.colormap, 'rdbu');
+  assert.equal(parsed.view.contrastMin, -20);
+  assert.equal(parsed.view.contrastMax, 0);
+  assert.deepEqual(parsed.view.viewCenter, [-150.1, 61.2]);
+  assert.equal(parsed.view.viewZoom, 3);
+});
+
+test('localFile is null on URL links; dataUrl wins when both present', () => {
+  assert.equal(parseShareLink(`?url=${encodeURIComponent(COG_URL)}`).localFile, null);
+  const both = parseShareLink(`?url=${encodeURIComponent(COG_URL)}&file=x.tif`);
+  assert.equal(both.dataUrl, COG_URL); // URL link takes the normal path
+});
+
+// ---------------------------------------------------------------------------
 // Spatial subset params (W016): ?bbox= / ?wkt=
 // ---------------------------------------------------------------------------
 

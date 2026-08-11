@@ -28,6 +28,11 @@
  * its bbox for fetch scoping (polygon fidelity is kept only for the ROI/WKT
  * input display). Malformed values are ignored with a console warning.
  *
+ * Local-file state links: `?file=<name>` + render params, NO data URL. Local
+ * files can't travel in a URL, so the link carries the render/view state and a
+ * filename hint; the app applies the state (pinned against auto-derivation)
+ * and the user drops the matching local file to reproduce the view.
+ *
  * Region-first links (W017): `bbox`/`wkt` WITHOUT any data param is a valid
  * link — the app resolves the granule from the region via CMR spatial search
  * (src/utils/granule-resolve.js). Optional refinements:
@@ -46,6 +51,7 @@ const KEYS = {
   nisar: 'nisar',
   nitf: 'nitf',       // also matches ?sicd= (SICD-in-NITF is the common case)
   compare: 'compare', // multi-panel: comma-separated COG URLs (each opt. "label~url")
+  file: 'file',       // local-file state link: filename hint, no URL (see below)
   // Rendering
   cmap: 'cmap',
   rev: 'rev',         // reverse colormap (0/1)
@@ -252,7 +258,11 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
   // present, main.jsx opens compare mode and seeds panels from this list.
   const compare = parseCompareList(p.get(KEYS.compare));
 
-  return { dataUrl, dataType, view, compare };
+  // Local-file state link (?file=): a filename hint for a link with no data
+  // URL — the render/view params above ARE the payload.
+  const localFile = p.get(KEYS.file) || null;
+
+  return { dataUrl, dataType, view, compare, localFile };
 }
 
 /**
@@ -260,23 +270,32 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
  *
  * @param {Object} opts
  * @param {string} [opts.baseUrl]   — defaults to window.location origin+pathname (no query)
- * @param {string} opts.dataUrl     — raw (un-proxied) data URL to share
- * @param {'cog'|'nisar'|'nitf'} opts.dataType
+ * @param {string} [opts.dataUrl]   — raw (un-proxied) data URL to share
+ * @param {'cog'|'nisar'|'nitf'} [opts.dataType] — required with dataUrl
+ * @param {string} [opts.localFile] — local-file state link: filename hint emitted
+ *                                    as ?file= instead of a data URL
  * @param {Object} [opts.view]      — partial render state (same shape as parseShareLink output)
  * @returns {string} full share URL
  */
-export function buildShareLink({ baseUrl, dataUrl, dataType, view = {} }) {
-  if (!dataUrl || !dataType) throw new Error('buildShareLink: dataUrl and dataType are required');
+export function buildShareLink({ baseUrl, dataUrl, dataType, localFile, view = {} }) {
+  if (!dataUrl && !localFile) throw new Error('buildShareLink: dataUrl or localFile is required');
+  if (dataUrl && !dataType) throw new Error('buildShareLink: dataType is required with dataUrl');
 
   const base = baseUrl || (typeof window !== 'undefined'
     ? `${window.location.origin}${window.location.pathname}`
     : 'https://nicksteiner.github.io/sardine/');
 
   const p = new URLSearchParams();
-  // Emit the generic ?url= when the extension round-trips to the same type;
-  // otherwise pin the type explicitly (?cog=/?nisar=/?nitf=).
-  if (inferDataTypeFromUrl(dataUrl) === dataType) p.set(KEYS.url, dataUrl);
-  else p.set(KEYS[dataType], dataUrl);
+  if (dataUrl) {
+    // Emit the generic ?url= when the extension round-trips to the same type;
+    // otherwise pin the type explicitly (?cog=/?nisar=/?nitf=).
+    if (inferDataTypeFromUrl(dataUrl) === dataType) p.set(KEYS.url, dataUrl);
+    else p.set(KEYS[dataType], dataUrl);
+  } else {
+    // Local file — no URL exists; carry the filename as a hint so the opener
+    // knows which file to drop. The render params below are the payload.
+    p.set(KEYS.file, localFile);
+  }
 
   // Only emit params that differ from defaults — keep URLs short and readable.
   if (view.colormap && view.colormap !== 'grayscale') p.set(KEYS.cmap, view.colormap);

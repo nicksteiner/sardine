@@ -33,7 +33,7 @@ import { label as labelColor } from '../utils/colormap.js';
  */
 
 const MAX_PANELS = 4;
-const COLORMAPS = ['grayscale', 'sardine', 'viridis', 'inferno', 'plasma', 'magma', 'cividis', 'turbo'];
+const COLORMAPS = ['grayscale', 'sardine', 'viridis', 'inferno', 'plasma', 'magma', 'cividis', 'turbo', 'rdbu', 'diverging'];
 const STRETCH_MODE_KEYS = ['linear', 'sqrt', 'cbrt', 'log', 'gamma', 'sigmoid'];
 // Chip swatch colors — mirror the overlay layer line colors (see overlayLayers).
 const OVERLAY_CHIP_COLORS = ['#ffc800', '#00c8ff', '#ff64c8', '#64ff64', '#ff8c00'];
@@ -52,7 +52,7 @@ const nextPanelId = () => `cmp-panel-${++panelSeq}`;
  * @param {{ entries:number, rgb:Uint8Array } | null} colorTable
  * @returns {{ palette: Uint8Array, entries: number }}
  */
-function buildClassPalette(colorTable) {
+export function buildClassPalette(colorTable) {
   if (colorTable?.rgb) return { palette: colorTable.rgb, entries: colorTable.entries };
   const palette = new Uint8Array(256 * 3);
   for (let i = 1; i < 256; i++) {
@@ -71,7 +71,7 @@ function buildClassPalette(colorTable) {
  * @param {{[index:number]:string}|null} classNames
  * @param {Uint8Array|null} palette  256×3 packed RGB
  */
-function seedLegendFromNames(classNames, palette) {
+export function seedLegendFromNames(classNames, palette) {
   if (!classNames) return null;
   const values = Object.keys(classNames)
     .map(Number)
@@ -567,6 +567,16 @@ export const CompareGrid = forwardRef(function CompareGrid(
     [syncColormap]
   );
 
+  // Reverse-colormap toggle — follows the same sync rule as colormap changes.
+  const changeReverse = useCallback(
+    (id, reverseColormap) => {
+      setPanels((prev) =>
+        prev.map((p) => (syncColormap || p.id === id ? { ...p, reverseColormap } : p))
+      );
+    },
+    [syncColormap]
+  );
+
   // Auto-stretch a panel's contrast to p2/p98 of WHAT'S CURRENTLY IN VIEW.
   // Derives the panel's visible world rectangle from its viewState + canvas
   // size (deck.gl OrthographicView: visible world extent = canvasPx / 2^zoom),
@@ -835,6 +845,7 @@ export const CompareGrid = forwardRef(function CompareGrid(
             onViewStateChange={handleViewStateChange}
             onUpdate={updatePanel}
             onColormap={changeColormap}
+            onReverse={changeReverse}
             onAutoStretch={autoStretchPanel}
             onDataset={changePanelDataset}
             onRemove={removePanel}
@@ -879,7 +890,7 @@ export const CompareGrid = forwardRef(function CompareGrid(
               // On enable, push the first panel's colormap to all others.
               if (on) {
                 setPanels((prev) =>
-                  prev.length ? prev.map((p) => ({ ...p, colormap: prev[0].colormap })) : prev
+                  prev.length ? prev.map((p) => ({ ...p, colormap: prev[0].colormap, reverseColormap: !!prev[0].reverseColormap })) : prev
                 );
               }
             }}
@@ -965,6 +976,7 @@ const Panel = React.memo(function Panel({
   onViewStateChange,
   onUpdate,
   onColormap,
+  onReverse,
   onAutoStretch,
   onDataset,
   onRemove,
@@ -974,6 +986,7 @@ const Panel = React.memo(function Panel({
   const vsCb = useMemo(() => onViewStateChange(id), [onViewStateChange, id]);
   const change = useCallback((patch) => onUpdate(id, patch), [onUpdate, id]);
   const colormap = useCallback((cm) => onColormap(id, cm), [onColormap, id]);
+  const reverse = useCallback((rev) => onReverse(id, rev), [onReverse, id]);
   const autoStretch = useCallback(() => onAutoStretch(id), [onAutoStretch, id]);
   const dataset = useCallback((f, p) => onDataset(id, f, p), [onDataset, id]);
   const remove = useCallback(() => onRemove(id), [onRemove, id]);
@@ -1005,6 +1018,7 @@ const Panel = React.memo(function Panel({
         contrastLimits={panel.contrastLimits}
         useDecibels={panel.useDecibels}
         colormap={panel.colormap}
+        reverseColormap={!!panel.reverseColormap}
         stretchMode={panel.stretchMode}
         gamma={panel.gamma}
         classMode={!!panel.classMode}
@@ -1041,6 +1055,7 @@ const Panel = React.memo(function Panel({
         panel={panel}
         onChange={change}
         onColormap={colormap}
+        onReverse={reverse}
         onAutoStretch={autoStretch}
         onDataset={dataset}
         onRemove={remove}
@@ -1138,7 +1153,7 @@ function NumField({ value, onCommit, format = (v) => v.toFixed(1), title, style 
 }
 
 /** Per-panel overlay: label + full stretch controls. */
-function PanelControls({ panel, onChange, onColormap, onAutoStretch, onDataset, onRemove }) {
+function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, onDataset, onRemove }) {
   // NISAR panels expose a freq/pol picker built from the file's dataset list.
   const isNISAR = panel.kind === 'nisar' && Array.isArray(panel.datasets);
   const freqs = isNISAR ? [...new Set(panel.datasets.map((d) => d.frequency))] : [];
@@ -1256,6 +1271,19 @@ function PanelControls({ panel, onChange, onColormap, onAutoStretch, onDataset, 
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
+        <button
+          type="button"
+          onClick={() => onReverse(!panel.reverseColormap)}
+          style={{
+            ...autoStretchBtnStyle,
+            ...(panel.reverseColormap
+              ? { background: 'rgba(78,201,212,0.85)', color: '#0a1628', borderColor: 'var(--sardine-cyan, #4ec9d4)' }
+              : {}),
+          }}
+          title={panel.reverseColormap ? 'Colormap reversed — click to restore' : 'Reverse colormap'}
+        >
+          ⇅
+        </button>
         <select
           value={panel.stretchMode}
           onChange={(e) => onChange({ stretchMode: e.target.value })}

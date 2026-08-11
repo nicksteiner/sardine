@@ -798,13 +798,28 @@ export async function loadLocalTIF(file, onProgress) {
     console.log(`[COG Loader] Raster read: ${width}x${height} (${(fullData.byteLength / 1e6).toFixed(1)} MB)`);
   }
 
-  // Categorical detection: an embedded color table is definitive; otherwise,
-  // for plain TIFs (full data in memory) sniff whether values look like integer
-  // class labels. COGs without a color table stay continuous by default (the
-  // user can still enable Classes manually). Computed BEFORE getTile so class
-  // maps read overviews with NEAREST resampling — bilinear would blend integer
-  // class indices across boundaries, painting phantom classes along every edge.
-  const isCategorical = !!colorTable || (fullData ? looksCategorical(fullData) : false);
+  // Categorical detection: an embedded color table is definitive; otherwise
+  // sniff whether values look like integer class labels — from the full raster
+  // for plain TIFs, or from the coarsest overview for COGs (a 660 MB class map
+  // with a stripped palette would otherwise silently render as continuous).
+  // Only Byte/Int rasters are sniffed; float COGs skip the read entirely.
+  // Computed BEFORE getTile so class maps read overviews with NEAREST
+  // resampling — bilinear would blend integer class indices across boundaries,
+  // painting phantom classes along every edge.
+  let sniffedCategorical = false;
+  if (!colorTable && isCOG && !fullData) {
+    try {
+      const sniffImg = await tiff.getImage(imageCount - 1); // coarsest overview
+      const bps = sniffImg.getBitsPerSample?.() ?? sniffImg.getFileDirectory()?.BitsPerSample?.[0];
+      const isFloat = (sniffImg.getFileDirectory()?.SampleFormat?.[0] ?? 1) === 3;
+      if (!isFloat && bps <= 16 && sniffImg.getWidth() * sniffImg.getHeight() <= 4_000_000) {
+        const sample = await sniffImg.readRasters();
+        sniffedCategorical = looksCategorical(sample[0]);
+        if (sniffedCategorical) console.log('[COG Loader] Categorical sniff (overview): integer class map');
+      }
+    } catch (_) { /* stay continuous on any failure */ }
+  }
+  const isCategorical = !!colorTable || (fullData ? looksCategorical(fullData) : sniffedCategorical);
   const tileResample = isCategorical ? 'nearest' : 'bilinear';
 
   // --- getTile: for COGs, read from overviews on demand ---

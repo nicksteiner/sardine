@@ -41,7 +41,8 @@ import {
   setEDLToken,
   validateEDLToken,
 } from '../src/utils/proxy.js';
-import { parseShareLink, buildShareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
+import { parseShareLink, buildShareLink, buildCompareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
+import { buildClassPalette, seedLegendFromNames } from '../src/viewers/CompareGrid.jsx';
 import { resolveGranulesForBbox } from '../src/utils/granule-resolve.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
@@ -565,6 +566,15 @@ function App() {
   const [figureTheme, setFigureTheme] = useState(() => {
     try { return localStorage.getItem('sardine.figureTheme') || 'publication'; } catch { return 'publication'; }
   });
+  // Figure coordinate grid: 'lines' (full gridlines), 'ticks' (edge ticks +
+  // labels only), or 'off'.
+  const [figureGridMode, setFigureGridMode] = useState(() => {
+    try { return localStorage.getItem('sardine.figureGrid') || 'lines'; } catch { return 'lines'; }
+  });
+  // Custom colorbar caption for figure exports; empty → auto ('dB' / 'linear').
+  const [colorbarLabel, setColorbarLabel] = useState(() => {
+    try { return localStorage.getItem('sardine.colorbarLabel') || ''; } catch { return ''; }
+  });
   const [attributionVendor, setAttributionVendor] = useState(() => {
     try { return localStorage.getItem('sardine.attribution.vendor') || ''; } catch { return ''; }
   });
@@ -780,7 +790,7 @@ function App() {
   const deepLinkAutoLoad = useRef(false);
   const handleLoadRemoteNISARRef = useRef(null);
   useEffect(() => {
-    const { dataUrl, dataType, view, compare } = parseShareLink();
+    const { dataUrl, dataType, view, compare, localFile } = parseShareLink();
 
     // Multi-panel compare link (?compare=): open the synced grid and seed its
     // panels from the URL list. Same-origin/CORS-friendly COG URLs load
@@ -800,11 +810,16 @@ function App() {
     // W017: spatial params ALONE are a valid link — the granule is resolved
     // from the region via CMR below (region-first deep links).
     const regionOnly = !dataUrl && Array.isArray(view.roiBbox);
-    if (!dataUrl && !regionOnly) return;
+    // Local-file state link (?file=): no URL travels — the render/view params
+    // are the payload, applied now and pinned so the file load doesn't clobber
+    // them; the user drops the named local file to reproduce the view.
+    const localOnly = !dataUrl && !regionOnly && !!localFile;
+    if (!dataUrl && !regionOnly && !localOnly) return;
 
     if (Number.isFinite(view.contrastMin) || Number.isFinite(view.contrastMax)) deepLinkPins.current.add('contrast');
     if (view.selectedPolarization) deepLinkPins.current.add('pol');
     if (view.selectedFrequency) deepLinkPins.current.add('freq');
+    if (view.compositeId || view.displayMode) deepLinkPins.current.add('comp');
     if (Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)) deepLinkPins.current.add('view');
     if (Array.isArray(view.roiBbox)) {
       deepLinkRoiRef.current = {
@@ -832,6 +847,12 @@ function App() {
     if (view.displayMode) setDisplayMode(view.displayMode);
     if (Array.isArray(view.viewCenter)) setViewCenter(view.viewCenter);
     if (Number.isFinite(view.viewZoom)) setViewZoom(view.viewZoom);
+
+    // Local-file state link: state is applied and pinned — nothing to fetch.
+    if (localOnly) {
+      addStatusLog?.('info', `Link state applied — load local file "${localFile}" to reproduce the view`);
+      return;
+    }
 
     // Shared NISAR staging (W008/W016): EDL-token gate on hosted builds, then
     // the same handleRemoteFileSelect path used by the discovery UI. Both an
@@ -1759,6 +1780,20 @@ function App() {
     setClassificationMap(map);
   }, [classifierData, classRegions, incidenceRange]);
 
+  // Class-map rendering for the main viewer: categorical rasters (embedded
+  // color table / integer labels, e.g. WorldCover) render one authored color
+  // per class instead of the continuous dB ramp. Mirrors the compare grid's
+  // auto-enable; palette prefers the file's color table.
+  const mainClassInfo = useMemo(() => {
+    if (!imageData?.isCategorical) return null;
+    const { palette, entries } = buildClassPalette(imageData.colorTable);
+    return {
+      palette, entries,
+      names: imageData.classNames || null,
+      legend: seedLegendFromNames(imageData.classNames, palette),
+    };
+  }, [imageData]);
+
   // Compute WGS84 bounds for overview map and context layers
   const wgs84Bounds = useMemo(() => {
     if (!imageData) return null;
@@ -2639,14 +2674,17 @@ function App() {
         setNisarDatasets(datasets);
 
         if (datasets.length > 0) {
-          // Prefer frequency B when available
+          // Prefer frequency B when available (deep-link pins win — local
+          // ?file= state links use the same one-shot guards as W008)
           const preferB = datasets.find(d => d.frequency === 'B') || datasets[0];
-          setSelectedFrequency(preferB.frequency);
-          setSelectedPolarization(preferB.polarization);
+          if (!consumeDeepLinkPin('freq')) setSelectedFrequency(preferB.frequency);
+          if (!consumeDeepLinkPin('pol')) setSelectedPolarization(preferB.polarization);
 
           // Apply auto-contrast immediately from metadata stats
           const firstStats = preferB.stats;
-          if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
+          if (consumeDeepLinkPin('contrast')) {
+            addStatusLog('info', 'Keeping deep-link contrast (metadata auto-contrast skipped)');
+          } else if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
             const meanDb = 10 * Math.log10(firstStats.mean_value);
             const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
             setContrastMin(Math.round(meanDb - 2 * stdDb));
@@ -2667,8 +2705,11 @@ function App() {
         }
 
         const autoComposite = autoSelectComposite(datasets);
-        setCompositeId(autoComposite);
-        setDisplayMode('single');
+        // Deep-link comp/mode win over the auto-selection (one-shot pin)
+        if (!consumeDeepLinkPin('comp')) {
+          setCompositeId(autoComposite);
+          setDisplayMode('single');
+        }
 
         if (autoComposite) {
           addStatusLog('info', `RGB composite available: ${composites.find(c => c.id === autoComposite)?.name || autoComposite}`);
@@ -2725,8 +2766,20 @@ function App() {
         : `Loaded: ${data.width}x${data.height} px`;
       addStatusLog('success', label);
 
-      // Auto-contrast with dB detection
-      try {
+      // Categorical rasters (class maps): the dB heuristic misfires on
+      // integer labels (all-positive, p98 > 1 → "raw power"). Class mode
+      // renders through the palette, so skip dB + contrast entirely.
+      if (data.isCategorical) {
+        setUseDecibels(false);
+        const n = data.classNames ? Object.keys(data.classNames).length : null;
+        addStatusLog('success', 'Class map detected — rendering with embedded palette',
+          n ? `${n} named classes` : 'integer labels');
+      } else
+      // Auto-contrast with dB detection (skipped when a deep link pinned
+      // explicit contrastMin/Max — local-file ?file= state links)
+      if (consumeDeepLinkPin('contrast')) {
+        addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
+      } else try {
         const sampleData = data.data;
         if (sampleData) {
           const vals = [];
@@ -2776,7 +2829,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [addStatusLog, autoFitIfNewScene]);
+  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin]);
 
   // Switch to a different band in the currently-open multi-band TIF.
   // Only meaningful for single-file loads; mosaic loads use band 0.
@@ -3336,8 +3389,11 @@ function App() {
         setIndexForm(remoteIndices[0].form);
       }
       const autoComp = autoSelectComposite(datasets);
-      setCompositeId(autoComp);
-      setDisplayMode('single');
+      // Deep-link comp/mode win over the auto-selection (one-shot pin)
+      if (!consumeDeepLinkPin('comp')) {
+        setCompositeId(autoComp);
+        setDisplayMode('single');
+      }
 
       addStatusLog('success', `Found ${datasets.length} remote datasets`,
         datasets.map(d => `${d.frequency}/${d.polarization}`).join(', '));
@@ -4826,6 +4882,16 @@ function App() {
     filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
   }), [colormap, reverseColormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
 
+  // Local-file state links (?file=): filename hint for the Copy-link button
+  // when no shareable URL exists. Only real local Files qualify — remote NISAR
+  // staging stores {url, name} objects, which sharedRawUrl already covers.
+  const localShareName =
+    (fileType === 'nisar' || fileType === 'nisar-gunw')
+      ? (typeof File !== 'undefined' && nisarFile instanceof File ? nisarFile.name : null)
+      : fileType === 'local-tif'
+        ? (mosaicFiles[0]?.name || null)
+        : null;
+
   // Serialize the full set of render options + viewport for clipboard copy.
   // Marker `__sardine: 'render-state'` lets Ctrl+V detect a SARdine payload
   // and ignore unrelated clipboard contents.
@@ -5036,6 +5102,9 @@ function App() {
             classPalette: p.classPalette || null,
             classNames: p.classNames || null,
             classLegend: p.classLegend || null,
+            gridMode: figureGridMode,
+            colorbarLabel,
+            reverseColormap: !!p.reverseColormap,
           },
         }));
         const blob = await exportFigureGrid(panelSpecs, { format, theme: figureTheme });
@@ -5074,6 +5143,7 @@ function App() {
         : null;
       const mainOpts = {
         colormap,
+        reverseColormap,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
         compositeId: isRGBDisplayMode ? compositeId : null,
@@ -5087,6 +5157,16 @@ function App() {
         colorblindMode,
         attribution,
         annotations,
+        gridMode: figureGridMode,
+        colorbarLabel,
+        // Class-map figures: discrete legend instead of the continuous colorbar.
+        classMode: !!mainClassInfo,
+        classPalette: mainClassInfo?.palette || null,
+        classNames: mainClassInfo?.names || null,
+        classLegend: mainClassInfo?.legend || null,
+        // Location-map inset: exported when the satellite/overview map is on
+        // screen (export parity with the viewer).
+        wgs84Bounds: (satelliteMapVisible || overviewMapVisible) ? wgs84Bounds : null,
       };
 
       const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
@@ -5098,6 +5178,7 @@ function App() {
         const isTS = secondaryRef === roiTSViewerRef;
         const secondaryOpts = isTS ? {
           colormap,
+          reverseColormap,
           contrastLimits: roiTSContrastLimits,
           useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
           compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
@@ -5108,6 +5189,8 @@ function App() {
           identification: imageData?.identification || null,
           colorblindMode,
           attribution,
+          gridMode: figureGridMode,
+          colorbarLabel,
         } : {
           colormap,
           contrastLimits: roiRGBContrastLimits,
@@ -5121,6 +5204,8 @@ function App() {
           identification: imageData?.identification || null,
           colorblindMode,
           attribution,
+          gridMode: figureGridMode,
+          colorbarLabel,
         };
         blob = await exportFigureSideBySide(
           { canvas: glCanvas, options: mainOpts },
@@ -5148,7 +5233,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [compareMode, colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme]);
+  }, [compareMode, colormap, reverseColormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async (fmt) => {
@@ -5178,6 +5263,7 @@ function App() {
         : null;
       const mainOpts = {
         colormap,
+        reverseColormap,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
         compositeId: isRGBDisplayMode ? compositeId : null,
@@ -5199,6 +5285,16 @@ function App() {
         colorblindMode,
         attribution,
         annotations,
+        gridMode: figureGridMode,
+        colorbarLabel,
+        // Class-map figures: discrete legend instead of the continuous colorbar.
+        classMode: !!mainClassInfo,
+        classPalette: mainClassInfo?.palette || null,
+        classNames: mainClassInfo?.names || null,
+        classLegend: mainClassInfo?.legend || null,
+        // Location-map inset: exported when the satellite/overview map is on
+        // screen (export parity with the viewer).
+        wgs84Bounds: (satelliteMapVisible || overviewMapVisible) ? wgs84Bounds : null,
       };
 
       const secondaryRef = roiRGBViewerRef.current ? roiRGBViewerRef : roiTSViewerRef.current ? roiTSViewerRef : null;
@@ -5216,6 +5312,7 @@ function App() {
         const isTS = secondaryRef === roiTSViewerRef;
         const secondaryOpts = isTS ? {
           colormap,
+          reverseColormap,
           contrastLimits: roiTSContrastLimits,
           useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
           compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
@@ -5226,6 +5323,8 @@ function App() {
           identification: imageData?.identification || null,
           colorblindMode,
           attribution,
+          gridMode: figureGridMode,
+          colorbarLabel,
         } : {
           colormap,
           contrastLimits: roiRGBContrastLimits,
@@ -5239,6 +5338,8 @@ function App() {
           identification: imageData?.identification || null,
           colorblindMode,
           attribution,
+          gridMode: figureGridMode,
+          colorbarLabel,
         };
         // For the main panel, use exportFigureWithOverlays to capture ROI/profile overlays;
         // for the secondary panel use plain exportFigure (no ROI drawn there).
@@ -5287,7 +5388,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme]);
+  }, [colormap, reverseColormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -6087,7 +6188,7 @@ function App() {
             aria-label={sheetExpanded ? 'Collapse panel' : 'Expand panel'}
             onClick={() => setSheetExpanded(v => !v)}
           />
-          {!imageData && (activePanel === 'analysis' || activePanel === 'export') && (
+          {!imageData && (activePanel === 'analysis' || (activePanel === 'export' && !compareMode)) && (
             <div className="control-section" style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
               Load a scene to enable {activePanel === 'analysis'
                 ? 'ROI, annotation, and profile tools'
@@ -6206,22 +6307,52 @@ function App() {
 
           </>)}
 
-          {/* Share link — a URL exists only for remote sources (COG URL or
-              DAAC NISAR URL). For local files the button is shown disabled
-              with an explanatory tooltip (W008). */}
-          {activePanel === 'export' && (sharedRawUrl || imageData) && (
+          {/* Share link — remote sources carry the data URL; local files get a
+              ?file= state link (render + view params + filename hint) that
+              applies when the same file is loaded again (W008). Compare mode
+              emits a ?compare= link from the URL-backed panels. */}
+          {activePanel === 'export' && (sharedRawUrl || imageData || compareMode) && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
               <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
-                Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.
+                {compareMode
+                  ? 'Compare grid — the link reopens the grid with its URL-loaded panels. Local-file panels cannot travel in a URL and are skipped.'
+                  : sharedRawUrl
+                    ? 'Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.'
+                    : 'Local file — the link carries the render + view state (no data travels). Open it, then load the same file to reproduce this view.'}
               </div>
               <div className="control-group" style={{ display: 'flex', gap: '6px' }}>
                 <button
-                  disabled={!sharedRawUrl}
-                  title={sharedRawUrl
-                    ? 'Copy a deep link that reproduces this view'
-                    : 'Local file — no URL exists to share. Load from a URL to enable deep links.'}
+                  disabled={!compareMode && !sharedRawUrl && !localShareName}
+                  title={compareMode
+                    ? 'Copy a compare link (URL-loaded panels only)'
+                    : sharedRawUrl
+                      ? 'Copy a deep link that reproduces this view'
+                      : localShareName
+                        ? 'Copy a state link — open it, then load this file again to reproduce the view'
+                        : 'No shareable source loaded'}
                   onClick={async () => {
-                    if (!sharedRawUrl) return;
+                    // Compare grid → ?compare= link from the URL-backed panels.
+                    if (compareMode) {
+                      const gridPanels = compareGridRef.current?.getPanels?.() || [];
+                      const urlPanels = gridPanels.filter((p) => p.url)
+                        .map((p) => ({ url: p.url, label: p.name }));
+                      if (urlPanels.length === 0) {
+                        addStatusLog('warning', 'Compare link needs URL-loaded panels — local-file panels cannot travel in a URL');
+                        return;
+                      }
+                      try {
+                        const link = buildCompareLink({ panels: urlPanels });
+                        await navigator.clipboard.writeText(link);
+                        const skipped = gridPanels.length - urlPanels.length;
+                        addStatusLog('success',
+                          `Compare link copied (${urlPanels.length} panel${urlPanels.length > 1 ? 's' : ''}${skipped ? `, ${skipped} local skipped` : ''})`,
+                          link);
+                      } catch (e) {
+                        addStatusLog('error', `Failed to copy compare link: ${e.message}`);
+                      }
+                      return;
+                    }
+                    if (!sharedRawUrl && !localShareName) return;
                     try {
                       // W016: active ROI → ?bbox= (WGS84). ROI pixel range →
                       // file-CRS bounds → inverse-reproject when projected.
@@ -6242,21 +6373,28 @@ function App() {
                           roiBbox = crs === 'EPSG:4326' ? sub : projectedToWGS84(sub, crs);
                         } catch { /* omit bbox from the link */ }
                       }
-                      const link = buildShareLink({
-                        dataUrl: sharedRawUrl,
-                        dataType: fileType === 'cog' ? 'cog'
-                          : fileType === 'nitf' ? 'nitf'
-                          : 'nisar',
-                        view: {
-                          colormap, reverseColormap, useDecibels,
-                          contrastMin, contrastMax, stretchMode, gamma,
-                          selectedPolarization, selectedFrequency,
-                          multiLook, compositeId, displayMode,
-                          viewCenter, viewZoom, roiBbox,
-                        },
-                      });
+                      const view = {
+                        colormap, reverseColormap, useDecibels,
+                        contrastMin, contrastMax, stretchMode, gamma,
+                        selectedPolarization, selectedFrequency,
+                        multiLook, compositeId, displayMode,
+                        viewCenter, viewZoom, roiBbox,
+                      };
+                      const link = sharedRawUrl
+                        ? buildShareLink({
+                            dataUrl: sharedRawUrl,
+                            dataType: fileType === 'cog' ? 'cog'
+                              : fileType === 'nitf' ? 'nitf'
+                              : 'nisar',
+                            view,
+                          })
+                        : buildShareLink({ localFile: localShareName, view });
                       await navigator.clipboard.writeText(link);
-                      addStatusLog('success', 'Share link copied to clipboard', link);
+                      addStatusLog('success',
+                        sharedRawUrl
+                          ? 'Share link copied to clipboard'
+                          : `State link copied — reopen it and load ${localShareName} to reproduce this view`,
+                        link);
                     } catch (e) {
                       addStatusLog('error', `Failed to copy share link: ${e.message}`);
                     }
@@ -7547,9 +7685,9 @@ function App() {
           )}
 
           {/* Export buttons */}
-          {activePanel === 'export' && imageData && (
+          {activePanel === 'export' && (imageData || compareMode) && (
           <CollapsibleSection title="Export">
-            {imageData && (
+            {(imageData || compareMode) && (
               <div>
                 <div style={{ display: 'flex', gap: '6px' }}>
                 {imageData?.getExportStripe && (
@@ -7567,20 +7705,21 @@ function App() {
                     + editable vector chrome for Illustrator/Inkscape). */}
                 <div style={{ flex: 1, display: 'flex' }}>
                   <button
-                    onClick={() => (roi ? handleSaveFigureWithOverlays('png') : handleSaveFigure('png'))}
-                    title="Save figure as a flattened PNG"
+                    onClick={() => (roi && !compareMode ? handleSaveFigureWithOverlays('png') : handleSaveFigure('png'))}
+                    title={compareMode ? 'Save the compare grid as a stitched PNG figure' : 'Save figure as a flattened PNG'}
                     style={{ flex: 1, borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
                   >
                     Save Figure (PNG)
                   </button>
                   <button
-                    onClick={() => (roi ? handleSaveFigureWithOverlays('svg') : handleSaveFigure('svg'))}
+                    onClick={() => (roi && !compareMode ? handleSaveFigureWithOverlays('svg') : handleSaveFigure('svg'))}
                     title="Save figure as SVG — SAR image embedded, chrome (scale bar, labels, legend, grid) editable vector"
                     style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none', paddingLeft: '10px', paddingRight: '10px' }}
                   >
                     SVG
                   </button>
                 </div>
+                {imageData && (
                 <button
                   onClick={handleSaveFigureGeoTIFF}
                   title="Save current viewport as georeferenced GeoTIFF"
@@ -7588,6 +7727,7 @@ function App() {
                 >
                   Save Figure (GeoTIFF)
                 </button>
+                )}
                 </div>
                 {exporting && (
                   <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
@@ -7620,6 +7760,52 @@ function App() {
                     </div>
                   </div>
                 </div>
+                {/* Figure coordinate grid — full gridlines, edge ticks only, or none. */}
+                <div className="control-group" style={{ marginTop: '6px' }}>
+                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
+                      Figure grid
+                    </label>
+                    <div style={{ display: 'flex' }}>
+                      {[['lines', 'Lines'], ['ticks', 'Ticks'], ['off', 'Off']].map(([val, lbl], i, arr) => (
+                        <button
+                          key={val}
+                          onClick={() => { setFigureGridMode(val); try { localStorage.setItem('sardine.figureGrid', val); } catch {} }}
+                          className={figureGridMode === val ? '' : 'btn-secondary'}
+                          style={{
+                            fontSize: '0.68rem', padding: '3px 10px',
+                            borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
+                            borderTopRightRadius: i === arr.length - 1 ? undefined : 0, borderBottomRightRadius: i === arr.length - 1 ? undefined : 0,
+                            borderLeft: i === 0 ? undefined : 'none',
+                            fontWeight: figureGridMode === val ? 600 : 400,
+                          }}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                {/* Colorbar caption — always editable; empty falls back to dB/linear. */}
+                <div className="control-group" style={{ marginTop: '6px' }}>
+                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <label htmlFor="colorbarLabel" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
+                      Colorbar label
+                    </label>
+                    <input
+                      id="colorbarLabel"
+                      type="text"
+                      value={colorbarLabel}
+                      placeholder="auto (dB / linear)"
+                      onChange={(e) => { setColorbarLabel(e.target.value); try { localStorage.setItem('sardine.colorbarLabel', e.target.value); } catch {} }}
+                      onKeyDown={(e) => e.stopPropagation()}
+                      style={{ width: '55%', fontSize: '0.72rem', padding: '3px 6px' }}
+                    />
+                  </div>
+                </div>
+                {/* Attribution stamps the single-scene export; compare-grid
+                    panels don't carry it. */}
+                {imageData && (
                 <div className="control-group" style={{ marginTop: '6px' }}>
                   <div className="control-row">
                     <input
@@ -7687,6 +7873,7 @@ function App() {
                     />
                   )}
                 </div>
+                )}
               </div>
             )}
           </CollapsibleSection>
@@ -8600,6 +8787,9 @@ function App() {
                   speckleKernelSize={speckleKernelSize}
                   rgbSaturation={rgbSaturation}
                   colorblindMode={colorblindMode}
+                  classMode={!!mainClassInfo}
+                  classPalette={mainClassInfo?.palette || null}
+                  classPaletteEntries={mainClassInfo?.entries || 0}
                   showGrid={showGrid}
                   opacity={1}
                   width="100%"

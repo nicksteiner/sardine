@@ -176,6 +176,24 @@ function handleFileList(dataDir, reqUrl, res) {
 
       var entryPrefix = prefix ? prefix.replace(/\/$/, '') + '/' + entry.name : entry.name;
 
+      // Resolve symlinks so linked data folders/files list like real ones
+      if (typeof entry.isSymbolicLink === 'function' && entry.isSymbolicLink()) {
+        try {
+          var linkStat = fs.statSync(path.join(dirPath, entry.name));
+          if (linkStat.isDirectory()) {
+            directories.push(entryPrefix + '/');
+          } else if (linkStat.isFile()) {
+            files.push({
+              key: entryPrefix,
+              size: linkStat.size,
+              lastModified: linkStat.mtime.toISOString(),
+              etag: '',
+            });
+          }
+        } catch (e) { /* broken symlink — skip */ }
+        return;
+      }
+
       if (typeof entry.isDirectory === 'function' && entry.isDirectory()) {
         directories.push(entryPrefix + '/');
       } else if (typeof entry.isFile === 'function' && entry.isFile()) {
