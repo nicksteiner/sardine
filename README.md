@@ -13,15 +13,15 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.0--beta.11-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0--beta.13-orange)](https://github.com/nicksteiner/sardine/releases)
 [![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
 [![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
 
-[![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?bbox=-63.55,-3.6,-62.55,-2.6&pol=HHHH&db=1&min=-18&max=0)
+[![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?cog=demo/solimoes_hh.tif,demo/solimoes_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid&c=750,400&z=0.3)
 
-*▲ Click the screenshot to open this view **live**: it resolves a NISAR GCOV granule over the Amazon floodplain from the ASF archive via CMR and streams just the HH backscatter for the region into your browser (paste your free [Earthdata token](https://urs.earthdata.nasa.gov/profile) when prompted).*
+*▲ Click the screenshot to open this view **instantly** — a dual-pol RGB composite (HH / HV / HH÷HV) of NISAR L-band backscatter over the Solimões floodplain west of Manaus, served as a pre-staged 12 MB Cloud Optimized GeoTIFF subset. No login, no search: pixels in a couple of seconds. To stream the **same region live from the NASA archive** (CMR granule search + chunked HDF5 range reads, free [Earthdata token](https://urs.earthdata.nasa.gov/profile) required), use [this link](https://nicksteiner.github.io/sardine/?bbox=-63.55,-3.6,-62.55,-2.6&pol=HHHH&db=1&min=-18&max=0).*
 
 </div>
 
@@ -36,12 +36,6 @@ The hosted build runs entirely in your browser. Three ways to load data:
 | **Drag-and-drop** | Drop a `.tif`, NISAR `.h5`, NITF/SICD, or `.geojson` onto the page | A local file |
 | **Public URL** | Paste a public COG URL into "Direct URL" — Capella Open Data, Umbra Open Data, Sentinel-2 cogs, etc. | A CORS-friendly URL |
 | **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov/profile](https://urs.earthdata.nasa.gov/profile) → *Generate Token*, and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
-
-**Or just click — New York City in NISAR L-band** (paste your EDL token when prompted, then the rest is automatic):
-
-- **[NYC — all five boroughs](https://nicksteiner.github.io/sardine/?bbox=-74.26,40.49,-73.70,40.92&db=1&min=-18&max=4)** — resolves the best-coverage full-frame granule via CMR and streams only the NYC chunks. Harbor and rivers dark, street grid bright, strong urban double-bounce.
-- **[Manhattan + the East River bridges](https://nicksteiner.github.io/sardine/?bbox=-74.03,40.68,-73.90,40.88&db=1&min=-18&max=4)** — a tighter region: Central Park's texture break, the bridges as bright lines over dark water.
-- **[NYC, December 2025 only](https://nicksteiner.github.io/sardine/?bbox=-74.26,40.49,-73.70,40.92&t=2025-12-01/2025-12-31&db=1&min=-18&max=4)** — same place, time-bounded: `t=` filters acquisitions, so links can cite a place *and* a period.
 
 ### About your Earthdata token (read this if you're security-conscious)
 

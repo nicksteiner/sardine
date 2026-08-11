@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import './theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
+import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
 import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
@@ -404,6 +404,9 @@ function App() {
   // Unified load mode — single selector replaces old format × source matrix
   const [fileType, setFileType] = useState('nisar'); // 'nisar' | 'local-tif' | 'remote' | 'cog' | 'catalog' | 'cmr'
   const [cogUrl, setCogUrl] = useState('');
+  // Deep-link multi-band RGB COG load request: {urls: string[], compositeId}
+  // (?cog=hh.tif,hv.tif&comp=dual-pol-h) — consumed by an effect below.
+  const [cogRgbRequest, setCogRgbRequest] = useState(null);
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
   const [loading, setLoading] = useState(false);
@@ -790,7 +793,7 @@ function App() {
   const deepLinkAutoLoad = useRef(false);
   const handleLoadRemoteNISARRef = useRef(null);
   useEffect(() => {
-    const { dataUrl, dataType, view, compare, localFile } = parseShareLink();
+    const { dataUrl, dataUrls, dataType, view, compare, localFile } = parseShareLink();
 
     // Multi-panel compare link (?compare=): open the synced grid and seed its
     // panels from the URL list. Same-origin/CORS-friendly COG URLs load
@@ -881,7 +884,13 @@ function App() {
       setFileType('cog');
       // Pre-proxy if needed (share links carry raw URLs; loaders need proxy).
       setSharedRawUrl(dataUrl);
-      setCogUrl(proxyUrlShared(dataUrl));
+      if (Array.isArray(dataUrls) && dataUrls.length >= 2) {
+        // Multi-band RGB COG list (?cog=hh.tif,hv.tif&comp=dual-pol-h):
+        // assembled into one RGB composite by the cogRgbRequest effect.
+        setCogRgbRequest({ urls: dataUrls, compositeId: view.compositeId || 'dual-pol-h' });
+      } else {
+        setCogUrl(proxyUrlShared(dataUrl));
+      }
     } else if (dataType === 'nitf') {
       // NITF/SICD via HTTP Range. Build a URLFile and hand it to the existing
       // local-file handler so the rest of the load flow (datasets, picker,
@@ -2516,6 +2525,109 @@ function App() {
       handleLoadCOG();
     }
   }, [cogUrl, fileType, handleLoadCOG]);
+
+  // Auto-load a multi-band RGB COG list from a deep link
+  // (?cog=hh.tif,hv.tif&comp=dual-pol-h&mode=rgb). Single-band ?cog= links go
+  // through cogUrl above; this path assembles per-band loadCOG sources into
+  // one RGB-composite imageData via loadCOGRGBComposite — same render contract
+  // as the NISAR HDF5 RGB path (getRGBTile tiles carry {bands, compositeId}).
+  useEffect(() => {
+    if (!cogRgbRequest) return;
+    const { urls, compositeId: comp } = cogRgbRequest;
+    const gen = ++loadGenRef.current;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      const polNames = getRequiredDatasets(comp);
+      if (polNames.length !== urls.length) {
+        setLoading(false);
+        setError(`RGB COG link: composite '${comp}' needs ${polNames.length || 'a known set of'} band URLs, got ${urls.length}`);
+        addStatusLog('error', `RGB COG link: composite '${comp}' needs ${polNames.length} bands (${polNames.join(', ')}), got ${urls.length} URLs`);
+        return;
+      }
+      addStatusLog('info', `Loading ${urls.length}-band RGB COG composite (${comp})`,
+        polNames.map((pol, i) => `${pol}: ${urls[i]}`).join('\n'));
+      try {
+        const data = await loadCOGRGBComposite({
+          urls: urls.map((u) => proxyUrlShared(u)),
+          polNames,
+          compositeId: comp,
+        });
+        if (gen !== loadGenRef.current) return;
+        setImageData(data);
+        setDisplayMode('rgb');
+        setCompositeId(comp);
+
+        // Per-channel contrast from band stats — same mean±2σ derivation as
+        // the remote NISAR RGB path. Channels without a direct dataset (e.g.
+        // ratio formulas) get the same defaults that path uses.
+        const preset = SAR_COMPOSITES[comp];
+        if (preset?.channels && Object.keys(data.bandStats || {}).length > 0) {
+          // Limits live in the display domain. With dB scaling on, use the
+          // loader's dB-domain mean±2σ (SAR power is ~log-normal, so a
+          // linear-domain window converted to dB collapses to a few dB and
+          // renders speckle-saturated); linear display keeps linear mean±2σ.
+          const useDb = useDecibelsRef.current;
+          const lims = {};
+          for (const ch of ['R', 'G', 'B']) {
+            const chDef = preset.channels[ch];
+            if (chDef?.dataset && data.bandStats[chDef.dataset]) {
+              const s = data.bandStats[chDef.dataset];
+              lims[ch] = useDb && Number.isFinite(s.mean_db)
+                ? [s.mean_db - 2 * s.sample_stddev_db, s.mean_db + 2 * s.sample_stddev_db]
+                : [Math.max(0, s.mean_value - 2 * s.sample_stddev), s.mean_value + 2 * s.sample_stddev];
+            } else if (chDef?.datasets && chDef.datasets.length === 2) {
+              const s0 = data.bandStats[chDef.datasets[0]];
+              const s1 = data.bandStats[chDef.datasets[1]];
+              if (s0 && s1) {
+                const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
+                lims[ch] = useDb
+                  ? [10 * Math.log10(ratio) - 5, 10 * Math.log10(ratio) + 5]
+                  : [ratio * 0.3, ratio * 3];
+              } else {
+                lims[ch] = [0, 1];
+              }
+            } else {
+              // Formula channels (e.g. dual-pol ratio B): window around the
+              // co/cross ratio when both stats exist, else a broad default.
+              const s0 = data.bandStats[polNames[0]];
+              const s1 = data.bandStats[polNames[1]];
+              if (s0 && s1) {
+                const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
+                lims[ch] = useDb
+                  ? [10 * Math.log10(ratio) - 5, 10 * Math.log10(ratio) + 5]
+                  : [ratio * 0.3, ratio * 3];
+              } else {
+                lims[ch] = [0, 1];
+              }
+            }
+          }
+          setRgbContrastLimits(lims);
+          setHistogramScope('viewport');
+          addStatusLog('info', 'Initial RGB contrast from band statistics',
+            ['R', 'G', 'B'].map((ch) => `${ch}: ${lims[ch][0].toFixed(1)}–${lims[ch][1].toFixed(1)}${useDecibelsRef.current ? ' dB' : ''}`).join(', '));
+        }
+
+        // Fit view to the scene (skipped when the link pinned c/z — W008).
+        if (data.bounds && !consumeDeepLinkPin('view')) {
+          const [minX, minY, maxX, maxY] = data.bounds;
+          setViewCenter([(minX + maxX) / 2, (minY + maxY) / 2]);
+          const maxSpan = Math.max(maxX - minX, maxY - minY);
+          const isProjected = Math.abs(minX) > 180 || Math.abs(maxX) > 180;
+          setViewZoom(isProjected ? Math.log2(1000 / maxSpan) : Math.log2(360 / maxSpan) - 1);
+        }
+        applyDeepLinkRoi(data);
+        addStatusLog('success', `RGB COG composite ready (${data.width}x${data.height}, ${comp})`);
+      } catch (e) {
+        if (gen !== loadGenRef.current) return;
+        setImageData(null);
+        setError(`Failed to load RGB COG composite: ${e.message}`);
+        addStatusLog('error', 'Failed to load RGB COG composite', e.message);
+      } finally {
+        if (gen === loadGenRef.current) setLoading(false);
+      }
+    })();
+  }, [cogRgbRequest]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle view state changes from viewer
   const handleViewStateChange = useCallback(({ viewState }) => {
@@ -5561,10 +5673,13 @@ function App() {
       handleLoadRemoteNISAR();
     } else if ((fileType === 'cog' || fileType === 'remote') && cogUrl) {
       handleLoadCOG();
+    } else if (fileType === 'cog' && cogRgbRequest) {
+      // RGB COG composite: re-trigger the load effect with a fresh object.
+      setCogRgbRequest({ ...cogRgbRequest });
     } else {
       addStatusLog('warning', 'Could not determine data source for reload');
     }
-  }, [imageData, fileType, nisarFile, remoteUrl, cogUrl, addStatusLog, handleLoadNISAR, handleLoadRemoteNISAR, handleLoadCOG]);
+  }, [imageData, fileType, nisarFile, remoteUrl, cogUrl, cogRgbRequest, addStatusLog, handleLoadNISAR, handleLoadRemoteNISAR, handleLoadCOG]);
 
   // Fetch Overture features for entire scene extent (once per enable/theme/data change)
   useEffect(() => {
@@ -6383,6 +6498,10 @@ function App() {
                       const link = sharedRawUrl
                         ? buildShareLink({
                             dataUrl: sharedRawUrl,
+                            // RGB COG composite: carry the full per-band URL
+                            // list (raw, un-proxied) so the link round-trips.
+                            dataUrls: (fileType === 'cog' && cogRgbRequest?.urls?.length >= 2)
+                              ? cogRgbRequest.urls : undefined,
                             dataType: fileType === 'cog' ? 'cog'
                               : fileType === 'nitf' ? 'nitf'
                               : 'nisar',

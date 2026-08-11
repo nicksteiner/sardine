@@ -50,6 +50,8 @@ test_sar_*.tif
 # ...but keep the tiny committed unit-test fixtures (~12 KB + ~8 KB)
 !test/unit/fixtures/synthetic-chunked.h5
 !test/unit/fixtures/synthetic-chunked-v0.h5
+# ...and the hosted demo COGs served by GitHub Pages (~12 MB total)
+!app/public/demo/*.tif
 
 # Playwright test output
 test-results/

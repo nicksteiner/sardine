@@ -18,6 +18,14 @@
  * The generic `?url=` param routes by file extension (see inferDataTypeFromUrl);
  * the explicit `?cog=` / `?nisar=` / `?nitf=` params override inference.
  *
+ * Multi-band RGB COGs: `?cog=` (or `?url=`) accepts a comma-separated list of
+ * per-band COG URLs whose order matches the composite's required
+ * polarizations, rendered as RGB via `comp=`/`mode=rgb`:
+ *
+ *   ?cog=demo/scene_hh.tif,demo/scene_hv.tif&comp=dual-pol-h&mode=rgb&db=1
+ *
+ * Commas inside a URL must be %2C-encoded (same convention as ?compare=).
+ *
  * The recipient still needs their own Earthdata Login token for DAAC URLs —
  * tokens never travel in deep links.
  *
@@ -188,6 +196,21 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
     dataType = inferDataTypeFromUrl(dataUrl) || 'nisar';
   }
 
+  // Multi-band RGB COG list: ?cog=/?url= accepts comma-separated per-band
+  // URLs, ordered to match the composite's required polarizations (?comp=).
+  // Commas inside a URL must be %2C-encoded — same convention as ?compare=
+  // (bare commas always split; URLSearchParams already decoded the outer
+  // layer, so only the literal %2C sentinel remains).
+  let dataUrls = null;
+  if (dataType === 'cog' && dataUrl && dataUrl.includes(',')) {
+    dataUrls = dataUrl.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((u) => (/%2c/i.test(u) ? u.replace(/%2c/gi, ',') : u));
+    if (dataUrls.length >= 2) dataUrl = dataUrls[0];
+    else dataUrls = null;
+  }
+
   const view = {};
   const cmap = pick(p, KEYS.cmap);   if (cmap) view.colormap = cmap;
   const rev = bool(p.get(KEYS.rev)); if (rev != null) view.reverseColormap = rev;
@@ -262,7 +285,7 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
   // URL — the render/view params above ARE the payload.
   const localFile = p.get(KEYS.file) || null;
 
-  return { dataUrl, dataType, view, compare, localFile };
+  return { dataUrl, dataUrls, dataType, view, compare, localFile };
 }
 
 /**
@@ -277,16 +300,21 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
  * @param {Object} [opts.view]      — partial render state (same shape as parseShareLink output)
  * @returns {string} full share URL
  */
-export function buildShareLink({ baseUrl, dataUrl, dataType, localFile, view = {} }) {
-  if (!dataUrl && !localFile) throw new Error('buildShareLink: dataUrl or localFile is required');
-  if (dataUrl && !dataType) throw new Error('buildShareLink: dataType is required with dataUrl');
+export function buildShareLink({ baseUrl, dataUrl, dataUrls, dataType, localFile, view = {} }) {
+  const hasRgbList = Array.isArray(dataUrls) && dataUrls.length >= 2;
+  if (!dataUrl && !localFile && !hasRgbList) throw new Error('buildShareLink: dataUrl or localFile is required');
+  if ((dataUrl || hasRgbList) && !dataType) throw new Error('buildShareLink: dataType is required with dataUrl');
 
   const base = baseUrl || (typeof window !== 'undefined'
     ? `${window.location.origin}${window.location.pathname}`
     : 'https://nicksteiner.github.io/sardine/');
 
   const p = new URLSearchParams();
-  if (dataUrl) {
+  if (hasRgbList) {
+    // Multi-band RGB COG list — inverse of the parse-side comma split.
+    // %2C-encode commas inside each URL so they survive the split.
+    p.set(KEYS.cog, dataUrls.map((u) => String(u).replace(/,/g, '%2C')).join(','));
+  } else if (dataUrl) {
     // Emit the generic ?url= when the extension round-trips to the same type;
     // otherwise pin the type explicitly (?cog=/?nisar=/?nitf=).
     if (inferDataTypeFromUrl(dataUrl) === dataType) p.set(KEYS.url, dataUrl);

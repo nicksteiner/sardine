@@ -13,6 +13,7 @@ export {
   loadMultipleCOGs,
   loadCOGFullImage,
   loadMultiBandCOG,
+  loadCOGRGBComposite,
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
 export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARIndex, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';

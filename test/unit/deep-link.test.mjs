@@ -458,4 +458,65 @@ test('buildCompareLink percent-encodes commas inside URLs so they do not split',
   assert.equal(compare[0].url, withComma);
 });
 
+// ---------------------------------------------------------------------------
+// Multi-band RGB COG lists — ?cog=hh.tif,hv.tif&comp=dual-pol-h
+// ---------------------------------------------------------------------------
+
+test('cog= with a comma-separated list parses into dataUrls', () => {
+  const { dataUrl, dataUrls, dataType, view } = parseShareLink(
+    '?cog=demo/hero_hh.tif,demo/hero_hv.tif&comp=dual-pol-h&mode=rgb&db=1');
+  assert.equal(dataType, 'cog');
+  assert.deepEqual(dataUrls, ['demo/hero_hh.tif', 'demo/hero_hv.tif']);
+  assert.equal(dataUrl, 'demo/hero_hh.tif', 'dataUrl falls back to the first band');
+  assert.equal(view.compositeId, 'dual-pol-h');
+  assert.equal(view.displayMode, 'rgb');
+});
+
+test('url= with comma-separated .tif list also yields dataUrls', () => {
+  const { dataUrls, dataType } = parseShareLink(
+    `?url=${encodeURIComponent('https://x/a_hh.tif,https://x/a_hv.tif')}`);
+  assert.equal(dataType, 'cog');
+  assert.deepEqual(dataUrls, ['https://x/a_hh.tif', 'https://x/a_hv.tif']);
+});
+
+test('single cog= URL leaves dataUrls null', () => {
+  const { dataUrl, dataUrls } = parseShareLink(`?cog=${encodeURIComponent(COG_URL)}`);
+  assert.equal(dataUrls, null);
+  assert.equal(dataUrl, COG_URL);
+});
+
+test('nisar= URLs never split on commas', () => {
+  const withComma = 'https://host/gcov,v2.h5';
+  const { dataUrl, dataUrls } = parseShareLink(`?nisar=${encodeURIComponent(withComma)}`);
+  assert.equal(dataUrls, null, 'comma split is COG-only');
+  assert.equal(dataUrl, withComma);
+});
+
+test('buildShareLink emits dataUrls as a comma list and round-trips', () => {
+  const link = buildShareLink({
+    baseUrl: BASE,
+    dataUrls: ['https://x/a_hh.tif', 'https://x/a_hv.tif'],
+    dataType: 'cog',
+    view: { compositeId: 'dual-pol-h', displayMode: 'rgb' },
+  });
+  const { dataUrls, dataType, view } = parseShareLink(new URL(link).search);
+  assert.equal(dataType, 'cog');
+  assert.deepEqual(dataUrls, ['https://x/a_hh.tif', 'https://x/a_hv.tif']);
+  assert.equal(view.compositeId, 'dual-pol-h');
+  assert.equal(view.displayMode, 'rgb');
+});
+
+test('RGB COG list %2C-protects commas inside a band URL', () => {
+  const withComma = 'https://x/scene,v2_hh.tif';
+  const link = buildShareLink({
+    baseUrl: BASE,
+    dataUrls: [withComma, 'https://x/scene_hv.tif'],
+    dataType: 'cog',
+    view: {},
+  });
+  const { dataUrls } = parseShareLink(new URL(link).search);
+  assert.equal(dataUrls.length, 2, 'comma in URL must not create a third band');
+  assert.equal(dataUrls[0], withComma);
+});
+
 await run();

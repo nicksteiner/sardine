@@ -1247,6 +1247,179 @@ export async function loadMultiBandCOG(config) {
 }
 
 /**
+ * Load N single-band COGs as one RGB-composite source.
+ *
+ * Mirrors loadNISARRGBComposite's render contract: getRGBTile yields
+ * {bands: {POL: Float32Array}, width, height, compositeId} tiles that
+ * SARTileLayer feeds through computeRGBBands, and bandStats carries
+ * {mean_value, sample_stddev} per polarization so the app can derive
+ * per-channel contrast limits the same way it does for NISAR HDF5 RGB.
+ *
+ * All URLs must share one grid (same CRS/bounds/dimensions) — per-pol COGs
+ * cut from the same scene in one conversion run. A dimension mismatch is an
+ * error; a small bounds drift only warns.
+ *
+ * @param {Object} config
+ * @param {string[]} config.urls - Per-band COG URLs
+ * @param {string[]} config.polNames - Covariance-term name for each URL, in
+ *   the same order (e.g. ['HHHH', 'HVHV'] for 'dual-pol-h')
+ * @param {string} config.compositeId - SAR_COMPOSITES preset id
+ * @returns {Promise<Object>} imageData-shaped source with getRGBTile
+ */
+export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
+  if (!Array.isArray(urls) || urls.length < 2) {
+    throw new Error('loadCOGRGBComposite: need at least 2 band URLs');
+  }
+  if (!Array.isArray(polNames) || polNames.length !== urls.length) {
+    throw new Error(`loadCOGRGBComposite: polNames (${polNames?.length}) must match urls (${urls.length})`);
+  }
+
+  const tiffs = await Promise.all(urls.map((u) => fromUrl(normalizeS3Url(u))));
+  const bandMeta = await Promise.all(tiffs.map(async (tiff) => {
+    const image = await tiff.getImage();
+    const imageCount = await tiff.getImageCount();
+    return { tiff, image, imageCount, width: image.getWidth(), height: image.getHeight() };
+  }));
+
+  const ref = bandMeta[0];
+  const { width, height } = ref;
+  bandMeta.forEach((b, i) => {
+    if (b.width !== width || b.height !== height) {
+      throw new Error(`loadCOGRGBComposite: band ${polNames[i]} grid ${b.width}x${b.height} != ${width}x${height}`);
+    }
+  });
+
+  const worldBounds = ref.image.getBoundingBox();
+  const geoKeys = ref.image.getGeoKeys();
+  let crs = 'EPSG:4326';
+  if (geoKeys.ProjectedCSTypeGeoKey) crs = `EPSG:${geoKeys.ProjectedCSTypeGeoKey}`;
+  else if (geoKeys.GeographicTypeGeoKey) crs = `EPSG:${geoKeys.GeographicTypeGeoKey}`;
+
+  // NISAR loader convention: bounds (and the viewer's world space) are PIXEL
+  // coordinates [0, 0, width, height]; the projected extent rides along as
+  // worldBounds + crs. SARViewer's OrthographicView then hands getRGBTile
+  // pixel-space bboxes, same as the HDF5 RGB path.
+  const bounds = [0, 0, width, height];
+
+  // Read one 256×256 tile from a base-resolution pixel window, picking the
+  // overview closest to the requested resolution (same selection rule as the
+  // single-band local-COG getTile).
+  const tileSize = 256;
+  async function readWindow(bi, pxLeft, pxTop, pxRight, pxBottom) {
+    const b = bandMeta[bi];
+    const neededRes = Math.max(pxRight - pxLeft, pxBottom - pxTop) / tileSize;
+    let bestIdx = 0;
+    for (let i = 0; i < b.imageCount; i++) {
+      const ovImg = await b.tiff.getImage(i);
+      const ovRes = width / ovImg.getWidth();
+      if (ovRes <= neededRes * 1.5) bestIdx = i;
+    }
+    const ovImg = await b.tiff.getImage(bestIdx);
+    const scaleX = ovImg.getWidth() / width;
+    const scaleY = ovImg.getHeight() / height;
+    const win = [
+      Math.max(0, Math.floor(pxLeft * scaleX)),
+      Math.max(0, Math.floor(pxTop * scaleY)),
+      Math.min(ovImg.getWidth(), Math.ceil(pxRight * scaleX)),
+      Math.min(ovImg.getHeight(), Math.ceil(pxBottom * scaleY)),
+    ];
+    if (win[0] >= win[2] || win[1] >= win[3]) return null;
+    const rasters = await ovImg.readRasters({
+      window: win, width: tileSize, height: tileSize, resampleMethod: 'bilinear',
+    });
+    return rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]);
+  }
+
+  async function getRGBTile({ x, y, z, bbox } = {}) {
+    // Pixel-space world → base-resolution pixel window (Y flipped: world Y
+    // grows north/up, image rows grow down).
+    let pxLeft = 0, pxTop = 0, pxRight = width, pxBottom = height;
+    if (bbox && bbox.left !== undefined) {
+      const wyMax = Math.max(bbox.top, bbox.bottom);
+      const wyMin = Math.min(bbox.top, bbox.bottom);
+      pxLeft = Math.max(0, Math.floor(Math.min(bbox.left, bbox.right)));
+      pxRight = Math.min(width, Math.ceil(Math.max(bbox.left, bbox.right)));
+      pxTop = Math.max(0, Math.floor(height - wyMax));
+      pxBottom = Math.min(height, Math.ceil(height - wyMin));
+    } else if (Number.isFinite(z)) {
+      const worldSize = tileSize * Math.pow(2, -z);
+      pxLeft = Math.max(0, Math.floor(x * worldSize));
+      pxRight = Math.min(width, Math.ceil((x + 1) * worldSize));
+      pxTop = Math.max(0, Math.floor(height - (y + 1) * worldSize));
+      pxBottom = Math.min(height, Math.ceil(height - y * worldSize));
+    }
+    if (pxLeft >= pxRight || pxTop >= pxBottom) return null;
+
+    const datas = await Promise.all(polNames.map((_, i) => readWindow(i, pxLeft, pxTop, pxRight, pxBottom)));
+    const valid = datas.find((d) => d);
+    if (!valid) return null;
+    const bands = {};
+    polNames.forEach((pol, i) => {
+      bands[pol] = datas[i] || new Float32Array(valid.length);
+    });
+    return { bands, width: tileSize, height: tileSize, compositeId };
+  }
+
+  // Per-band stats from one full-extent overview read each: cheap, and enough
+  // for the app's mean±2σ initial per-channel contrast.
+  const bandStats = {};
+  await Promise.all(polNames.map(async (pol, i) => {
+    try {
+      const data = await readWindow(i, 0, 0, width, height);
+      if (!data) return;
+      let sum = 0, sumSq = 0, count = 0, dbSum = 0, dbSumSq = 0;
+      for (let j = 0; j < data.length; j++) {
+        const v = data[j];
+        if (!isNaN(v) && v > 0) {
+          sum += v; sumSq += v * v; count++;
+          const d = 10 * Math.log10(v);
+          dbSum += d; dbSumSq += d * d;
+        }
+      }
+      if (count > 0) {
+        const mean = sum / count;
+        const meanDb = dbSum / count;
+        bandStats[pol] = {
+          mean_value: mean,
+          sample_stddev: Math.sqrt(Math.max(0, sumSq / count - mean * mean)),
+          // dB-domain stats: SAR backscatter is roughly log-normal, so
+          // mean±2σ computed in dB gives far better contrast windows than
+          // converting the linear-domain window (which collapses to a few dB).
+          mean_db: meanDb,
+          sample_stddev_db: Math.sqrt(Math.max(0, dbSumSq / count - meanDb * meanDb)),
+          count,
+        };
+      }
+    } catch (e) {
+      console.warn(`[loadCOGRGBComposite] stats sample failed for ${pol}:`, e.message);
+    }
+  }));
+
+  console.log(`[loadCOGRGBComposite] ${polNames.join('+')} ${width}x${height} ${crs}, composite ${compositeId}`);
+
+  return {
+    getRGBTile,
+    getTile: getRGBTile,
+    bounds,
+    worldBounds,
+    crs,
+    width,
+    height,
+    pixelSpacing: {
+      x: Math.abs(worldBounds[2] - worldBounds[0]) / width,
+      y: Math.abs(worldBounds[3] - worldBounds[1]) / height,
+    },
+    isCOG: true,
+    imageCount: ref.imageCount,
+    composite: compositeId,
+    requiredPols: polNames,
+    bandStats,
+    cogRgbUrls: urls,
+    mode: 'streaming',
+  };
+}
+
+/**
  * Detect band names from URLs based on common SAR naming conventions
  * @param {Array<string>} urls - Array of URLs
  * @returns {Object} Object mapping detected band names to URLs

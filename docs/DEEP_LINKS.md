@@ -16,6 +16,23 @@ https://<sardine-host>/?url=https://host/scene.tif&colormap=viridis&contrastMin=
 | `url` | Generic remote source; type inferred from extension: `.h5/.he5/.hdf5/.hdf` → NISAR, `.tif/.tiff/.geotiff` → COG, `.ntf/.nitf` → NITF/SICD. Unknown extension falls back to NISAR HDF5 (same as the direct-URL input). |
 | `cog` / `nisar` / `nitf` (or `sicd`) | Explicit source type; wins over `url`. |
 
+### Multi-band RGB COGs
+
+`cog` (or `url` with `.tif` extensions) also accepts a **comma-separated list of
+per-band COG URLs**, rendered as an RGB composite. URL order must match the
+composite's required polarizations (`getRequiredDatasets(comp)` order — e.g.
+`dual-pol-h` → `HHHH,HVHV`); commas inside a URL must be `%2C`-encoded (same
+convention as `compare=`). Relative URLs resolve against the page, so
+Pages-hosted subsets need no proxy or login:
+
+```
+https://<sardine-host>/?cog=demo/solimoes_hh.tif,demo/solimoes_hv.tif&comp=dual-pol-h&mode=rgb&db=1
+```
+
+Per-channel contrast starts from band statistics (mean±2σ, same derivation as
+the NISAR HDF5 RGB path) and stays adjustable in the sidebar. "Copy share link"
+re-emits the full band list.
+
 ## Render params (all optional, short or long form)
 
 | Short | Long | Values |
