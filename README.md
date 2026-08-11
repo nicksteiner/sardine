@@ -19,9 +19,9 @@
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
 [![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
 
-[![SARdine viewer — NISAR GCOV RGB composite over the Amazon basin](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?cog=demo/solimoes_hh.tif,demo/solimoes_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid&c=750,400&z=0.3)
+[![SARdine viewer — NISAR GCOV dual-pol RGB composite over the Pacaya-Samiria floodplain](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?cog=demo/pacaya_hh.tif,demo/pacaya_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid)
 
-*▲ Click the screenshot to open this view **instantly** — a dual-pol RGB composite (HH / HV / HH÷HV) of NISAR L-band backscatter over the Solimões floodplain west of Manaus, served as a pre-staged 12 MB Cloud Optimized GeoTIFF subset. No login, no search: pixels in a couple of seconds. To stream the **same region live from the NASA archive** (CMR granule search + chunked HDF5 range reads, free [Earthdata token](https://urs.earthdata.nasa.gov/profile) required), use [this link](https://nicksteiner.github.io/sardine/?bbox=-63.55,-3.6,-62.55,-2.6&pol=HHHH&db=1&min=-18&max=0).*
+*▲ Click the screenshot to open this view **instantly** — a dual-pol RGB composite (HH / HV / HH÷HV) of NISAR L-band backscatter over the Ucayali floodplain in Pacaya-Samiria, Peru, served as a pre-staged ~18 MB Cloud Optimized GeoTIFF subset. No login, no search: pixels in a couple of seconds. To stream the **same region live from the NASA archive** (CMR granule search + chunked HDF5 range reads, free [Earthdata token](https://urs.earthdata.nasa.gov/profile) required), use [this link](https://nicksteiner.github.io/sardine/?bbox=-74.69,-5.55,-74.15,-5.01&db=1&min=-18&max=0).*
 
 </div>
 
