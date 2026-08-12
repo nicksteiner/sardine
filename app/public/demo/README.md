@@ -1,8 +1,16 @@
 # Hosted demo COGs
 
-Pre-staged subsets served by GitHub Pages so the README hero link renders
-instantly — no Earthdata Login, no CMR search, no HDF5 metadata walk. The
-live-streaming NISAR links in the README exercise the real DAAC path.
+Demo data behind the README hero link — no Earthdata Login, no CMR search,
+no HDF5 metadata walk. The live-streaming NISAR links in the README exercise
+the real DAAC path.
+
+**The hero itself streams the full-frame 20 m pair (~1 GB) hosted on
+Hugging Face**: [nicksteiner/sardine-demo-data](https://huggingface.co/datasets/nicksteiner/sardine-demo-data)
+(`pacaya_full_{hh,hv}.tif`, same granule as below, whole 240×270 km frame,
+COG overview pyramid so first paint reads only a few MB). A copy is attached
+to the GitHub release `demo-data-pacaya` for download (release assets don't
+serve CORS, so they can't be streamed by the browser). The small subset pair
+in this folder is kept as a light same-origin fallback.
 
 ## pacaya_hh.tif / pacaya_hv.tif
 

@@ -2573,8 +2573,12 @@ function App() {
             const chDef = preset.channels[ch];
             if (chDef?.dataset && data.bandStats[chDef.dataset]) {
               const s = data.bandStats[chDef.dataset];
+              // ±2σ in dB, floored at ±3 dB — overview-derived σ underestimates
+              // scene variance on large frames (the coarsest overview averages
+              // away speckle AND texture), which oversaturates the render.
+              const half = Math.max(2 * s.sample_stddev_db, 3);
               lims[ch] = useDb && Number.isFinite(s.mean_db)
-                ? [s.mean_db - 2 * s.sample_stddev_db, s.mean_db + 2 * s.sample_stddev_db]
+                ? [s.mean_db - half, s.mean_db + half]
                 : [Math.max(0, s.mean_value - 2 * s.sample_stddev), s.mean_value + 2 * s.sample_stddev];
             } else if (chDef?.datasets && chDef.datasets.length === 2) {
               const s0 = data.bandStats[chDef.datasets[0]];

@@ -57,6 +57,10 @@ function needsProxy(url) {
       'capella-open-data.s3.amazonaws.com',
       'sentinel-cogs.s3.us-west-2.amazonaws.com',
       'overturemaps-us-west-2.s3.us-west-2.amazonaws.com',
+      // Hugging Face resolve URLs (demo data): CORS * + Range, including
+      // the cas-bridge/CDN hosts the resolve endpoint redirects to.
+      'huggingface.co',
+      'hf.co',
     ];
     if (directOK.some(h => u.hostname.endsWith(h))) return false;
     return true;

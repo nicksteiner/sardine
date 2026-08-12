@@ -19,9 +19,9 @@
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
 [![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
 
-[![SARdine viewer — NISAR GCOV dual-pol RGB composite over the Pacaya-Samiria floodplain](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?cog=demo/pacaya_hh.tif,demo/pacaya_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid)
+[![SARdine viewer — NISAR GCOV dual-pol RGB composite over the Pacaya-Samiria floodplain](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?cog=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hh.tif,https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid&c=12233,7038&z=-1.5)
 
-*▲ Click the screenshot to open this view **instantly** — a dual-pol RGB composite (HH / HV / HH÷HV) of NISAR L-band backscatter over the Ucayali floodplain in Pacaya-Samiria, Peru, served as a pre-staged ~18 MB Cloud Optimized GeoTIFF subset. No login, no search: pixels in a couple of seconds. To stream the **same region live from the NASA archive** (CMR granule search + chunked HDF5 range reads, free [Earthdata token](https://urs.earthdata.nasa.gov/profile) required), use [this link](https://nicksteiner.github.io/sardine/?bbox=-74.69,-5.55,-74.15,-5.01&db=1&min=-18&max=0).*
+*▲ Click the screenshot and your browser starts streaming a **full NISAR frame at native 20 m resolution — a ~1 GB Cloud Optimized GeoTIFF pair** — rendered as a dual-pol RGB composite (HH / HV / HH÷HV) over the Ucayali floodplain in Pacaya-Samiria, Peru. No login, no server, no download: HTTP Range reads fetch only the tiles you look at (a few MB), so it opens in seconds — then pan and zoom anywhere in the 240×270 km frame down to full detail. To stream the **same region live from the NASA archive as HDF5** (CMR granule search + chunked range reads, free [Earthdata token](https://urs.earthdata.nasa.gov/profile) required), use [this link](https://nicksteiner.github.io/sardine/?bbox=-74.69,-5.55,-74.15,-5.01&db=1&min=-18&max=0).*
 
 </div>
 
