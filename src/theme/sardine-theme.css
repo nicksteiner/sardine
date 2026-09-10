@@ -1,43 +1,57 @@
 /*
  * SARdine Design System — sardine-theme.css
  * ===========================================
- * Dark-first SAR analysis workstation theme.
+ * Dark-first SAR analysis workstation theme.  THE source of truth for chrome.
+ *
+ * Authority direction:  this file  →  src/utils/theme-tokens.js
+ *   The CSS is authoritative; the JS mirror follows it.  Never reconcile the
+ *   other way.  test/unit/theme-mirror.test.mjs fails the build on drift in
+ *   either direction, and `npm run lint:tokens` fails on token bypass.
  *
  * Themes:
- *   (default) "dark"          Neutral near-black. Optimal for raster work:
- *                             a chromatically neutral, low-luminance surround
- *                             (radiology reading-room practice) so the
- *                             imagery's tones and colors read true.
+ *   (default) "dark"          Warm neutral near-black.  Optimal for raster work:
+ *                             a low-chroma, low-luminance surround (radiology
+ *                             reading-room practice) so the imagery's tones read
+ *                             true, with a hint of warmth in the greys so the
+ *                             chrome does not read as dead machine grey.
  *   [data-theme="sardine"]    Navy-tinted brand variant.
  *   [data-theme="light"]      Light theme.
  *
- * Fonts: JetBrains Mono (data values), Space Grotesk (headings), IBM Plex Sans (body/labels)
+ * Fonts loaded from app/index.html (preconnect + non-blocking <link>); every
+ * stack below carries a real system fallback so an air-gapped network degrades.
+ *
  * Color rule: surfaces and text are neutral; cyan is the single interactive
  * accent; green/magenta/orange are reserved for data semantics (polarization
  * channels, alerts) — never for chrome.
+ *
+ * OVERLAY RULE (measured, not a preference): no flat colour is legible across
+ * the grey range SAR imagery occupies.  Cyan #4ec9d4 scores 8.31:1 on panel but
+ * 2.00:1 on mid-grey #808080 and 1.28:1 on bright #d0d0d0; clay and amber do
+ * worse; even #ffffff and #000000 bottom out at 1.00:1.  Therefore the chrome
+ * accent NEVER appears over imagery.  Anything drawn on the raster (ROI,
+ * annotations, transects, class overlays, scale bar, coordinate grid) uses the
+ * --overlay-ink / --overlay-halo pair — ink plus a contrasting halo — which is
+ * legible over any grey because the pair, not the colour, carries the contrast.
  */
-
-/* ─── WEB FONTS ─── */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Serif:wght@300;400;500;600;700&display=swap');
 
 /* ═══════════════════════════════════════════════
    DESIGN TOKENS (CSS Custom Properties)
    ═══════════════════════════════════════════════ */
 :root {
-  /* ─── PRIMARY PALETTE (dark — default) ─── */
-  /* Neutral near-black ramp, per display literature for image interpretation:
-     zero hue in the surround (a tinted surround shifts perceived color
-     balance via simultaneous contrast), luminance low but slightly above
-     pure black so panel structure stays legible and the eye's adaptation
-     level suits dB-grayscale reading. */
-  --sardine-bg:            #0a0a0b;
-  --sardine-bg-raised:     #121316;
-  --sardine-bg-panel:      #16171b;
-  --sardine-bg-hover:      #1e2024;
-  --sardine-border:        #292b31;
-  --sardine-border-subtle: #1e2025;
+  /* ─── SURFACES (dark — default) ─── */
+  /* Warm neutral ramp.  Values are AA-verified against the ink ramp below. */
+  --sardine-bg:            #1a1917;
+  --sardine-bg-raised:     #282523;
+  --sardine-bg-panel:      #211f1d;
+  --sardine-bg-hover:      #302d2a;
+  --sardine-border:        #35312d;
+  --sardine-border-subtle: #2a2724;
 
   /* ─── ACCENT: SAR SIGNAL CYAN (single interactive accent) ─── */
+  /* W027 decision: KEEP cyan.  It is the strongest AA performer on panel
+     (8.31:1), reads as instrumentation rather than marketing, and swapping it
+     would cost 21 literals plus every screenshot for no legibility gain.
+     Chrome surfaces only — see OVERLAY RULE above. */
   --sardine-cyan:       #4ec9d4;
   --sardine-cyan-dim:   #2a8a93;
   --sardine-cyan-glow:  transparent;  /* flat states — glows retired, tokens kept for compat */
@@ -62,43 +76,90 @@
   /* ─── STATUS RED (errors, destructive actions) ─── */
   --sardine-red: #e74c3c;
 
-  /* ─── TEXT (neutral grays — no blue tint) ─── */
-  --text-primary:   #e8eaed;
-  --text-secondary: #a0a6ad;
-  --text-muted:     #6e747b;
-  --text-disabled:  #4a4f55;
+  /* ─── INK (text ramp — warm neutral, AA-verified) ─── */
+  /* --ink-muted is #9c9389 because that is the MINIMUM value clearing 4.5:1 on
+     the worst surface (--sardine-bg-hover #302d2a → 4.53:1).  Do not lower it. */
+  --ink:       #ede9e3;  /* 14.53:1 on bg — primary   */
+  --ink-soft:  #b8b0a6;  /*  8.20:1      — secondary  */
+  --ink-muted: #9c9389;  /*  4.53:1 worst case — AA floor, do not lower */
+  --ink-faint: #6b625a;  /*  2.94:1 — NON-TEXT ONLY: rules, disabled fills.
+                              Below AA by design.  Linted; never use for text. */
+
+  /* Legacy semantic aliases — the ink ramp is canonical. */
+  --text-primary:   var(--ink);
+  --text-secondary: var(--ink-soft);
+  --text-muted:     var(--ink-muted);
+  --text-disabled:  var(--ink-faint);
 
   /* Aliases consumed by component inline styles */
-  --sardine-text-primary:   var(--text-primary);
-  --sardine-text-secondary: var(--text-secondary);
-  --sardine-text-muted:     var(--text-muted);
-  --sardine-text-disabled:  var(--text-disabled);
+  --sardine-text-primary:   var(--ink);
+  --sardine-text-secondary: var(--ink-soft);
+  --sardine-text-muted:     var(--ink-muted);
+  --sardine-text-disabled:  var(--ink-faint);
+
+  /* Referenced by inline styles; defined here so they resolve. */
+  --surface-2:   var(--sardine-bg-raised);
+  --surface-alt: var(--sardine-bg-panel);
+
+  /* ─── OVERLAY INK (drawn OVER imagery — read the OVERLAY RULE above) ─── */
+  /* Always draw ink on halo (stroke/shadow), never ink alone: the pair is what
+     carries contrast across the full SAR grey range. */
+  --overlay-ink:  #ffffff;
+  --overlay-halo: rgba(0, 0, 0, 0.72);
 
   /* ─── CHROME BEHAVIOR ─── */
   --panel-border-style: solid;
-  --overlay-bg:         rgba(16, 17, 20, 0.92); /* floating panels over the viewer */
-  --overlay-bg-hover:   rgba(30, 32, 36, 0.95);
+  --overlay-bg:         rgba(26, 25, 23, 0.92); /* floating panels over the viewer */
+  --overlay-bg-hover:   rgba(48, 45, 42, 0.95);
 
   /* ─── STATUS ─── */
   --status-flood:   #ff5c5c;
   --status-water:   #4ea8ff;
   --status-dry:     #c4a35a;
   --status-success: #3ddc84;
+  --status-warning: #e8a33a;
 
   /* ─── TYPOGRAPHY ─── */
-  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
-  --font-display: 'Space Grotesk', sans-serif;
-  --font-body:    'IBM Plex Sans', sans-serif;
-  --font-serif:   'IBM Plex Serif', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-body:    'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-serif:   'IBM Plex Serif', Georgia, 'Times New Roman', serif;
+  --sardine-font-mono: var(--font-mono);
+
+  /* ─── TYPE SCALE ─── */
+  /* Six steps, floor 11px, all rem (px sizes ignore the user's font-size
+     preference — linted).  Replaces 31 ad-hoc sizes clustering in 0.02rem
+     steps: too small to read as hierarchy, large enough to look misaligned. */
+  --text-xs:  0.6875rem;  /* 11px — dense numerics, table cells */
+  --text-sm:  0.75rem;    /* 12px — default UI (the workhorse)  */
+  --text-md:  0.875rem;   /* 14px — body, panel copy            */
+  --text-lg:  1rem;       /* 16px — section titles              */
+  --text-xl:  1.25rem;    /* 20px — panel/dialog titles         */
+  --text-2xl: 1.5rem;     /* 24px — app title, empty-state head */
 
   /* ─── SPACING ─── */
-  --space-xs:  4px;
+  /* The low end exists because the measured rhythm is a 2–8px continuum; the
+     old 4/8/16/24/32/48/64 scale had no 2/6/12 step, which is why ~90% of
+     spacing bypassed it. */
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs:  6px;
   --space-sm:  8px;
-  --space-md:  16px;
-  --space-lg:  24px;
-  --space-xl:  32px;
-  --space-2xl: 48px;
-  --space-3xl: 64px;
+  --space-md:  12px;
+  --space-lg:  16px;
+  --space-xl:  24px;
+  --space-2xl: 32px;
+  --space-3xl: 48px;
+
+  /* ─── Z-SCALE ─── */
+  --z-base:     0;
+  --z-overlay:  100;
+  --z-panel:    200;
+  --z-sheet:    300;
+  --z-dropdown: 400;
+  --z-modal:    500;
+  --z-toast:    600;
+  --z-dragdrop: 700;
 
   /* ─── RADII ─── */
   --radius-sm: 2px;
@@ -953,10 +1014,10 @@ button.btn-danger:hover {
   --sardine-border:        #35486c;
   --sardine-border-subtle: #283a58;
 
-  --text-primary:   #e8edf5;
-  --text-secondary: #a7b7d4;
-  --text-muted:     #7389ad;
-  --text-disabled:  #4d6182;
+  --ink:       #e8edf5;
+  --ink-soft:  #a7b7d4;
+  --ink-muted: #8ea3c4;  /* AA floor on this ramp's hover surface */
+  --ink-faint: #4d6182;  /* NON-TEXT ONLY */
 
   --overlay-bg:       rgba(24, 35, 56, 0.92);
   --overlay-bg-hover: rgba(43, 61, 96, 0.95);
@@ -995,15 +1056,16 @@ button.btn-danger:hover {
   --sardine-magenta-dim:  #7a2f94;
   --sardine-magenta-glow: transparent;
 
-  --text-primary:   #1a2233;
-  --text-secondary: #4a5568;
-  --text-muted:     #7a8599;
-  --text-disabled:  #b0b8c4;
+  --ink:       #1a2233;
+  --ink-soft:  #4a5568;
+  --ink-muted: #6b7688;  /* AA floor on --sardine-bg-hover #edeae4 → 4.53:1 */
+  --ink-faint: #b0b8c4;  /* NON-TEXT ONLY */
 
   --status-flood:   #cc3333;
   --status-water:   #2a7acc;
   --status-dry:     #9a8030;
   --status-success: #1a8a4a;
+  --status-warning: #b5701a;
 }
 
 

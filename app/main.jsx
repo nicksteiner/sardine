@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import './theme/sardine-theme.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
 import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
