@@ -325,9 +325,7 @@ function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {
       zIndex: 10,
       minWidth: 220,
     }}>
-      <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)', letterSpacing: 1, marginBottom: 2 }}>
-        ANALYTICAL · MEDICAL
-      </div>
+      <h2 className="medical-readout__title">Analytical · Medical</h2>
       {readout ? (
         <>
           <Row label="px" val={`(${readout.col}, ${readout.row})`} />

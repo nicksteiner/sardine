@@ -1,17 +1,22 @@
 import React, { useState } from 'react';
 
 /**
- * Section — a collapsible control-panel section with a real <h3>.
+ * Section — a collapsible control-panel section with a real heading.
  *
- * Promoted verbatim from `app/main.jsx`'s CollapsibleSection (used 21×) and
- * from MetadataPanel's private copy of the same idea; the two-layer
- * disclosure (rail group → section) is good UX and is preserved exactly.
- * The only behavioural addition is the heading element: the three largest
- * panels had zero <h1>-<h6> between them, so nothing could be skimmed or
- * navigated by structure.
+ * Promoted verbatim from `app/main.jsx`'s CollapsibleSection (21 call sites)
+ * and converging MetadataPanel's private copy of the same idea.  The
+ * two-layer disclosure — six rail groups over these sections, so only 15-30
+ * controls render at once — is good UX and is preserved exactly: same
+ * classes, same collapse animation, same default-open behaviour.
+ *
+ * Two things change.  The heading is now a real <h3> wrapping a <button>
+ * rather than a click-handling <h3>, so the section can be reached by Tab and
+ * toggled with Enter or Space and announces its state via aria-expanded.  And
+ * the toggle lives in one file instead of two.
  *
  * `open` is presentational disclosure state, local to this component — the
- * same useState that lived in CollapsibleSection, moved with it.
+ * same useState that lived in CollapsibleSection, moved here with it.  No
+ * application state is involved.
  *
  * Props:
  *   title        heading text
@@ -32,20 +37,19 @@ export function Section({
   const Heading = `h${level}`;
 
   return (
-    <section className={['ui-section', className].filter(Boolean).join(' ')} {...rest}>
-      <Heading style={{ margin: 0 }}>
+    <section className={['control-section', className].filter(Boolean).join(' ')} {...rest}>
+      <Heading className={`collapsible${open ? '' : ' collapsed'}`}>
         <button
           type="button"
-          className="ui-section__head"
+          className="ui-section__toggle"
           aria-expanded={open}
           onClick={() => setOpen(o => !o)}
         >
-          <span className={`ui-section__chevron${open ? ' ui-section__chevron--open' : ''}`}>▸</span>
           <span>{title}</span>
           {aside != null && <span className="ui-section__aside">{aside}</span>}
         </button>
       </Heading>
-      <div className="ui-section__body" hidden={!open}>{children}</div>
+      <div className={`section-body${open ? '' : ' collapsed'}`}>{children}</div>
     </section>
   );
 }

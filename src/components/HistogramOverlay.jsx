@@ -19,6 +19,7 @@ import { generateHistogramSVG, downloadSVG } from '../utils/svg-export.js';
 // W028: this file used to define its own CHANNEL_COLORS, shadowing the export
 // with a different palette.  The plot colours are derived from the tokens now.
 import { CHANNEL_PLOT_COLORS as CHANNEL_COLORS } from '../utils/theme-tokens.js';
+import { Button, CloseButton, Toolbar } from './ui/index.js';
 
 const DPR = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
 
@@ -458,25 +459,14 @@ export function HistogramOverlay({
       overflow: 'hidden',
     }} onClick={(e) => e.stopPropagation()}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px 0 12px', flexShrink: 0 }}>
-        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
-          <span style={{ color: 'var(--sardine-cyan)' }}>Histogram</span>
-        </span>
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
-            background: 'none', border: '1px solid var(--sardine-border)', color: 'var(--text-muted)', cursor: 'pointer',
-            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-          }}>&#8635;</button>
-          <button onClick={handleExportSVG} title="Export SVG" style={{
-            background: 'none', border: '1px solid var(--sardine-border)', color: 'var(--text-muted)', cursor: 'pointer',
-            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-          }}>SVG</button>
-          <button onClick={onClose} style={{
-            background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
-            fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
-          }}>&times;</button>
-        </div>
-      </div>
+      <header className="panel__head">
+        <h2 className="panel__title">Histogram</h2>
+        <Toolbar className="panel__actions" wrap={false}>
+          <Button variant="ghost" icon label="Redraw histogram" onClick={() => setDrawCount(c => c + 1)}>&#8635;</Button>
+          <Button variant="ghost" label="Export SVG" onClick={handleExportSVG}>SVG</Button>
+          <CloseButton onClick={onClose} label="Close histogram" />
+        </Toolbar>
+      </header>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
       </div>

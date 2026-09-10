@@ -297,7 +297,7 @@ body {
   color: var(--text-secondary);
 }
 
-.control-section h3.collapsible::after {
+.control-section h3.collapsible .ui-section__toggle::after {
   content: '';
   width: 0;
   height: 0;
@@ -312,7 +312,7 @@ body {
   border-bottom-color: transparent;
 }
 
-.control-section h3.collapsible.collapsed::after {
+.control-section h3.collapsible.collapsed .ui-section__toggle::after {
   transform: rotate(-90deg);
 }
 
@@ -725,6 +725,20 @@ button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: 
 }
 
 /* ─── METADATA SECTIONS ─── */
+/* W028: .metadata-section is now a Section (.control-section) modifier —
+   the panel is dense, so it drops the card chrome and tightens the rhythm. */
+.control-section.metadata-section {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+.control-section.metadata-section h3.collapsible {
+  font-size: var(--text-xs);
+  letter-spacing: 1px;
+  margin-bottom: var(--space-2xs);
+}
+
 .metadata-section {
   padding: 6px 4px;
   border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle);
@@ -1090,6 +1104,8 @@ button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: 
 }
 
 .discovery-url {
+  margin: 0;
+  font-weight: 400;
   font-family: var(--font-mono, monospace);
   font-size: var(--text-sm);
   color: var(--sardine-cyan, #4ec9d4);

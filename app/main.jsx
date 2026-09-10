@@ -260,23 +260,11 @@ function generateMarkdownState(state) {
   return lines.join('\n');
 }
 
-/**
- * CollapsibleSection - A control panel section with a clickable header to collapse/expand.
- */
-function CollapsibleSection({ title, defaultOpen = true, children }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="control-section">
-      <h3
-        className={`collapsible${open ? '' : ' collapsed'}`}
-        onClick={() => setOpen(o => !o)}
-      >{title}</h3>
-      <div className={`section-body${open ? '' : ' collapsed'}`}>
-        {children}
-      </div>
-    </div>
-  );
-}
+// CollapsibleSection was defined here and used 21 times; W028 promoted it
+// verbatim to src/components/ui/Section.jsx (which also absorbed
+// MetadataPanel's private copy) and gave it a keyboard-operable heading.
+// The alias keeps the 21 call sites reading the way they always did.
+const CollapsibleSection = Section;
 
 // Activity rail groups — each id gates a cluster of control sections in the
 // panel (one group visible at a time, VS Code activity-bar style).

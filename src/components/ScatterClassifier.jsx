@@ -9,6 +9,7 @@
 
 import React, { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from 'react';
 import { generateScatterSVG, generateClassMapSVG, downloadSVG } from '../utils/svg-export.js';
+import { Button, CloseButton, Toolbar } from './ui/index.js';
 
 const CLASS_COLORS = [
   '#3498db',  // blue   (water)
@@ -530,27 +531,16 @@ export default function ScatterClassifier({
       boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
     }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
-          <span style={{ color: 'var(--sardine-cyan)' }}>{isSingleChannel ? 'Histogram' : 'Feature Space'}</span>
-        </span>
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button onClick={handleExportSVG} title="Export scatter SVG" style={{
-            background: 'none', border: '1px solid var(--sardine-border)', color: 'var(--text-muted)', cursor: 'pointer',
-            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-          }}>SVG</button>
+      <header className="panel__head">
+        <h2 className="panel__title">{isSingleChannel ? 'Histogram' : 'Feature Space'}</h2>
+        <Toolbar className="panel__actions" wrap={false}>
+          <Button variant="ghost" label="Export scatter SVG" onClick={handleExportSVG}>SVG</Button>
           {classificationMap && (
-            <button onClick={handleExportClassMap} title="Export class map SVG" style={{
-              background: 'none', border: '1px solid var(--sardine-border)', color: 'var(--text-muted)', cursor: 'pointer',
-              fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-            }}>Map</button>
+            <Button variant="ghost" label="Export class map SVG" onClick={handleExportClassMap}>Map</Button>
           )}
-          <button onClick={onClose} style={{
-            background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
-            fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
-          }}>&times;</button>
-        </div>
-      </div>
+          <CloseButton onClick={onClose} label="Close feature space" />
+        </Toolbar>
+      </header>
 
       {/* Scatter canvas */}
       <canvas
