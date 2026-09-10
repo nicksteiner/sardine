@@ -342,10 +342,18 @@ body {
 }
 
 /* Labels are sans; mono is reserved for data values (.value-display, metadata values) */
-.control-group label {
-  font-family: var(--font-body);
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
+/* W028: a control-group label reads the same whether or not its row has been
+   migrated to Field — a mono micro-label, matching .field__label.  Without
+   this the panel mixes two label styles for the duration of the migration.
+   Checkbox rows (.control-row label) keep sentence case: there the label is
+   the click target for the box, not a caption above a control. */
+.control-group > label,
+.control-group .field__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .control-group input[type="text"],
@@ -1489,7 +1497,11 @@ button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: 
   left: 0;
   right: 0;
   height: 24px;
-  z-index: var(--z-toast);
+  /* 1000/1001, not var(--z-toast): the dock sits above the activity rail
+     (z-index 900), and the z-scale tops out at --z-dragdrop (700).  The scale
+     does not yet describe the app's real stacking — reconciling it is W027
+     follow-up work, and guessing here would silently re-order the shell. */
+  z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1519,7 +1531,7 @@ button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: 
   bottom: 24px;               /* sits directly above the footer */
   left: 50%;
   transform: translateX(-50%);
-  z-index: var(--z-toast);
+  z-index: 1001;   /* above the activity rail — see .app-footer */
   display: flex;
   align-items: center;
   gap: var(--space-xs);
@@ -1559,7 +1571,7 @@ button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: 
   bottom: 0;
   left: 0;
   right: 0;
-  z-index: var(--z-toast);
+  z-index: 1001;   /* above the activity rail — see .app-footer */
   max-height: 300px;
   overflow: hidden;
   background: var(--sardine-bg-raised);
