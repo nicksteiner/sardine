@@ -419,6 +419,10 @@ export function AnnotationOverlay({
     >
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={annotations.length
+          ? `Annotation overlay, ${annotations.length} annotations`
+          : 'Annotation overlay, empty'}
         style={{
           width: '100%', height: '100%',
           pointerEvents: 'none',
@@ -426,7 +430,7 @@ export function AnnotationOverlay({
       />
 
       {editingId && editorPos && (
-        <input
+        <input aria-label="caption…"
           autoFocus
           type="text"
           value={editorValue}
@@ -449,7 +453,6 @@ export function AnnotationOverlay({
             color: resolveColor(annotations.find(a => a.id === editingId)?.color || 'cyan'),
             border: `1px solid ${resolveColor(annotations.find(a => a.id === editingId)?.color || 'cyan')}`,
             borderRadius: 3,
-            outline: 'none',
             zIndex: 20,
             pointerEvents: 'auto',
           }}

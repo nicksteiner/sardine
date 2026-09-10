@@ -270,6 +270,8 @@ export function TransectLineOverlay({
   return (
     <canvas
       ref={canvasRef}
+      // Decorative: the transect profile panel carries the numbers.
+      aria-hidden="true"
       style={{
         position: 'absolute',
         inset: 0,

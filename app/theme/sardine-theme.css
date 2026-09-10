@@ -65,8 +65,13 @@
   /* ─── TEXT (neutral grays — no blue tint) ─── */
   --text-primary:   #e8eaed;
   --text-secondary: #a0a6ad;
-  --text-muted:     #6e747b;
-  --text-disabled:  #4a4f55;
+  --text-muted:     #8b9199;  /* AA floor: 5.13:1 on --sardine-bg-hover, the worst-case ground */
+  --text-disabled:  #838991;  /* 4.62:1 on the same — this token labels live text, not inactive controls */
+
+  /* Sub-AA neutral. NON-TEXT ONLY (hairlines, dividers, tick marks). Never
+     set `color` from this — use --text-muted, which is measured against every
+     background the app paints. */
+  --ink-faint:      #4a4f55;
 
   /* Aliases consumed by component inline styles */
   --sardine-text-primary:   var(--text-primary);
@@ -213,6 +218,22 @@ body {
 }
 
 /* ─── COLLAPSIBLE SECTIONS ─── */
+/* The <h3> is the heading; the <button> inside it is the disclosure control.
+   The button carries the whole hit area and all the type styling. */
+.collapsible-toggle {
+  flex: 1;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .control-section h3.collapsible {
   cursor: pointer;
   display: flex;
@@ -255,6 +276,11 @@ body {
 .section-body.collapsed {
   max-height: 0;
   opacity: 0;
+  /* Not just invisible — `visibility: hidden` also takes the collapsed
+     controls out of the tab order and out of the accessibility tree, which
+     `max-height: 0` alone does not. Without it, tabbing walks into a section
+     the user cannot see. */
+  visibility: hidden;
 }
 
 
@@ -286,7 +312,6 @@ body {
   border: 1px solid var(--sardine-border);
   background: var(--sardine-bg);
   color: var(--text-primary);
-  outline: none;
   transition: border-color var(--transition-fast);
   width: 100%;
 }
@@ -352,7 +377,10 @@ button {
   background: var(--sardine-cyan);
   color: var(--sardine-bg);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  /* Named, not `all`: transitioning `all` also animates the focus ring, so
+     the keyboard indicator faded in over 150 ms instead of appearing. */
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+              color var(--transition-fast), box-shadow var(--transition-fast);
   text-transform: uppercase;
 }
 
@@ -468,7 +496,6 @@ button.btn-danger:hover {
   line-height: 1.6;
   padding: var(--space-md);
   resize: none;
-  outline: none;
   transition: background var(--transition-fast);
 }
 
@@ -955,8 +982,9 @@ button.btn-danger:hover {
 
   --text-primary:   #e8edf5;
   --text-secondary: #a7b7d4;
-  --text-muted:     #7389ad;
-  --text-disabled:  #4d6182;
+  --text-muted:     #98abc9;  /* 4.64:1 on --sardine-bg-hover */
+  --text-disabled:  #92a6c6;  /* 4.38:1 — see note in :root */
+  --ink-faint:      #4d6182;
 
   --overlay-bg:       rgba(24, 35, 56, 0.92);
   --overlay-bg-hover: rgba(43, 61, 96, 0.95);
@@ -977,10 +1005,10 @@ button.btn-danger:hover {
   --sardine-border:        #d4cdb8;
   --sardine-border-subtle: #e2ddd0;
 
-  --sardine-cyan:       #0e8a96;
-  --sardine-cyan-dim:   #0a6e78;
+  --sardine-cyan:       #0a6e78;  /* 4.98:1 on --sardine-bg-hover; #0e8a96 was 3.43:1 */
+  --sardine-cyan-dim:   #085860;
   --sardine-cyan-glow:  transparent;
-  --sardine-cyan-bg:    rgba(14, 138, 150, 0.06);
+  --sardine-cyan-bg:    rgba(10, 110, 120, 0.06);
 
   --sardine-orange:      #c96a25;
   --sardine-orange-dim:  #a0541d;
@@ -997,8 +1025,9 @@ button.btn-danger:hover {
 
   --text-primary:   #1a2233;
   --text-secondary: #4a5568;
-  --text-muted:     #7a8599;
-  --text-disabled:  #b0b8c4;
+  --text-muted:     #5c6472;  /* 4.97:1 on --sardine-bg-hover */
+  --text-disabled:  #5f6675;  /* 4.80:1 on the same */
+  --ink-faint:      #b0b8c4;
 
   --status-flood:   #cc3333;
   --status-water:   #2a7acc;
@@ -1272,7 +1301,6 @@ button.btn-danger:hover {
 
 .discovery-filter-group select:focus {
   border-color: var(--sardine-cyan, #4ec9d4);
-  outline: none;
 }
 
 
@@ -1507,3 +1535,133 @@ button.btn-danger:hover {
   }
 }
 
+
+
+/* ═══════════════════════════════════════════════
+   ACCESSIBILITY BASELINE (W029)
+
+   Focus affordance, motion safety, overlay legibility and the screen-reader
+   utility class. Rules here are correctness, not decoration: test/unit/
+   a11y-static.test.mjs asserts they exist.
+   ═══════════════════════════════════════════════ */
+
+:root {
+  /* Chrome drawn OVER SAR imagery. No flat colour clears 3:1 across a dB
+     greyscale ramp — white and black each bottom out at 1.00:1 somewhere in
+     the range — so overlay glyphs must be painted as ink + halo, never as a
+     single fill. Use both together, always. */
+  --overlay-ink:  #ffffff;
+  --overlay-halo: rgba(0, 0, 0, 0.85);
+  --overlay-text-shadow:
+    0 0 2px var(--overlay-halo),
+    0 0 4px var(--overlay-halo),
+    0 1px 3px var(--overlay-halo);
+}
+
+[data-theme="light"] {
+  --overlay-ink:  #101114;
+  --overlay-halo: rgba(255, 255, 255, 0.88);
+}
+
+/* Text/glyphs sitting directly on the raster. */
+.overlay-ink {
+  color: var(--overlay-ink);
+  text-shadow: var(--overlay-text-shadow);
+}
+
+/* ─── FOCUS ─────────────────────────────────────
+   One ring, everywhere, keyboard-only. Tuned for a dense instrument UI:
+   2px at the accent with a 2px offset reads as a ring rather than a border
+   thickening, and the offset keeps it clear of adjacent controls. */
+:focus-visible {
+  outline: 2px solid var(--sardine-cyan);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Inputs already carry a border at the accent on focus; keep the ring but
+   pull the offset in so it does not collide with neighbouring fields. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--sardine-cyan);
+  outline-offset: 1px;
+}
+
+/* Over imagery the accent alone can vanish into bright backscatter — pair the
+   ring with the halo so it survives any grey level underneath. */
+.overlay-ink:focus-visible,
+.viewer-overlay :focus-visible {
+  outline: 2px solid var(--overlay-ink);
+  box-shadow: 0 0 0 4px var(--overlay-halo);
+}
+
+/* deck.gl sets `outline: none` inline on its own focusable wrapper, which no
+   outline rule can beat. Ring it with a shadow instead — the raster is a real
+   tab stop (its controller takes the arrow keys) and must show focus. */
+#deckgl-wrapper:focus-visible {
+  box-shadow: inset 0 0 0 3px var(--sardine-cyan), inset 0 0 0 5px var(--overlay-halo);
+}
+
+/* The comparison viewer panels mark the ACTIVE panel with an inline `outline`,
+   which beats the ring above. Give them an inset shadow ring instead, so the
+   two indicators can coexist rather than one hiding the other. */
+.viewer-panel:focus-visible {
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--sardine-cyan), inset 0 0 0 5px var(--overlay-halo);
+}
+
+/* A focus indicator must be there the instant focus lands — never faded in by
+   an inherited transition. */
+:focus-visible {
+  transition-property: none;
+}
+
+/* Mouse users keep a clean surface: only suppress the ring where the browser
+   would draw it on click, never where :focus-visible has matched. */
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ─── MOTION ────────────────────────────────────
+   A NISAR load runs for minutes, and the spinner and pulse run for its whole
+   duration — exactly the sustained-motion case that triggers vestibular
+   symptoms. !important is deliberate: two of the three animations are set as
+   inline styles and cannot otherwise be overridden. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* The three infinite animations, named so their removal is explicit. */
+  .overview-map-pulse,
+  [style*="overview-pulse"] {
+    animation: none !important;
+  }
+  /* spin — LoadingIndicator; pulse — reload button while loading */
+  [style*="spin"],
+  [style*="pulse"] {
+    animation: none !important;
+  }
+}
+
+/* ─── SCREEN-READER-ONLY ────────────────────────
+   Live-region and label text that must reach assistive technology without
+   occupying layout. Not `display:none` — that would remove it from the
+   accessibility tree along with the announcement. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

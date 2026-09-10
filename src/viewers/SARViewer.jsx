@@ -477,7 +477,20 @@ export const SARViewer = forwardRef(function SARViewer({
 
   return (
     <div ref={containerRef} style={containerStyle}>
-      <div style={{ position: 'absolute', inset: 0, filter: canvasFilter }}>
+      {/* deck.gl makes its own wrapper a tab stop so its controller can take
+          the arrow keys. It ships that wrapper unnamed, so a keyboard user
+          lands on "blank" — name it here. The raster itself has no text
+          alternative and is not meant to: SAR backscatter is the data, not a
+          picture of something describable. */}
+      <div
+        style={{ position: 'absolute', inset: 0, filter: canvasFilter }}
+        ref={(el) => {
+          const w = el?.querySelector('#deckgl-wrapper');
+          if (!w) return;
+          w.setAttribute('aria-label', 'SAR image viewer — arrow keys pan, plus and minus zoom');
+          w.setAttribute('role', 'application');
+        }}
+      >
         <DeckGL
           views={views}
           viewState={viewState}
@@ -566,6 +579,7 @@ export const SARViewer = forwardRef(function SARViewer({
             setViewState(defaultViewState);
             onViewStateChange?.({ viewState: defaultViewState });
           }}
+          aria-label="Zoom to data extent"
           title="Zoom to data extent"
           style={{
             position: 'absolute',

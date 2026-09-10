@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { presignGeoJSON } from '../utils/s3-presign.js';
+import { disclosure, option } from '../utils/a11y.js';
 
 /**
  * SceneCatalog — Browse, select and load NISAR scenes from a GeoJSON catalog.
@@ -201,9 +202,9 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
       {/* Catalog input */}
       <div className="control-group">
-        <label>GeoJSON Catalog</label>
+        <label htmlFor="sc-geojson-catalog">GeoJSON Catalog</label>
         <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-          <input
+          <input id="sc-geojson-catalog"
             type="text"
             value={catalogUrl}
             onChange={e => setCatalogUrl(e.target.value)}
@@ -253,7 +254,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
       {catalog && (
         <div>
           <div
-            onClick={() => setShowCredentials(s => !s)}
+            {...disclosure(() => setShowCredentials(s => !s), showCredentials, { label: 'AWS credentials' })}
             style={{
               cursor: 'pointer',
               fontSize: '0.75rem',
@@ -275,26 +276,26 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
                 Credentials are stored in memory only and never persisted.
               </div>
-              <input
+              <input aria-label="Access Key ID"
                 type="text"
                 placeholder="Access Key ID"
                 value={credentials.accessKeyId}
                 onChange={e => setCredentials(c => ({ ...c, accessKeyId: e.target.value }))}
               />
-              <input
+              <input aria-label="Secret Access Key"
                 type="password"
                 placeholder="Secret Access Key"
                 value={credentials.secretAccessKey}
                 onChange={e => setCredentials(c => ({ ...c, secretAccessKey: e.target.value }))}
               />
-              <input
+              <input aria-label="Session Token (optional)"
                 type="text"
                 placeholder="Session Token (optional)"
                 value={credentials.sessionToken}
                 onChange={e => setCredentials(c => ({ ...c, sessionToken: e.target.value }))}
               />
               <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-                <input
+                <input aria-label="Region"
                   type="text"
                   placeholder="Region"
                   value={credentials.region}
@@ -318,8 +319,8 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
       {catalog && catalog.features.length > 0 && (
         <div>
           <div className="control-group">
-            <label>Scenes ({filteredFeatures.length})</label>
-            <input
+            <label htmlFor="sc-scenes">Scenes ({filteredFeatures.length})</label>
+            <input id="sc-scenes"
               type="text"
               value={filterText}
               onChange={e => setFilterText(e.target.value)}
@@ -327,13 +328,17 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               style={{ fontSize: '0.75rem' }}
             />
           </div>
-          <div style={{
-            maxHeight: '200px',
-            overflowY: 'auto',
-            border: '1px solid var(--sardine-border)',
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--sardine-bg-raised)',
-          }}>
+          <div
+            role="listbox"
+            aria-label={`Catalog scenes, ${filteredFeatures.length} shown`}
+            style={{
+              maxHeight: '200px',
+              overflowY: 'auto',
+              border: '1px solid var(--sardine-border)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--sardine-bg-raised)',
+            }}
+          >
             {filteredFeatures.map((f, i) => {
               const p = f.properties || {};
               const name = p.filename || p.name || `Scene ${i + 1}`;
@@ -343,7 +348,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               return (
                 <div
                   key={actualIdx}
-                  onClick={() => handleSelectScene(f, actualIdx)}
+                  {...option(() => handleSelectScene(f, actualIdx), isSelected, { label: `Scene ${p.id || actualIdx + 1}${hasUrl ? '' : ', no data URL'}` })}
                   style={{
                     padding: '4px 8px',
                     cursor: 'pointer',

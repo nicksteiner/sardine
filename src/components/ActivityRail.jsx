@@ -61,17 +61,32 @@ const RAIL_ICONS = {
 export function ActivityRail({ groups, active, open, onSelect, onPalette }) {
   return (
     <nav className="activity-rail" aria-label="Panels">
-      <div className="activity-rail-groups" role="tablist">
-        {groups.map((g) => {
+      <div className="activity-rail-groups" role="tablist" aria-orientation="vertical" aria-label="Control panels">
+        {groups.map((g, i) => {
           const isActive = active === g.id && open;
           return (
             <button
               key={g.id}
               role="tab"
+              id={`rail-tab-${g.id}`}
               aria-selected={isActive}
+              aria-controls={`rail-panel-${g.id}`}
+              aria-label={g.title}
+              // Roving tabindex — the rail is one tab stop, not five, and the
+              // arrow keys move within it. A half-declared tabs pattern
+              // promises semantics the app does not deliver.
+              tabIndex={isActive || (!groups.some(x => x.id === active) && i === 0) ? 0 : -1}
               className={`rail-btn${isActive ? ' active' : ''}`}
               title={g.title}
               onClick={() => onSelect(g.id)}
+              onKeyDown={(e) => {
+                if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                e.preventDefault();
+                const d = e.key === 'ArrowDown' ? 1 : -1;
+                const next = groups[(i + d + groups.length) % groups.length];
+                onSelect(next.id);
+                document.getElementById(`rail-tab-${next.id}`)?.focus();
+              }}
             >
               <svg viewBox="0 0 16 16" width="18" height="18" fill="none"
                 stroke="currentColor" strokeWidth="1.3"

@@ -16,6 +16,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { NISAR_PRODUCTS, searchGranules } from '../loaders/cmr-client.js';
+import { disclosure, option } from '../utils/a11y.js';
 
 export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLayersChange, onGranulesChange, onTokenChange, viewBounds, onZoomToBounds }) {
   // ─── Search state ───────────────────────────────────────────────────
@@ -265,8 +266,8 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
       {/* Product selector */}
       <div className="control-group">
-        <label>NISAR Product</label>
-        <select
+        <label htmlFor="ns-nisar-product">NISAR Product</label>
+        <select id="ns-nisar-product"
           value={product}
           onChange={e => setProduct(e.target.value)}
           style={{ fontSize: '0.75rem' }}
@@ -285,7 +286,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
       {/* Auth token */}
       <div>
         <div
-          onClick={() => setShowAuth(v => !v)}
+          {...disclosure(() => setShowAuth(v => !v), showAuth, { label: 'Earthdata authentication' })}
           style={{
             cursor: 'pointer',
             fontSize: '0.75rem',
@@ -311,7 +312,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
               </code>
               <br />Paste the <code>access_token</code> value. Stored in memory only.
             </div>
-            <input
+            <input aria-label="Earthdata bearer token"
               type="password"
               value={token}
               onChange={e => { setToken(e.target.value); onTokenChange?.(e.target.value); }}
@@ -324,16 +325,16 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
 
       {/* Search filters */}
       <div className="control-group">
-        <label>Search Filters</label>
+        <label htmlFor="ns-search-filters">Search Filters</label>
         <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-          <input
+          <input id="ns-search-filters"
             type="date"
             value={dateStart}
             onChange={e => setDateStart(e.target.value)}
             style={{ flex: 1, fontSize: '0.7rem' }}
             title="Start date"
           />
-          <input
+          <input aria-label="End date"
             type="date"
             value={dateEnd}
             onChange={e => setDateEnd(e.target.value)}
@@ -342,7 +343,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
           />
         </div>
         <div style={{ display: 'flex', gap: 'var(--space-xs)', marginTop: '4px' }}>
-          <input
+          <input aria-label="NISAR Track number"
             type="number"
             value={track}
             onChange={e => setTrack(e.target.value)}
@@ -350,7 +351,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             style={{ flex: 1, fontSize: '0.7rem' }}
             title="NISAR Track number"
           />
-          <input
+          <input aria-label="NISAR Frame number"
             type="number"
             value={frame}
             onChange={e => setFrame(e.target.value)}
@@ -448,13 +449,18 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
 
       {/* Granule list */}
       {granules.length > 0 && (
-        <div style={{
-          maxHeight: '300px',
-          overflowY: 'auto',
-          border: '1px solid var(--sardine-border)',
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--sardine-bg-raised)',
-        }}>
+        <div
+          role="listbox"
+          aria-label={`Search results, ${granules.length} granules`}
+          aria-multiselectable={multiSelect || undefined}
+          style={{
+            maxHeight: '300px',
+            overflowY: 'auto',
+            border: '1px solid var(--sardine-border)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--sardine-bg-raised)',
+          }}
+        >
           {granules.map((g, i) => {
             const isSelected = multiSelect ? selectedIndices.has(i) : i === selectedIdx;
             const hasData = !!g.dataUrl;
@@ -469,7 +475,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             return (
               <div
                 key={g.id || i}
-                onClick={() => handleClick(g, i)}
+                {...option(() => handleClick(g, i), isSelected, { label: `${g.id || `Granule ${i + 1}`}${hasData ? '' : ', no data'}`, disabled: !hasData })}
                 style={{
                   padding: '4px 8px',
                   cursor: hasData ? 'pointer' : 'default',

@@ -96,7 +96,7 @@ export function CommandPalette({ open, onClose, actions }) {
           color: '#e8edf5',
         }}
       >
-        <input
+        <input aria-label="Type a command…"
           ref={inputRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -111,7 +111,6 @@ export function CommandPalette({ open, onClose, actions }) {
             color: '#e8edf5',
             fontSize: '0.85rem',
             fontFamily: 'inherit',
-            outline: 'none',
             boxSizing: 'border-box',
           }}
         />

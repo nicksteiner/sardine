@@ -9,6 +9,7 @@
  *   - "server-s3"  — private S3 buckets via sardine-launch server (server holds credentials)
  */
 import React, { useState, useCallback, useRef, useMemo } from 'react';
+import { clickable } from '../utils/a11y.js';
 import {
   listBucket,
   listBucketViaServer,
@@ -341,8 +342,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
         <>
           {/* Browse mode selector */}
           <div className="control-group">
-            <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Browse Mode</label>
-            <select
+            <label htmlFor="dd-browse-mode" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Browse Mode</label>
+            <select id="dd-browse-mode"
               value={browseMode}
               onChange={(e) => setBrowseMode(e.target.value)}
               style={{ fontSize: '0.75rem' }}
@@ -355,8 +356,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
           {browseMode === 'direct' ? (
             <>
               <div className="control-group">
-                <label>Bucket / Endpoint URL</label>
-                <input
+                <label htmlFor="dd-bucket-endpoint-url">Bucket / Endpoint URL</label>
+                <input id="dd-bucket-endpoint-url"
                   ref={inputRef}
                   type="text"
                   value={bucketUrl}
@@ -370,8 +371,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
           ) : (
             <>
               <div className="control-group">
-                <label>S3 Bucket Name</label>
-                <input
+                <label htmlFor="dd-s3-bucket-name">S3 Bucket Name</label>
+                <input id="dd-s3-bucket-name"
                   type="text"
                   value={s3Bucket}
                   onChange={(e) => setS3Bucket(e.target.value)}
@@ -381,8 +382,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                 />
               </div>
               <div className="control-group">
-                <label>AWS Region</label>
-                <input
+                <label htmlFor="dd-aws-region">AWS Region</label>
+                <input id="dd-aws-region"
                   type="text"
                   value={s3Region}
                   onChange={(e) => setS3Region(e.target.value)}
@@ -403,6 +404,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {PRESET_BUCKETS.map((p, i) => (
                 <button
                   key={i}
+                  aria-label={`${p.label}${p.requiresAuth ? ', requires authentication' : ''}`}
                   className="btn-secondary discovery-preset-btn"
                   onClick={() => handlePreset(p)}
                   title={p.description}
@@ -427,7 +429,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {connectedLabel}
               {connectedLabel.length > 30 ? '...' : ''}
             </span>
-            <button
+            <button aria-label="Disconnect"
               className="btn-secondary discovery-disconnect-btn"
               onClick={handleDisconnect}
               title="Disconnect"
@@ -441,6 +443,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                 {i > 0 && <span className="discovery-sep">›</span>}
                 <button
                   className="discovery-crumb"
+                  aria-label={`Go to ${b.label}`}
                   onClick={() => handleBreadcrumb(b.prefix, b.index)}
                   disabled={b.prefix === prefix}
                 >
@@ -474,8 +477,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Cycle */}
               {filterOptions.cycles.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Cycle</label>
-                  <select value={filterCycle} onChange={e => setFilterCycle(e.target.value)}>
+                  <label htmlFor="dd-cycle">Cycle</label>
+                  <select id="dd-cycle" value={filterCycle} onChange={e => setFilterCycle(e.target.value)}>
                     <option value="">All ({filterOptions.cycles.length})</option>
                     {filterOptions.cycles.map(c => (
                       <option key={c} value={c}>{String(c).padStart(3, '0')}</option>
@@ -486,8 +489,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Track */}
               {filterOptions.tracks.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Track</label>
-                  <select value={filterTrack} onChange={e => setFilterTrack(e.target.value)}>
+                  <label htmlFor="dd-track">Track</label>
+                  <select id="dd-track" value={filterTrack} onChange={e => setFilterTrack(e.target.value)}>
                     <option value="">All ({filterOptions.tracks.length})</option>
                     {filterOptions.tracks.map(t => (
                       <option key={t} value={t}>{String(t).padStart(3, '0')}</option>
@@ -498,8 +501,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Direction */}
               {filterOptions.directions.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Dir</label>
-                  <select value={filterDirection} onChange={e => setFilterDirection(e.target.value)}>
+                  <label htmlFor="dd-dir">Dir</label>
+                  <select id="dd-dir" value={filterDirection} onChange={e => setFilterDirection(e.target.value)}>
                     <option value="">All</option>
                     {filterOptions.directions.map(d => (
                       <option key={d} value={d}>{d === 'A' ? 'Asc' : 'Desc'}</option>
@@ -510,8 +513,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Polarization */}
               {filterOptions.polCodes.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Pol</label>
-                  <select value={filterPol} onChange={e => setFilterPol(e.target.value)}>
+                  <label htmlFor="dd-pol">Pol</label>
+                  <select id="dd-pol" value={filterPol} onChange={e => setFilterPol(e.target.value)}>
                     <option value="">All ({filterOptions.polCodes.length})</option>
                     {filterOptions.polCodes.map(p => (
                       <option key={p} value={p}>{p}</option>
@@ -522,8 +525,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Frame */}
               {filterOptions.frames.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Frame</label>
-                  <select value={filterFrame} onChange={e => setFilterFrame(e.target.value)}>
+                  <label htmlFor="dd-frame">Frame</label>
+                  <select id="dd-frame" value={filterFrame} onChange={e => setFilterFrame(e.target.value)}>
                     <option value="">All ({filterOptions.frames.length})</option>
                     {filterOptions.frames.map(f => (
                       <option key={f} value={f}>{String(f).padStart(3, '0')}</option>
@@ -534,8 +537,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Mode */}
               {filterOptions.modes.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Mode</label>
-                  <select value={filterMode} onChange={e => setFilterMode(e.target.value)}>
+                  <label htmlFor="dd-mode">Mode</label>
+                  <select id="dd-mode" value={filterMode} onChange={e => setFilterMode(e.target.value)}>
                     <option value="">All ({filterOptions.modes.length})</option>
                     {filterOptions.modes.map(m => (
                       <option key={m} value={m}>{m}</option>
@@ -550,7 +553,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
           <div className="discovery-listing">
             {/* Back button */}
             {pathStack.length > 0 && (
-              <div className="discovery-item discovery-dir" onClick={handleBack}>
+              <div className="discovery-item discovery-dir" {...clickable(handleBack, { label: 'Up to parent directory' })}>
                 <span className="discovery-icon">⬆</span>
                 <span className="discovery-name">..</span>
               </div>
@@ -561,7 +564,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               <div
                 key={`d-${i}`}
                 className="discovery-item discovery-dir"
-                onClick={() => handleNavigate(dir)}
+                {...clickable(() => handleNavigate(dir), { label: `Open directory ${displayName(dir)}` })}
               >
                 <span className="discovery-icon">📁</span>
                 <span className="discovery-name">{displayName(dir)}</span>
@@ -580,7 +583,10 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                 <div
                   key={`f-${i}`}
                   className={`discovery-item discovery-file ${isLoadable ? 'discovery-loadable' : ''} ${isNisar ? 'discovery-nisar' : ''}`}
-                  onClick={isLoadable ? () => handleFileClick(file) : undefined}
+                  {...clickable(isLoadable ? () => handleFileClick(file) : null, {
+                    label: isLoadable ? `Load ${name}, ${formatSize(file.size)}` : name,
+                    disabled: !isLoadable,
+                  })}
                   title={
                     parsed
                       ? `Cyc ${parsed.cycle} · Trk ${parsed.track} · ${parsed.directionName} · Frm ${parsed.frame} · ${parsed.polCode}\n${parsed.startStr} → ${parsed.endStr}\nClick to load`

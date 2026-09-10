@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { fetchWorldCoastlines } from '../loaders/overture-loader.js';
 import { toDb } from '../utils/stats.js';
+import { disclosure } from '../utils/a11y.js';
 
 /**
  * MetadataPanel — Collapsible panel showing NISAR product metadata
@@ -314,7 +315,7 @@ function CollapsibleSection({ title, defaultOpen = false, children, count }) {
     <div className="metadata-section">
       <div
         className="metadata-section-title"
-        onClick={() => setOpen(o => !o)}
+        {...disclosure(() => setOpen(o => !o), open, { label: `${title}${count != null ? `, ${count} entries` : ''}` })}
         style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
       >
         <span>{open ? '▾' : '▸'} {title}</span>
@@ -414,7 +415,10 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
 
   return (
     <div className={`metadata-panel ${collapsed ? 'collapsed' : ''}`}>
-      <div className="metadata-panel-header" onClick={() => setCollapsed(c => !c)}>
+      <div
+        className="metadata-panel-header"
+        {...disclosure(() => setCollapsed(c => !c), !collapsed, { label: 'Metadata panel' })}
+      >
         <span className="metadata-panel-title">
           <span style={{ color: 'var(--sardine-cyan)' }}>◈</span> Metadata
         </span>

@@ -112,6 +112,9 @@ export default function ClassificationOverlay({
   return (
     <canvas
       ref={canvasRef}
+      // Decorative: the classification legend beside it carries the same
+      // information as text, so announcing the raster twice adds nothing.
+      aria-hidden="true"
       style={{
         position: 'absolute',
         inset: 0,

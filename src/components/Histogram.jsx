@@ -197,8 +197,15 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
     padding: '1px 3px',
     width: '48px',
     textAlign: 'center',
-    outline: 'none',
   };
+
+  // Screen-reader naming. Every control in this panel is one of a pair, so the
+  // channel and the end (Lo/Hi) both have to be in the name — "slider, 0.65"
+  // is what these announced as before.
+  const chan = label ? `${label} ` : '';
+  const unit = useDecibels ? ' decibels' : '';
+  const nameMin = `${chan}contrast minimum${unit}`;
+  const nameMax = `${chan}contrast maximum${unit}`;
 
   return (
     <div style={{ marginBottom: '8px' }}>
@@ -216,6 +223,8 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
       )}
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={`${chan || 'Backscatter '}histogram, ${stats.histogram?.length || 0} bins, ${fmt(stats.min)} to ${fmt(stats.max)}. Contrast window ${fmt(lo)} to ${fmt(hi)}.`}
         style={{
           width: `${WIDTH}px`,
           height: `${HEIGHT}px`,
@@ -243,15 +252,28 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
               if (e.key === 'Escape') setEditingMin(false);
             }}
             style={numInputStyle}
+            aria-label={`${nameMin}, exact value`}
           />
         ) : (
           <span
+            role="button"
+            tabIndex={0}
+            aria-label={`${nameMin}, ${fmt(lo)}. Activate to type an exact value.`}
             onClick={() => { setEditMinVal(fmtShort(lo)); setEditingMin(true); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setEditMinVal(fmtShort(lo));
+                setEditingMin(true);
+              }
+            }}
             style={numLabelStyle}
             title="Click to edit"
           >{fmtShort(lo)}</span>
         )}
         <input
+          aria-label={nameMin}
+          aria-valuetext={fmt(lo)}
           type="range"
           min={sliderMin}
           max={sliderMax}
@@ -280,15 +302,28 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
               if (e.key === 'Escape') setEditingMax(false);
             }}
             style={numInputStyle}
+            aria-label={`${nameMax}, exact value`}
           />
         ) : (
           <span
+            role="button"
+            tabIndex={0}
+            aria-label={`${nameMax}, ${fmt(hi)}. Activate to type an exact value.`}
             onClick={() => { setEditMaxVal(fmtShort(hi)); setEditingMax(true); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setEditMaxVal(fmtShort(hi));
+                setEditingMax(true);
+              }
+            }}
             style={numLabelStyle}
             title="Click to edit"
           >{fmtShort(hi)}</span>
         )}
         <input
+          aria-label={nameMax}
+          aria-valuetext={fmt(hi)}
           type="range"
           min={sliderMin}
           max={sliderMax}

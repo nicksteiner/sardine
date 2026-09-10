@@ -226,6 +226,8 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
   return (
     <canvas
       ref={canvasRef}
+      // Decorative: the ROI's extent is reported as text in the ROI panel.
+      aria-hidden="true"
       style={{
         position: 'absolute',
         inset: 0,

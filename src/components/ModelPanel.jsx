@@ -63,7 +63,12 @@ function RasterPreview({ data, width, height, label }) {
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
-      <canvas ref={ref} style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid var(--sardine-border)', borderRadius: 2 }} />
+      <canvas
+        ref={ref}
+        role="img"
+        aria-label={`${label} preview, ${width} by ${height} pixels`}
+        style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid var(--sardine-border)', borderRadius: 2 }}
+      />
     </div>
   );
 }
@@ -107,6 +112,7 @@ export default function ModelPanel({
             background: busy ? 'rgba(78,201,212,0.06)' : 'transparent',
           }}>
             <button
+              aria-label={`Run ${m.name || m.id} on the region of interest`}
               title={hasRoi ? `Run on ROI (${m['mlm:tasks'].join(', ')})` : 'Shift+drag an ROI first'}
               disabled={!runnable}
               onClick={() => onRun(m)}

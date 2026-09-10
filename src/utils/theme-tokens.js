@@ -29,8 +29,8 @@ export const DARK = Object.freeze({
 
   textPrimary:   '#e8edf5',
   textSecondary: '#8fa4c4',
-  textMuted:     '#5a7099',
-  textDisabled:  '#3a5070',
+  textMuted:     '#98abc9',   // AA floor against bgHover (see sardine-theme.css)
+  textDisabled:  '#92a6c6',
 
   statusFlood:   '#ff5c5c',
   statusWater:   '#4ea8ff',
@@ -51,8 +51,8 @@ export const LIGHT = Object.freeze({
   border:        '#d4cdb8',
   borderSubtle:  '#e2ddd0',
 
-  cyan:          '#0e8a96',
-  cyanDim:       '#0a6e78',
+  cyan:          '#0a6e78',   // AA floor for the light interactive accent
+  cyanDim:       '#085860',
   orange:        '#c96a25',
   orangeDim:     '#a0541d',
   green:         '#1a8a4a',
@@ -62,8 +62,8 @@ export const LIGHT = Object.freeze({
 
   textPrimary:   '#1a2233',
   textSecondary: '#4a5568',
-  textMuted:     '#7a8599',
-  textDisabled:  '#b0b8c4',
+  textMuted:     '#5c6472',   // AA floor against bgHover
+  textDisabled:  '#5f6675',
 
   statusFlood:   '#cc3333',
   statusWater:   '#2a7acc',

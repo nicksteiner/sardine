@@ -21,11 +21,19 @@ const DPR = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
 
 // ─── Publication-quality palette ─────────────────────────────────────────
 // Colors chosen for perceptual separability on dark backgrounds and in print.
+/**
+ * Per-channel trace styling.
+ *
+ * `dash` is not decoration. Red and green are the classic deuteranopia
+ * confusion pair, and with three overlaid traces colour alone is the only
+ * thing separating them — so each channel also gets its own stroke pattern,
+ * carried through to the legend swatch so the two can be matched up.
+ */
 const CHANNEL_COLORS = {
-  R:      { fill: 'rgba(231, 76, 60, 0.45)',   stroke: 'rgba(231, 76, 60, 0.9)',   legend: '#e74c3c' },
-  G:      { fill: 'rgba(46, 204, 113, 0.40)',   stroke: 'rgba(46, 204, 113, 0.85)', legend: '#2ecc71' },
-  B:      { fill: 'rgba(52, 152, 219, 0.40)',   stroke: 'rgba(52, 152, 219, 0.85)', legend: '#3498db' },
-  single: { fill: 'rgba(78, 201, 212, 0.35)',   stroke: 'rgba(78, 201, 212, 0.85)', legend: '#4ec9d4' },
+  R:      { fill: 'rgba(231, 76, 60, 0.45)',   stroke: 'rgba(231, 76, 60, 0.9)',   legend: '#e74c3c', dash: [] },
+  G:      { fill: 'rgba(46, 204, 113, 0.40)',   stroke: 'rgba(46, 204, 113, 0.85)', legend: '#2ecc71', dash: [7, 3] },
+  B:      { fill: 'rgba(52, 152, 219, 0.40)',   stroke: 'rgba(52, 152, 219, 0.85)', legend: '#3498db', dash: [2, 3] },
+  single: { fill: 'rgba(78, 201, 212, 0.35)',   stroke: 'rgba(78, 201, 212, 0.85)', legend: '#4ec9d4', dash: [] },
 };
 
 /**
@@ -213,7 +221,9 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
     }
     ctx.strokeStyle = style.stroke;
     ctx.lineWidth = compact ? 1 : 1.5;
+    ctx.setLineDash(style.dash || []);
     ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // ── Contrast limit markers ──
@@ -339,6 +349,14 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
     const swatchX = legendX - (compact ? 80 : 84);
     ctx.fillRect(swatchX, legendY - swatchSize / 2, swatchSize, swatchSize);
     ctx.strokeRect(swatchX, legendY - swatchSize / 2, swatchSize, swatchSize);
+    // Repeat the trace's dash pattern across the swatch so a reader who
+    // cannot separate the colours can still match legend to curve.
+    ctx.setLineDash(style.dash || []);
+    ctx.beginPath();
+    ctx.moveTo(swatchX, legendY);
+    ctx.lineTo(swatchX + swatchSize, legendY);
+    ctx.stroke();
+    ctx.setLineDash([]);
 
     // Label (after swatch)
     ctx.fillStyle = 'rgba(232, 237, 245, 0.9)';
@@ -468,7 +486,7 @@ export function HistogramOverlay({
           <span style={{ color: '#4ec9d4' }}>Histogram</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
+          <button aria-label="Redraw histogram" onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
             background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
             fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>&#8635;</button>
@@ -483,7 +501,20 @@ export function HistogramOverlay({
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-        <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
+        <canvas
+          ref={canvasRef}
+          role="img"
+          aria-label={(() => {
+            // The chart carries quantitative content, so the alternative has
+            // to carry the numbers — not just say "a histogram".
+            const unit = useDecibels ? ' dB' : '';
+            const parts = Object.entries(histograms || {}).map(([k, st]) => (
+              st ? `${k === 'single' ? (polarization || 'band') : k} ${st.min?.toFixed(1)} to ${st.max?.toFixed(1)}${unit}` : null
+            )).filter(Boolean);
+            return `Histogram${compositeId ? `, ${compositeId}` : ''}. ${parts.join('; ') || 'no data'}.`;
+          })()}
+          style={{ display: 'block', width: '100%', height: '100%' }}
+        />
       </div>
     </div>
   );
