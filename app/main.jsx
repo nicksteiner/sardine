@@ -77,7 +77,7 @@ import { trainLogistic, evaluateModel, predictLogistic } from '../src/ml/trainer
 import { datasetFromClassRegions, stratifiedSplit } from '../src/ml/dataset.js';
 import { debugLog } from '../src/utils/debug-log.js';
 import { toDb } from '../src/utils/stats.js';
-import { clickable } from '../src/utils/a11y.js';
+import { clickable, isTypingTarget } from '../src/utils/a11y.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -5603,7 +5603,9 @@ function App() {
       }
 
       // Skip when typing in inputs
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+      // isTypingTarget also covers contenteditable, which is neither INPUT
+      // nor TEXTAREA and so slipped past the old check.
+      if (isTypingTarget(e.target)) return;
 
       // Ctrl+Shift+S — Save figure with all overlays
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
@@ -6389,7 +6391,12 @@ function App() {
           onPalette={() => setCommandPaletteOpen(true)}
         />
         {/* Controls Panel — one rail group visible at a time */}
-        <div className={`controls-panel${panelOpen ? '' : ' closed'}${sheetExpanded ? ' expanded' : ''}`}>
+        <div
+          className={`controls-panel${panelOpen ? '' : ' closed'}${sheetExpanded ? ' expanded' : ''}`}
+          role="tabpanel"
+          id={`rail-panel-${activePanel}`}
+          aria-labelledby={`rail-tab-${activePanel}`}
+        >
           <button
             className="sheet-handle"
             aria-label={sheetExpanded ? 'Collapse panel' : 'Expand panel'}

@@ -419,6 +419,10 @@ export function AnnotationOverlay({
     >
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={annotations.length
+          ? `Annotation overlay, ${annotations.length} annotations`
+          : 'Annotation overlay, empty'}
         style={{
           width: '100%', height: '100%',
           pointerEvents: 'none',

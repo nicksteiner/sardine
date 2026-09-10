@@ -555,6 +555,10 @@ export default function ScatterClassifier({
       {/* Scatter canvas */}
       <canvas
         ref={canvasRef}
+        role="img"
+        aria-label={`Scatter density, ${xLabel || 'band X'} against `
+          + `${isSingleChannel ? 'count' : (yLabel || 'band Y')}. `
+          + `${classRegions.length} class ${classRegions.length === 1 ? 'region' : 'regions'} drawn.`}
         style={{ cursor: drawingClass >= 0 ? 'crosshair' : 'default', display: 'block' }}
         onPointerDown={handlePointerDown}
       />

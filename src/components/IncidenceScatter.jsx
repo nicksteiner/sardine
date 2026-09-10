@@ -269,6 +269,11 @@ export function IncidenceScatter({
   return (
     <canvas
       ref={canvasRef}
+      role="img"
+      aria-label={dataBounds
+        ? `Backscatter against incidence angle, ${scatterData.count} samples. `
+          + `Angle filter ${angleMin} to ${angleMax} degrees.`
+        : 'Backscatter against incidence angle, no data'}
       style={{
         width: PLOT_W, height: PLOT_H,
         borderRadius: 'var(--radius-sm)',

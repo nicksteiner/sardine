@@ -106,6 +106,8 @@ export function CoordinateGrid({ viewState, bounds, width, height, epsg = null }
   return (
     <canvas
       ref={canvasRef}
+      // Decorative graticule — the coordinate readout states the same values.
+      aria-hidden="true"
       style={{
         position: 'absolute',
         inset: 0,

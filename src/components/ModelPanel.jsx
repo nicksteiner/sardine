@@ -63,7 +63,12 @@ function RasterPreview({ data, width, height, label }) {
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ fontSize: '0.55rem', color: 'var(--text-muted)', marginBottom: 2 }}>{label}</div>
-      <canvas ref={ref} style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid var(--sardine-border)', borderRadius: 2 }} />
+      <canvas
+        ref={ref}
+        role="img"
+        aria-label={`${label} preview, ${width} by ${height} pixels`}
+        style={{ width: '100%', imageRendering: 'pixelated', border: '1px solid var(--sardine-border)', borderRadius: 2 }}
+      />
     </div>
   );
 }

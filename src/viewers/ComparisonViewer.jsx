@@ -2,6 +2,7 @@ import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import DeckGL from '@deck.gl/react';
 import { OrthographicView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
+import { sliderKeys } from '../utils/a11y.js';
 
 /**
  * ComparisonViewer - Side-by-side SAR image viewer with linked pan/zoom
@@ -376,7 +377,22 @@ export function SwipeComparisonViewer({
       </div>
 
       {/* Swipe handle */}
-      <div style={swipeHandleStyle} onMouseDown={handleMouseDown}>
+      {/* The one control in the app whose interaction did not exist for the
+          keyboard at all — it was onMouseDown only. It is a slider in every
+          respect but its markup, so it says so and takes the arrow keys. */}
+      <div
+        style={swipeHandleStyle}
+        onMouseDown={handleMouseDown}
+        role="slider"
+        tabIndex={0}
+        aria-label="Comparison swipe position"
+        aria-orientation="vertical"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(swipePosition * 100)}
+        aria-valuetext={`${Math.round(swipePosition * 100)}% left scene`}
+        onKeyDown={sliderKeys(swipePosition, setSwipePosition, { step: 0.02 })}
+      >
         <div
           style={{
             position: 'absolute',
