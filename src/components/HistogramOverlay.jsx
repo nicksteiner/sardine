@@ -468,7 +468,7 @@ export function HistogramOverlay({
           <span style={{ color: '#4ec9d4' }}>Histogram</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
+          <button aria-label="Redraw histogram" onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
             background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
             fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>&#8635;</button>

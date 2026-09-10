@@ -864,7 +864,7 @@ export const CompareGrid = forwardRef(function CompareGrid(
             <span key={o.id} style={overlayChipStyle}>
               <span style={{ width: 8, height: 8, borderRadius: 2, background: OVERLAY_CHIP_COLORS[i % OVERLAY_CHIP_COLORS.length] }} />
               <span style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.name}</span>
-              <button type="button" onClick={() => removeOverlay(o.id)} style={removeButtonStyle} title="Remove overlay">×</button>
+              <button aria-label="Remove overlay" type="button" onClick={() => removeOverlay(o.id)} style={removeButtonStyle} title="Remove overlay">×</button>
             </span>
           ))}
         </div>
@@ -909,6 +909,8 @@ export const CompareGrid = forwardRef(function CompareGrid(
               <button
                 key={val}
                 type="button"
+                aria-label={`Figure style: ${lbl}`}
+                aria-pressed={figureTheme === val}
                 onClick={() => onFigureThemeChange(val)}
                 style={{
                   ...addButtonStyle,
@@ -1209,7 +1211,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {panel.name}
         </span>
-        <button type="button" onClick={onRemove} style={removeButtonStyle} title="Remove panel">×</button>
+        <button aria-label="Remove panel" type="button" onClick={onRemove} style={removeButtonStyle} title="Remove panel">×</button>
       </div>
 
       {/* Row 1b — NISAR frequency + polarization (only for .h5 panels) */}
@@ -1273,6 +1275,8 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
         </select>
         <button
           type="button"
+          aria-label="Reverse colormap"
+          aria-pressed={!!panel.reverseColormap}
           onClick={() => onReverse(!panel.reverseColormap)}
           style={{
             ...autoStretchBtnStyle,

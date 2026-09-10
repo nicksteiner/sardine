@@ -107,6 +107,7 @@ export default function ModelPanel({
             background: busy ? 'rgba(78,201,212,0.06)' : 'transparent',
           }}>
             <button
+              aria-label={`Run ${m.name || m.id} on the region of interest`}
               title={hasRoi ? `Run on ROI (${m['mlm:tasks'].join(', ')})` : 'Shift+drag an ROI first'}
               disabled={!runnable}
               onClick={() => onRun(m)}

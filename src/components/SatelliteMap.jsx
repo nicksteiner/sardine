@@ -164,10 +164,10 @@ export function SatelliteMap({ wgs84Bounds, visible = false, onToggle }) {
       <div className="overview-map-header">
         <span className="overview-map-title">Satellite · Bing VirtualEarth</span>
         <div className="overview-map-controls">
-          <button className="overview-map-btn" onClick={handleResetView} title="Reset view">R</button>
+          <button aria-label="Reset view" className="overview-map-btn" onClick={handleResetView} title="Reset view">R</button>
           <button className="overview-map-btn" onClick={() => setViewState(v => ({ ...v, zoom: Math.max(0, v.zoom - 1) }))} title="Zoom out">&minus;</button>
           <span className="overview-map-zoom-label">z{Math.round(viewState.zoom)}</span>
-          <button className="overview-map-btn" onClick={() => setViewState(v => ({ ...v, zoom: Math.min(18, v.zoom + 1) }))} title="Zoom in">+</button>
+          <button aria-label="Zoom in" className="overview-map-btn" onClick={() => setViewState(v => ({ ...v, zoom: Math.min(18, v.zoom + 1) }))} title="Zoom in">+</button>
           <button className="overview-map-btn overview-map-close" onClick={onToggle} title="Close">&times;</button>
         </div>
       </div>

@@ -427,7 +427,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {connectedLabel}
               {connectedLabel.length > 30 ? '...' : ''}
             </span>
-            <button
+            <button aria-label="Disconnect"
               className="btn-secondary discovery-disconnect-btn"
               onClick={handleDisconnect}
               title="Disconnect"
@@ -441,6 +441,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                 {i > 0 && <span className="discovery-sep">›</span>}
                 <button
                   className="discovery-crumb"
+                  aria-label={`Go to ${b.label}`}
                   onClick={() => handleBreadcrumb(b.prefix, b.index)}
                   disabled={b.prefix === prefix}
                 >

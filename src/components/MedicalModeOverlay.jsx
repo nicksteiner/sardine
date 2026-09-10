@@ -403,12 +403,13 @@ function ControlRail({ onSigma, onPercentile, onSnap, inverted, setInverted, has
             disabled={disabled}
             onClick={() => onSigma(n)}
             style={{ ...btn, opacity: disabled ? 0.4 : 1 }}
+            aria-label={`Stretch to plus or minus ${n} sigma`}
             title={`±${n}σ from histogram`}
           >
             {n}σ
           </button>
         ))}
-        <button
+        <button aria-label="2nd–98th percentile"
           disabled={disabled}
           onClick={onPercentile}
           style={{ ...btn, opacity: disabled ? 0.4 : 1 }}
@@ -420,10 +421,10 @@ function ControlRail({ onSigma, onPercentile, onSnap, inverted, setInverted, has
 
       <div style={sectionLabel}>ZOOM</div>
       <div style={{ display: 'flex', gap: 2 }}>
-        <button onClick={() => onSnap(0.25)} style={btn} title="1 data px = 4 screen px (1/4)">1:4</button>
-        <button onClick={() => onSnap(1)} style={btn} title="1:1 actual size">1:1</button>
-        <button onClick={() => onSnap(2)} style={btn} title="2 screen px per data px">2:1</button>
-        <button onClick={() => onSnap(4)} style={btn} title="4 screen px per data px">4:1</button>
+        <button aria-label="1 data px = 4 screen px (1/4)" onClick={() => onSnap(0.25)} style={btn} title="1 data px = 4 screen px (1/4)">1:4</button>
+        <button aria-label="1:1 actual size" onClick={() => onSnap(1)} style={btn} title="1:1 actual size">1:1</button>
+        <button aria-label="2 screen px per data px" onClick={() => onSnap(2)} style={btn} title="2 screen px per data px">2:1</button>
+        <button aria-label="4 screen px per data px" onClick={() => onSnap(4)} style={btn} title="4 screen px per data px">4:1</button>
       </div>
 
       <div style={sectionLabel}>DISPLAY</div>

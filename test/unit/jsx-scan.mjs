@@ -139,6 +139,19 @@ export function literalText(body) {
  * True if `el` sits inside the body of a <label> that carries literal text.
  * A wrapping label names its control implicitly — no htmlFor needed.
  */
+/**
+ * Every string a body could render: its literal text plus the string and
+ * template literals inside its JSX expressions. `{playing ? '⏸' : '▶'}` yields
+ * only glyphs — unnamed; `{n ? 'None' : 'Reset'}` yields words — named.
+ */
+export function accessibleText(body) {
+  const strings = [];
+  const re = /(["'`])((?:[^\\]|\\.)*?)\1/g;
+  let m;
+  while ((m = re.exec(body))) strings.push(m[2]);
+  return literalText(body) + ' ' + strings.join(' ');
+}
+
 export function insideTextLabel(el, all) {
   return all.some(l => l.tag === 'label'
     && el.index > l.bodyStart && el.index < l.bodyEnd

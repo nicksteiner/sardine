@@ -594,7 +594,7 @@ export default function ScatterClassifier({
             <span style={{ fontSize: 10, color: '#5a7099', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
               {classCounts[i] != null ? formatCount(classCounts[i]) : '—'}
             </span>
-            <button
+            <button aria-label="Redraw region"
               onClick={() => redrawClass(i)}
               title="Redraw region"
               style={{

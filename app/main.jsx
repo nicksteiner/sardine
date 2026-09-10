@@ -6335,6 +6335,7 @@ function App() {
               {geojsonPopup.geometry?.type || 'Feature'}
             </span>
             <button
+              aria-label="Close feature popup"
               onClick={() => setGeojsonPopup(null)}
               style={{
                 background: 'none', border: 'none', color: '#aaa', cursor: 'pointer',
@@ -7678,6 +7679,8 @@ function App() {
                       className={exportMode === mode.id ? '' : 'btn-secondary'}
                       style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
                       onClick={() => setExportMode(mode.id)}
+                      aria-label={`Export as ${mode.label}`}
+                      aria-pressed={exportMode === mode.id}
                       title={mode.desc}
                     >
                       {mode.label}
@@ -7943,6 +7946,8 @@ function App() {
                       {[['publication', 'Publication'], ['dark', 'Presentation']].map(([val, lbl], i) => (
                         <button
                           key={val}
+                          aria-label={`Figure style: ${lbl}`}
+                          aria-pressed={figureTheme === val}
                           onClick={() => { setFigureTheme(val); try { localStorage.setItem('sardine.figureTheme', val); } catch {} }}
                           className={figureTheme === val ? '' : 'btn-secondary'}
                           style={{
@@ -7969,6 +7974,8 @@ function App() {
                       {[['lines', 'Lines'], ['ticks', 'Ticks'], ['off', 'Off']].map(([val, lbl], i, arr) => (
                         <button
                           key={val}
+                          aria-label={`Figure grid: ${lbl}`}
+                          aria-pressed={figureGridMode === val}
                           onClick={() => { setFigureGridMode(val); try { localStorage.setItem('sardine.figureGrid', val); } catch {} }}
                           className={figureGridMode === val ? '' : 'btn-secondary'}
                           style={{
@@ -8098,6 +8105,8 @@ function App() {
                     ].map(({ key, label }) => (
                       <button
                         key={key}
+                        aria-label={`Annotation tool: ${key}`}
+                        aria-pressed={annotationMode === key}
                         onClick={() => setAnnotationMode(key)}
                         title={
                           key === 'arrow' ? 'Click tail, click head, type caption (Esc cancels)'
@@ -8138,6 +8147,8 @@ function App() {
                             ));
                           }
                         }}
+                        aria-label={`Annotation size: ${key}`}
+                        aria-pressed={annotationSize === key}
                         title={
                           `${key.charAt(0).toUpperCase() + key.slice(1)} — thicker lines & larger text`
                           + (selectedAnnotationId ? ' (also resizes the selected annotation)' : '')
@@ -8163,6 +8174,8 @@ function App() {
                       <button
                         key={key}
                         onClick={() => setAnnotationColor(key)}
+                        aria-label={`Annotation colour: ${key}`}
+                        aria-pressed={annotationColor === key}
                         title={`Color: ${key}`}
                         style={{
                           width: 18, height: 18,
@@ -8328,6 +8341,8 @@ function App() {
                     return (
                       <button
                         key={scope}
+                        aria-label={`Histogram scope: ${label}`}
+                        aria-pressed={histogramScope === scope}
                         className={histogramScope === scope ? '' : 'btn-secondary'}
                         style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px', opacity: disabled ? 0.4 : 1 }}
                         disabled={disabled}
@@ -8505,6 +8520,7 @@ function App() {
                     return presets.map(p => (
                       <button
                         key={p.label}
+                        aria-label={`Phase range ${p.label}`}
                         className="btn-secondary"
                         style={{ flex: 1, fontSize: '0.65rem', padding: '2px 4px', minWidth: '40px' }}
                         onClick={() => {
@@ -9146,14 +9162,17 @@ function App() {
                       borderRadius: 'var(--radius-sm)', fontSize: '0.7rem',
                     }}>
                       <button
+                        aria-label="Previous frame"
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev - 1 + roiTSFrames.length) % roiTSFrames.length); }}
                         style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
                       >◀</button>
                       <button
+                        aria-label={roiTSPlaying ? 'Pause time series' : 'Play time series'}
                         onClick={(e) => { e.stopPropagation(); setRoiTSPlaying(prev => !prev); }}
                         style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
                       >{roiTSPlaying ? '⏸' : '▶'}</button>
                       <button
+                        aria-label="Next frame"
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev + 1) % roiTSFrames.length); }}
                         style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
                       >▶</button>
