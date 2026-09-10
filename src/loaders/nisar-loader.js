@@ -114,6 +114,12 @@ function createLoadProgress(onProgress) {
       if (phase !== 'chunks') phase = 'chunks';
       emit();
     },
+    /** Bytes that crossed the wire, independent of chunk completion. */
+    addBytes(nBytes) {
+      if (!(nBytes > 0)) return;
+      bytes += nBytes;
+      emit();
+    },
     /** Terminal 100% report. Safe to call more than once. */
     finish() {
       if (!onProgress || lastPct >= 100) return;
@@ -130,6 +136,7 @@ function createLoadProgress(onProgress) {
       reader.setProgressSink((ev) => {
         if (ev.type === 'batch') this.addTotal(ev.total);
         else if (ev.type === 'chunk') this.chunkDone(1, ev.bytes || 0, false);
+        else if (ev.type === 'bytes') this.addBytes(ev.bytes || 0);
       });
     },
     /** Stop reporting — background tile reads must not drive the load bar. */
@@ -4477,12 +4484,17 @@ async function classifyDatasets(streamReader, datasets, paths = null, freq = 'A'
  * @param {string} url — HTTPS URL to a NISAR HDF5 file
  * @returns {Promise<Array<{frequency: string, polarization: string, band: string}>>}
  */
-export async function listNISARDatasetsFromUrl(url, { useTransferAcceleration = false, cloudfrontDomain, fetchHeaders } = {}) {
+export async function listNISARDatasetsFromUrl(url, { useTransferAcceleration = false, cloudfrontDomain, fetchHeaders, signal } = {}) {
   const resolvedUrl = normalizeS3Url(url, { useTransferAcceleration, cloudfrontDomain });
   debugLog(`[NISAR Loader] Listing datasets from URL: ${resolvedUrl}`);
+  throwIfAborted(signal);
 
   try {
     const streamReader = await openH5ChunkUrl(resolvedUrl, null, { fetchHeaders }); // Use lazy tree-walking
+    // W030: metadata streaming is a load too — a mis-pasted 1 GB URL should be
+    // stoppable before the user has committed to loading a band.
+    streamReader.setLoadSignal?.(signal || null);
+    throwIfAborted(signal);
     const h5Datasets = streamReader.getDatasets();
 
     debugLog(`[h5chunk] Found ${h5Datasets.length} datasets from URL`);

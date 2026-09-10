@@ -511,6 +511,199 @@ button.btn-danger:hover {
 }
 
 
+/* ─── W030: LOAD PANEL (determinate progress + cancel) ─── */
+.load-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(360px, 80%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  background: var(--sardine-panel, rgba(20, 24, 28, 0.92));
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-md);
+  text-align: center;
+  z-index: 20;
+}
+
+.load-panel-title {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  letter-spacing: 1px;
+  color: var(--text-primary);
+}
+
+.load-panel-detail {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.load-cancel {
+  align-self: center;
+  min-height: 32px;
+  padding: 4px 18px;
+}
+
+/* ─── W030: ERROR STACK (dismissible, no last-error-wins) ─── */
+.error-stack {
+  position: absolute;
+  top: var(--space-lg);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 90%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  z-index: 30;
+}
+
+.error-stack .error {
+  position: static;
+  transform: none;
+  max-width: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(255, 92, 92, 0.12);
+}
+
+.error-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.error-count {
+  color: var(--text-muted);
+}
+
+.error-dismiss {
+  flex-shrink: 0;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  line-height: 1;
+  font-size: 1rem;
+  background: transparent;
+  border: none;
+  color: var(--status-flood);
+  cursor: pointer;
+}
+
+.error-dismiss:hover {
+  color: var(--text-primary);
+}
+
+.error-dismiss-all {
+  align-self: flex-end;
+  min-height: 26px;
+  padding: 2px 12px;
+  font-size: 0.7rem;
+}
+
+/* ─── W030: EMPTY STATE (first thing a new user sees) ─── */
+.empty-state {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(520px, 88%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  text-align: center;
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: var(--text-primary);
+}
+
+.empty-state-lede {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.empty-state-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.empty-state-actions .btn-primary {
+  min-height: 36px;
+  padding: 6px 20px;
+}
+
+.empty-state-or {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.empty-state-url {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.empty-state-url label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.empty-state-url-row {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.empty-state-url-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-primary);
+  background: var(--sardine-bg, #0d1117);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+}
+
+.empty-state-url-row .btn-secondary {
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 4px 14px;
+}
+
+.empty-state-demo {
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.72rem;
+  color: var(--sardine-cyan);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.empty-state-demo:hover {
+  color: var(--text-primary);
+}
+
+
 /* ─── VALUE DISPLAY (monospace data) ─── */
 .value-display {
   font-family: var(--font-mono);

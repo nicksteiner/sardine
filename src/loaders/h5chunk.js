@@ -3218,6 +3218,8 @@ export class H5Chunk {
       // request completed contribute samples.
       // Skip measurement if batch was very fast (likely cached)
       const elapsed = (performance.now() - batchStart) / 1000; // seconds
+      // W030: report what actually crossed the wire, merged ranges included.
+      if (batchBytes > 0) this._emitProgress({ type: 'bytes', bytes: batchBytes, dataset: datasetId, tag });
       if (elapsed > 0.1 && batchBytes > 0) {
         const mbps = (batchBytes / (1024 * 1024)) / elapsed;
         this._throughputSamples.push(mbps);
@@ -3237,7 +3239,10 @@ export class H5Chunk {
           const chunkBuffer = mergedBuffer.slice(localOffset, localOffset + entry.size);
           const decoded = await this._decompressAndDecode(chunkBuffer, dataset, entry.filterMask);
           results.set(entry.key, decoded);
-          this._emitProgress({ type: 'chunk', bytes: entry.size, dataset: datasetId, tag });
+          // No bytes here: on the HTTP path the wire cost is the MERGED range,
+          // reported once per batch below. Summing chunk sizes would under-report
+          // by whatever the coalescer pulled in between them.
+          this._emitProgress({ type: 'chunk', dataset: datasetId, tag });
         })());
       }
     }
