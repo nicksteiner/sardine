@@ -6359,8 +6359,7 @@ function App() {
               </div>
             </div>
             {isHostedBuild() && (
-              <div className="control-group">
-                <label className="u-sm">Proxy URL</label>
+              <Field label="Proxy URL" className="control-group">
                 <input
                   type="text"
                   value={edlProxyUrl}
@@ -6377,7 +6376,7 @@ function App() {
                     borderRadius: '2px',
                   }}
                 />
-              </div>
+              </Field>
             )}
             <div className="control-group u-row-sm">
               <button
@@ -6548,8 +6547,7 @@ function App() {
               </div>
 
               {/* Compare grid — open up to 4 GeoTIFFs / NISAR .h5 side by side / 2×2 */}
-              <div className="control-group">
-                <label>Compare (up to 4, synced)</label>
+              <Field label="Compare (up to 4, synced)" className="control-group">
                 <input
                   type="file"
                   accept=".tif,.tiff,.h5,.hdf5,.he5"
@@ -6573,7 +6571,7 @@ function App() {
                 >
                   {compareMode ? 'Exit Compare Grid' : 'Compare Files…'}
                 </button>
-              </div>
+              </Field>
 
               {imageData?.sliceCount > 1 && (
                 <div className="control-group u-note">
@@ -6625,8 +6623,7 @@ function App() {
           {/* NISAR HDF5 Input */}
           {(fileType === 'nisar' || fileType === 'nisar-gunw') && (
             <CollapsibleSection title={`Load NISAR ${nisarProductType}`}>
-              <div className="control-group">
-                <label>HDF5 File</label>
+              <Field label="HDF5 File" className="control-group">
                 <input
                   type="file"
                   accept=".h5,.hdf5,.he5"
@@ -6645,7 +6642,7 @@ function App() {
                 >
                   {nisarFile ? 'Change File...' : 'Choose File...'}
                 </button>
-              </div>
+              </Field>
 
               {nisarFile && (
                 <div className="control-group u-hint u-break">
@@ -6705,8 +6702,7 @@ function App() {
           {fileType === 'remote' && (
             <CollapsibleSection title="Browse Remote Data">
               {/* Direct URL input (pre-signed S3, HTTPS) */}
-              <div className="control-group">
-                <label>Direct URL</label>
+              <Field label="Direct URL" className="control-group">
                 <input
                   type="text"
                   value={directUrl}
@@ -6715,7 +6711,7 @@ function App() {
                   placeholder="https://…/*.h5 or *.tif (auto-detected)"
                   style={{ fontFamily: 'monospace', fontSize: 'var(--text-sm)' }}
                 />
-              </div>
+              </Field>
               <button
                 className="btn-secondary"
                 onClick={handleDirectUrlSubmit}
@@ -6832,8 +6828,7 @@ function App() {
                 )}
               </div>
 
-              <div className="control-group">
-                <label>Frequency</label>
+              <Field label="Frequency" className="control-group">
                 <select
                   value={selectedFrequency}
                   onChange={(e) => {
@@ -6860,12 +6855,11 @@ function App() {
                     <option key={f} value={f}>Frequency {f}</option>
                   ))}
                 </select>
-              </div>
+              </Field>
 
               {/* GUNW-specific: Layer group selector */}
               {nisarProductType === 'GUNW' && (
-                <div className="control-group">
-                  <label>Layer</label>
+                <Field label="Layer" className="control-group">
                   <select
                     value={selectedLayer}
                     onChange={(e) => {
@@ -6889,13 +6883,12 @@ function App() {
                       </option>
                     ))}
                   </select>
-                </div>
+                </Field>
               )}
 
               {/* GUNW-specific: Dataset selector within layer */}
               {nisarProductType === 'GUNW' && (
-                <div className="control-group">
-                  <label>Dataset</label>
+                <Field label="Dataset" className="control-group">
                   <select
                     value={selectedGunwDataset}
                     onChange={(e) => setSelectedGunwDataset(e.target.value)}
@@ -6912,11 +6905,10 @@ function App() {
                       </option>
                     ))}
                   </select>
-                </div>
+                </Field>
               )}
 
-              <div className="control-group">
-                <label>Polarization</label>
+              <Field label="Polarization" className="control-group">
                 <select
                   value={selectedPolarization}
                   onChange={(e) => {
@@ -6944,11 +6936,10 @@ function App() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </Field>
 
               {/* Display mode — single band, RGB composite (GCOV only), or multi-temporal */}
-              <div className="control-group">
-                <label>Display Mode</label>
+              <Field label="Display Mode" className="control-group">
                 <select
                   value={displayMode}
                   onChange={(e) => setDisplayMode(e.target.value)}
@@ -6966,7 +6957,7 @@ function App() {
                   )}
                   <option value="multi-temporal">Multi-temporal RGB (3 dates)</option>
                 </select>
-              </div>
+              </Field>
 
               {displayMode === 'index' && availableIndices.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
@@ -7394,8 +7385,7 @@ function App() {
 
             {opticalPeekEnabled && (
               <>
-                <div className="control-group">
-                  <label>Source</label>
+                <Field label="Source" className="control-group">
                   <select
                     value={opticalPeekProvider}
                     onChange={(e) => setOpticalPeekProvider(e.target.value)}
@@ -7403,7 +7393,7 @@ function App() {
                     <option value="esri">Esri World Imagery</option>
                     <option value="osm">OpenStreetMap</option>
                   </select>
-                </div>
+                </Field>
                 <div className="control-group">
                   <label>Opacity: {opticalPeekOpacity.toFixed(2)}</label>
                   <input
@@ -7422,14 +7412,13 @@ function App() {
           {activePanel === 'display' && (
           <CollapsibleSection title="Display">
 
-            <div className="control-group">
-              <label>UI Theme</label>
+            <Field label="UI Theme" className="control-group">
               <select value={uiTheme} onChange={(e) => setUiTheme(e.target.value)}>
                 <option value="">Dark</option>
                 <option value="sardine">SARdine (navy)</option>
                 <option value="light">Light</option>
               </select>
-            </div>
+            </Field>
 
             {/* Colormap selector — hidden in RGB composite mode */}
             {sidebarDisplayMode !== 'rgb' && (
@@ -8560,14 +8549,13 @@ function App() {
             )}
 
             {/* Stretch mode + Gamma */}
-            <div className="control-group">
-              <label>Stretch</label>
+            <Field label="Stretch" className="control-group">
               <select value={stretchMode} onChange={(e) => setStretchMode(e.target.value)}>
                 {Object.entries(STRETCH_MODES).map(([id, mode]) => (
                   <option key={id} value={id}>{mode.name}</option>
                 ))}
               </select>
-            </div>
+            </Field>
 
             {(stretchMode === 'gamma' || stretchMode === 'sigmoid') && (
               <div className="control-group">
@@ -8606,8 +8594,7 @@ function App() {
 
             {/* Color deficiency mode — only shown in RGB display modes */}
             {isRGBDisplayMode && imageData?.getRGBTile && (
-              <div className="control-group">
-                <label>Color deficiency</label>
+              <Field label="Color deficiency" className="control-group">
                 <select
                   value={colorblindMode}
                   onChange={(e) => {
@@ -8622,7 +8609,7 @@ function App() {
                   <option value="deuteranopia">Deuteranopia / Protanopia</option>
                   <option value="tritanopia">Tritanopia</option>
                 </select>
-              </div>
+              </Field>
             )}
 
             {/* Multi-look toggle — hidden on main branch, needs more work */}
