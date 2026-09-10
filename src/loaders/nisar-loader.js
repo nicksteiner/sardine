@@ -588,7 +588,10 @@ async function detectFrequencies(streamReader, h5Datasets, paths) {
     return result;
   }
 
-  return ['A']; // default
+  // No frequency evidence anywhere in the file — report nothing rather than
+  // asserting frequency A exists (see detectCovarianceTerms).
+  debugLog('[NISAR Loader] No frequencies detected');
+  return [];
 }
 
 /**
@@ -662,7 +665,13 @@ async function detectCovarianceTerms(streamReader, h5Datasets, paths, freq) {
     return DIAGONAL_TERMS.slice(0, 4); // conservative default
   }
 
-  return ['HHHH', 'HVHV', 'VHVH', 'VVVV']; // last-resort default
+  // No evidence of any covariance term. Previously this returned a full
+  // quad-pol default, so a file that yielded nothing — a truncated download,
+  // most commonly — was reported as containing HHHH/HVHV/VHVH/VVVV. That is
+  // fabricated: listNISARDatasets "succeeded" while the actual load failed,
+  // which sends the reader hunting for a loader defect. Report nothing found.
+  debugLog(`[NISAR Loader] No covariance terms detected for freq ${freq}`);
+  return [];
 }
 
 /**
