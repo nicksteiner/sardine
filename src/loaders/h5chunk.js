@@ -1380,6 +1380,20 @@ export class H5Chunk {
     // Skip signature scanning in lazy tree-walking mode (saves bandwidth + time)
     if (this.lazyTreeWalking) {
       debugLog(`[h5chunk] Lazy mode: skipping signature scans, found ${this.datasets.size} datasets from root group`);
+      // A truncated download presents as an empty file: object headers point
+      // into bytes that were never written, so the walk finds nothing. Say so
+      // explicitly — "no datasets" sends people hunting for a parser bug.
+      const actualSize = this.file?.size ?? this.remoteSize ?? null;
+      if (this.datasets.size === 0 && actualSize != null &&
+          this.superblock?.endOfFileAddress != null &&
+          actualSize < this.superblock.endOfFileAddress) {
+        const missing = this.superblock.endOfFileAddress - actualSize;
+        throw new Error(
+          `HDF5 file is truncated: ${actualSize} bytes available but the superblock ` +
+          `declares ${this.superblock.endOfFileAddress} (${(missing / 1e6).toFixed(1)} MB missing). ` +
+          `The download is incomplete — re-fetch the file.`
+        );
+      }
       return;
     }
 
@@ -2854,6 +2868,149 @@ export class H5Chunk {
 
     // Decompress + decode (uses worker pool when enabled)
     return this._decompressAndDecode(buffer, dataset, chunkInfo.filterMask);
+  }
+
+  /**
+   * Read one chunk of an N-dimensional dataset by chunk index.
+   *
+   * readChunk() is 2D-only: it builds the B-tree key from (row, col) alone.
+   * Metadata cubes are 3D (height x northing x easting), so their B-tree keys
+   * have three coordinates and a 2D lookup never matches — the chunk is
+   * reported missing and the cube silently fails to load.
+   *
+   * @param {string} datasetId
+   * @param {number[]} chunkIndex - chunk index per dimension, e.g. [z, y, x]
+   * @returns {Promise<Float32Array|null>} decoded chunk, or null if absent
+   */
+  async readChunkND(datasetId, chunkIndex, { signal } = {}) {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
+
+    if (this.lazyTreeWalking && !dataset.chunks) {
+      await this._ensureChunkIndex(datasetId);
+    }
+    if (!dataset.chunks) throw new Error('Dataset is not chunked or chunk index not available');
+
+    // B-tree keys are PIXEL offsets per dimension, not chunk indices.
+    const chunkDims = dataset.layout?.chunkDims || [];
+    const key = chunkIndex.map((ci, d) => ci * (chunkDims[d] ?? 1)).join(',');
+    const chunkInfo = dataset.chunks.get(key);
+    if (!chunkInfo) return null; // sparse / absent chunk
+
+    let buffer;
+    if (this.file) {
+      buffer = await this.file.slice(chunkInfo.offset, chunkInfo.offset + chunkInfo.size).arrayBuffer();
+    } else if (this.url) {
+      const response = await fetch(this.url, {
+        headers: {
+          'Range': `bytes=${chunkInfo.offset}-${chunkInfo.offset + chunkInfo.size - 1}`,
+          ...this.fetchHeaders,
+        },
+        signal,
+      });
+      buffer = await response.arrayBuffer();
+    } else {
+      throw new Error('No file or url available for chunk read');
+    }
+
+    return this._decompressAndDecode(buffer, dataset, chunkInfo.filterMask);
+  }
+
+  /**
+   * Read an entire N-dimensional chunked dataset into a flat array.
+   *
+   * Intended for small N-D metadata (NISAR radarGrid cubes are ~21 x 715 x 725
+   * float32, a few tens of MB uncompressed), NOT for image rasters.
+   *
+   * @param {string} datasetId
+   * @returns {Promise<Float32Array|null>}
+   */
+  async readFullND(datasetId, { signal } = {}) {
+    const dataset = this.datasets.get(datasetId);
+    if (!dataset) throw new Error(`Dataset not found: ${datasetId}`);
+
+    const shape = dataset.shape || [];
+    if (shape.length === 0) return null;
+
+    if (dataset.layout?.type === 'contiguous') {
+      // Contiguous N-D: one linear read of the whole extent.
+      const total = shape.reduce((a, b) => a * b, 1);
+      const bytes = total * (dataset.bytesPerElement || 4);
+      let buffer;
+      if (this.file) {
+        buffer = await this.file.slice(dataset.layout.address, dataset.layout.address + bytes).arrayBuffer();
+      } else {
+        const response = await fetch(this.url, {
+          headers: { 'Range': `bytes=${dataset.layout.address}-${dataset.layout.address + bytes - 1}`, ...this.fetchHeaders },
+          signal,
+        });
+        buffer = await response.arrayBuffer();
+      }
+      return this._decodeData(buffer, dataset.dtype);
+    }
+
+    if (this.lazyTreeWalking && !dataset.chunks) {
+      await this._ensureChunkIndex(datasetId);
+    }
+    if (!dataset.chunks) return null;
+
+    // Chunk grid extent per dimension. HDF5 chunkDims may carry a trailing
+    // element-size entry (e.g. [1, 512, 512, 4] for a rank-3 float32 dataset),
+    // so only the first `rank` entries describe the chunk grid.
+    const rank = shape.length;
+    const chunkDims = (dataset.layout?.chunkDims || []).slice(0, rank);
+    if (chunkDims.length !== rank) return null;
+    const nChunks = shape.map((s, d) => Math.ceil(s / chunkDims[d]));
+
+    const total = shape.reduce((a, b) => a * b, 1);
+    const out = new Float32Array(total);
+
+    // Row-major strides for the destination array.
+    const strides = new Array(rank).fill(1);
+    for (let d = rank - 2; d >= 0; d--) strides[d] = strides[d + 1] * shape[d + 1];
+
+    // Iterate the chunk grid in odometer order.
+    const idx = new Array(rank).fill(0);
+    const totalChunks = nChunks.reduce((a, b) => a * b, 1);
+    for (let c = 0; c < totalChunks; c++) {
+      const data = await this.readChunkND(datasetId, idx, { signal });
+      if (data) {
+        // Copy this chunk into the destination, clipping at array edges
+        // (edge chunks are padded in the file but not in the output).
+        const origin = idx.map((ci, d) => ci * chunkDims[d]);
+        const extent = origin.map((o, d) => Math.min(chunkDims[d], shape[d] - o));
+        const inner = extent[rank - 1];
+        const outerCount = extent.slice(0, rank - 1).reduce((a, b) => a * b, 1);
+        const pos = new Array(rank - 1).fill(0);
+        for (let o = 0; o < outerCount; o++) {
+          // Linear index of this row's start within the (padded) chunk.
+          let srcLin = 0, mult = 1;
+          for (let d = rank - 1; d >= 0; d--) {
+            const coord = d === rank - 1 ? 0 : pos[d];
+            srcLin += coord * mult;
+            mult *= chunkDims[d];
+          }
+          // Matching offset in the destination array.
+          let dst = 0;
+          for (let d = 0; d < rank - 1; d++) dst += (origin[d] + pos[d]) * strides[d];
+          dst += origin[rank - 1] * strides[rank - 1];
+
+          if (srcLin + inner <= data.length && dst + inner <= out.length) {
+            out.set(data.subarray(srcLin, srcLin + inner), dst);
+          }
+          // Odometer over the outer dimensions.
+          for (let d = rank - 2; d >= 0; d--) {
+            if (++pos[d] < extent[d]) break;
+            pos[d] = 0;
+          }
+        }
+      }
+      for (let d = rank - 1; d >= 0; d--) {
+        if (++idx[d] < nChunks[d]) break;
+        idx[d] = 0;
+      }
+    }
+    return out;
   }
 
   /**

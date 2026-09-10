@@ -429,8 +429,20 @@ async function readDataset(reader, path) {
         if (result) return result.data || result;
       }
 
-      // Fall back to readRegion for larger datasets (cube fields, etc.)
-      // Treat N-D data as flat 2D: (product of leading dims, last dim)
+      // N-D fields (the cubes themselves are rank 3: height x northing x
+      // easting). readRegion is 2D-only — it derives the B-tree key from
+      // (row, col) alone, so a rank-3 key never matches and the field comes
+      // back empty. readFullND walks the chunk grid in full rank.
+      if (reader.readFullND && reader.getDatasets) {
+        const dsMeta = reader.getDatasets().find(d => d.id === dsId);
+        const rank = dsMeta?.shape?.length || 0;
+        if (rank >= 3) {
+          const full = await reader.readFullND(dsId);
+          if (full) return full;
+        }
+      }
+
+      // Fall back to readRegion for 1-D/2-D datasets.
       if (reader.readRegion && reader.getDatasets) {
         const datasets = reader.getDatasets();
         const dsMeta = datasets.find(d => d.id === dsId);
