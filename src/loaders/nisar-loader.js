@@ -43,6 +43,111 @@ import { toDb } from '../utils/stats.js';
 /** SAR bands — NISAR carries L-band (LSAR) and S-band (SSAR). */
 const SAR_BANDS = ['LSAR', 'SSAR'];
 
+// ── W030: load progress reporting ───────────────────────────────────────────
+// Percentage budget per load phase. Opening/metadata/index are bounded and
+// quick; the chunk stream owns the rest, which is where a >500 MB granule
+// actually spends its time.
+const LOAD_PHASE_BASE = {
+  opening: 0,
+  metadata: 5,
+  index: 10,
+  chunks: 15,
+  done: 100,
+};
+
+/**
+ * Build the progress reporter threaded through the NISAR loaders.
+ *
+ * Mirrors the established COG/TIF/NITF convention — `onProgress(pct)` — and
+ * adds a second argument with the counts a SAR user actually wants
+ * ("142 / 380 chunks · 412 MB"). Percentages are clamped monotonic: totals grow
+ * as new chunk batches are announced, and a bar that walks backwards reads as
+ * broken.
+ *
+ * @param {(pct: number, detail: object) => void} [onProgress]
+ */
+function createLoadProgress(onProgress) {
+  let total = 0, done = 0, bytes = 0, cached = 0;
+  let phase = 'opening';
+  let lastPct = 0;
+
+  const emit = () => {
+    if (!onProgress) return;
+    let pct;
+    if (phase === 'chunks') {
+      const span = LOAD_PHASE_BASE.done - LOAD_PHASE_BASE.chunks;
+      pct = total > 0
+        ? LOAD_PHASE_BASE.chunks + span * (done / total)
+        : LOAD_PHASE_BASE.chunks;
+      pct = Math.min(99, pct); // 100 is reserved for the explicit finish()
+    } else {
+      pct = LOAD_PHASE_BASE[phase] ?? 0;
+    }
+    pct = Math.max(lastPct, pct);
+    lastPct = pct;
+    // All chunks served from the L2 cache → this load touched no network.
+    const fromCache = done > 0 && cached === done;
+    onProgress(pct, {
+      phase, chunksDone: done, chunksTotal: total, bytes,
+      cachedChunks: cached, fromCache,
+    });
+  };
+
+  return {
+    get enabled() { return !!onProgress; },
+    setPhase(p) { phase = p; emit(); },
+    /** Announce N more chunks that this load will have to fetch/decode. */
+    addTotal(n) {
+      if (!(n > 0)) return;
+      total += n;
+      phase = 'chunks';
+      emit();
+    },
+    /** One chunk finished. `isCached` marks an L2 (IndexedDB) hit. */
+    chunkDone(n = 1, nBytes = 0, isCached = false) {
+      done += n;
+      bytes += nBytes;
+      if (isCached) cached += n;
+      // L2 cache hits are counted before their batch is announced (the batch
+      // only ever sees the misses), so keep the denominator honest.
+      if (done > total) total = done;
+      if (phase !== 'chunks') phase = 'chunks';
+      emit();
+    },
+    /** Terminal 100% report. Safe to call more than once. */
+    finish() {
+      if (!onProgress || lastPct >= 100) return;
+      lastPct = 100;
+      phase = 'done';
+      onProgress(100, {
+        phase: 'done', chunksDone: done, chunksTotal: total || done, bytes,
+        cachedChunks: cached, fromCache: done > 0 && cached === done,
+      });
+    },
+    /** Attach to an H5Chunk reader so per-chunk decode completion reports. */
+    attach(reader) {
+      if (!onProgress || !reader?.setProgressSink) return;
+      reader.setProgressSink((ev) => {
+        if (ev.type === 'batch') this.addTotal(ev.total);
+        else if (ev.type === 'chunk') this.chunkDone(1, ev.bytes || 0, false);
+      });
+    },
+    /** Stop reporting — background tile reads must not drive the load bar. */
+    detach(reader) {
+      reader?.setProgressSink?.(null);
+    },
+  };
+}
+
+/** Throw a cancellation error if the caller's load-scoped signal has fired. */
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    const e = new Error('Load cancelled');
+    e.name = 'AbortError';
+    throw e;
+  }
+}
+
 /**
  * Diagonal (real-valued) covariance terms — backscatter power.
  * Type: Float32, Shape: (length, width), units: gamma0 (linear).
@@ -1169,13 +1274,24 @@ async function loadNISARGCOVStreaming(file, options = {}) {
   const {
     frequency = 'A',
     polarization = 'HHHH',
+    onProgress,
+    signal,
   } = options;
+
+  const progress = createLoadProgress(onProgress);
+  throwIfAborted(signal);
+  progress.setPhase('opening');
 
   debugLog('[NISAR Loader] Opening with h5chunk streaming...');
 
   // Open with h5chunk - uses lazy tree-walking by default
   // With lazy mode: reads ~10KB + remote object headers (~1-2MB) + on-demand B-trees
   const streamReader = await openH5ChunkFile(file); // Let h5chunk decide based on lazyTreeWalking flag
+  // W030: the load-scoped user-cancel signal reaches the range reads themselves;
+  // the per-tile deck.gl signal (W003) is a separate channel and stays out of here.
+  streamReader.setLoadSignal?.(signal || null);
+  throwIfAborted(signal);
+  progress.setPhase('metadata');
 
   // Get discovered datasets
   const h5Datasets = streamReader.getDatasets();
@@ -2330,12 +2446,50 @@ async function loadNISARGCOVStreaming(file, options = {}) {
 
   // Eagerly load the B-tree chunk index so the first getTile call is fast.
   // On a 40k×40k file this avoids a ~60s stall on the first tile render.
+  progress.setPhase('index');
   try {
     await streamReader._ensureChunkIndex(selectedDatasetId);
     if (maskDatasetId) await streamReader._ensureChunkIndex(maskDatasetId);
   } catch (e) {
+    if (e?.name === 'AbortError') throw e;
     console.warn('[NISAR Loader] Eager B-tree load failed (will retry lazily):', e.message);
   }
+  throwIfAborted(signal);
+
+  // W030: warm a coarse overview grid before handing the scene back. Two
+  // reasons: the first paint comes from cache instead of a cold chunk fetch,
+  // and it is the only place the local-file path does bulk chunk I/O — so it
+  // is where a determinate progress bar can report real chunk counts for the
+  // "drop a 1 GB GCOV" flow. Bounded to OVERVIEW_MAX_CHUNKS so it stays a
+  // warm-up, never a full read.
+  const OVERVIEW_MAX = 8; // 8×8 = 64 chunks max
+  try {
+    progress.attach(streamReader);
+    const totalCR = Math.ceil(height / chunkH);
+    const totalCC = Math.ceil(width / chunkW);
+    const strideR = Math.max(1, Math.ceil(totalCR / OVERVIEW_MAX));
+    const strideC = Math.max(1, Math.ceil(totalCC / OVERVIEW_MAX));
+    const coords = [];
+    for (let cr = 0; cr < totalCR; cr += strideR) {
+      for (let cc = 0; cc < totalCC; cc += strideC) coords.push([cr, cc]);
+    }
+    if (coords.length > 0 && streamReader.readChunksBatch) {
+      // mergeGap 0: this grid is strided — merging would download the gaps.
+      const opts = (strideR > 1 || strideC > 1)
+        ? { mergeGap: 0, tag: 'prefetch-local' }
+        : { tag: 'prefetch-local' };
+      const batchMap = await streamReader.readChunksBatch(selectedDatasetId, coords, opts);
+      for (const [key, data] of batchMap) {
+        chunkCache.set(key, data?.data || data);
+      }
+    }
+  } catch (e) {
+    if (e?.name === 'AbortError') { progress.detach(streamReader); throw e; }
+    console.warn('[NISAR Loader] Local overview prefetch failed (tiles will load lazily):', e.message);
+  } finally {
+    progress.detach(streamReader);
+  }
+  progress.finish();
 
   debugLog('[NISAR Loader] NISAR GCOV loaded successfully (streaming mode):', {
     width, height, bounds, worldBounds, crs, frequency, polarization,
@@ -2521,7 +2675,14 @@ export async function loadNISARGCOV(file, options = {}) {
   const {
     frequency = 'A',
     polarization = 'HHHH',
+    // W030: mirrors the COG/TIF/NITF convention — onProgress(pct, detail).
+    onProgress,
+    // W030: load-scoped user-cancel signal. NOT the per-tile deck.gl signal
+    // (W003) — this one reaches the h5chunk range reads.
+    signal,
   } = options;
+  const progress = createLoadProgress(onProgress);
+  throwIfAborted(signal);
 
   debugLog(`[NISAR Loader] Loading NISAR GCOV: ${file.name}`);
   debugLog(`[NISAR Loader] File size: ${(file.size / 1e9).toFixed(2)} GB`);
@@ -2536,9 +2697,12 @@ export async function loadNISARGCOV(file, options = {}) {
 
   // For smaller files, use h5wasm (full load into memory)
   debugLog('[NISAR Loader] Using h5wasm (full load) for smaller file');
+  progress.setPhase('opening');
 
   // Open HDF5 file (loads entire file into memory)
   const { h5file, fullLoaded, loadedSize } = await openHDF5Chunked(file);
+  throwIfAborted(signal);
+  progress.setPhase('metadata');
 
   debugLog(`[NISAR Loader] Loaded: ${(loadedSize / 1e6).toFixed(1)} MB, Full: ${fullLoaded}`);
 
@@ -2749,6 +2913,9 @@ export async function loadNISARGCOV(file, options = {}) {
     _fullLoaded: fullLoaded,
     _h5file: h5file,
   };
+
+  throwIfAborted(signal);
+  progress.finish();
 
   debugLog('[NISAR Loader] NISAR GCOV loaded successfully (chunked):', {
     width,
@@ -4380,7 +4547,16 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
     // cannot resolve. Without it those files silently report EPSG:4326 over a
     // UTM grid, and every geographic ROI then misses the scene.
     assumeEpsg = null,
+    // W030: onProgress(pct, detail) — same convention as COG/TIF/NITF. Stays
+    // live through prefetchOverviewChunks(), which is where the bytes are.
+    onProgress,
+    // W030: load-scoped user-cancel signal (never the per-tile signal, W003).
+    signal,
   } = options;
+
+  const progress = createLoadProgress(onProgress);
+  throwIfAborted(signal);
+  progress.setPhase('opening');
 
   // Normalize S3 URIs and optionally apply Transfer Acceleration / CloudFront
   const resolvedUrl = normalizeS3Url(url, { useTransferAcceleration, cloudfrontDomain });
@@ -4390,6 +4566,9 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
   // Reuse reader from listNISARDatasetsFromUrl if available (avoids re-downloading metadata)
   const streamReader = existingReader || await openH5ChunkUrl(resolvedUrl, null, { fetchHeaders }); // Use lazy tree-walking
+  streamReader.setLoadSignal?.(signal || null);
+  throwIfAborted(signal);
+  progress.setPhase('metadata');
   const h5Datasets = streamReader.getDatasets();
 
   debugLog(`[NISAR Loader] h5chunk discovered ${h5Datasets.length} datasets from URL`);
@@ -4656,6 +4835,11 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
               const key = `${cr},${cc}`;
               cacheChunkL1(key, cached);
               out.set(key, cached);
+              // W030: an L2 (IndexedDB) hit never reaches readChunksBatch, so
+              // it is invisible to the reader's progress sink. Count it here,
+              // flagged, so a warm reload reads as "cached" rather than as a
+              // network fetch that never happened.
+              if (batchOpts.onCachedChunk) batchOpts.onCachedChunk();
             } else {
               missing.push([cr, cc]);
             }
@@ -5526,10 +5710,19 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         tasks.push(streamReader._ensureChunkIndex(maskDatasetId).catch(() => {}));
       }
 
+      // W030: the overview prefetch is where a remote load actually spends its
+      // bytes, so the progress bar stays live across it and only finishes here.
+      progress.attach(streamReader);
+      const onCachedChunk = () => progress.chunkDone(1, 0, true);
+
       // Use batch read if available (L2 first, then coalesced HTTP requests).
       // mergeGap 0: this grid is strided — merging would download the gaps.
       if (streamReader.readChunksBatch) {
-        tasks.push(readDataChunksBatch(coords, (strideR > 1 || strideC > 1) ? { mergeGap: 0, tag: 'prefetch' } : { tag: 'prefetch' }));
+        const strided = strideR > 1 || strideC > 1;
+        const opts = strided
+          ? { mergeGap: 0, tag: 'prefetch', onCachedChunk }
+          : { tag: 'prefetch', onCachedChunk };
+        tasks.push(readDataChunksBatch(coords, opts));
       } else {
         // Fallback: individual parallel reads
         for (const [cr, cc] of coords) {
@@ -5537,7 +5730,12 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
         }
       }
 
-      await Promise.all(tasks);
+      try {
+        await Promise.all(tasks);
+      } finally {
+        progress.detach(streamReader);
+      }
+      progress.finish();
       debugLog(`[NISAR Loader] Overview prefetch complete (${chunkCache.size} chunks cached)`);
     },
     /** Enable/disable Phase 2 background refinement. */
@@ -5553,12 +5751,15 @@ export async function loadNISARGCOVFromUrl(url, options = {}) {
 
   // Eagerly load the B-tree chunk index so the first getTile call is fast.
   // On a 40k×40k file this avoids a ~60s stall on the first tile render.
+  progress.setPhase('index');
   try {
     await streamReader._ensureChunkIndex(selectedDatasetId);
     if (maskDatasetId) await streamReader._ensureChunkIndex(maskDatasetId);
   } catch (e) {
+    if (e?.name === 'AbortError') throw e;
     console.warn('[NISAR Loader] Eager B-tree load failed (will retry lazily):', e.message);
   }
+  throwIfAborted(signal);
 
   return result;
 }

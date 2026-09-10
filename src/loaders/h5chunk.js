@@ -1204,6 +1204,53 @@ export class H5Chunk {
     this._throughputSamples = []; // recent MB/s measurements
     this._concurrencyMin = 6;
     this._concurrencyMax = 50;
+
+    // ── W030 load UX ────────────────────────────────────────────────────────
+    // `_loadSignal` is the USER-CANCEL signal for a whole load operation. It is
+    // deliberately NOT the per-tile deck.gl signal that W003 forbids forwarding
+    // into chunk reads (see the regression note in readChunksBatch): that one
+    // arrives as the `signal` call option and is only a post-read CPU skip.
+    // This one is load-scoped — when the user presses Cancel we must actually
+    // stop issuing range reads, not merely discard their results.
+    this._loadSignal = null;
+    // `_progressSink` receives one {type:'batch'} event per readChunksBatch and
+    // one {type:'chunk'} event per chunk that finishes decoding (decode-pool
+    // completion), so callers can report real per-chunk progress.
+    this._progressSink = null;
+  }
+
+  /**
+   * Install the load-scoped user-cancel signal. Distinct from the per-tile
+   * deck.gl signal (W003) — this one IS forwarded into fetch().
+   * @param {AbortSignal|null} signal
+   */
+  setLoadSignal(signal) {
+    this._loadSignal = signal || null;
+  }
+
+  /**
+   * Install a per-chunk progress sink. Pass null to remove it (callers should
+   * do this once a load finishes so background tile reads stop reporting).
+   * @param {((ev: {type: 'batch'|'chunk', total?: number, bytes?: number, dataset?: string, tag?: string}) => void)|null} fn
+   */
+  setProgressSink(fn) {
+    this._progressSink = typeof fn === 'function' ? fn : null;
+  }
+
+  /** Emit a progress event; a throwing sink must never break a read. */
+  _emitProgress(ev) {
+    const sink = this._progressSink;
+    if (!sink) return;
+    try { sink(ev); } catch { /* a broken progress UI must not fail the load */ }
+  }
+
+  /** Throw an AbortError if the user cancelled this load. */
+  _throwIfLoadAborted() {
+    if (this._loadSignal?.aborted) {
+      const e = new Error('Load cancelled');
+      e.name = 'AbortError';
+      throw e;
+    }
   }
 
   /**
@@ -3070,6 +3117,11 @@ export class H5Chunk {
 
     if (chunkEntries.length === 0) return results;
 
+    // W030: announce the batch size before any I/O so a progress consumer can
+    // size its denominator, then bail immediately if the user already cancelled.
+    this._emitProgress({ type: 'batch', total: chunkEntries.length, dataset: datasetId, tag });
+    this._throwIfLoadAborted();
+
     // For local files: read + decompress with bounded concurrency.
     // All tile requests share a global semaphore (_CHUNK_SEM_LIMIT) so that
     // concurrent deck.gl tile loads don't accumulate hundreds of compressed
@@ -3082,11 +3134,15 @@ export class H5Chunk {
       await Promise.all(chunkEntries.map(async (entry) => {
         await _acquireChunkSlot();
         try {
+          // A cancelled load stops issuing reads here — the slots already
+          // acquired drain, but no further bytes are pulled off the file.
+          this._throwIfLoadAborted();
           const slice = this.file.slice(entry.offset, entry.offset + entry.size);
           const buffer = await slice.arrayBuffer();
           totalBytes += buffer.byteLength;
           const decoded = await this._decompressAndDecode(buffer, dataset, entry.filterMask);
           results.set(entry.key, decoded);
+          this._emitProgress({ type: 'chunk', bytes: entry.size, dataset: datasetId, tag });
         } finally {
           _releaseChunkSlot();
         }
@@ -3129,6 +3185,8 @@ export class H5Chunk {
     const rangeResults = new Array(mergedRanges.length);
 
     for (let i = 0; i < mergedRanges.length; i += concurrency) {
+      // W030: user cancel — stop before issuing the next wave of range reads.
+      this._throwIfLoadAborted();
       const batch = mergedRanges.slice(i, i + concurrency);
       const batchStart = performance.now();
       let batchBytes = 0;
@@ -3137,7 +3195,10 @@ export class H5Chunk {
         // Regression note (W003): tile getTile paths intentionally do NOT pass a
         // signal here — chunk reads run to completion so the chunk cache stays warm
         // even when the requesting deck.gl tile has been aborted.
+        // W030: a load-scoped user-cancel signal IS forwarded (it must actually
+        // stop the transfer). It is never the per-tile signal above.
         if (signal) fetchOpts.signal = signal;
+        else if (this._loadSignal) fetchOpts.signal = this._loadSignal;
         const response = await fetch(this.url, fetchOpts);
         const buf = await response.arrayBuffer();
         batchBytes += buf.byteLength;
@@ -3176,6 +3237,7 @@ export class H5Chunk {
           const chunkBuffer = mergedBuffer.slice(localOffset, localOffset + entry.size);
           const decoded = await this._decompressAndDecode(chunkBuffer, dataset, entry.filterMask);
           results.set(entry.key, decoded);
+          this._emitProgress({ type: 'chunk', bytes: entry.size, dataset: datasetId, tag });
         })());
       }
     }
