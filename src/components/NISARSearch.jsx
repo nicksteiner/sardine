@@ -16,6 +16,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { NISAR_PRODUCTS, searchGranules } from '../loaders/cmr-client.js';
+import { disclosure, option } from '../utils/a11y.js';
 
 export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLayersChange, onGranulesChange, onTokenChange, viewBounds, onZoomToBounds }) {
   // ─── Search state ───────────────────────────────────────────────────
@@ -285,7 +286,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
       {/* Auth token */}
       <div>
         <div
-          onClick={() => setShowAuth(v => !v)}
+          {...disclosure(() => setShowAuth(v => !v), showAuth, { label: 'Earthdata authentication' })}
           style={{
             cursor: 'pointer',
             fontSize: '0.75rem',
@@ -448,13 +449,18 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
 
       {/* Granule list */}
       {granules.length > 0 && (
-        <div style={{
-          maxHeight: '300px',
-          overflowY: 'auto',
-          border: '1px solid var(--sardine-border)',
-          borderRadius: 'var(--radius-sm)',
-          background: 'var(--sardine-bg-raised)',
-        }}>
+        <div
+          role="listbox"
+          aria-label={`Search results, ${granules.length} granules`}
+          aria-multiselectable={multiSelect || undefined}
+          style={{
+            maxHeight: '300px',
+            overflowY: 'auto',
+            border: '1px solid var(--sardine-border)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--sardine-bg-raised)',
+          }}
+        >
           {granules.map((g, i) => {
             const isSelected = multiSelect ? selectedIndices.has(i) : i === selectedIdx;
             const hasData = !!g.dataUrl;
@@ -469,7 +475,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             return (
               <div
                 key={g.id || i}
-                onClick={() => handleClick(g, i)}
+                {...option(() => handleClick(g, i), isSelected, { label: `${g.id || `Granule ${i + 1}`}${hasData ? '' : ', no data'}`, disabled: !hasData })}
                 style={{
                   padding: '4px 8px',
                   cursor: hasData ? 'pointer' : 'default',

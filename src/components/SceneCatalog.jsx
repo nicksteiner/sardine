@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { presignGeoJSON } from '../utils/s3-presign.js';
+import { disclosure, option } from '../utils/a11y.js';
 
 /**
  * SceneCatalog — Browse, select and load NISAR scenes from a GeoJSON catalog.
@@ -253,7 +254,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
       {catalog && (
         <div>
           <div
-            onClick={() => setShowCredentials(s => !s)}
+            {...disclosure(() => setShowCredentials(s => !s), showCredentials, { label: 'AWS credentials' })}
             style={{
               cursor: 'pointer',
               fontSize: '0.75rem',
@@ -327,13 +328,17 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               style={{ fontSize: '0.75rem' }}
             />
           </div>
-          <div style={{
-            maxHeight: '200px',
-            overflowY: 'auto',
-            border: '1px solid var(--sardine-border)',
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--sardine-bg-raised)',
-          }}>
+          <div
+            role="listbox"
+            aria-label={`Catalog scenes, ${filteredFeatures.length} shown`}
+            style={{
+              maxHeight: '200px',
+              overflowY: 'auto',
+              border: '1px solid var(--sardine-border)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--sardine-bg-raised)',
+            }}
+          >
             {filteredFeatures.map((f, i) => {
               const p = f.properties || {};
               const name = p.filename || p.name || `Scene ${i + 1}`;
@@ -343,7 +348,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               return (
                 <div
                   key={actualIdx}
-                  onClick={() => handleSelectScene(f, actualIdx)}
+                  {...option(() => handleSelectScene(f, actualIdx), isSelected, { label: `Scene ${p.id || actualIdx + 1}${hasUrl ? '' : ', no data URL'}` })}
                   style={{
                     padding: '4px 8px',
                     cursor: 'pointer',

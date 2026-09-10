@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { clickable } from '../utils/a11y.js';
 
 /**
  * StatusWindow - Collapsible debug/status window at bottom of screen.
@@ -31,7 +32,10 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
     return (
       <div
         className="status-pulltab"
-        onClick={handleToggle}
+        {...clickable(handleToggle, {
+          label: `Open the status log${logs.length ? `, ${logs.length} messages` : ''}`,
+          'aria-expanded': false,
+        })}
         style={{
           position: 'fixed',
           bottom: '24px', // sit right above the footer
@@ -182,12 +186,31 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   return (
     <div className="status-window" style={containerStyle}>
       <div style={headerStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} role="tablist" aria-label="Status window">
           {allTabs.map(t => (
             <div
               key={t.id}
               style={tabStyle(currentTab === t.id)}
-              onClick={(e) => { e.stopPropagation(); selectTab(t.id); }}
+              {...clickable((e) => { e.stopPropagation(); selectTab(t.id); }, {
+                role: 'tab',
+                'aria-selected': currentTab === t.id,
+                'aria-controls': `status-panel-${t.id}`,
+                id: `status-tab-${t.id}`,
+                // Roving tabindex: only the selected tab is a tab stop; the
+                // arrow keys move between them, per the ARIA tabs pattern.
+                tabIndex: currentTab === t.id ? 0 : -1,
+                onKeyDown: (e) => {
+                  const i = allTabs.findIndex(x => x.id === currentTab);
+                  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+                    e.preventDefault();
+                    const d = e.key === 'ArrowRight' ? 1 : -1;
+                    selectTab(allTabs[(i + d + allTabs.length) % allTabs.length].id);
+                  } else if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    selectTab(t.id);
+                  }
+                },
+              })}
             >
               {t.label}
               {t.id === 'status' && logs.length > 0 && (
@@ -196,11 +219,18 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
             </div>
           ))}
         </div>
-        <div style={toggleButtonStyle} onClick={handleToggle}>▼</div>
+        <div style={toggleButtonStyle} {...clickable(handleToggle, { label: 'Collapse the status log', 'aria-expanded': true })}>▼</div>
       </div>
 
       {currentTab === 'status' ? (
-        <div style={contentStyle} ref={contentRef}>
+        <div
+          style={contentStyle}
+          ref={contentRef}
+          role="tabpanel"
+          id="status-panel-status"
+          aria-labelledby="status-tab-status"
+          tabIndex={0}
+        >
           {logs.length === 0 ? (
             <div style={{ color: 'var(--text-disabled, #3a5070)', fontStyle: 'italic' }}>
               No status messages yet...
@@ -220,7 +250,13 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
           )}
         </div>
       ) : (
-        <div style={{ ...contentStyle, color: 'var(--text-secondary, #8fa4c4)' }}>
+        <div
+          style={{ ...contentStyle, color: 'var(--text-secondary, #8fa4c4)' }}
+          role="tabpanel"
+          id={`status-panel-${currentTab}`}
+          aria-labelledby={`status-tab-${currentTab}`}
+          tabIndex={0}
+        >
           {activeContent}
         </div>
       )}

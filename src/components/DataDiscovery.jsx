@@ -9,6 +9,7 @@
  *   - "server-s3"  — private S3 buckets via sardine-launch server (server holds credentials)
  */
 import React, { useState, useCallback, useRef, useMemo } from 'react';
+import { clickable } from '../utils/a11y.js';
 import {
   listBucket,
   listBucketViaServer,
@@ -551,7 +552,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
           <div className="discovery-listing">
             {/* Back button */}
             {pathStack.length > 0 && (
-              <div className="discovery-item discovery-dir" onClick={handleBack}>
+              <div className="discovery-item discovery-dir" {...clickable(handleBack, { label: 'Up to parent directory' })}>
                 <span className="discovery-icon">⬆</span>
                 <span className="discovery-name">..</span>
               </div>
@@ -562,7 +563,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               <div
                 key={`d-${i}`}
                 className="discovery-item discovery-dir"
-                onClick={() => handleNavigate(dir)}
+                {...clickable(() => handleNavigate(dir), { label: `Open directory ${displayName(dir)}` })}
               >
                 <span className="discovery-icon">📁</span>
                 <span className="discovery-name">{displayName(dir)}</span>
@@ -581,7 +582,10 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                 <div
                   key={`f-${i}`}
                   className={`discovery-item discovery-file ${isLoadable ? 'discovery-loadable' : ''} ${isNisar ? 'discovery-nisar' : ''}`}
-                  onClick={isLoadable ? () => handleFileClick(file) : undefined}
+                  {...clickable(isLoadable ? () => handleFileClick(file) : null, {
+                    label: isLoadable ? `Load ${name}, ${formatSize(file.size)}` : name,
+                    disabled: !isLoadable,
+                  })}
                   title={
                     parsed
                       ? `Cyc ${parsed.cycle} · Trk ${parsed.track} · ${parsed.directionName} · Frm ${parsed.frame} · ${parsed.polCode}\n${parsed.startStr} → ${parsed.endStr}\nClick to load`

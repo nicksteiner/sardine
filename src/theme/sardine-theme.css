@@ -218,6 +218,22 @@ body {
 }
 
 /* ─── COLLAPSIBLE SECTIONS ─── */
+/* The <h3> is the heading; the <button> inside it is the disclosure control.
+   The button carries the whole hit area and all the type styling. */
+.collapsible-toggle {
+  flex: 1;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .control-section h3.collapsible {
   cursor: pointer;
   display: flex;
@@ -260,6 +276,11 @@ body {
 .section-body.collapsed {
   max-height: 0;
   opacity: 0;
+  /* Not just invisible — `visibility: hidden` also takes the collapsed
+     controls out of the tab order and out of the accessibility tree, which
+     `max-height: 0` alone does not. Without it, tabbing walks into a section
+     the user cannot see. */
+  visibility: hidden;
 }
 
 

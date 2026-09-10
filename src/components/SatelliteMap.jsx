@@ -3,6 +3,7 @@ import DeckGL from '@deck.gl/react';
 import { MapView } from '@deck.gl/core';
 import { GeoJsonLayer, BitmapLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
+import { clickable } from '../utils/a11y.js';
 
 const MAP_VIEW = new MapView({ id: 'satellite-map', repeat: true });
 
@@ -147,7 +148,7 @@ export function SatelliteMap({ wgs84Bounds, visible = false, onToggle }) {
 
   if (!visible) {
     return (
-      <div className="satellite-map-toggle" onClick={onToggle} title="Satellite View (Bing VirtualEarth)">
+      <div className="satellite-map-toggle" {...clickable(onToggle, { label: 'Show satellite view' })} title="Satellite View (Bing VirtualEarth)">
         {/* Aerial/satellite icon — 2×2 filled grid contrasting with wireframe globe */}
         <svg className="overview-map-toggle-icon" viewBox="0 0 20 20" width="18" height="18" fill="currentColor" stroke="none">
           <rect x="2"  y="2"  width="7" height="7" rx="1" opacity="0.9" />

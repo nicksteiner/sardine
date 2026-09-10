@@ -77,6 +77,7 @@ import { trainLogistic, evaluateModel, predictLogistic } from '../src/ml/trainer
 import { datasetFromClassRegions, stratifiedSplit } from '../src/ml/dataset.js';
 import { debugLog } from '../src/utils/debug-log.js';
 import { toDb } from '../src/utils/stats.js';
+import { clickable } from '../src/utils/a11y.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -264,13 +265,26 @@ function generateMarkdownState(state) {
  */
 function CollapsibleSection({ title, defaultOpen = true, children }) {
   const [open, setOpen] = useState(defaultOpen);
+  // One id per section so the header can point at the body it controls.
+  const bodyId = useMemo(
+    () => `section-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+    [title],
+  );
   return (
     <div className="control-section">
-      <h3
-        className={`collapsible${open ? '' : ' collapsed'}`}
-        onClick={() => setOpen(o => !o)}
-      >{title}</h3>
-      <div className={`section-body${open ? '' : ' collapsed'}`}>
+      <h3 className={`collapsible${open ? '' : ' collapsed'}`}>
+        {/* The disclosure control is the button, not the heading: a heading
+            is not focusable and screen readers do not offer it as an action.
+            This one primitive covers all 21 sections in the panel. */}
+        <button
+          type="button"
+          className="collapsible-toggle"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={() => setOpen(o => !o)}
+        >{title}</button>
+      </h3>
+      <div id={bodyId} className={`section-body${open ? '' : ' collapsed'}`}>
         {children}
       </div>
     </div>
@@ -8969,7 +8983,11 @@ function App() {
               )}
               {/* Main viewer (single-channel full extent) */}
               <div
-                onClick={() => roiRGBData && setActiveViewer('main')}
+                {...clickable(() => roiRGBData && setActiveViewer('main'), {
+                  role: 'group',
+                  label: 'Main viewer',
+                  'aria-current': roiRGBData && activeViewer === 'main' ? 'true' : undefined,
+                })}
                 style={{
                   flex: 1, position: 'relative', height: '100%',
                   outline: roiRGBData && activeViewer === 'main' ? '2px solid #ffc832' : 'none',
@@ -9061,7 +9079,11 @@ function App() {
                     flexShrink: 0,
                   }} />
                   <div
-                    onClick={() => setActiveViewer('roi-rgb')}
+                    {...clickable(() => setActiveViewer('roi-rgb'), {
+                      role: 'group',
+                      label: 'ROI composite viewer',
+                      'aria-current': activeViewer === 'roi-rgb' ? 'true' : undefined,
+                    })}
                     style={{
                       flex: 1, position: 'relative', height: '100%',
                       outline: activeViewer === 'roi-rgb' ? '2px solid #4ec9d4' : 'none',
@@ -9114,7 +9136,11 @@ function App() {
                     flexShrink: 0,
                   }} />
                   <div
-                    onClick={() => setActiveViewer('roi-ts')}
+                    {...clickable(() => setActiveViewer('roi-ts'), {
+                      role: 'group',
+                      label: 'ROI time series viewer',
+                      'aria-current': activeViewer === 'roi-ts' ? 'true' : undefined,
+                    })}
                     style={{
                       flex: 1, position: 'relative', height: '100%',
                       outline: activeViewer === 'roi-ts' ? '2px solid #2ecc71' : 'none',

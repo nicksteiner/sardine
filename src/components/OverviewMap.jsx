@@ -4,6 +4,7 @@ import { MapView } from '@deck.gl/core';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { TileLayer } from '@deck.gl/geo-layers';
 import { BitmapLayer } from '@deck.gl/layers';
+import { clickable } from '../utils/a11y.js';
 
 /**
  * OverviewMap — Toggleable geographic overview using deck.gl MapView.
@@ -226,7 +227,7 @@ export function OverviewMap({ wgs84Bounds, visible = false, onToggle, cmrFootpri
 
   if (!visible) {
     return (
-      <div className="overview-map-toggle" onClick={onToggle} title="Overview Map">
+      <div className="overview-map-toggle" {...clickable(onToggle, { label: 'Show overview map' })} title="Overview Map">
         <svg className="overview-map-toggle-icon" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.2">
           <circle cx="10" cy="10" r="8" />
           <ellipse cx="10" cy="10" rx="4" ry="8" />
