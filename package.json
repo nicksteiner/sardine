@@ -25,6 +25,7 @@
     "report": "node src/lite/serve.js",
     "report:open": "node src/lite/serve.js --open",
     "launch": "node server/launch.cjs",
+    "bridge": "node server/agent-bridge.cjs",
     "launch:dev": "npm run build && node server/launch.cjs"
   },
   "keywords": [

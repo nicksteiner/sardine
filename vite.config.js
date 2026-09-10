@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import https from 'node:https';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 /**
  * Vite plugin: CORS proxy for dev server.
@@ -248,8 +249,32 @@ function deepLinkDevFixPlugin() {
   };
 }
 
+/**
+ * Vite plugin: mount the W018 agent bridge on the dev server.
+ *
+ * Keeping it in-process means `npm run dev` is still the only thing you
+ * start — no separate broker to remember. The bridge is inert until a
+ * viewer opens its EventSource and an agent posts a command.
+ */
+function agentBridgePlugin() {
+  return {
+    name: 'sardine-agent-bridge',
+    configureServer(server) {
+      // vite.config.js is ESM; the broker is CJS (matching server/launch.cjs).
+      const require = createRequire(import.meta.url);
+      const { createAgentBridge } = require('./server/agent-bridge.cjs');
+      const bridge = createAgentBridge();
+      server.middlewares.use((req, res, next) => {
+        bridge.handleRequest(req, res).then((handled) => {
+          if (!handled) next();
+        }).catch(next);
+      });
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), corsProxyPlugin(), deepLinkDevFixPlugin()],
+  plugins: [react(), corsProxyPlugin(), deepLinkDevFixPlugin(), agentBridgePlugin()],
   base: './',   // Relative paths for JupyterHub proxy
   root: 'app',
   // onnxruntime-web loads via lazy dynamic import (W025). Excluding it from

@@ -42,6 +42,7 @@ import {
   validateEDLToken,
 } from '../src/utils/proxy.js';
 import { parseShareLink, buildShareLink, buildCompareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
+import { connectAgentBridge, captureCanvas } from '../src/utils/agent-bridge-client.js';
 import { buildClassPalette, seedLegendFromNames } from '../src/viewers/CompareGrid.jsx';
 import { resolveGranulesForBbox } from '../src/utils/granule-resolve.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
@@ -5000,6 +5001,39 @@ function App() {
     viewZoom,
     filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
   }), [colormap, reverseColormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
+
+  // W018 Phase 1 — agent bridge (read-only). Lets Claude Code see what the
+  // viewer is showing: current render settings and a screenshot of the actual
+  // canvas. Nothing here writes app state. The bridge is a no-op when no
+  // broker is running, so this is inert in production builds.
+  useEffect(() => {
+    const bridge = connectAgentBridge();
+
+    bridge.register('get_view_state', () => ({
+      ...serializeViewerState(),
+      hasData: !!imageData,
+      bounds: wgs84Bounds || null,
+    }));
+
+    bridge.register('screenshot', ({ maxDim } = {}) => {
+      const viewer = viewerRef.current;
+      if (!viewer) throw new Error('Viewer not mounted');
+      // deck.gl may have cleared the drawing buffer since the last paint;
+      // force a fresh frame, then read it back on the next rAF.
+      viewer.redraw?.();
+      return new Promise((resolve, reject) => {
+        requestAnimationFrame(() => {
+          try {
+            resolve(captureCanvas(viewer.getCanvas(), maxDim || 1024));
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+    });
+
+    return () => bridge.disconnect();
+  }, [serializeViewerState, imageData, wgs84Bounds]);
 
   // Local-file state links (?file=): filename hint for the Copy-link button
   // when no shareable URL exists. Only real local Files qualify — remote NISAR
