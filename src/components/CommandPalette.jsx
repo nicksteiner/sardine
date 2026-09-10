@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
+import { Dialog } from './ui/index.js';
 
 /**
  * CommandPalette — Cmd-K / Ctrl-K modal with fuzzy search.
@@ -52,8 +53,6 @@ export function CommandPalette({ open, onClose, actions }) {
     if (el) el.scrollIntoView({ block: 'nearest' });
   }, [selected]);
 
-  if (!open) return null;
-
   const onKey = (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -76,78 +75,51 @@ export function CommandPalette({ open, onClose, actions }) {
   };
 
   return (
-    <div
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 1000,
-        background: 'rgba(0, 0, 0, 0.55)',
-        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
-        paddingTop: '12vh',
-      }}
-    >
-      <div
-        style={{
-          width: 'min(560px, 90vw)',
-          background: '#0d1620',
-          border: '1px solid #2a2a2a',
-          borderTop: '2px solid #4ec9d4',
-          boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-          fontFamily: 'var(--font-mono, monospace)',
-          color: '#e8edf5',
-        }}
-      >
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={onKey}
-          placeholder="Type a command…"
-          style={{
-            width: '100%',
-            padding: '12px 14px',
-            background: 'transparent',
-            border: 'none',
-            borderBottom: '1px solid #1a2a3a',
-            color: '#e8edf5',
-            fontSize: 'var(--text-md)',
-            fontFamily: 'inherit',
-            outline: 'none',
-            boxSizing: 'border-box',
-          }}
-        />
-        <div ref={listRef} style={{ maxHeight: '50vh', overflowY: 'auto' }}>
-          {filtered.length === 0 ? (
-            <div style={{ padding: '14px', color: '#5a7099', fontStyle: 'italic', fontSize: 'var(--text-sm)' }}>
-              no matches
-            </div>
-          ) : (
-            filtered.map(({ action }, i) => (
-              <ActionRow
-                key={action.id}
-                action={action}
-                idx={i}
-                selected={i === selected}
-                onHover={() => setSelected(i)}
-                onPick={() => {
-                  onClose();
-                  setTimeout(() => action.run(), 0);
-                }}
-              />
-            ))
-          )}
-        </div>
-        <div style={{
-          borderTop: '1px solid #1a2a3a',
-          padding: '5px 12px',
-          fontSize: 'var(--text-xs)',
-          color: '#5a7099',
-          display: 'flex', justifyContent: 'space-between',
-        }}>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      align="top"
+      flushBody
+      ariaLabel="Command palette"
+      initialFocus={inputRef}
+      className="cmdk"
+      footer={(
+        <>
           <span>↑↓ navigate · ↵ run · esc close</span>
-          <span>{filtered.length} / {actions.length}</span>
-        </div>
+          <span className="cmdk__count">{filtered.length} / {actions.length}</span>
+        </>
+      )}
+    >
+      <input
+        ref={inputRef}
+        className="cmdk__input"
+        type="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={onKey}
+        placeholder="Type a command…"
+        aria-label="Search commands"
+      />
+      <div ref={listRef} className="cmdk__list">
+        {filtered.length === 0 ? (
+          <p className="cmdk__empty">no matches</p>
+        ) : (
+          filtered.map(({ action }, i) => (
+            <ActionRow
+              key={action.id}
+              action={action}
+              idx={i}
+              selected={i === selected}
+              onHover={() => setSelected(i)}
+              onPick={() => {
+                onClose();
+                setTimeout(() => action.run(), 0);
+              }}
+            />
+          ))
+        )}
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -155,34 +127,14 @@ function ActionRow({ action, idx, selected, onHover, onPick }) {
   return (
     <div
       data-idx={idx}
+      className={`cmdk__row${selected ? ' cmdk__row--selected' : ''}`}
       onMouseEnter={onHover}
       onMouseDown={(e) => { e.preventDefault(); onPick(); }}
-      style={{
-        padding: '7px 14px',
-        cursor: 'pointer',
-        background: selected ? 'rgba(78, 201, 212, 0.12)' : 'transparent',
-        borderLeft: selected ? '2px solid #4ec9d4' : '2px solid transparent',
-        display: 'flex', alignItems: 'center', gap: 10,
-        fontSize: 'var(--text-sm)',
-      }}
     >
-      {action.group && (
-        <span style={{ color: '#5a7099', fontSize: 'var(--text-xs)', minWidth: 60, letterSpacing: 1 }}>
-          {action.group}
-        </span>
-      )}
-      <span style={{ color: selected ? '#4ec9d4' : '#e8edf5', flex: 1 }}>
-        {action.label}
-      </span>
-      {action.hint && (
-        <span style={{ color: '#5a7099', fontSize: 'var(--text-xs)' }}>{action.hint}</span>
-      )}
-      {action.shortcut && (
-        <span style={{
-          color: '#5a7099', fontSize: 'var(--text-xs)',
-          padding: '1px 5px', border: '1px solid #2a3a4a', borderRadius: 2,
-        }}>{action.shortcut}</span>
-      )}
+      {action.group && <span className="cmdk__group">{action.group}</span>}
+      <span className="cmdk__label">{action.label}</span>
+      {action.hint && <span className="cmdk__hint">{action.hint}</span>}
+      {action.shortcut && <kbd className="cmdk__shortcut">{action.shortcut}</kbd>}
     </div>
   );
 }

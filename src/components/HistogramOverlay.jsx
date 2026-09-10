@@ -16,17 +16,12 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { SAR_COMPOSITES } from '../utils/sar-composites.js';
 import { generateHistogramSVG, downloadSVG } from '../utils/svg-export.js';
+// W028: this file used to define its own CHANNEL_COLORS, shadowing the export
+// with a different palette.  The plot colours are derived from the tokens now.
+import { CHANNEL_PLOT_COLORS as CHANNEL_COLORS } from '../utils/theme-tokens.js';
 
 const DPR = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
 
-// ─── Publication-quality palette ─────────────────────────────────────────
-// Colors chosen for perceptual separability on dark backgrounds and in print.
-const CHANNEL_COLORS = {
-  R:      { fill: 'rgba(231, 76, 60, 0.45)',   stroke: 'rgba(231, 76, 60, 0.9)',   legend: '#e74c3c' },
-  G:      { fill: 'rgba(46, 204, 113, 0.40)',   stroke: 'rgba(46, 204, 113, 0.85)', legend: '#2ecc71' },
-  B:      { fill: 'rgba(52, 152, 219, 0.40)',   stroke: 'rgba(52, 152, 219, 0.85)', legend: '#3498db' },
-  single: { fill: 'rgba(78, 201, 212, 0.35)',   stroke: 'rgba(78, 201, 212, 0.85)', legend: '#4ec9d4' },
-};
 
 /**
  * Derive legend labels from the composite preset.

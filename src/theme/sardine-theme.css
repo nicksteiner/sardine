@@ -75,6 +75,14 @@
   --sardine-magenta-dim:  #9a3db8;
   --sardine-magenta-glow: transparent;
 
+  /* ─── DATA SEMANTICS: RGB COMPOSITE CHANNELS ─── */
+  /* Mirrored by CHANNEL_COLORS in theme-tokens.js.  Chrome that *labels* a
+     channel (the R/G/B dataset pickers, histogram legends) uses these; they
+     are data semantics, not the interactive accent. */
+  --channel-r: var(--sardine-magenta);
+  --channel-g: var(--sardine-green);
+  --channel-b: var(--sardine-cyan);
+
   /* ─── STATUS RED (errors, destructive actions) ─── */
   --sardine-red: #e74c3c;
 

@@ -26,6 +26,7 @@ const FOCUSABLE = [
  *   actions     nodes right-aligned in the header, before the close button
  *   footer      nodes rendered in a bottom bar
  *   initialFocus  ref to focus on open (defaults to the first focusable)
+ *   ariaLabel     accessible name for a headerless dialog (the palette)
  */
 export function Dialog({
   open,
@@ -38,6 +39,7 @@ export function Dialog({
   footer,
   initialFocus,
   labelledBy,
+  ariaLabel,
   className = '',
   children,
 }) {
@@ -91,7 +93,7 @@ export function Dialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={labelledBy || (title ? titleId : undefined)}
-        aria-label={!title && !labelledBy ? 'Dialog' : undefined}
+        aria-label={!title && !labelledBy ? (ariaLabel || 'Dialog') : undefined}
         tabIndex={-1}
         className={['dialog', wide ? 'dialog--wide' : null, className].filter(Boolean).join(' ')}
       >
