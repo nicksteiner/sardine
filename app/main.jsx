@@ -43,6 +43,7 @@ import {
 } from '../src/utils/proxy.js';
 import { parseShareLink, buildShareLink, buildCompareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
 import { connectAgentBridge, captureCanvas } from '../src/utils/agent-bridge-client.js';
+import { buildGrounding } from '../src/utils/sar-grounding.js';
 import { buildClassPalette, seedLegendFromNames } from '../src/viewers/CompareGrid.jsx';
 import { resolveGranulesForBbox } from '../src/utils/granule-resolve.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
@@ -5006,14 +5007,27 @@ function App() {
   // viewer is showing: current render settings and a screenshot of the actual
   // canvas. Nothing here writes app state. The bridge is a no-op when no
   // broker is running, so this is inert in production builds.
+  // Handlers must read CURRENT state, not the values captured when the
+  // bridge connected — otherwise an agent is told about a render that has
+  // since changed (e.g. a deep link applying a colormap after mount).
+  const bridgeStateRef = useRef(null);
+  bridgeStateRef.current = { serializeViewerState, imageData, wgs84Bounds };
+
   useEffect(() => {
     const bridge = connectAgentBridge();
 
-    bridge.register('get_view_state', () => ({
-      ...serializeViewerState(),
-      hasData: !!imageData,
-      bounds: wgs84Bounds || null,
-    }));
+    bridge.register('get_view_state', () => {
+      const { serializeViewerState, imageData, wgs84Bounds } = bridgeStateRef.current;
+      const render = serializeViewerState();
+      return {
+        ...render,
+        hasData: !!imageData,
+        bounds: wgs84Bounds || null,
+        // Phase 1.5: a view without its physical frame invites optical
+        // misreadings, so grounding travels with every agent-facing view.
+        grounding: buildGrounding(imageData, render),
+      };
+    });
 
     bridge.register('screenshot', ({ maxDim } = {}) => {
       const viewer = viewerRef.current;
@@ -5033,7 +5047,9 @@ function App() {
     });
 
     return () => bridge.disconnect();
-  }, [serializeViewerState, imageData, wgs84Bounds]);
+    // Empty deps: one bridge for the app's lifetime; handlers read live state
+    // through bridgeStateRef, so reconnecting on every render is unnecessary.
+  }, []);
 
   // Local-file state links (?file=): filename hint for the Copy-link button
   // when no shareable URL exists. Only real local Files qualify — remote NISAR
