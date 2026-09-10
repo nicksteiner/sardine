@@ -447,11 +447,11 @@ export function HistogramOverlay({
       width: 460,
       height: 260,
       background: 'rgba(10, 22, 40, 0.94)',
-      border: '1px solid #1e3a5f',
+      border: '1px solid var(--sardine-border)',
       borderRadius: 8,
       zIndex: 30,
       fontFamily: "'JetBrains Mono', monospace",
-      color: '#e8edf5',
+      color: 'var(--text-primary)',
       boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
       display: 'flex',
       flexDirection: 'column',
@@ -460,19 +460,19 @@ export function HistogramOverlay({
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px 0 12px', flexShrink: 0 }}>
         <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
-          <span style={{ color: '#4ec9d4' }}>Histogram</span>
+          <span style={{ color: 'var(--sardine-cyan)' }}>Histogram</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <button onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
-            background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
+            background: 'none', border: '1px solid var(--sardine-border)', color: 'var(--text-muted)', cursor: 'pointer',
             fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>&#8635;</button>
           <button onClick={handleExportSVG} title="Export SVG" style={{
-            background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
+            background: 'none', border: '1px solid var(--sardine-border)', color: 'var(--text-muted)', cursor: 'pointer',
             fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>SVG</button>
           <button onClick={onClose} style={{
-            background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
+            background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer',
             fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
           }}>&times;</button>
         </div>

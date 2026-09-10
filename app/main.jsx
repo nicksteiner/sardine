@@ -6411,7 +6411,7 @@ function App() {
                 </span>
               )}
               {edlValidation && !edlValidation.ok && (
-                <span style={{ fontSize: 'var(--text-xs)', color: '#e8833a' }} title={edlValidation.error}>
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-orange)' }} title={edlValidation.error}>
                   ✗ failed
                 </span>
               )}
@@ -7617,7 +7617,7 @@ function App() {
                     borderRadius: 'var(--radius-sm)',
                     padding: '4px 8px',
                   }}>
-                    <span style={{ color: '#ffc832' }}>
+                    <span style={{ color: 'var(--status-dry)' }}>
                       ROI: {roi.width} × {roi.height} px
                     </span>
                     <div className="u-row">
@@ -7681,7 +7681,7 @@ function App() {
                           fontSize: 'var(--text-xs)', padding: '3px 8px',
                           background: roiCompositeId ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
                           border: '1px solid rgba(78, 201, 212, 0.3)',
-                          color: '#4ec9d4', borderRadius: 'var(--radius-sm)',
+                          color: 'var(--sardine-cyan)', borderRadius: 'var(--radius-sm)',
                           cursor: roiCompositeId ? 'pointer' : 'default',
                           opacity: roiCompositeId ? 1 : 0.4,
                           whiteSpace: 'nowrap',
@@ -7691,7 +7691,7 @@ function App() {
                       </button>
                     </div>
                     {roiRGBData && (
-                      <div style={{ fontSize: 'var(--text-xs)', color: '#4ec9d4', marginTop: '2px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-cyan)', marginTop: '2px' }}>
                         RGB overlay active ({roiCompositeId})
                       </div>
                     )}
@@ -7728,7 +7728,7 @@ function App() {
                           fontSize: 'var(--text-xs)', padding: '3px 8px',
                           background: roiTSFiles.length ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
                           border: '1px solid rgba(46, 204, 113, 0.3)',
-                          color: '#2ecc71', borderRadius: 'var(--radius-sm)',
+                          color: 'var(--status-success)', borderRadius: 'var(--radius-sm)',
                           cursor: roiTSFiles.length ? 'pointer' : 'default',
                           opacity: roiTSFiles.length ? 1 : 0.4,
                           whiteSpace: 'nowrap',
@@ -7738,7 +7738,7 @@ function App() {
                       </button>
                     </div>
                     {roiTSFrames && (
-                      <div style={{ fontSize: 'var(--text-xs)', color: '#2ecc71', marginTop: '2px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--status-success)', marginTop: '2px' }}>
                         {roiTSFrames.length} frames loaded
                       </div>
                     )}
@@ -7757,7 +7757,7 @@ function App() {
                       style={{
                         flex: 1, fontSize: 'var(--text-xs)',
                         background: 'var(--surface-2)', color: 'var(--ink)',
-                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--sardine-border)',
+                        border: wktError ? '1px solid var(--sardine-red)' : '1px solid var(--sardine-border)',
                         borderRadius: 'var(--radius-sm)', padding: '3px 6px',
                         fontFamily: "'JetBrains Mono', monospace",
                       }}
@@ -7769,7 +7769,7 @@ function App() {
                         fontSize: 'var(--text-xs)', padding: '3px 8px',
                         background: wktInput.trim() ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
                         border: '1px solid rgba(255, 200, 50, 0.3)',
-                        color: '#ffc832', borderRadius: 'var(--radius-sm)',
+                        color: 'var(--status-dry)', borderRadius: 'var(--radius-sm)',
                         cursor: wktInput.trim() ? 'pointer' : 'default',
                         opacity: wktInput.trim() ? 1 : 0.4,
                       }}
@@ -7778,7 +7778,7 @@ function App() {
                     </button>
                   </div>
                   {wktError && (
-                    <div style={{ color: '#e74c3c', fontSize: 'var(--text-xs)', marginTop: '2px' }}>
+                    <div style={{ color: 'var(--sardine-red)', fontSize: 'var(--text-xs)', marginTop: '2px' }}>
                       {wktError}
                     </div>
                   )}
@@ -9170,14 +9170,13 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '2rem', color: '#e0e0e0', background: '#1a1a2e', height: '100vh', fontFamily: 'monospace' }}>
-          <h2>Something went wrong</h2>
-          <pre style={{ whiteSpace: 'pre-wrap', color: '#ff6b6b' }}>{this.state.error?.message}</pre>
-          <button onClick={() => this.setState({ hasError: false, error: null })}
-            style={{ padding: '0.5rem 1rem', marginTop: '1rem', cursor: 'pointer' }}>
+        <main className="crash">
+          <h1 className="crash__title">Something went wrong</h1>
+          <pre className="crash__message">{this.state.error?.message}</pre>
+          <Button variant="primary" size="md" onClick={() => this.setState({ hasError: false, error: null })}>
             Try Again
-          </button>
-        </div>
+          </Button>
+        </main>
       );
     }
     return this.props.children;

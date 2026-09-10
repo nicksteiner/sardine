@@ -9,10 +9,10 @@ import React, { useRef, useEffect, useState } from 'react';
 import { toDb } from '../utils/stats.js';
 
 const BACKEND_CHIP = {
-  'builtin-heuristic': { label: 'HEURISTIC', color: '#ffc832' },
-  'builtin-classical': { label: 'ML', color: '#2ecc71' },
-  onnx: { label: 'ONNX', color: '#4ec9d4' },
-  remote: { label: 'REMOTE', color: '#b48ce0' },
+  'builtin-heuristic': { label: 'HEURISTIC', color: 'var(--status-dry)' },
+  'builtin-classical': { label: 'ML', color: 'var(--status-success)' },
+  onnx: { label: 'ONNX', color: 'var(--sardine-cyan)' },
+  remote: { label: 'REMOTE', color: 'var(--sardine-magenta)' },
 };
 
 const chipStyle = (color) => ({
@@ -117,7 +117,7 @@ export default function ModelPanel({
               {m['mlm:name']}
             </span>
             {Number.isFinite(acc) && (
-              <span style={{ fontSize: 'var(--text-xs)', color: '#2ecc71' }} title="held-out test accuracy">
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--status-success)' }} title="held-out test accuracy">
                 {fmtPct(acc)}
               </span>
             )}
@@ -199,7 +199,7 @@ export default function ModelPanel({
         </div>
         {headMetrics && (
           <div style={{ marginTop: 4 }}>
-            <div style={{ fontSize: 'var(--text-xs)', color: '#2ecc71' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--status-success)' }}>
               acc {fmtPct(headMetrics.accuracy)} · F1 {headMetrics.macroF1.toFixed(2)} · IoU {headMetrics.meanIoU.toFixed(2)}
               <span style={{ color: 'var(--text-muted)' }}> · test n={headMetrics.n}</span>
               <button onClick={() => setShowConfusion(s => !s)}

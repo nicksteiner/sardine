@@ -634,3 +634,21 @@
 .viewer-playbar__btn:hover:not(:disabled) { background: none; color: var(--status-success); }
 .viewer-playbar__scrub { width: 100px; accent-color: var(--status-success); }
 .viewer-playbar__label { color: var(--status-success); min-width: 70px; text-align: center; }
+
+/* ═══════════════ CRASH SCREEN ═══════════════ */
+/* The error boundary's last resort.  It is the one screen a user may see
+   with nothing else rendered, so it gets a real <main> and an <h1>. */
+.crash {
+  display: block;
+  height: 100vh;
+  padding: var(--space-2xl);
+  background: var(--sardine-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.crash__title { font-size: var(--text-2xl); margin-bottom: var(--space-md); }
+.crash__message {
+  white-space: pre-wrap;
+  color: var(--sardine-red);
+  margin-bottom: var(--space-lg);
+}
