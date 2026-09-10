@@ -11,6 +11,7 @@ import { URLFile } from '../src/loaders/url-file.js';
 import { listLocalCOGDatasets, loadLocalCOGDataset } from '../src/loaders/cog-loader.js';
 import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
+import { Button, CloseButton, Field, Section, Panel, Toolbar, Dialog } from '../src/components/ui/index.js';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds, reprojectBbox, bboxToPixelRange, roiIntersectsFile } from '../src/utils/roi-subset.js';
@@ -9262,33 +9263,15 @@ function App() {
       />
 
       {/* Footer */}
-      <footer className="app-footer" style={{
-        position: 'fixed',
-        bottom: 0,
-        left: 0,
-        right: 0,
-        height: '24px',
-        background: 'var(--sardine-bg, #0a1628)',
-        borderTop: '1px dashed rgba(78, 201, 212, 0.15)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 12px',
-        fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
-        fontSize: 'var(--text-xs)',
-        color: 'var(--text-muted, #5a7099)',
-        zIndex: 1000,
-        letterSpacing: '0.03em',
-      }}>
-        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>SARdine</a> v1.0 · MIT</span>
+      <footer className="app-footer">
+        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer">SARdine</a> v1.0 · MIT</span>
         <span>steinerlab - ccny</span>
-        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6, display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <Toolbar className="app-footer__meta" wrap={false}>
           deck.gl{multiLook ? ' · multi-look' : ''}
           {gpuInfo.webgpu
             ? ' · WebGPU'
-            : <span style={{ color: '#f5a623' }}> · no WebGPU (histogram CPU-only)</span>}
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            · workers:
+            : <span className="app-footer__gpu"> · no WebGPU (histogram CPU-only)</span>}
+          <Field label="workers" inline value={workerCount} className="app-footer__workers">
             <input
               type="range"
               min={1}
@@ -9299,11 +9282,9 @@ function App() {
                 setWorkerCount(n);
                 setPoolWorkerCount(n);
               }}
-              style={{ width: '60px', accentColor: 'var(--sardine-cyan, #4ec9d4)' }}
             />
-            {workerCount}
-          </span>
-        </span>
+          </Field>
+        </Toolbar>
       </footer>
 
       {/* Histogram overlay moved inside viewer-container */}

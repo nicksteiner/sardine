@@ -1,0 +1,330 @@
+/*
+ * ui.css — W028 UI primitives.
+ * ============================
+ * The one place chrome is styled.  Every rule here is expressed in W027
+ * tokens: no bare hex, no px font sizes, no !important.  If a surface needs
+ * a colour or a size that is not a token, the token is missing — add it to
+ * sardine-theme.css rather than hard-coding it here.
+ *
+ * Specificity discipline: single-class selectors only.  The primitives must
+ * be overridable by a caller's className without an escalation war — that
+ * war is exactly what the old global `button` CTA rule started.
+ */
+
+/* ═══════════════ BUTTON ═══════════════ */
+/* `.btn` is the shape; the variant carries the colour.  Default variant is
+   `secondary` (quiet) — one primary action per view, the rest recede. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  padding: var(--space-2xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.btn--md {
+  font-size: var(--text-md);
+  padding: var(--space-xs) var(--space-md);
+}
+
+.btn--block { width: 100%; }
+
+.btn--icon {
+  padding: var(--space-3xs);
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  font-size: var(--text-md);
+  letter-spacing: 0;
+}
+
+/* ─── variant: primary (the CTA the old global rule applied to everything) ─── */
+.btn--primary {
+  background: var(--sardine-cyan);
+  border-color: var(--sardine-cyan);
+  color: var(--sardine-bg);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--sardine-cyan-dim);
+  border-color: var(--sardine-cyan-dim);
+}
+
+/* ─── variant: secondary (default) ─── */
+.btn--secondary {
+  background: var(--sardine-bg-raised);
+  border-color: var(--sardine-border);
+  color: var(--text-secondary);
+}
+.btn--secondary:hover:not(:disabled) {
+  background: var(--sardine-bg-hover);
+  border-color: var(--sardine-cyan-dim);
+  color: var(--text-primary);
+}
+
+/* ─── variant: ghost (dense tool chrome — no chrome until touched) ─── */
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: var(--sardine-bg-hover);
+  color: var(--text-primary);
+}
+
+/* ─── variant: danger ─── */
+.btn--danger {
+  background: transparent;
+  border-color: var(--sardine-red);
+  color: var(--sardine-red);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--sardine-red);
+  color: var(--sardine-bg);
+}
+
+/* ─── selected / active (a toggle that is on) ─── */
+.btn.is-active,
+.btn[aria-pressed='true'] {
+  background: var(--sardine-cyan-bg);
+  border-color: var(--sardine-cyan);
+  color: var(--sardine-cyan);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ═══════════════ TOOLBAR ═══════════════ */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  flex-wrap: wrap;
+}
+.toolbar--wrap    { flex-wrap: wrap; }
+.toolbar--nowrap  { flex-wrap: nowrap; }
+.toolbar--between { justify-content: space-between; }
+.toolbar--end     { justify-content: flex-end; }
+.toolbar--grow > * { flex: 1 1 0; }
+.toolbar--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* ═══════════════ FIELD ═══════════════ */
+/* label ↔ control pairing lives here so no caller has to remember it. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  margin-bottom: var(--space-xs);
+}
+
+.field__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.field__control { display: flex; align-items: center; gap: var(--space-xs); }
+.field__control > input[type='range'] { flex: 1; }
+.field__control > select,
+.field__control > input[type='text'],
+.field__control > input[type='number'],
+.field__control > input[type='search'] { flex: 1; min-width: 0; }
+
+.field__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.field__hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.field__error {
+  font-size: var(--text-xs);
+  color: var(--sardine-red);
+}
+
+/* inline: label sits beside the control (checkboxes, compact rows) */
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.field--inline .field__label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.field--inline .field__control { flex: 0 0 auto; }
+
+.field--disabled { opacity: 0.5; }
+
+/* ═══════════════ SECTION ═══════════════ */
+/* Promoted from main.jsx's CollapsibleSection; renders a real <h3>. */
+.ui-section { border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle); }
+.ui-section:last-child { border-bottom: none; }
+
+.ui-section__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: var(--space-sm) 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sardine-cyan);
+  cursor: pointer;
+  text-align: left;
+}
+.ui-section__head:hover { color: var(--text-primary); }
+
+.ui-section__chevron {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  transition: transform var(--transition-fast);
+}
+.ui-section__chevron--open { transform: rotate(90deg); }
+
+.ui-section__aside {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.ui-section__body { padding-bottom: var(--space-sm); }
+.ui-section__body[hidden] { display: none; }
+
+/* ═══════════════ PANEL ═══════════════ */
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--sardine-bg-panel);
+  border: 1px var(--panel-border-style) var(--sardine-border);
+  border-radius: var(--radius-md);
+}
+
+.panel--flush { border: none; border-radius: 0; background: transparent; }
+
+.panel--floating {
+  background: var(--overlay-bg);
+  backdrop-filter: blur(6px);
+  border-color: var(--sardine-border);
+  border-radius: var(--radius-lg);
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle);
+}
+
+.panel__title {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.panel__actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-3xs); }
+
+.panel__body { padding: var(--space-sm); overflow: auto; min-height: 0; }
+.panel__body--flush { padding: 0; }
+
+/* ═══════════════ DIALOG ═══════════════ */
+.dialog__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  justify-content: center;
+  background: var(--overlay-halo);
+}
+.dialog__scrim--top    { align-items: flex-start; padding-top: 12vh; }
+.dialog__scrim--center { align-items: center; }
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(38rem, calc(100vw - var(--space-xl)));
+  max-height: 70vh;
+  min-height: 0;
+  background: var(--sardine-bg-panel);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+.dialog--wide { width: min(60rem, calc(100vw - var(--space-xl))); }
+
+.dialog__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--sardine-border-subtle);
+}
+
+.dialog__title {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.dialog__actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-3xs); }
+
+.dialog__body { padding: var(--space-md); overflow: auto; min-height: 0; }
+.dialog__body--flush { padding: 0; }
+
+.dialog__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--sardine-border-subtle);
+}

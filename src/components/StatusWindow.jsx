@@ -29,78 +29,21 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   // When collapsed, render a small pull-tab above the footer
   if (isCollapsed) {
     return (
-      <div
+      <button
+        type="button"
         className="status-pulltab"
         onClick={handleToggle}
-        style={{
-          position: 'fixed',
-          bottom: '24px', // sit right above the footer
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 1001,
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          padding: '3px 14px',
-          backgroundColor: 'var(--sardine-bg-panel, #122240)',
-          border: '1px solid var(--sardine-border, #1e3a5f)',
-          borderBottom: 'none',
-          borderRadius: '6px 6px 0 0',
-          cursor: 'pointer',
-          userSelect: 'none',
-          fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
-          fontSize: 'var(--text-xs)',
-          color: 'var(--text-muted, #5a7099)',
-          letterSpacing: '0.5px',
-          transition: 'color 0.15s, border-color 0.15s',
-        }}
-        onMouseEnter={e => {
-          e.currentTarget.style.color = 'var(--sardine-cyan, #4ec9d4)';
-          e.currentTarget.style.borderColor = 'var(--sardine-cyan-dim, #2a8a93)';
-        }}
-        onMouseLeave={e => {
-          e.currentTarget.style.color = 'var(--text-muted, #5a7099)';
-          e.currentTarget.style.borderColor = 'var(--sardine-border, #1e3a5f)';
-        }}
+        aria-expanded={false}
+        aria-label={`Show status log${logs.length ? ` (${logs.length} entries)` : ''}`}
       >
-        <span style={{ fontSize: 'var(--text-xs)' }}>▲</span>
+        <span aria-hidden="true">▲</span>
         <span>STATUS</span>
-        {logs.length > 0 && (
-          <span style={{
-            minWidth: '16px',
-            height: '16px',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            borderRadius: '8px',
-            backgroundColor: 'var(--sardine-cyan-bg, rgba(78, 201, 212, 0.08))',
-            color: 'var(--sardine-cyan, #4ec9d4)',
-            fontSize: 'var(--text-xs)',
-            fontWeight: '600',
-            padding: '0 4px',
-          }}>
-            {logs.length}
-          </span>
-        )}
-      </div>
+        {logs.length > 0 && <span className="status-pulltab__count">{logs.length}</span>}
+      </button>
     );
   }
 
   // Expanded state
-  const containerStyle = {
-    position: 'fixed',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'var(--sardine-bg-raised, #0f1f38)',
-    borderTop: '1px solid var(--sardine-border, #1e3a5f)',
-    zIndex: 1001,
-    transition: 'max-height 0.3s ease',
-    maxHeight: '300px',
-    overflow: 'hidden',
-    fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
-    fontSize: 'var(--text-sm)',
-  };
 
   const headerStyle = {
     display: 'flex',
@@ -180,7 +123,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   });
 
   return (
-    <div className="status-window" style={containerStyle}>
+    <section className="status-window" aria-label="Status log">
       <div style={headerStyle}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           {allTabs.map(t => (
@@ -224,7 +167,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
           {activeContent}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
