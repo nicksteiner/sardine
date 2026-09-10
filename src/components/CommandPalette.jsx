@@ -111,7 +111,6 @@ export function CommandPalette({ open, onClose, actions }) {
             color: '#e8edf5',
             fontSize: '0.85rem',
             fontFamily: 'inherit',
-            outline: 'none',
             boxSizing: 'border-box',
           }}
         />

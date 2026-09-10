@@ -453,7 +453,6 @@ export function AnnotationOverlay({
             color: resolveColor(annotations.find(a => a.id === editingId)?.color || 'cyan'),
             border: `1px solid ${resolveColor(annotations.find(a => a.id === editingId)?.color || 'cyan')}`,
             borderRadius: 3,
-            outline: 'none',
             zIndex: 20,
             pointerEvents: 'auto',
           }}

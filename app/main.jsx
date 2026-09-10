@@ -279,6 +279,7 @@ function CollapsibleSection({ title, defaultOpen = true, children }) {
         <button
           type="button"
           className="collapsible-toggle"
+          aria-label={title}
           aria-expanded={open}
           aria-controls={bodyId}
           onClick={() => setOpen(o => !o)}
@@ -7090,8 +7091,9 @@ function App() {
 
               {displayMode === 'index' && availableIndices.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
-                  <label>Index</label>
+                  <label htmlFor="sd-index">Index</label>
                   <select
+                    id="sd-index"
                     value={indexId}
                     onChange={(e) => {
                       const id = e.target.value;
@@ -7447,6 +7449,7 @@ function App() {
                       <input
                         type="checkbox"
                         id={`overture-${key}`}
+                        aria-label={`Overture theme: ${theme.label || key}`}
                         checked={overtureThemes.includes(key)}
                         onChange={(e) => {
                           setOvertureThemes(prev =>
