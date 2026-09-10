@@ -579,6 +579,7 @@ export default function ScatterClassifier({
               background: r.color, flexShrink: 0,
             }} />
             <input
+              aria-label={`Class ${i + 1} name`}
               type="text"
               value={r.name}
               onChange={(e) => renameClass(i, e.target.value)}
@@ -653,7 +654,9 @@ export default function ScatterClassifier({
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 9, color: '#5a7099', width: 22, textAlign: 'right' }}>{curMin}°</span>
-              <input type="range" min={dataMin} max={dataMax} step={1} value={curMin}
+              <input aria-label="Incidence angle filter, minimum degrees"
+                aria-valuetext={`${curMin} degrees`}
+                type="range" min={dataMin} max={dataMax} step={1} value={curMin}
                 onChange={(e) => {
                   const v = Number(e.target.value);
                   onIncidenceRangeChange([Math.min(v, curMax - 1), curMax]);
@@ -663,7 +666,9 @@ export default function ScatterClassifier({
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontSize: 9, color: '#5a7099', width: 22, textAlign: 'right' }}>{curMax}°</span>
-              <input type="range" min={dataMin} max={dataMax} step={1} value={curMax}
+              <input aria-label="Incidence angle filter, maximum degrees"
+                aria-valuetext={`${curMax} degrees`}
+                type="range" min={dataMin} max={dataMax} step={1} value={curMax}
                 onChange={(e) => {
                   const v = Number(e.target.value);
                   onIncidenceRangeChange([curMin, Math.max(v, curMin + 1)]);

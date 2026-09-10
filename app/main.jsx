@@ -26,6 +26,7 @@ import { computeChannelStatsAuto, sampleViewportStatsAuto } from '../src/gpu/gpu
 import { probeGPU } from '../src/utils/gpu-detect.js';
 import { applySpeckleFilter, getFilterTypes } from '../src/gpu/spatial-filter.js';
 import { StatusWindow } from '../src/components/StatusWindow.jsx';
+import { LiveRegion, useLoadAnnouncer } from '../src/components/LiveRegion.jsx';
 import { MetadataPanel } from '../src/components/MetadataPanel.jsx';
 import { OverviewMap } from '../src/components/OverviewMap.jsx';
 import { SatelliteMap } from '../src/components/SatelliteMap.jsx';
@@ -414,6 +415,9 @@ function App() {
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
   const [loading, setLoading] = useState(false);
+  // Screen-reader announcements. `liveError` is fed by addStatusLog (below)
+  // and by setError; the polite channel tracks the loading transition only.
+  const [liveError, setLiveError] = useState('');
   const [loadProgress, setLoadProgress] = useState(0);
   const [error, setError] = useState(null);
 
@@ -1309,7 +1313,22 @@ function App() {
       const next = [...prev, { type, message, details, timestamp }];
       return next.length > 500 ? next.slice(-500) : next;
     });
+    // Failures reach the screen reader; the other ~300 log types do not.
+    // StatusWindow is collapsed by default, so an error is otherwise silent.
+    if (type === 'error') setLiveError(message);
   }, []);
+
+  // Load lifecycle → screen reader. State transitions only: start, finish,
+  // failure. Progress ticks are deliberately never announced.
+  const liveSubject = fileType === 'nisar' ? 'NISAR granule'
+    : fileType === 'cmr' ? 'NISAR metadata'
+    : fileType === 'local-tif' ? 'local GeoTIFF'
+    : fileType === 'catalog' ? 'catalog scene'
+    : 'Cloud Optimized GeoTIFF';
+  const liveAnnouncement = useLoadAnnouncer({ loading, subject: liveSubject, error: liveError });
+
+  // The visible error banner and the assertive region say the same thing.
+  useEffect(() => { if (error) setLiveError(String(error)); }, [error]);
 
   // One-time status log of which histogram compute path is active (W007).
   // Emitted the first time histogram stats are actually computed.
@@ -6254,6 +6273,7 @@ function App() {
       onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDragOver(false); }}
       onDrop={handleFileDrop}
     >
+      <LiveRegion polite={liveAnnouncement.polite} assertive={liveAnnouncement.assertive} />
       <PagesBanner />
       <CommandPalette
         open={commandPaletteOpen}
@@ -6371,7 +6391,7 @@ function App() {
           {/* Data Source Selection */}
           <CollapsibleSection title="Data Source">
             <div className="control-group">
-              <select value={fileType} onChange={(e) => setFileType(e.target.value)}>
+              <select aria-label="Data source" value={fileType} onChange={(e) => setFileType(e.target.value)}>
                 <option value="nisar">Local HDF5 (NISAR GCOV)</option>
                 <option value="nisar-gunw">Local HDF5 (NISAR GUNW)</option>
                 <option value="local-tif">Local GeoTIFF</option>
@@ -6390,8 +6410,8 @@ function App() {
                 : 'Optional in dev (the Vite proxy bypasses auth). Useful for testing the hosted flow.'}
             </div>
             <div className="control-group">
-              <label style={{ fontSize: '0.7rem' }}>EDL token</label>
-              <input
+              <label htmlFor="sd-edl-token" style={{ fontSize: '0.7rem' }}>EDL token</label>
+              <input id="sd-edl-token"
                 type="password"
                 placeholder="Paste your Earthdata Login token"
                 value={edlToken}
@@ -6429,8 +6449,8 @@ function App() {
             </div>
             {isHostedBuild() && (
               <div className="control-group">
-                <label style={{ fontSize: '0.7rem' }}>Proxy URL</label>
-                <input
+                <label htmlFor="sd-proxy-url" style={{ fontSize: '0.7rem' }}>Proxy URL</label>
+                <input id="sd-proxy-url"
                   type="text"
                   value={edlProxyUrl}
                   onChange={(e) => {
@@ -6784,8 +6804,8 @@ function App() {
             <CollapsibleSection title="Browse Remote Data">
               {/* Direct URL input (pre-signed S3, HTTPS) */}
               <div className="control-group">
-                <label>Direct URL</label>
-                <input
+                <label htmlFor="sd-direct-url">Direct URL</label>
+                <input id="sd-direct-url"
                   type="text"
                   value={directUrl}
                   onChange={(e) => setDirectUrl(e.target.value)}
@@ -6911,8 +6931,8 @@ function App() {
               </div>
 
               <div className="control-group">
-                <label>Frequency</label>
-                <select
+                <label htmlFor="sd-frequency">Frequency</label>
+                <select id="sd-frequency"
                   value={selectedFrequency}
                   onChange={(e) => {
                     setSelectedFrequency(e.target.value);
@@ -6943,8 +6963,8 @@ function App() {
               {/* GUNW-specific: Layer group selector */}
               {nisarProductType === 'GUNW' && (
                 <div className="control-group">
-                  <label>Layer</label>
-                  <select
+                  <label htmlFor="sd-layer">Layer</label>
+                  <select id="sd-layer"
                     value={selectedLayer}
                     onChange={(e) => {
                       setSelectedLayer(e.target.value);
@@ -6973,8 +6993,8 @@ function App() {
               {/* GUNW-specific: Dataset selector within layer */}
               {nisarProductType === 'GUNW' && (
                 <div className="control-group">
-                  <label>Dataset</label>
-                  <select
+                  <label htmlFor="sd-dataset">Dataset</label>
+                  <select id="sd-dataset"
                     value={selectedGunwDataset}
                     onChange={(e) => setSelectedGunwDataset(e.target.value)}
                   >
@@ -6994,8 +7014,8 @@ function App() {
               )}
 
               <div className="control-group">
-                <label>Polarization</label>
-                <select
+                <label htmlFor="sd-polarization">Polarization</label>
+                <select id="sd-polarization"
                   value={selectedPolarization}
                   onChange={(e) => {
                     const pol = e.target.value;
@@ -7026,8 +7046,8 @@ function App() {
 
               {/* Display mode — single band, RGB composite (GCOV only), or multi-temporal */}
               <div className="control-group">
-                <label>Display Mode</label>
-                <select
+                <label htmlFor="sd-display-mode">Display Mode</label>
+                <select id="sd-display-mode"
                   value={displayMode}
                   onChange={(e) => setDisplayMode(e.target.value)}
                 >
@@ -7072,8 +7092,8 @@ function App() {
 
               {displayMode === 'rgb' && availableComposites.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
-                  <label>Composite</label>
-                  <select
+                  <label htmlFor="sd-composite">Composite</label>
+                  <select id="sd-composite"
                     value={compositeId || ''}
                     onChange={(e) => setCompositeId(e.target.value)}
                   >
@@ -7164,6 +7184,7 @@ function App() {
                         <span className="value-display">{coherenceThreshold.toFixed(2)}</span>
                       </div>
                       <input
+                        aria-label="Coherence mask threshold"
                         type="range"
                         min={0}
                         max={1}
@@ -7431,10 +7452,10 @@ function App() {
 
                 <div className="control-group">
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <label>Opacity</label>
+                    <label htmlFor="sd-opacity">Opacity</label>
                     <span className="value-display">{(overtureOpacity * 100).toFixed(0)}%</span>
                   </div>
-                  <input
+                  <input id="sd-opacity"
                     type="range"
                     min={0}
                     max={1}
@@ -7477,8 +7498,8 @@ function App() {
             {opticalPeekEnabled && (
               <>
                 <div className="control-group">
-                  <label>Source</label>
-                  <select
+                  <label htmlFor="sd-source">Source</label>
+                  <select id="sd-source"
                     value={opticalPeekProvider}
                     onChange={(e) => setOpticalPeekProvider(e.target.value)}
                   >
@@ -7487,8 +7508,8 @@ function App() {
                   </select>
                 </div>
                 <div className="control-group">
-                  <label>Opacity: {opticalPeekOpacity.toFixed(2)}</label>
-                  <input
+                  <label htmlFor="sd-opacity-2">Opacity: {opticalPeekOpacity.toFixed(2)}</label>
+                  <input id="sd-opacity-2"
                     type="range" min="0" max="1" step="0.05"
                     value={opticalPeekOpacity}
                     onChange={(e) => setOpticalPeekOpacity(parseFloat(e.target.value))}
@@ -7505,8 +7526,8 @@ function App() {
           <CollapsibleSection title="Display">
 
             <div className="control-group">
-              <label>UI Theme</label>
-              <select value={uiTheme} onChange={(e) => setUiTheme(e.target.value)}>
+              <label htmlFor="sd-ui-theme">UI Theme</label>
+              <select id="sd-ui-theme" value={uiTheme} onChange={(e) => setUiTheme(e.target.value)}>
                 <option value="">Dark</option>
                 <option value="sardine">SARdine (navy)</option>
                 <option value="light">Light</option>
@@ -7516,8 +7537,8 @@ function App() {
             {/* Colormap selector — hidden in RGB composite mode */}
             {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
-                <label>Colormap</label>
-                <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
+                <label htmlFor="sd-colormap">Colormap</label>
+                <select id="sd-colormap" value={colormap} onChange={(e) => setColormap(e.target.value)}>
                   <optgroup label="Sequential (perceptually uniform)">
                     <option value="grayscale">Grayscale</option>
                     <option value="sardine">SARdine (cubehelix, SAR-tuned)</option>
@@ -7592,7 +7613,7 @@ function App() {
                 />
                 <label htmlFor="pixelExplorer">Pixel Explorer</label>
                 {pixelExplorer && (
-                  <select
+                  <select aria-label="Averaging window size around cursor"
                     value={pixelWindowSize}
                     onChange={(e) => setPixelWindowSize(Number(e.target.value))}
                     style={{ marginLeft: '8px', fontSize: '0.7rem', width: '55px' }}
@@ -7730,6 +7751,7 @@ function App() {
                   }}>
                     <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                       <select
+                        aria-label="ROI composite preset"
                         value={roiCompositeId || ''}
                         onChange={(e) => setRoiCompositeId(e.target.value || null)}
                         style={{
@@ -7824,6 +7846,7 @@ function App() {
                       value={wktInput}
                       onChange={(e) => { setWktInput(e.target.value); setWktError(null); }}
                       onKeyDown={(e) => e.key === 'Enter' && handleWktApply()}
+                      aria-label="Region of interest as WKT"
                       placeholder="BBOX(west, south, east, north) or POLYGON(...)"
                       style={{
                         flex: 1, fontSize: '0.65rem',
@@ -8000,6 +8023,7 @@ function App() {
                     const effective = attributionVendor || detected || '';
                     return (
                       <select
+                        aria-label="Data provider attribution"
                         value={attributionVendor}
                         onChange={(e) => {
                           setAttributionVendor(e.target.value);
@@ -8035,6 +8059,7 @@ function App() {
                         setAttributionProcessor(e.target.value);
                         try { localStorage.setItem('sardine.attribution.processor', e.target.value); } catch {}
                       }}
+                      aria-label="Processed by"
                       title="Override the 'Processed by' name. Persists across sessions; leave blank to use default."
                       style={{
                         width: '100%',
@@ -8596,7 +8621,7 @@ function App() {
             {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <label>Brightness</label>
+                  <label htmlFor="sd-brightness">Brightness</label>
                   <ScrubNumber
                     value={(contrastMin + contrastMax) / 2}
                     onChange={(newCenter) => {
@@ -8612,7 +8637,7 @@ function App() {
                     width={64}
                   />
                 </div>
-                <input
+                <input id="sd-brightness"
                   type="range"
                   min={effectiveUseDecibels ? -50 : 0}
                   max={effectiveUseDecibels ? 10 : 200}
@@ -8649,8 +8674,8 @@ function App() {
 
             {/* Stretch mode + Gamma */}
             <div className="control-group">
-              <label>Stretch</label>
-              <select value={stretchMode} onChange={(e) => setStretchMode(e.target.value)}>
+              <label htmlFor="sd-stretch">Stretch</label>
+              <select id="sd-stretch" value={stretchMode} onChange={(e) => setStretchMode(e.target.value)}>
                 {Object.entries(STRETCH_MODES).map(([id, mode]) => (
                   <option key={id} value={id}>{mode.name}</option>
                 ))}
@@ -8660,10 +8685,10 @@ function App() {
             {(stretchMode === 'gamma' || stretchMode === 'sigmoid') && (
               <div className="control-group">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <label>Gamma</label>
+                  <label htmlFor="sd-gamma">Gamma</label>
                   <ScrubNumber value={gamma} onChange={setGamma} min={0.1} max={5.0} step={0.02} precision={2} width={56} />
                 </div>
-                <input
+                <input id="sd-gamma"
                   type="range"
                   min={0.1}
                   max={5.0}
@@ -8678,10 +8703,10 @@ function App() {
             {isRGBDisplayMode && imageData?.getRGBTile && (
               <div className="control-group">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <label>Saturation</label>
+                  <label htmlFor="sd-saturation">Saturation</label>
                   <ScrubNumber value={rgbSaturation} onChange={setRgbSaturation} min={0} max={3} step={0.02} precision={2} width={56} />
                 </div>
-                <input
+                <input id="sd-saturation"
                   type="range"
                   min={0}
                   max={3}
@@ -8695,8 +8720,8 @@ function App() {
             {/* Color deficiency mode — only shown in RGB display modes */}
             {isRGBDisplayMode && imageData?.getRGBTile && (
               <div className="control-group">
-                <label>Color deficiency</label>
-                <select
+                <label htmlFor="sd-color-deficiency">Color deficiency</label>
+                <select id="sd-color-deficiency"
                   value={colorblindMode}
                   onChange={(e) => {
                     setColorblindMode(e.target.value);
@@ -8784,6 +8809,7 @@ function App() {
                       <span className="value-display">{incAngleMin}°</span>
                     </div>
                     <input
+                      aria-label="Incidence angle mask, near range minimum, degrees"
                       type="range" min={0} max={60} step={1}
                       value={incAngleMin}
                       onChange={(e) => setIncAngleMin(Number(e.target.value))}
@@ -8793,6 +8819,7 @@ function App() {
                       <span className="value-display">{incAngleMax}°</span>
                     </div>
                     <input
+                      aria-label="Incidence angle mask, far range maximum, degrees"
                       type="range" min={0} max={60} step={1}
                       value={incAngleMax}
                       onChange={(e) => setIncAngleMax(Number(e.target.value))}
@@ -9131,6 +9158,7 @@ function App() {
                         style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
                       >▶</button>
                       <input
+                        aria-label="Time series frame"
                         type="range"
                         min={0}
                         max={roiTSFrames.length - 1}
@@ -9289,6 +9317,7 @@ function App() {
           <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
             · workers:
             <input
+              aria-label="Decode worker count"
               type="range"
               min={1}
               max={workerInfo.cores * 2}

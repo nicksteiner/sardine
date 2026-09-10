@@ -130,6 +130,37 @@ export function ScrubNumber({
       {label && <span style={{ color: '#5a7099' }}>{label}</span>}
       <span
         ref={elRef}
+        role="spinbutton"
+        tabIndex={disabled ? -1 : 0}
+        aria-label={label || suffix || 'Value'}
+        aria-valuenow={value}
+        aria-valuemin={Number.isFinite(min) ? min : undefined}
+        aria-valuemax={Number.isFinite(max) ? max : undefined}
+        aria-valuetext={`${formatDisplay(value)}${suffix ? ' ' + suffix : ''}`}
+        aria-disabled={disabled || undefined}
+        // Dragging is the mouse affordance; arrows are the keyboard one. The
+        // same modifier ladder applies so the two behave identically.
+        onKeyDown={(e) => {
+          if (disabled || editing) return;
+          const base = effStep;
+          const mult = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
+          let next = null;
+          if (e.key === 'ArrowUp' || e.key === 'ArrowRight') next = value + base * mult;
+          else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') next = value - base * mult;
+          else if (e.key === 'PageUp') next = value + base * 10;
+          else if (e.key === 'PageDown') next = value - base * 10;
+          else if (e.key === 'Home' && Number.isFinite(min)) next = min;
+          else if (e.key === 'End' && Number.isFinite(max)) next = max;
+          else if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setDraftStr(formatDisplay(value));
+            setEditing(true);
+            return;
+          }
+          if (next === null) return;
+          e.preventDefault();
+          onChange(clamp(next, min, max));
+        }}
         style={{
           width,
           padding: '2px 6px',
@@ -148,6 +179,7 @@ export function ScrubNumber({
       >
         {editing ? (
           <input
+            aria-label={label ? `${label}, exact value` : 'Value'}
             ref={inputRef}
             value={draftStr}
             onChange={(e) => setDraftStr(e.target.value)}
@@ -159,7 +191,7 @@ export function ScrubNumber({
             style={{
               width: '100%', background: 'transparent', border: 'none',
               color: '#4ec9d4', fontFamily: 'inherit', fontSize: 'inherit',
-              padding: 0, textAlign: 'right', outline: 'none',
+              padding: 0, textAlign: 'right',
               boxSizing: 'border-box',
             }}
           />

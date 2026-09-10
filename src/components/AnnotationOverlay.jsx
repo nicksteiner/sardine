@@ -426,7 +426,7 @@ export function AnnotationOverlay({
       />
 
       {editingId && editorPos && (
-        <input
+        <input aria-label="caption…"
           autoFocus
           type="text"
           value={editorValue}

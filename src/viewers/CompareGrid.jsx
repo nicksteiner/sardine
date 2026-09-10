@@ -1134,7 +1134,7 @@ function NumField({ value, onCommit, format = (v) => v.toFixed(1), title, style 
   };
 
   return (
-    <input
+    <input aria-label={title}
       type="text"
       inputMode="decimal"
       value={display}
@@ -1215,7 +1215,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
       {/* Row 1b — NISAR frequency + polarization (only for .h5 panels) */}
       {isNISAR && (
         <div style={ctrlRowStyle}>
-          <select
+          <select aria-label="NISAR frequency"
             value={panel.frequency}
             onChange={(e) => {
               const f = e.target.value;
@@ -1229,7 +1229,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
           >
             {freqs.map((f) => <option key={f} value={f}>freq{f}</option>)}
           </select>
-          <select
+          <select aria-label="Polarization"
             value={panel.polarization}
             onChange={(e) => onDataset(panel.frequency, e.target.value)}
             style={miniSelectStyle}
@@ -1261,7 +1261,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
       {/* Row 2 — colormap, stretch mode, dB (continuous rendering; hidden in class mode) */}
       {!panel.classMode && (
       <div style={ctrlRowStyle}>
-        <select
+        <select aria-label="Colormap"
           value={panel.colormap}
           onChange={(e) => onColormap(e.target.value)}
           style={miniSelectStyle}
@@ -1284,7 +1284,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
         >
           ⇅
         </button>
-        <select
+        <select aria-label="Stretch mode"
           value={panel.stretchMode}
           onChange={(e) => onChange({ stretchMode: e.target.value })}
           style={miniSelectStyle}
@@ -1310,6 +1310,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
         <div style={ctrlRowStyle}>
           <span style={{ ...sliderLabelStyle, minWidth: '14px' }}>γ</span>
           <input
+            aria-label="Gamma"
             type="range"
             min={0.2}
             max={3}
@@ -1336,7 +1337,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
           onCommit={(v) => setLo(v)}
           title="Contrast minimum (editable)"
         />
-        <input
+        <input aria-label="Contrast min"
           type="range"
           min={sMin}
           max={sMax}
@@ -1346,7 +1347,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
           style={{ flex: 1 }}
           title="Contrast min"
         />
-        <input
+        <input aria-label="Contrast max"
           type="range"
           min={sMin}
           max={sMax}

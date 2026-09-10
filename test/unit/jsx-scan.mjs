@@ -91,6 +91,8 @@ export function findElements(src, tags) {
       tag,
       attrs: open.attrs,
       body,
+      bodyStart: open.end,
+      bodyEnd: open.end + body.length,
       index: m.index,
       line: src.slice(0, m.index).split('\n').length,
     });
@@ -131,6 +133,16 @@ export function literalText(body) {
     i++;
   }
   return out.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * True if `el` sits inside the body of a <label> that carries literal text.
+ * A wrapping label names its control implicitly — no htmlFor needed.
+ */
+export function insideTextLabel(el, all) {
+  return all.some(l => l.tag === 'label'
+    && el.index > l.bodyStart && el.index < l.bodyEnd
+    && /[A-Za-z]{2}/.test(literalText(l.body)));
 }
 
 export function rel(p, root) { return relative(root, p); }

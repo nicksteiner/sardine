@@ -265,8 +265,8 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
       {/* Product selector */}
       <div className="control-group">
-        <label>NISAR Product</label>
-        <select
+        <label htmlFor="ns-nisar-product">NISAR Product</label>
+        <select id="ns-nisar-product"
           value={product}
           onChange={e => setProduct(e.target.value)}
           style={{ fontSize: '0.75rem' }}
@@ -311,7 +311,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
               </code>
               <br />Paste the <code>access_token</code> value. Stored in memory only.
             </div>
-            <input
+            <input aria-label="Earthdata bearer token"
               type="password"
               value={token}
               onChange={e => { setToken(e.target.value); onTokenChange?.(e.target.value); }}
@@ -324,16 +324,16 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
 
       {/* Search filters */}
       <div className="control-group">
-        <label>Search Filters</label>
+        <label htmlFor="ns-search-filters">Search Filters</label>
         <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-          <input
+          <input id="ns-search-filters"
             type="date"
             value={dateStart}
             onChange={e => setDateStart(e.target.value)}
             style={{ flex: 1, fontSize: '0.7rem' }}
             title="Start date"
           />
-          <input
+          <input aria-label="End date"
             type="date"
             value={dateEnd}
             onChange={e => setDateEnd(e.target.value)}
@@ -342,7 +342,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
           />
         </div>
         <div style={{ display: 'flex', gap: 'var(--space-xs)', marginTop: '4px' }}>
-          <input
+          <input aria-label="NISAR Track number"
             type="number"
             value={track}
             onChange={e => setTrack(e.target.value)}
@@ -350,7 +350,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             style={{ flex: 1, fontSize: '0.7rem' }}
             title="NISAR Track number"
           />
-          <input
+          <input aria-label="NISAR Frame number"
             type="number"
             value={frame}
             onChange={e => setFrame(e.target.value)}

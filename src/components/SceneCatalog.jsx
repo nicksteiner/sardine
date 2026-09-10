@@ -201,9 +201,9 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
       {/* Catalog input */}
       <div className="control-group">
-        <label>GeoJSON Catalog</label>
+        <label htmlFor="sc-geojson-catalog">GeoJSON Catalog</label>
         <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-          <input
+          <input id="sc-geojson-catalog"
             type="text"
             value={catalogUrl}
             onChange={e => setCatalogUrl(e.target.value)}
@@ -275,26 +275,26 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
                 Credentials are stored in memory only and never persisted.
               </div>
-              <input
+              <input aria-label="Access Key ID"
                 type="text"
                 placeholder="Access Key ID"
                 value={credentials.accessKeyId}
                 onChange={e => setCredentials(c => ({ ...c, accessKeyId: e.target.value }))}
               />
-              <input
+              <input aria-label="Secret Access Key"
                 type="password"
                 placeholder="Secret Access Key"
                 value={credentials.secretAccessKey}
                 onChange={e => setCredentials(c => ({ ...c, secretAccessKey: e.target.value }))}
               />
-              <input
+              <input aria-label="Session Token (optional)"
                 type="text"
                 placeholder="Session Token (optional)"
                 value={credentials.sessionToken}
                 onChange={e => setCredentials(c => ({ ...c, sessionToken: e.target.value }))}
               />
               <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-                <input
+                <input aria-label="Region"
                   type="text"
                   placeholder="Region"
                   value={credentials.region}
@@ -318,8 +318,8 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
       {catalog && catalog.features.length > 0 && (
         <div>
           <div className="control-group">
-            <label>Scenes ({filteredFeatures.length})</label>
-            <input
+            <label htmlFor="sc-scenes">Scenes ({filteredFeatures.length})</label>
+            <input id="sc-scenes"
               type="text"
               value={filterText}
               onChange={e => setFilterText(e.target.value)}

@@ -341,8 +341,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
         <>
           {/* Browse mode selector */}
           <div className="control-group">
-            <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Browse Mode</label>
-            <select
+            <label htmlFor="dd-browse-mode" style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Browse Mode</label>
+            <select id="dd-browse-mode"
               value={browseMode}
               onChange={(e) => setBrowseMode(e.target.value)}
               style={{ fontSize: '0.75rem' }}
@@ -355,8 +355,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
           {browseMode === 'direct' ? (
             <>
               <div className="control-group">
-                <label>Bucket / Endpoint URL</label>
-                <input
+                <label htmlFor="dd-bucket-endpoint-url">Bucket / Endpoint URL</label>
+                <input id="dd-bucket-endpoint-url"
                   ref={inputRef}
                   type="text"
                   value={bucketUrl}
@@ -370,8 +370,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
           ) : (
             <>
               <div className="control-group">
-                <label>S3 Bucket Name</label>
-                <input
+                <label htmlFor="dd-s3-bucket-name">S3 Bucket Name</label>
+                <input id="dd-s3-bucket-name"
                   type="text"
                   value={s3Bucket}
                   onChange={(e) => setS3Bucket(e.target.value)}
@@ -381,8 +381,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                 />
               </div>
               <div className="control-group">
-                <label>AWS Region</label>
-                <input
+                <label htmlFor="dd-aws-region">AWS Region</label>
+                <input id="dd-aws-region"
                   type="text"
                   value={s3Region}
                   onChange={(e) => setS3Region(e.target.value)}
@@ -474,8 +474,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Cycle */}
               {filterOptions.cycles.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Cycle</label>
-                  <select value={filterCycle} onChange={e => setFilterCycle(e.target.value)}>
+                  <label htmlFor="dd-cycle">Cycle</label>
+                  <select id="dd-cycle" value={filterCycle} onChange={e => setFilterCycle(e.target.value)}>
                     <option value="">All ({filterOptions.cycles.length})</option>
                     {filterOptions.cycles.map(c => (
                       <option key={c} value={c}>{String(c).padStart(3, '0')}</option>
@@ -486,8 +486,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Track */}
               {filterOptions.tracks.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Track</label>
-                  <select value={filterTrack} onChange={e => setFilterTrack(e.target.value)}>
+                  <label htmlFor="dd-track">Track</label>
+                  <select id="dd-track" value={filterTrack} onChange={e => setFilterTrack(e.target.value)}>
                     <option value="">All ({filterOptions.tracks.length})</option>
                     {filterOptions.tracks.map(t => (
                       <option key={t} value={t}>{String(t).padStart(3, '0')}</option>
@@ -498,8 +498,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Direction */}
               {filterOptions.directions.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Dir</label>
-                  <select value={filterDirection} onChange={e => setFilterDirection(e.target.value)}>
+                  <label htmlFor="dd-dir">Dir</label>
+                  <select id="dd-dir" value={filterDirection} onChange={e => setFilterDirection(e.target.value)}>
                     <option value="">All</option>
                     {filterOptions.directions.map(d => (
                       <option key={d} value={d}>{d === 'A' ? 'Asc' : 'Desc'}</option>
@@ -510,8 +510,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Polarization */}
               {filterOptions.polCodes.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Pol</label>
-                  <select value={filterPol} onChange={e => setFilterPol(e.target.value)}>
+                  <label htmlFor="dd-pol">Pol</label>
+                  <select id="dd-pol" value={filterPol} onChange={e => setFilterPol(e.target.value)}>
                     <option value="">All ({filterOptions.polCodes.length})</option>
                     {filterOptions.polCodes.map(p => (
                       <option key={p} value={p}>{p}</option>
@@ -522,8 +522,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Frame */}
               {filterOptions.frames.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Frame</label>
-                  <select value={filterFrame} onChange={e => setFilterFrame(e.target.value)}>
+                  <label htmlFor="dd-frame">Frame</label>
+                  <select id="dd-frame" value={filterFrame} onChange={e => setFilterFrame(e.target.value)}>
                     <option value="">All ({filterOptions.frames.length})</option>
                     {filterOptions.frames.map(f => (
                       <option key={f} value={f}>{String(f).padStart(3, '0')}</option>
@@ -534,8 +534,8 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {/* Mode */}
               {filterOptions.modes.length > 1 && (
                 <div className="discovery-filter-group">
-                  <label>Mode</label>
-                  <select value={filterMode} onChange={e => setFilterMode(e.target.value)}>
+                  <label htmlFor="dd-mode">Mode</label>
+                  <select id="dd-mode" value={filterMode} onChange={e => setFilterMode(e.target.value)}>
                     <option value="">All ({filterOptions.modes.length})</option>
                     {filterOptions.modes.map(m => (
                       <option key={m} value={m}>{m}</option>

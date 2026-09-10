@@ -90,8 +90,8 @@ export function DatasetPicker({
       <>
         {showRGBToggle && (
           <div className="control-group">
-            <label>Display Mode</label>
-            <select value="rgb" onChange={(e) => onModeChange?.(e.target.value)}>
+            <label htmlFor="dp-display-mode">Display Mode</label>
+            <select id="dp-display-mode" value="rgb" onChange={(e) => onModeChange?.(e.target.value)}>
               <option value="single">Single Band</option>
               <option value="rgb">RGB Composite</option>
             </select>
@@ -99,8 +99,8 @@ export function DatasetPicker({
         )}
         {presets.length > 0 && (
           <div className="control-group">
-            <label>Preset</label>
-            <select value={presetId || ''} onChange={(e) => onPresetChange?.(e.target.value || null)}>
+            <label htmlFor="dp-preset">Preset</label>
+            <select id="dp-preset" value={presetId || ''} onChange={(e) => onPresetChange?.(e.target.value || null)}>
               <option value="">Custom…</option>
               {presets.map(p => (
                 <option key={p.id} value={p.id}>{p.name}</option>
@@ -112,6 +112,7 @@ export function DatasetPicker({
           <div key={slot} className="control-group">
             <label style={{ color: labelColor[slot] }}>{slot}</label>
             <select
+              aria-label={`${slot} channel dataset`}
               value={selectedRGB?.[slot] || ''}
               onChange={(e) => onSelectRGB?.({ ...selectedRGB, [slot]: e.target.value })}
             >
@@ -128,16 +129,16 @@ export function DatasetPicker({
     <>
       {showRGBToggle && (
         <div className="control-group">
-          <label>Display Mode</label>
-          <select value="single" onChange={(e) => onModeChange?.(e.target.value)}>
+          <label htmlFor="dp-display-mode-2">Display Mode</label>
+          <select id="dp-display-mode-2" value="single" onChange={(e) => onModeChange?.(e.target.value)}>
             <option value="single">Single Band</option>
             <option value="rgb">RGB Composite</option>
           </select>
         </div>
       )}
       <div className="control-group">
-        <label>Dataset</label>
-        <select
+        <label htmlFor="dp-dataset">Dataset</label>
+        <select id="dp-dataset"
           value={selectedId || ''}
           onChange={(e) => onSelect?.(e.target.value)}
         >
