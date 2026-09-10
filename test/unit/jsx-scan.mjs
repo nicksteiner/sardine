@@ -145,11 +145,38 @@ export function literalText(body) {
  * only glyphs — unnamed; `{n ? 'None' : 'Reset'}` yields words — named.
  */
 export function accessibleText(body) {
-  const strings = [];
-  const re = /(["'`])((?:[^\\]|\\.)*?)\1/g;
-  let m;
-  while ((m = re.exec(body))) strings.push(m[2]);
-  return literalText(body) + ' ' + strings.join(' ');
+  // Walk the body once, collecting top-level text and the string literals
+  // inside top-level expressions. Nested tags are skipped whole — their
+  // attribute values ("none", "currentColor" on an <svg>) are markup, not
+  // text a screen reader would ever read out.
+  const out = [];
+  let depth = 0;
+  let i = 0;
+  while (i < body.length) {
+    const c = body[i];
+    if (c === '<') {                       // skip a tag, at any depth
+      const close = body.indexOf('>', i);
+      i = close === -1 ? body.length : close + 1;
+      continue;
+    }
+    if (c === '{') { depth++; i++; continue; }
+    if (c === '}') { depth = Math.max(0, depth - 1); i++; continue; }
+    if (depth > 0 && (c === '"' || c === "'" || c === '`')) {
+      let j = i + 1;
+      let lit = '';
+      while (j < body.length && body[j] !== c) {
+        if (body[j] === '\\') j++;
+        else lit += body[j];
+        j++;
+      }
+      out.push(' ' + lit + ' ');
+      i = j + 1;
+      continue;
+    }
+    if (depth === 0) out.push(c);   // plain text char
+    i++;
+  }
+  return out.join('').replace(/\s+/g, ' ').trim();
 }
 
 export function insideTextLabel(el, all) {

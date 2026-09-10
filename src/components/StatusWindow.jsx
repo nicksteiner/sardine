@@ -193,6 +193,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
               style={tabStyle(currentTab === t.id)}
               {...clickable((e) => { e.stopPropagation(); selectTab(t.id); }, {
                 role: 'tab',
+                label: t.label,
                 'aria-selected': currentTab === t.id,
                 'aria-controls': `status-panel-${t.id}`,
                 id: `status-tab-${t.id}`,

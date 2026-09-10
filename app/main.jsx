@@ -8993,6 +8993,7 @@ function App() {
               )}
               {/* Main viewer (single-channel full extent) */}
               <div
+                className="viewer-panel"
                 {...clickable(() => roiRGBData && setActiveViewer('main'), {
                   role: 'group',
                   label: 'Main viewer',
@@ -9089,6 +9090,7 @@ function App() {
                     flexShrink: 0,
                   }} />
                   <div
+                    className="viewer-panel"
                     {...clickable(() => setActiveViewer('roi-rgb'), {
                       role: 'group',
                       label: 'ROI composite viewer',
@@ -9146,6 +9148,7 @@ function App() {
                     flexShrink: 0,
                   }} />
                   <div
+                    className="viewer-panel"
                     {...clickable(() => setActiveViewer('roi-ts'), {
                       role: 'group',
                       label: 'ROI time series viewer',

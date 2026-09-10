@@ -404,6 +404,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               {PRESET_BUCKETS.map((p, i) => (
                 <button
                   key={i}
+                  aria-label={`${p.label}${p.requiresAuth ? ', requires authentication' : ''}`}
                   className="btn-secondary discovery-preset-btn"
                   onClick={() => handlePreset(p)}
                   title={p.description}

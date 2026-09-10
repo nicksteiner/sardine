@@ -377,7 +377,10 @@ button {
   background: var(--sardine-cyan);
   color: var(--sardine-bg);
   cursor: pointer;
-  transition: all var(--transition-fast);
+  /* Named, not `all`: transitioning `all` also animates the focus ring, so
+     the keyboard indicator faded in over 150 ms instead of appearing. */
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+              color var(--transition-fast), box-shadow var(--transition-fast);
   text-transform: uppercase;
 }
 
@@ -1591,6 +1594,27 @@ textarea:focus-visible {
 .viewer-overlay :focus-visible {
   outline: 2px solid var(--overlay-ink);
   box-shadow: 0 0 0 4px var(--overlay-halo);
+}
+
+/* deck.gl sets `outline: none` inline on its own focusable wrapper, which no
+   outline rule can beat. Ring it with a shadow instead — the raster is a real
+   tab stop (its controller takes the arrow keys) and must show focus. */
+#deckgl-wrapper:focus-visible {
+  box-shadow: inset 0 0 0 3px var(--sardine-cyan), inset 0 0 0 5px var(--overlay-halo);
+}
+
+/* The comparison viewer panels mark the ACTIVE panel with an inline `outline`,
+   which beats the ring above. Give them an inset shadow ring instead, so the
+   two indicators can coexist rather than one hiding the other. */
+.viewer-panel:focus-visible {
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 3px var(--sardine-cyan), inset 0 0 0 5px var(--overlay-halo);
+}
+
+/* A focus indicator must be there the instant focus lands — never faded in by
+   an inherited transition. */
+:focus-visible {
+  transition-property: none;
 }
 
 /* Mouse users keep a clean surface: only suppress the ring where the browser

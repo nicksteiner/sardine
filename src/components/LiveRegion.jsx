@@ -63,14 +63,26 @@ export function useLoadAnnouncer({ loading, subject = '', error = '' }) {
   const [polite, setPolite] = useState('');
   const [assertive, setAssertive] = useState('');
   const wasLoading = useRef(loading);
+  const errorAtStart = useRef(error);
+  const latestError = useRef(error);
   const timer = useRef(null);
+  latestError.current = error;
 
   useEffect(() => {
     if (loading === wasLoading.current) return;  // transitions only
     wasLoading.current = loading;
 
     const what = subject ? subject.trim() : 'data';
-    const message = loading ? `Loading ${what}` : `${what} loaded`;
+    // A load that ends with a fresh error did not finish — saying "loaded"
+    // there is worse than saying nothing. The error is read from a ref so it
+    // does not sit in the dependency list: an error arriving mid-load would
+    // otherwise re-run this effect and cancel the pending "Loading" utterance.
+    const err = latestError.current;
+    const failed = !loading && err && err !== errorAtStart.current;
+    if (loading) errorAtStart.current = err;
+    const message = loading ? `Loading ${what}`
+      : failed ? `${what} could not be loaded`
+      : `${what} loaded`;
 
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
@@ -78,9 +90,10 @@ export function useLoadAnnouncer({ loading, subject = '', error = '' }) {
       // the trailing marker forces a fresh utterance for a genuine repeat.
       setPolite(prev => (prev === message ? `${message}.` : message));
     }, ANNOUNCE_DEBOUNCE_MS);
-
-    return () => clearTimeout(timer.current);
   }, [loading, subject]);
+
+  // Only unmount cancels a pending announcement.
+  useEffect(() => () => clearTimeout(timer.current), []);
 
   useEffect(() => {
     if (!error) return;

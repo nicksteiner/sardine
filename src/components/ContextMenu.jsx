@@ -76,6 +76,7 @@ export function ContextMenu({ open, x, y, items, onClose }) {
           )}
           <button
             role="menuitem"
+            aria-label={item.shortcut ? `${item.label}, ${item.shortcut}` : item.label}
             className={`context-menu-item${i === selected ? ' selected' : ''}`}
             onMouseEnter={() => setSelected(i)}
             onClick={() => { onClose(); setTimeout(() => item.run(), 0); }}
