@@ -624,13 +624,13 @@ function resolvePixelLayout(img, sicd) {
  */
 export async function loadNITF(file, onProgress) {
   const progress = onProgress || (() => {});
-  console.log(`[NITF Loader] Opening: ${file.name} (${(file.size / 1e9).toFixed(2)} GB)`);
+  debugLog(`[NITF Loader] Opening: ${file.name} (${(file.size / 1e9).toFixed(2)} GB)`);
   progress(5);
 
   // ── 1. Read file header (first 1 KB is always enough) ──
   const headerBuf = await file.slice(0, 1024).arrayBuffer();
   const fh = parseFileHeader(headerBuf);
-  console.log('[NITF Loader] File header:', {
+  debugLog('[NITF Loader] File header:', {
     version: fh.version, title: fh.ftitle,
     images: fh.numi, des: fh.numdes,
   });
@@ -642,7 +642,7 @@ export async function loadNITF(file, onProgress) {
   const imgSubLen = fh.images[0].subheaderLen;
   const imgSubBuf = await file.slice(imgSubStart, imgSubStart + imgSubLen).arrayBuffer();
   const img = parseImageSubheader(imgSubBuf);
-  console.log('[NITF Loader] Image:', {
+  debugLog('[NITF Loader] Image:', {
     id: img.iid1, size: `${img.nrows}×${img.ncols}`,
     pvtype: img.pvtype, irep: img.irep, icat: img.icat,
     compression: img.ic, bands: img.totalBands,
@@ -690,7 +690,7 @@ export async function loadNITF(file, onProgress) {
 
         if (xmlStr.includes('<SICD')) {
           sicd = parseSICDXml(xmlStr);
-          console.log('[NITF Loader] SICD metadata:', {
+          debugLog('[NITF Loader] SICD metadata:', {
             collector: sicd.collector,
             mode: sicd.modeType,
             pixelType: sicd.pixelType,
@@ -724,8 +724,8 @@ export async function loadNITF(file, onProgress) {
       projection = proj;
       projectedCorners = projCorners;
       geoBounds = bbox;
-      console.log('[NITF Loader] Georeferencing: SICD projection (sarpy-equivalent)');
-      console.log('[NITF Loader]   bbox:', bbox.map(v => v.toFixed(5)).join(', '));
+      debugLog('[NITF Loader] Georeferencing: SICD projection (sarpy-equivalent)');
+      debugLog('[NITF Loader]   bbox:', bbox.map(v => v.toFixed(5)).join(', '));
     } catch (e) {
       console.warn('[NITF Loader] SICD projection build failed:', e.message);
     }
@@ -763,14 +763,14 @@ export async function loadNITF(file, onProgress) {
   // Falls back to 1.0 (uncalibrated power) if no SICD metadata
   const calSF = sicd?.sigmaZeroSF || 1.0;
   if (sicd?.sigmaZeroSF) {
-    console.log(`[NITF Loader] Sigma0 calibration: SF=${calSF.toExponential(4)}`);
+    debugLog(`[NITF Loader] Sigma0 calibration: SF=${calSF.toExponential(4)}`);
   }
 
   const { nrows, ncols } = img;
   const { bytesPerPixel: pixelBytes, decode } = resolvePixelLayout(img, sicd);
   const rowBytes = ncols * pixelBytes;
 
-  console.log('[NITF Loader] Ready:', {
+  debugLog('[NITF Loader] Ready:', {
     complex: isComplex,
     pixelType: sicd?.pixelType || '(inferred)',
     decoder: decode.name,
@@ -964,7 +964,7 @@ export async function loadNITF(file, onProgress) {
     },
   };
 
-  console.log('[NITF Loader] Loaded:', {
+  debugLog('[NITF Loader] Loaded:', {
     width: ncols, height: nrows,
     bounds: result.bounds,
     geoBounds,
@@ -972,50 +972,6 @@ export async function loadNITF(file, onProgress) {
   });
 
   return result;
-}
-
-/**
- * Parse a NITF file from an in-memory ArrayBuffer (no File needed).
- * Suitable for Node scripts — pass a DOMParser implementation for SICD XML.
- *
- * Only parses header/subheader/SICD metadata. Does NOT read pixel data.
- *
- * @param {ArrayBuffer} buffer   Full NITF file as ArrayBuffer
- * @param {Function} [DOMParserImpl]  DOMParser constructor (e.g. from @xmldom/xmldom)
- * @returns {{ fileHeader, imageSubheader, sicd }}
- */
-export function parseNITFMetadataFromBuffer(buffer, DOMParserImpl) {
-  const fh = parseFileHeader(buffer.slice(0, 2048));
-  if (fh.numi === 0) throw new Error('NITF file contains no image segments');
-
-  const imgSubStart = fh.hl;
-  const imgSubLen = fh.images[0].subheaderLen;
-  const img = parseImageSubheader(buffer.slice(imgSubStart, imgSubStart + imgSubLen));
-
-  const dataOffset = imgSubStart + imgSubLen;
-  const dataLen = fh.images[0].dataLen;
-
-  let sicd = null;
-  if (fh.numdes > 0) {
-    let desOffset = dataOffset + dataLen;
-    for (let i = 0; i < fh.numdes; i++) {
-      const desSubLen = fh.des[i].subheaderLen;
-      const desDataLen = fh.des[i].dataLen;
-      const desSubBuf = buffer.slice(desOffset, desOffset + desSubLen);
-      const desSubStr = readStr(new DataView(desSubBuf), 0, Math.min(25, desSubLen));
-      if (desSubStr.includes('XML_DATA_CONTENT')) {
-        const desDataBuf = buffer.slice(desOffset + desSubLen, desOffset + desSubLen + desDataLen);
-        const xmlStr = new TextDecoder('utf-8').decode(desDataBuf);
-        if (xmlStr.includes('<SICD')) {
-          sicd = parseSICDXml(xmlStr, DOMParserImpl);
-          break;
-        }
-      }
-      desOffset += desSubLen + desDataLen;
-    }
-  }
-
-  return { fileHeader: fh, imageSubheader: img, sicd };
 }
 
 export { parseSICDXml, parseFileHeader, parseImageSubheader };
@@ -1272,6 +1228,7 @@ async function loadNITFAtIndex(file, imageIndex, onProgress) {
 // File-backed code paths.
 
 import { URLFile } from './url-file.js';
+import { debugLog } from '../utils/debug-log.js';
 
 /**
  * Stream a NITF file from an HTTP URL via Range requests. Pass-through to
@@ -1285,15 +1242,6 @@ export async function loadNITFFromUrl(url, { onProgress, fetchHeaders } = {}) {
   const urlFile = await URLFile.open(url, { fetchHeaders });
   const data = await loadNITF(urlFile, onProgress);
   return { ...data, format: 'nitf' };
-}
-
-/**
- * List datasets (image segments) in a remote NITF file. Mirrors
- * listNITFDatasets() but reads via HTTP Range.
- */
-export async function listNITFDatasetsFromUrl(url, { fetchHeaders } = {}) {
-  const urlFile = await URLFile.open(url, { fetchHeaders });
-  return { datasets: await listNITFDatasets(urlFile), _urlFile: urlFile };
 }
 
 /**

@@ -15,6 +15,7 @@
 
 import { getDecodePool } from './decode-pool.js';
 import { decodeBytes } from './decode-core.js';
+import { debugLog } from '../utils/debug-log.js';
 
 // Re-export pool controls so existing consumers (app/main.jsx) keep working.
 export { setWorkerCount, getWorkerPoolInfo } from './decode-pool.js';
@@ -1227,7 +1228,7 @@ export class H5Chunk {
     }
     // else: 3-5 MB/s — keep current level
     if (this._concurrency !== prev) {
-      console.log(`[h5chunk] Adaptive concurrency: ${prev} → ${this._concurrency} (avg ${avg.toFixed(1)} MB/s)`);
+      debugLog(`[h5chunk] Adaptive concurrency: ${prev} → ${this._concurrency} (avg ${avg.toFixed(1)} MB/s)`);
     }
   }
 
@@ -1239,15 +1240,15 @@ export class H5Chunk {
   async openFile(file, metadataSize = null) {
     this.file = file;
 
-    console.log(`[h5chunk] Opening file: ${file.name}`);
-    console.log(`[h5chunk] File size: ${(file.size / 1e6).toFixed(1)} MB`);
+    debugLog(`[h5chunk] Opening file: ${file.name}`);
+    debugLog(`[h5chunk] File size: ${(file.size / 1e6).toFixed(1)} MB`);
 
     // Local files: read 1MB upfront (covers full tree structure for most NISAR products).
     // This is cheap for local I/O and avoids missing groups during lazy tree-walking
     // that would require many small remote fetches.
     // Bulk mode: read full metadata page (8 MB).
     const readSize = metadataSize || (this.lazyTreeWalking ? 1024 * 1024 : 8 * 1024 * 1024);
-    console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
+    debugLog(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
 
     // Read metadata portion
     const slice = file.slice(0, Math.min(readSize, file.size));
@@ -1265,7 +1266,7 @@ export class H5Chunk {
     this.url = url;
     if (fetchHeaders) this.fetchHeaders = fetchHeaders;
 
-    console.log(`[h5chunk] Opening URL: ${url}`);
+    debugLog(`[h5chunk] Opening URL: ${url}`);
 
     // Remote URLs: read 8 MB upfront in lazy mode. NISAR HDF5 files have 150+
     // datasets whose object headers, B-tree nodes and heap data span 4-6 MB.
@@ -1273,7 +1274,7 @@ export class H5Chunk {
     // round-trips during tree walking (each ~130 ms to S3 = 36+ seconds).
     // 8 MB captures virtually all structural metadata in a single request.
     const readSize = metadataSize || 8 * 1024 * 1024;
-    console.log(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
+    debugLog(`[h5chunk] Reading initial metadata: ${(readSize / 1024).toFixed(1)} KB (lazy=${this.lazyTreeWalking})`);
 
     // Fetch metadata with range request
     const response = await fetch(url, {
@@ -1378,7 +1379,7 @@ export class H5Chunk {
 
     // Skip signature scanning in lazy tree-walking mode (saves bandwidth + time)
     if (this.lazyTreeWalking) {
-      console.log(`[h5chunk] Lazy mode: skipping signature scans, found ${this.datasets.size} datasets from root group`);
+      debugLog(`[h5chunk] Lazy mode: skipping signature scans, found ${this.datasets.size} datasets from root group`);
       return;
     }
 
@@ -1412,7 +1413,7 @@ export class H5Chunk {
     // Scan for Data Layout message patterns (version 3 or 4 with chunked class)
     await this._scanForChunkedLayouts(reader, buffer);
 
-    console.log(`[h5chunk] Found ${this.datasets.size} datasets total`);
+    debugLog(`[h5chunk] Found ${this.datasets.size} datasets total`);
   }
 
   /**
@@ -2720,7 +2721,7 @@ export class H5Chunk {
       return;
     }
 
-    console.log(`[h5chunk] Lazy-loading B-tree for ${dataset.path || datasetId} at 0x${layout.btreeAddress.toString(16)}`);
+    debugLog(`[h5chunk] Lazy-loading B-tree for ${dataset.path || datasetId} at 0x${layout.btreeAddress.toString(16)}`);
 
     // Use the metadata buffer if the B-tree falls within it — avoids a redundant
     // fetch AND gives the parser access to child nodes that may be scattered
@@ -2772,11 +2773,11 @@ export class H5Chunk {
           rank + 1,
           layout.chunkDims
         );
-        console.log(`[h5chunk] Loaded ${dataset.chunks.size} chunks for ${dataset.path || datasetId}`);
+        debugLog(`[h5chunk] Loaded ${dataset.chunks.size} chunks for ${dataset.path || datasetId}`);
       } else {
         // Layout version 4 — index type determines chunk lookup structure
         const indexType = layout.indexType ?? 4;
-        console.log(`[h5chunk] Layout v4 for ${dataset.path || datasetId}: indexType=${indexType}, addr=0x${layout.btreeAddress.toString(16)}`);
+        debugLog(`[h5chunk] Layout v4 for ${dataset.path || datasetId}: indexType=${indexType}, addr=0x${layout.btreeAddress.toString(16)}`);
         if (indexType === 0 || indexType === 1) {
           // Single chunk or implicit: entire dataset is one chunk at btreeAddress
           dataset.chunks = this._parseSingleChunkIndex(layout, dataset);
@@ -2789,7 +2790,7 @@ export class H5Chunk {
           dataset.chunks = new Map();
         }
         if (dataset.chunks) {
-          console.log(`[h5chunk] Loaded ${dataset.chunks.size} chunks for ${dataset.path || datasetId}`);
+          debugLog(`[h5chunk] Loaded ${dataset.chunks.size} chunks for ${dataset.path || datasetId}`);
         }
       }
     } catch (e) {
@@ -2935,7 +2936,7 @@ export class H5Chunk {
       }));
       const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
       const mb = (totalBytes / (1024 * 1024)).toFixed(1);
-      console.log(`[h5chunk] Local batch: ${chunkEntries.length} chunks, ${mb} MB read+decompressed in ${elapsed}s (${this.useWorkerPool ? 'workers' : 'main-thread'})`);
+      debugLog(`[h5chunk] Local batch: ${chunkEntries.length} chunks, ${mb} MB read+decompressed in ${elapsed}s (${this.useWorkerPool ? 'workers' : 'main-thread'})`);
       return results;
     }
 
@@ -2944,7 +2945,7 @@ export class H5Chunk {
 
     // MERGE_GAP: module-level default; callers doing strided sampling pass 0
     const gap = mergeGap ?? MERGE_GAP;
-    console.log(`[h5chunk] batch[${tag || 'untagged'}]: ${datasetId.split('/').slice(-2).join('/')} ${chunkEntries.length} chunks, gap=${gap}`);
+    debugLog(`[h5chunk] batch[${tag || 'untagged'}]: ${datasetId.split('/').slice(-2).join('/')} ${chunkEntries.length} chunks, gap=${gap}`);
     const mergedRanges = []; // { start, end, chunks: [{entry, localOffset}] }
     let current = null;
 

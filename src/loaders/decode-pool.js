@@ -21,6 +21,7 @@
  */
 
 import { decodeChunkSync } from './decode-core.js';
+import { debugLog } from '../utils/debug-log.js';
 
 const DEFAULT_MAX_WORKERS = 4;
 const HARD_MAX_WORKERS = 32;
@@ -96,7 +97,7 @@ export class DecodePool {
     worker.onerror = (e) => this._onError(idx, e);
     this.workers.push(worker);
     if (idx === 0) {
-      console.log(`[decode-pool] Chunk decode worker pool (lazy, max ${this.maxWorkers} threads)`);
+      debugLog(`[decode-pool] Chunk decode worker pool (lazy, max ${this.maxWorkers} threads)`);
     }
     return idx;
   }
@@ -187,7 +188,7 @@ export class DecodePool {
       this.workers[idx].terminate();
       this.workers[idx] = null;
     }
-    console.log(`[decode-pool] Worker pool cap set to ${this.maxWorkers} threads`);
+    debugLog(`[decode-pool] Worker pool cap set to ${this.maxWorkers} threads`);
     this._dispatch();
   }
 

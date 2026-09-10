@@ -160,19 +160,6 @@ export async function presignS3Url({
 }
 
 /**
- * Batch-presign multiple S3 keys in the same bucket/region.
- *
- * @param {Object} opts — Same as presignS3Url, but `key` is replaced by `keys` (string[])
- * @returns {Promise<Map<string, string>>} Map of key → pre-signed URL
- */
-export async function presignMultiple({ keys, ...opts }) {
-  const entries = await Promise.all(
-    keys.map(async key => [key, await presignS3Url({ ...opts, key })])
-  );
-  return new Map(entries);
-}
-
-/**
  * Parse an s3:// URI into {bucket, key}.
  * @param {string} uri — e.g. 's3://my-bucket/path/to/file.h5'
  * @returns {{bucket: string, key: string}}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { pixelToWorld } from '../utils/geo-overlays.js';
+import { toDb } from '../utils/stats.js';
 
 /**
  * MedicalModeOverlay — analytical / medical-imaging interaction layer.
@@ -299,7 +300,7 @@ function fmtRaw(v) {
 function fmtDb(v) {
   if (v === undefined) return '…';
   if (v === null || typeof v !== 'number' || v <= 0) return '—';
-  return `${(10 * Math.log10(v)).toFixed(2)} dB`;
+  return `${(toDb(v, 0)).toFixed(2)} dB`;
 }
 
 function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {

@@ -35,11 +35,3 @@ export function probeGPU() {
   };
   return _cached;
 }
-
-export function canUseGPURendering() {
-  return probeGPU().gpuRendering;
-}
-
-export function canUseWebGPUCompute() {
-  return probeGPU().computeShaders;
-}

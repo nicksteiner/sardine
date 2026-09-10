@@ -59,12 +59,3 @@ export function normalizeS3Url(url, { useTransferAcceleration = false, cloudfron
   // Standard virtual-hosted S3
   return `https://${bucket}.s3.amazonaws.com/${key}`;
 }
-
-/**
- * Detect whether a URL points to an S3-compatible endpoint.
- * Useful for deciding whether to apply acceleration or CDN options.
- */
-export function isS3Url(url) {
-  if (!url) return false;
-  return url.startsWith('s3://') || /^https?:\/\/[^.]+\.s3[.-]/.test(url);
-}

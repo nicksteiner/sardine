@@ -72,6 +72,8 @@ import { createModelRegistry, runModel, buildHeadManifest } from '../src/ml/regi
 import { manifestDefaults, serializeManifest, deserializeManifest } from '../src/ml/manifest.js';
 import { trainLogistic, evaluateModel, predictLogistic } from '../src/ml/trainer.js';
 import { datasetFromClassRegions, stratifiedSplit } from '../src/ml/dataset.js';
+import { debugLog } from '../src/utils/debug-log.js';
+import { toDb } from '../src/utils/stats.js';
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -976,11 +978,11 @@ function App() {
   // Compute ROI profile data (row/col means + histogram) when ROI or imageData changes
   useEffect(() => {
     if (!roi || !imageData?.getExportStripe) {
-      if (roi) console.log('[ROI Profile] Skipping:', { roi: !!roi, hasGetExportStripe: !!imageData?.getExportStripe });
+      if (roi) debugLog('[ROI Profile] Skipping:', { roi: !!roi, hasGetExportStripe: !!imageData?.getExportStripe });
       setRoiProfile(null);
       return;
     }
-    console.log('[ROI Profile] Computing for ROI:', roi);
+    debugLog('[ROI Profile] Computing for ROI:', roi);
     let cancelled = false;
 
     const run = async () => {
@@ -1015,7 +1017,7 @@ function App() {
         for (let i = 0; i < raw.length; i++) {
           const r = raw[i];
           if (!isNaN(r) && r > 0) {
-            const v = effectiveUseDecibels ? 10 * Math.log10(r) : r;
+            const v = effectiveUseDecibels ? toDb(r, 0) : r;
             vals[i] = v;
             if (v < vMin) vMin = v;
             if (v > vMax) vMax = v;
@@ -1061,7 +1063,7 @@ function App() {
         }
 
         if (!cancelled) {
-          console.log('[ROI Profile] Computed:', { exportW, exportH, vCount, mean: mean.toFixed(2), vMin: vMin.toFixed(2), vMax: vMax.toFixed(2) });
+          debugLog('[ROI Profile] Computed:', { exportW, exportH, vCount, mean: mean.toFixed(2), vMin: vMin.toFixed(2), vMax: vMax.toFixed(2) });
           setRoiProfile({ rowMeans, colMeans, hist, histMin: vMin, histMax: vMax, mean, count: vCount, exportW, exportH, useDecibels: effectiveUseDecibels });
         }
       } catch (e) {
@@ -1174,7 +1176,7 @@ function App() {
         if (!Number.isFinite(v)) { values[i] = NaN; continue; }
         if (isAlreadyDb) { values[i] = v; continue; }
         if (v === 0) { values[i] = NaN; continue; } // power nodata
-        values[i] = db ? 10 * Math.log10(v) : v;
+        values[i] = db ? toDb(v, 0) : v;
       }
       setTransectData({ dist, values, lenPx, angleDeg });
     };
@@ -1249,15 +1251,15 @@ function App() {
         for (let i = 0; i < n; i++) {
           const xr = xData[i], yr = yData[i];
           if (!isNaN(xr) && xr > 0 && !isNaN(yr) && yr > 0) {
-            x[i] = 10 * Math.log10(xr);
-            y[i] = 10 * Math.log10(yr);
+            x[i] = toDb(xr, 0);
+            y[i] = toDb(yr, 0);
             valid[i] = 1;
           }
         }
 
         // Evaluate incidence angle over ROI if metadata cube available
         let incidence = null;
-        console.log('[Classifier] metadataCube:', !!imageData.metadataCube, 'xCoords:', !!imageData.xCoords, 'yCoords:', !!imageData.yCoords);
+        debugLog('[Classifier] metadataCube:', !!imageData.metadataCube, 'xCoords:', !!imageData.xCoords, 'yCoords:', !!imageData.yCoords);
         if (imageData.metadataCube && imageData.xCoords && imageData.yCoords) {
           incidence = new Float32Array(n);
           for (let oy = 0; oy < exportH; oy++) {
@@ -1274,7 +1276,7 @@ function App() {
 
         if (!cancelled) {
           const validCount = valid.reduce((a, b) => a + b, 0);
-          console.log('[Classifier] Scatter data ready:', { exportW, exportH, validCount, hasIncidence: !!incidence });
+          debugLog('[Classifier] Scatter data ready:', { exportW, exportH, validCount, hasIncidence: !!incidence });
           setClassifierData({ x, y, valid, w: exportW, h: exportH, incidence, singleChannel: xData === yData });
           setClassifierRoiDims({ w: exportW, h: exportH });
           // Set initial incidence range from data
@@ -1895,8 +1897,8 @@ function App() {
           let p98 = histogramData[ch].p98;
           // Metadata histograms (logX=true) store linear power p2/p98 — convert to dB for dB mode
           if (effectiveUseDecibels && histogramData[ch].logX) {
-            p2 = 10 * Math.log10(Math.max(p2, 1e-10));
-            p98 = 10 * Math.log10(Math.max(p98, 1e-10));
+            p2 = toDb(p2);
+            p98 = toDb(p98);
           }
           newLimits[ch] = [p2, p98];
         }
@@ -1922,7 +1924,7 @@ function App() {
 
   // Recompute histogram (viewport-aware)
   const handleRecomputeHistogram = useCallback(async () => {
-    console.log('[histogram] handleRecomputeHistogram called, scope:', histogramScope, 'displayMode:', displayMode, 'hasGetTile:', !!imageData?.getTile, 'hasGetRGBTile:', !!imageData?.getRGBTile, 'compositeId:', compositeId);
+    debugLog('[histogram] handleRecomputeHistogram called, scope:', histogramScope, 'displayMode:', displayMode, 'hasGetTile:', !!imageData?.getTile, 'hasGetRGBTile:', !!imageData?.getRGBTile, 'compositeId:', compositeId);
     if (!imageData || !imageData.getTile || !imageData.bounds) {
       addStatusLog('warning', 'No tile data available for histogram');
       return;
@@ -2016,8 +2018,8 @@ function App() {
             for (const ch of ['R', 'G', 'B']) {
               if (hists[ch]) {
                 lims[ch] = [
-                  10 * Math.log10(Math.max(hists[ch].p2, 1e-10)),
-                  10 * Math.log10(Math.max(hists[ch].p98, 1e-10)),
+                  toDb(hists[ch].p2),
+                  toDb(hists[ch].p98),
                 ];
               }
             }
@@ -2087,8 +2089,8 @@ function App() {
 
         if (hasH5Stats) {
           const { mean_value, sample_stddev } = imageData.stats;
-          const meanDb = 10 * Math.log10(mean_value);
-          const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+          const meanDb = toDb(mean_value, 0);
+          const stdDb = Math.abs(toDb(sample_stddev / mean_value, 0));
           const syntheticMin = meanDb - 4 * stdDb;
           const syntheticMax = meanDb + 4 * stdDb;
           const numBins = 128;
@@ -2106,20 +2108,20 @@ function App() {
           addStatusLog('success', `Global histogram from HDF5 statistics: ${p2.toFixed(1)} to ${p98.toFixed(1)} dB`);
         } else {
           // Viewport/ROI scope or no HDF5 stats — sample tiles
-          console.log('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', effectiveUseDecibels);
+          debugLog('[histogram] single-band path: region', { regionX, regionY, regionW, regionH }, 'useDecibels:', effectiveUseDecibels);
           logHistogramPathOnce();
           const stats = await sampleViewportStatsAuto(
             imageData.getTile, regionW, regionH, effectiveUseDecibels, 128,
             regionX, regionY, imageData.height,
             (done, total) => addStatusLog('info', `Histogram: sampling tile ${done}/${total}`),
           );
-          console.log('[histogram] single-band stats:', stats ? { p2: stats.p2, p98: stats.p98, count: stats.count } : null);
+          debugLog('[histogram] single-band stats:', stats ? { p2: stats.p2, p98: stats.p98, count: stats.count } : null);
           if (stats) {
-            console.log('[histogram] CALLING setHistogramData, new min:', stats.min.toFixed(2), 'max:', stats.max.toFixed(2), 'count:', stats.count);
+            debugLog('[histogram] CALLING setHistogramData, new min:', stats.min.toFixed(2), 'max:', stats.max.toFixed(2), 'count:', stats.count);
             setHistogramData({ single: stats });
             addStatusLog('success', `${scopeLabel} histogram: ${stats.p2.toFixed(1)} to ${stats.p98.toFixed(1)}`);
           } else {
-            console.log('[histogram] single-band: no stats returned');
+            debugLog('[histogram] single-band: no stats returned');
           }
         }
       }
@@ -2586,7 +2588,7 @@ function App() {
               if (s0 && s1) {
                 const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
                 lims[ch] = useDb
-                  ? [10 * Math.log10(ratio) - 5, 10 * Math.log10(ratio) + 5]
+                  ? [toDb(ratio, 0) - 5, toDb(ratio, 0) + 5]
                   : [ratio * 0.3, ratio * 3];
               } else {
                 lims[ch] = [0, 1];
@@ -2599,7 +2601,7 @@ function App() {
               if (s0 && s1) {
                 const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
                 lims[ch] = useDb
-                  ? [10 * Math.log10(ratio) - 5, 10 * Math.log10(ratio) + 5]
+                  ? [toDb(ratio, 0) - 5, toDb(ratio, 0) + 5]
                   : [ratio * 0.3, ratio * 3];
               } else {
                 lims[ch] = [0, 1];
@@ -2655,7 +2657,7 @@ function App() {
       prevBoundsRef.current = newBounds;
       return;
     }
-    console.log('[SARdine] autoFitIfNewScene:', newBounds, 'prev:', prevBoundsRef.current);
+    debugLog('[SARdine] autoFitIfNewScene:', newBounds, 'prev:', prevBoundsRef.current);
     const prev = prevBoundsRef.current;
     if (prev) {
       // Check if bounds overlap significantly (same track-frame)
@@ -2801,8 +2803,8 @@ function App() {
           if (consumeDeepLinkPin('contrast')) {
             addStatusLog('info', 'Keeping deep-link contrast (metadata auto-contrast skipped)');
           } else if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
-            const meanDb = 10 * Math.log10(firstStats.mean_value);
-            const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
+            const meanDb = toDb(firstStats.mean_value, 0);
+            const stdDb = Math.abs(toDb(firstStats.sample_stddev / firstStats.mean_value, 0));
             setContrastMin(Math.round(meanDb - 2 * stdDb));
             setContrastMax(Math.round(meanDb + 2 * stdDb));
             addStatusLog('info', 'Auto-contrast from metadata',
@@ -2917,7 +2919,7 @@ function App() {
           setUseDecibels(needsDb);
 
           const displayVals = needsDb
-            ? vals.map(v => 10 * Math.log10(Math.max(v, 1e-10)))
+            ? vals.map(v => toDb(v))
             : vals;
           const lowIdx = Math.floor(0.02 * displayVals.length);
           const highIdx = Math.floor(0.98 * displayVals.length);
@@ -3436,7 +3438,8 @@ function App() {
       ? { 'Authorization': `Bearer ${cleanToken}`, 'X-EDL-Token': cleanToken }
       : undefined;
     handleRemoteFileSelect._fetchHeaders = fetchHeaders;
-    console.log(`[SARdine] Token: ${cleanToken ? `set (${cleanToken.slice(0, 8)}...)` : 'none'}, URL: ${url.slice(0, 80)}`);
+    // Never print token material, even truncated — consoles get screenshotted.
+    debugLog(`[SARdine] Token: ${cleanToken ? 'set' : 'none'}, URL: ${url.slice(0, 80)}`);
     if (!cleanToken) {
       addStatusLog('warning', 'No Earthdata token — DAAC data URLs require authentication');
     }
@@ -3487,8 +3490,8 @@ function App() {
         if (deepLinkPins.current.has('contrast')) {
           addStatusLog('info', 'Keeping deep-link contrast (metadata auto-contrast skipped)');
         } else if (firstStats?.mean_value > 0 && firstStats?.sample_stddev > 0) {
-          const meanDb = 10 * Math.log10(firstStats.mean_value);
-          const stdDb = Math.abs(10 * Math.log10(firstStats.sample_stddev / firstStats.mean_value));
+          const meanDb = toDb(firstStats.mean_value, 0);
+          const stdDb = Math.abs(toDb(firstStats.sample_stddev / firstStats.mean_value, 0));
           setContrastMin(Math.round(meanDb - 2 * stdDb));
           setContrastMax(Math.round(meanDb + 2 * stdDb));
           addStatusLog('info', 'Auto-contrast from metadata',
@@ -3723,8 +3726,8 @@ function App() {
         if (data.stats && data.stats.mean_value !== undefined && !deepLinkPins.current.has('contrast')) {
           const { mean_value, sample_stddev } = data.stats;
           if (mean_value > 0 && sample_stddev > 0) {
-            const meanDb = 10 * Math.log10(mean_value);
-            const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+            const meanDb = toDb(mean_value, 0);
+            const stdDb = Math.abs(toDb(sample_stddev / mean_value, 0));
             setContrastMin(Math.round(meanDb - 2 * stdDb));
             setContrastMax(Math.round(meanDb + 2 * stdDb));
             addStatusLog('info', 'Auto-contrast from HDF5 statistics',
@@ -3734,10 +3737,10 @@ function App() {
       }
 
       if (gen !== loadGenRef.current) {
-        console.log('[SARdine] Stale load gen, skipping setImageData');
+        debugLog('[SARdine] Stale load gen, skipping setImageData');
         return;
       }
-      console.log('[SARdine] Setting imageData:', data.width, 'x', data.height, 'bounds:', data.bounds);
+      debugLog('[SARdine] Setting imageData:', data.width, 'x', data.height, 'bounds:', data.bounds);
       setImageData(data);
 
       // Auto-fit view only if this is a new scene (different track-frame)
@@ -4118,8 +4121,8 @@ function App() {
         if (data.stats && data.stats.mean_value !== undefined) {
           const { mean_value, sample_stddev } = data.stats;
           if (mean_value > 0 && sample_stddev > 0) {
-            const meanDb = 10 * Math.log10(mean_value);
-            const stdDb = Math.abs(10 * Math.log10(sample_stddev / mean_value));
+            const meanDb = toDb(mean_value, 0);
+            const stdDb = Math.abs(toDb(sample_stddev / mean_value, 0));
             setContrastMin(Math.round(meanDb - 2 * stdDb));
             setContrastMax(Math.round(meanDb + 2 * stdDb));
             addStatusLog('info', 'Auto-contrast from HDF5 statistics',
@@ -4279,7 +4282,7 @@ function App() {
     setExporting(true);
     const exportStart = performance.now();
     addStatusLog('info', '--- GeoTIFF Export Started ---');
-    console.log('[Export] GeoTIFF export started');
+    debugLog('[Export] GeoTIFF export started');
 
     // Yield to browser so "Exporting..." button state renders before heavy work
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -4667,7 +4670,7 @@ function App() {
             const amplitude = bandData[i];
             let value;
             if (effectiveUseDecibels) {
-              const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
+              const db = toDb(amplitude);
               value = (db - cMin) / (cMax - cMin);
             } else {
               value = (amplitude - cMin) / (cMax - cMin);
@@ -4911,7 +4914,7 @@ function App() {
           for (let i = 0; i < numPixels; i++) {
             const amp = bandData[i];
             let v = tsUseDecibels
-              ? (10 * Math.log10(Math.max(amp, 1e-10)) - cMin) / (cMax - cMin)
+              ? (toDb(amp) - cMin) / (cMax - cMin)
               : (amp - cMin) / (cMax - cMin);
             v = Math.max(0, Math.min(1, v));
             if (tsStretchFn !== null) v = tsStretchFn(v);
@@ -6873,8 +6876,8 @@ function App() {
                       // Update contrast from metadata stats for the new frequency
                       const ds = freqDs[0];
                       if (ds?.stats?.mean_value > 0 && ds?.stats?.sample_stddev > 0) {
-                        const meanDb = 10 * Math.log10(ds.stats.mean_value);
-                        const stdDb = Math.abs(10 * Math.log10(ds.stats.sample_stddev / ds.stats.mean_value));
+                        const meanDb = toDb(ds.stats.mean_value, 0);
+                        const stdDb = Math.abs(toDb(ds.stats.sample_stddev / ds.stats.mean_value, 0));
                         setContrastMin(Math.round(meanDb - 2 * stdDb));
                         setContrastMax(Math.round(meanDb + 2 * stdDb));
                       }
@@ -6950,8 +6953,8 @@ function App() {
                     // Update contrast from metadata stats for the new polarization
                     const ds = nisarDatasets.find(d => d.frequency === selectedFrequency && d.polarization === pol);
                     if (ds?.stats?.mean_value > 0 && ds?.stats?.sample_stddev > 0) {
-                      const meanDb = 10 * Math.log10(ds.stats.mean_value);
-                      const stdDb = Math.abs(10 * Math.log10(ds.stats.sample_stddev / ds.stats.mean_value));
+                      const meanDb = toDb(ds.stats.mean_value, 0);
+                      const stdDb = Math.abs(toDb(ds.stats.sample_stddev / ds.stats.mean_value, 0));
                       setContrastMin(Math.round(meanDb - 2 * stdDb));
                       setContrastMax(Math.round(meanDb + 2 * stdDb));
                     }

@@ -244,7 +244,7 @@ This ensures 100% of S3 bandwidth goes to the tile the user is looking at right 
 
 ## Performance Profile
 
-Benchmark against 5 NISAR GCOV files on S3 (us-west-2, pre-signed URLs), measured with `test-chunk-pipeline.mjs`:
+Benchmark against 5 NISAR GCOV files on S3 (us-west-2, pre-signed URLs), measured with a since-removed streaming benchmark script:
 
 | Metric | Target | Typical |
 |:-------|:-------|:--------|
@@ -310,4 +310,3 @@ File dimensions range from 33840×33120 to 40032×40176 pixels, with 512×512 ch
 |:-----|:------|:-----|
 | `src/loaders/h5chunk.js` | ~2800 | HDF5 format parser, chunk index builder, batch fetcher |
 | `src/loaders/nisar-loader.js` | ~4300 | NISAR product logic, tile management, caching, refinement |
-| `test/test-chunk-pipeline.mjs` | ~300 | S3 streaming benchmark (first paint, foreground tiles, Phase 2) |

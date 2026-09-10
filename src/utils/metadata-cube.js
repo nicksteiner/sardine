@@ -17,6 +17,8 @@
  * For users without a DEM, a single-height fallback uses the lowest layer.
  */
 
+import { debugLog } from './debug-log.js';
+
 /**
  * @typedef {Object} MetadataCubeData
  * @property {Float64Array} xCoordinates - Easting axis (Nx), meters, increasing
@@ -46,7 +48,7 @@ export class MetadataCube {
     this.dy = this.ny > 1 ? (this.y[this.ny - 1] - this.y[0]) / (this.ny - 1) : 1; // negative for north-up
     this.dz = this.nz > 1 ? (this.z[this.nz - 1] - this.z[0]) / (this.nz - 1) : 1;
 
-    console.log(`[MetadataCube] Created: ${this.nx}×${this.ny}×${this.nz}, ` +
+    debugLog(`[MetadataCube] Created: ${this.nx}×${this.ny}×${this.nz}, ` +
       `fields: [${Object.keys(this.fields).join(', ')}], ` +
       `easting: ${this.x[0].toFixed(0)}–${this.x[this.nx - 1].toFixed(0)}m, ` +
       `northing: ${this.y[0].toFixed(0)}–${this.y[this.ny - 1].toFixed(0)}m, ` +
@@ -362,7 +364,7 @@ export async function loadMetadataCube(reader, band, options = {}) {
     const ny = yCoordinates.length;
     const nz = heights.length;
 
-    console.log(`[MetadataCube] Axes: nx=${nx}, ny=${ny}, nz=${nz}`);
+    debugLog(`[MetadataCube] Axes: nx=${nx}, ny=${ny}, nz=${nz}`);
 
     // Read fields
     const fields = {};
@@ -373,10 +375,10 @@ export async function loadMetadataCube(reader, band, options = {}) {
         const expected = nz * ny * nx;
         if (data.length === expected) {
           fields[fieldName] = data instanceof Float32Array ? data : new Float32Array(data);
-          console.log(`[MetadataCube] Loaded ${fieldName}: ${data.length} values`);
+          debugLog(`[MetadataCube] Loaded ${fieldName}: ${data.length} values`);
         } else {
           // Some fields are 2D (e.g. groundTrackVelocity: ny × nx)
-          console.log(`[MetadataCube] ${fieldName}: ${data.length} values (expected ${expected}), skipping 3D interp`);
+          debugLog(`[MetadataCube] ${fieldName}: ${data.length} values (expected ${expected}), skipping 3D interp`);
         }
       }
     }

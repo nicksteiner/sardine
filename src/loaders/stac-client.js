@@ -89,28 +89,12 @@ function normalizeUrl(apiUrl) {
 }
 
 /**
- * Fetch the root catalog from a STAC API endpoint.
- * Returns { id, title, description, conformsTo, links }.
- */
-export async function fetchCatalog(apiUrl, { token } = {}) {
-  const resp = await stacFetch(normalizeUrl(apiUrl), { token });
-  return resp;
-}
-
-/**
  * List collections available at a STAC API endpoint.
  * Returns array of { id, title, description, extent, links, ... }.
  */
 export async function listCollections(apiUrl, { token } = {}) {
   const resp = await stacFetch(`${normalizeUrl(apiUrl)}/collections`, { token });
   return resp.collections || [];
-}
-
-/**
- * Get a single collection by ID.
- */
-export async function getCollection(apiUrl, collectionId, { token } = {}) {
-  return stacFetch(`${normalizeUrl(apiUrl)}/collections/${encodeURIComponent(collectionId)}`, { token });
 }
 
 /**
@@ -245,29 +229,6 @@ export function resolveAsset(item) {
   }
 
   return null;
-}
-
-/**
- * List all loadable assets from a STAC Item.
- * Useful when an item has multiple bands/polarizations as separate assets.
- */
-export function listAssets(item) {
-  if (!item?.assets) return [];
-
-  const results = [];
-  for (const [key, asset] of Object.entries(item.assets)) {
-    const type = detectAssetType(asset, key);
-    if (type) {
-      results.push({
-        url: asset.href,
-        type,
-        key,
-        title: asset.title || key,
-        roles: asset.roles || [],
-      });
-    }
-  }
-  return results;
 }
 
 /**
@@ -440,18 +401,6 @@ function formatSingle(dt) {
   } catch {
     return dt;
   }
-}
-
-/**
- * Compute the spatial extent [west, south, east, north] of a STAC Item's geometry.
- */
-export function itemBbox(item) {
-  if (item.bbox) return item.bbox.slice(0, 4);
-  // Fall back to geometry bounds
-  if (item.geometry?.coordinates) {
-    return geojsonBbox(item.geometry);
-  }
-  return null;
 }
 
 function geojsonBbox(geometry) {

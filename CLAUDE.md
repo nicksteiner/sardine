@@ -30,7 +30,7 @@ Context for Claude Code (or any AI coding assistant) to understand the SARdine p
 | **h5wasm** | HDF5 attribute/metadata parsing (WASM, used alongside h5chunk) |
 | **pako** | Inflate/deflate for HDF5 chunk decompression |
 | **MapLibre GL** | Basemap rendering |
-| **parquet-wasm** | Overture Maps GeoParquet decoding |
+| **pmtiles** | Overture Maps vector tile decoding |
 | **Vite** | Build tool and dev server |
 
 ### Key Design Decisions
@@ -71,7 +71,7 @@ sardine/
 │   ├── utils/
 │   │   ├── annotation-io.js    # markup ⇄ GeoJSON w/ versioned properties schema (W004)
 │   │   ├── export-sidecar.js   # {output}.tif.json provenance sidecar (W005)
-│   │   ├── deep-link.js        # ?url= + render-param links; share-link.js is a shim (W008)
+│   │   ├── deep-link.js        # ?url= + render-param links (W008)
 │   │   ├── sar-composites.js / sar-indices.js  # RGB presets + RVI-family indices
 │   │   ├── stats.js / stretch.js / colormap.js
 │   │   ├── geotiff-writer.js / figure-export.js / png-state.js / svg-export.js
@@ -178,6 +178,18 @@ npm run example      # Run example viewer
 - Plain JavaScript (no TypeScript in app code)
 - JSX for React components (.jsx extension)
 - Dark theme via CSS custom properties (sardine-theme.css)
+
+### Logging and dB conversion (standard practice)
+
+- **Never call `console.log` in app or library code.** Use `debugLog` from
+  `src/utils/debug-log.js` — it is gated (off by default; enable with
+  `?debug=1`, `localStorage sardine:debug=1`, or `globalThis.SARDINE_DEBUG = true`).
+  `console.warn`/`console.error` stay un-gated. Exceptions: `server/` and
+  `src/lite/serve.js` (node CLIs whose console output is their UI), tests.
+- **Never log secrets**, even truncated (tokens, presign credentials).
+- **Never inline `10 * Math.log10(...)`.** Use `toDb` from `src/utils/stats.js`:
+  `toDb(v)` floors at 1e-10 (nodata-safe, −100 dB); `toDb(v, 0)` is the raw
+  form for values already validated positive.
 
 ### Key Patterns
 

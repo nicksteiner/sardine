@@ -12,6 +12,7 @@
  */
 
 import pako from 'pako';
+import { toDb } from './stats.js';
 
 // TIFF tag IDs
 const TAG_NEW_SUBFILE_TYPE = 254;
@@ -243,7 +244,7 @@ function generateOverview(rgbaData, width, height, scale, options = {}) {
             if (count > 0) {
               // Average in linear space, then convert back to dB
               const avgLinear = sumLinear / count;
-              const avgDb = 10 * Math.log10(Math.max(avgLinear, 1e-10));
+              const avgDb = toDb(avgLinear);
 
               // Forward transform: dB → [0,1] → uint8
               const normalizedOut = Math.max(0, Math.min(1, (avgDb - dbMin) / (dbMax - dbMin)));

@@ -297,6 +297,3 @@ export function createPersistentChunkCache(sourceUrl, datasetPath, cache = getSh
 }
 
 /** Clear the entire persistent chunk cache (all URLs, all datasets). */
-export async function clearChunkCache() {
-  await getSharedChunkCacheL2().clear();
-}

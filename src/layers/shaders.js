@@ -4,33 +4,8 @@
  */
 
 /**
- * Vertex shader for SAR tile layer
- */
-export const sarVertexShader = `\
-#version 300 es
-#define SHADER_NAME sar-tile-layer-vertex-shader
-
-in vec2 texCoords;
-in vec3 positions;
-in vec3 positions64Low;
-in vec3 instancePickingColors;
-
-out vec2 vTexCoord;
-
-void main(void) {
-  geometry.worldPosition = positions;
-  geometry.uv = texCoords;
-  geometry.pickingColor = instancePickingColors;
-
-  gl_Position = project_position_to_clipspace(positions, positions64Low, vec3(0.0), geometry.position);
-
-  vTexCoord = texCoords;
-}
-`;
-
-/**
  * Consolidated GLSL colormap functions (single source of truth).
- * Used by sarFragmentShader and SARGPULayer.
+ * Used by SARGPULayer.
  */
 export const glslColormaps = `
 // Grayscale colormap
@@ -381,139 +356,6 @@ vec3 coherenceMap(float t) {
 }
 `;
 
-/**
- * Fragment shader for SAR tile layer.
- * Composed from glslColormaps (single source of truth for colormap functions).
- */
-export const sarFragmentShader = `\
-#version 300 es
-#define SHADER_NAME sar-tile-layer-fragment-shader
-
-precision highp float;
-
-uniform sampler2D uTexture;
-uniform float uMin;
-uniform float uMax;
-uniform bool uUseDecibels;
-uniform int uColormap;
-uniform int uStretchMode;  // 0=linear, 1=sqrt, 2=cbrt, 3=log, 4=gamma, 5=sigmoid
-uniform float uGamma;
-uniform bool uReverseColormap;
-
-// Class-map mode: sample amplitude as an integer class index and look up its
-// color in a 256×1 palette texture (the GeoTIFF's embedded ColorMap). Skips the
-// dB/stretch/colormap ramp entirely. uClassPaletteEntries = number of authored
-// classes; a palette texture must be bound (uClassPalette) when uClassMode > 0.
-uniform bool uClassMode;
-uniform sampler2D uClassPalette;
-uniform float uClassPaletteEntries;
-
-in vec2 vTexCoord;
-out vec4 fragColor;
-
-${glslColormaps}
-
-void main(void) {
-  vec4 texel = texture(uTexture, vTexCoord);
-  float amplitude = texel.r;
-
-  // ── Class-map mode: integer label → palette lookup ──
-  if (uClassMode) {
-    // 0 / NaN are background — render transparent (matches SAR nodata convention).
-    if (amplitude == 0.0 || isnan(amplitude)) {
-      fragColor = vec4(0.0);
-      DECKGL_FILTER_COLOR(fragColor, geometry);
-      return;
-    }
-    float idx = floor(amplitude + 0.5);           // nearest integer class
-    // Center-sample the palette texel for this class (256-wide palette texture).
-    float u = (idx + 0.5) / 256.0;
-    vec3 classColor = texture(uClassPalette, vec2(clamp(u, 0.0, 1.0), 0.5)).rgb;
-    fragColor = vec4(classColor, 1.0);
-    DECKGL_FILTER_COLOR(fragColor, geometry);
-    return;
-  }
-
-  float value;
-  if (uUseDecibels) {
-    float db = 10.0 * log2(max(amplitude, 1e-10)) * 0.30103;
-    value = (db - uMin) / (uMax - uMin);
-  } else {
-    value = (amplitude - uMin) / (uMax - uMin);
-  }
-
-  value = clamp(value, 0.0, 1.0);
-
-  // Apply stretch mode
-  if (uStretchMode == 1) {
-    value = sqrt(value);
-  } else if (uStretchMode == 2) {
-    value = pow(max(value, 0.0), 1.0 / 3.0);
-  } else if (uStretchMode == 3) {
-    float k = pow(10.0, 1.0 + uGamma);
-    value = log(1.0 + k * value) / log(1.0 + k);
-  } else if (uStretchMode == 4) {
-    value = pow(value, uGamma);
-  } else if (uStretchMode == 5) {
-    float gain = uGamma * 8.0;
-    float raw = 1.0 / (1.0 + exp(-gain * (value - 0.5)));
-    float lo = 1.0 / (1.0 + exp(gain * 0.5));
-    float hi = 1.0 / (1.0 + exp(-gain * 0.5));
-    float denom = hi - lo;
-    value = denom > 0.0 ? clamp((raw - lo) / denom, 0.0, 1.0) : value;
-  }
-
-  // Reverse-ramp toggle (skipped for label colormap, which has no meaningful inverse)
-  float cmapInput = (uReverseColormap && uColormap != 10) ? (1.0 - value) : value;
-
-  vec3 color;
-  if (uColormap == 0) {
-    color = grayscale(cmapInput);
-  } else if (uColormap == 1) {
-    color = viridis(cmapInput);
-  } else if (uColormap == 2) {
-    color = inferno(cmapInput);
-  } else if (uColormap == 3) {
-    color = plasma(cmapInput);
-  } else if (uColormap == 4) {
-    color = phaseColormap(cmapInput);
-  } else if (uColormap == 5) {
-    color = twilightMap(cmapInput);
-  } else if (uColormap == 6) {
-    color = sardineMap(cmapInput);
-  } else if (uColormap == 7) {
-    color = floodMap(cmapInput);
-  } else if (uColormap == 8) {
-    color = divergingMap(cmapInput);
-  } else if (uColormap == 9) {
-    color = polarimetricMap(cmapInput);
-  } else if (uColormap == 10) {
-    color = labelMap(value);
-  } else if (uColormap == 11) {
-    color = rdbuMap(cmapInput);
-  } else if (uColormap == 12) {
-    color = romaOMap(cmapInput);
-  } else if (uColormap == 13) {
-    color = magma(cmapInput);
-  } else if (uColormap == 14) {
-    color = cividisMap(cmapInput);
-  } else if (uColormap == 15) {
-    color = turboMap(cmapInput);
-  } else if (uColormap == 16) {
-    color = batlowMap(cmapInput);
-  } else if (uColormap == 17) {
-    color = coherenceMap(cmapInput);
-  } else {
-    color = grayscale(cmapInput);
-  }
-
-  float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
-
-  fragColor = vec4(color, alpha);
-
-  DECKGL_FILTER_COLOR(fragColor, geometry);
-}
-`;
 
 /**
  * Colormap name to integer mapping for shader
@@ -570,8 +412,6 @@ export function getStretchModeId(name) {
 }
 
 export default {
-  sarVertexShader,
-  sarFragmentShader,
   glslColormaps,
   COLORMAP_IDS,
   getColormapId,

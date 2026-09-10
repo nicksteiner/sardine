@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { fetchWorldCoastlines } from '../loaders/overture-loader.js';
+import { toDb } from '../utils/stats.js';
 
 /**
  * MetadataPanel — Collapsible panel showing NISAR product metadata
@@ -544,18 +545,18 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
               <>
                 <MetadataRow
                   label="Mean (γ₀)"
-                  value={`${(10 * Math.log10(imageData.stats.mean_value)).toFixed(1)} dB`}
+                  value={`${(toDb(imageData.stats.mean_value, 0)).toFixed(1)} dB`}
                 />
                 {imageData.stats.sample_stddev != null && (
                   <MetadataRow
                     label="Std. Dev."
-                    value={`${(10 * Math.log10(imageData.stats.sample_stddev / imageData.stats.mean_value)).toFixed(1)} dB`}
+                    value={`${(toDb(imageData.stats.sample_stddev / imageData.stats.mean_value, 0)).toFixed(1)} dB`}
                   />
                 )}
                 {imageData.stats.min_value != null && (
                   <MetadataRow
                     label="Range"
-                    value={`${(10 * Math.log10(Math.max(imageData.stats.min_value, 1e-10))).toFixed(1)} – ${(10 * Math.log10(Math.max(imageData.stats.max_value, 1e-10))).toFixed(1)} dB`}
+                    value={`${(toDb(imageData.stats.min_value)).toFixed(1)} – ${(toDb(imageData.stats.max_value)).toFixed(1)} dB`}
                   />
                 )}
               </>

@@ -13,7 +13,7 @@ import { SARViewer } from './SARViewer.jsx';
 import { OpticalPeekLayer } from '../layers/OpticalPeekLayer.js';
 import { loadLocalTIFs } from '../loaders/cog-loader.js';
 import { loadNISARGCOV, listNISARDatasets } from '../loaders/nisar-loader.js';
-import { autoContrastWithDbDetect, sampleViewportStats } from '../utils/stats.js';
+import { autoContrastWithDbDetect, sampleViewportStats, toDb } from '../utils/stats.js';
 import { reprojectBbox } from '../utils/roi-subset.js';
 import { label as labelColor } from '../utils/colormap.js';
 
@@ -167,8 +167,8 @@ function geoFrameSource(source) {
  */
 function nisarAutoContrast(stats) {
   if (stats?.mean_value > 0 && stats?.sample_stddev > 0) {
-    const meanDb = 10 * Math.log10(stats.mean_value);
-    const stdDb = Math.abs(10 * Math.log10(stats.sample_stddev / stats.mean_value));
+    const meanDb = toDb(stats.mean_value, 0);
+    const stdDb = Math.abs(toDb(stats.sample_stddev / stats.mean_value, 0));
     return [Math.round(meanDb - 2 * stdDb), Math.round(meanDb + 2 * stdDb)];
   }
   return [-25, 0];

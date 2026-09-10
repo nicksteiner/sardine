@@ -2,6 +2,7 @@ import { BitmapLayer } from '@deck.gl/layers';
 import GL from '@luma.gl/constants';
 import { getColormap } from '../utils/colormap.js';
 import { createStretchFn } from '../utils/stretch.js';
+import { toDb } from '../utils/stats.js';
 
 /**
  * SARBitmapLayer - A deck.gl BitmapLayer for full SAR images
@@ -126,7 +127,7 @@ function createSARTexture(data, width, height, contrastLimits, useDecibels, colo
     let value;
 
     if (useDecibels) {
-      const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
+      const db = toDb(amplitude);
       value = (db - min) / (max - min);
     } else {
       value = (amplitude - min) / (max - min);

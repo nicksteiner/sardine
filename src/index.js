@@ -10,19 +10,18 @@ export {
   loadCOG,
   loadLocalTIF,
   loadLocalTIFs,
-  loadMultipleCOGs,
   loadCOGFullImage,
   loadMultiBandCOG,
   loadCOGRGBComposite,
   loadTemporalCOGs
 } from './loaders/cog-loader.js';
-export { loadNISARGCOV, listNISARDatasets, loadNISARGCOVFullImage, loadNISARRGBComposite, loadNISARIndex, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
+export { loadNISARGCOV, listNISARDatasets, loadNISARRGBComposite, loadNISARIndex, loadNISARGCOVFromUrl, listNISARDatasetsFromUrl, wktToROI, loadNISARTimeSeriesROI } from './loaders/nisar-loader.js';
 export { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from './loaders/nisar-gunw-loader.js';
 export { detectNISARProduct, openNISARReader, getRenderMode, RENDER_MODES } from './loaders/nisar-product.js';
 export {
-  loadNITF, isNITFFile, parseNITFMetadataFromBuffer,
+  loadNITF, isNITFFile,
   listNITFDatasets, loadNITFDataset,
-  loadNITFFromUrl, listNITFDatasetsFromUrl, loadNITFDatasetFromUrl,
+  loadNITFFromUrl, loadNITFDatasetFromUrl,
 } from './loaders/nitf-loader.js';
 export { URLFile } from './loaders/url-file.js';
 
@@ -31,10 +30,10 @@ export { parseWKT, wktToBbox, bboxToWKT, validateWKT, wktToGeoJSON } from './uti
 export { bboxToPixelRange, reprojectBbox, computeSubsetBounds, roiIntersectsFile } from './utils/roi-subset.js';
 
 // S3 URL utilities
-export { normalizeS3Url, isS3Url } from './utils/s3-url.js';
+export { normalizeS3Url } from './utils/s3-url.js';
 
 // Persistent chunk cache (IndexedDB L2 — W009)
-export { clearChunkCache, ChunkCacheL2, createPersistentChunkCache, L2_MAX_BYTES } from './loaders/chunk-cache-idb.js';
+export { ChunkCacheL2, createPersistentChunkCache, L2_MAX_BYTES } from './loaders/chunk-cache-idb.js';
 
 // Layers
 export { SARTileLayer } from './layers/SARTileLayer.js';
@@ -42,8 +41,6 @@ export { SARBitmapLayer } from './layers/SARBitmapLayer.js';
 export { SARTiledCOGLayer } from './layers/SARTiledCOGLayer.js';
 export { SARGPULayer } from './layers/SARGPULayer.js';
 export {
-  sarVertexShader,
-  sarFragmentShader,
   glslColormaps,
   COLORMAP_IDS,
   getColormapId,
@@ -62,6 +59,7 @@ export { MapViewer } from './viewers/MapViewer.jsx';
 
 // Utilities
 export {
+  toDb,
   computeStats,
   autoContrastLimits,
   autoContrastWithDbDetect,
@@ -151,9 +149,6 @@ export {
   fetchAllOvertureThemes,
   fetchOvertureTile,
   fetchWorldCoastlines,
-  fetchSceneContext,
-  clearOvertureCache,
-  getOvertureUrl,
   OVERTURE_THEMES,
 } from './loaders/overture-loader.js';
 
@@ -163,12 +158,11 @@ export { createOvertureLayers } from './layers/OvertureLayer.js';
 export { MetadataCube, loadMetadataCube } from './utils/metadata-cube.js';
 
 // Phase Corrections
-export { loadAllCorrections, fitPlanarRamp, buildCombinedCorrection, CORRECTION_TYPES } from './utils/phase-corrections.js';
+export { loadAllCorrections, CORRECTION_TYPES } from './utils/phase-corrections.js';
 
 // S3 Pre-signed URL generation
 export {
   presignS3Url,
-  presignMultiple,
   presignGeoJSON,
   parseS3Uri,
 } from './utils/s3-presign.js';
@@ -190,21 +184,16 @@ export { MetadataPanel } from './components/MetadataPanel.jsx';
 export { OverviewMap } from './components/OverviewMap.jsx';
 export { StatusWindow } from './components/StatusWindow.jsx';
 export { SceneCatalog } from './components/SceneCatalog.jsx';
-export { STACSearch } from './components/STACSearch.jsx';
 
 // STAC Catalog
 export {
   STAC_ENDPOINTS,
-  fetchCatalog,
   listCollections,
-  getCollection,
   searchItems,
   resolveAsset,
-  listAssets,
   itemToScene,
   extractItemFilters,
   formatDatetime,
-  itemBbox,
 } from './loaders/stac-client.js';
 
 // Import for default export

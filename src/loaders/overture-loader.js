@@ -23,22 +23,13 @@
 
 import { PMTiles } from 'pmtiles';
 import proj4 from 'proj4';
+import { debugLog } from '../utils/debug-log.js';
 
 // ── Overture S3 endpoints ──
 const OVERTURE_BASE_URL = 'https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com';
 const OVERTURE_TILES_URL = 'https://overturemaps-tiles-us-west-2-beta.s3.amazonaws.com';
 const DEFAULT_RELEASE = '2024-12-18.0';
 const DEFAULT_TILES_RELEASE = '2024-12-18';  // PMTiles use date without minor version
-
-/**
- * Get the PMTiles URL for an Overture theme.
- * @param {string} theme - e.g. 'base', 'buildings', 'transportation', 'divisions'
- * @param {string} release - Release date
- * @returns {string} PMTiles URL
- */
-export function getOverturePMTilesUrl(theme, release = DEFAULT_TILES_RELEASE) {
-  return `${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`;
-}
 
 /**
  * Available Overture themes and their types.
@@ -99,41 +90,6 @@ export const OVERTURE_THEMES = {
 const featureCache = new Map();
 const MAX_CACHE_ENTRIES = 200;
 
-/**
- * Build the Overture PMTiles or Parquet URL for a theme/type.
- *
- * Overture now also publishes PMTiles which are more efficient for
- * tiled access. We prefer PMTiles when available.
- *
- * @param {string} theme - e.g. 'buildings', 'transportation'
- * @param {string} type - e.g. 'building', 'segment'
- * @param {string} release - Release version
- * @returns {string} URL
- */
-export function getOvertureUrl(theme, type, release = DEFAULT_RELEASE) {
-  // PMTiles URL (preferred — single file, tiled access)
-  return `${OVERTURE_BASE_URL}/release/${release}/theme=${theme}/type=${type}`;
-}
-
-/**
- * Fetch Overture features for a bounding box using the Overture API.
- *
- * For browser use, the most practical approach is to use the DuckDB WASM
- * spatial query or a lightweight GeoParquet reader. Since we want to keep
- * dependencies minimal, we use a two-tier approach:
- *
- * 1. For small viewports (high zoom): fetch from Overture's PMTiles endpoint
- * 2. For large viewports: skip (too many features to render)
- *
- * @param {string} theme - Overture theme name
- * @param {string} type - Overture type name
- * @param {number[]} bbox - [minLon, minLat, maxLon, maxLat] in WGS84
- * @param {Object} options
- * @param {string} options.release - Overture release version
- * @param {number} options.maxFeatures - Max features to return (default 50000)
- * @param {Function} options.onProgress - Progress callback
- * @returns {Promise<GeoJSON.FeatureCollection>}
- */
 // ─── proj4 Projection Utilities ─────────────────────────────────────────
 
 /**
@@ -282,7 +238,7 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
   // Per-theme zoom: viewport zoom is the floor, but themes like buildings
   // override it because their PMTiles archive is empty below z≥10.
   const viewportZoom = getZoomForBbox(wgs84Bbox);
-  console.log(`[Overture] Fetching ${enabledThemes.length} themes, viewport zoom ${viewportZoom} (span ${spanLon.toFixed(1)}° x ${spanLat.toFixed(1)}°)`);
+  debugLog(`[Overture] Fetching ${enabledThemes.length} themes, viewport zoom ${viewportZoom} (span ${spanLon.toFixed(1)}° x ${spanLat.toFixed(1)}°)`);
 
   const fetches = enabledThemes.map(async (themeKey) => {
     const themeDef = OVERTURE_THEMES[themeKey];
@@ -347,7 +303,7 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
       tilesLoaded++;
     }
 
-    console.log(`[Overture] Got ${features.length} features for ${themeKey} from ${tilesLoaded} tiles at z${themeZoom}`);
+    debugLog(`[Overture] Got ${features.length} features for ${themeKey} from ${tilesLoaded} tiles at z${themeZoom}`);
 
     results[themeKey] = {
       type: 'FeatureCollection',
@@ -358,15 +314,6 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
 
   await Promise.all(fetches);
   return results;
-}
-
-/**
- * Clear the feature cache (e.g., on release version change).
- */
-export function clearOvertureCache() {
-  featureCache.clear();
-  pmtilesGeoJSONCache.clear();
-  console.log('[Overture] Cache cleared');
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -389,7 +336,7 @@ function getPMTiles(theme, release = DEFAULT_TILES_RELEASE) {
   const key = `${release}/${theme}`;
   if (!pmtilesInstances.has(key)) {
     const url = `${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`;
-    console.log(`[Overture PMTiles] Opening: ${url}`);
+    debugLog(`[Overture PMTiles] Opening: ${url}`);
     pmtilesInstances.set(key, new PMTiles(url));
   }
   return pmtilesInstances.get(key);
@@ -772,25 +719,25 @@ function decodeMVT(buffer, tileX, tileY, tileZ) {
 export async function fetchOvertureTile(theme, z, x, y, release = DEFAULT_TILES_RELEASE) {
   const cacheKey = `tile:${theme}/${z}/${x}/${y}`;
   if (pmtilesGeoJSONCache.has(cacheKey)) {
-    console.log(`[Overture PMTiles] Cache hit: ${cacheKey}`);
+    debugLog(`[Overture PMTiles] Cache hit: ${cacheKey}`);
     return pmtilesGeoJSONCache.get(cacheKey);
   }
 
-  console.log(`[Overture PMTiles] Fetching ${theme}/${z}/${x}/${y} from ${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`);
+  debugLog(`[Overture PMTiles] Fetching ${theme}/${z}/${x}/${y} from ${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`);
 
   try {
     const pm = getPMTiles(theme, release);
     const tileData = await pm.getZxy(z, x, y);
 
     if (!tileData || !tileData.data) {
-      console.log(`[Overture PMTiles] No data for ${theme}/${z}/${x}/${y} (tile may be empty)`);
+      debugLog(`[Overture PMTiles] No data for ${theme}/${z}/${x}/${y} (tile may be empty)`);
       return { layers: {} };
     }
 
-    console.log(`[Overture PMTiles] Got ${tileData.data.byteLength} bytes for ${theme}/${z}/${x}/${y}`);
+    debugLog(`[Overture PMTiles] Got ${tileData.data.byteLength} bytes for ${theme}/${z}/${x}/${y}`);
     const decoded = decodeMVT(tileData.data, x, y, z);
     const featureCount = Object.values(decoded.layers || {}).reduce((sum, features) => sum + features.length, 0);
-    console.log(`[Overture PMTiles] Decoded ${featureCount} features from ${theme}/${z}/${x}/${y}`);
+    debugLog(`[Overture PMTiles] Decoded ${featureCount} features from ${theme}/${z}/${x}/${y}`);
 
     pmtilesGeoJSONCache.set(cacheKey, decoded);
     return decoded;
@@ -824,7 +771,7 @@ export async function fetchWorldCoastlines(options = {}) {
     return pmtilesGeoJSONCache.get(cacheKey);
   }
 
-  console.log(`[Overture] Fetching world coastlines at z${zoom}...`);
+  debugLog(`[Overture] Fetching world coastlines at z${zoom}...`);
 
   const land = [];
   const water = [];
@@ -861,75 +808,6 @@ export async function fetchWorldCoastlines(options = {}) {
   const result = { land, water };
   pmtilesGeoJSONCache.set(cacheKey, result);
 
-  console.log(`[Overture] Coastlines loaded: ${land.length} land, ${water.length} water features`);
-  return result;
-}
-
-
-/**
- * Fetch Overture context features near a scene footprint.
- *
- * Gets buildings, roads, and admin boundaries from Overture PMTiles
- * at an appropriate zoom level for the scene extent.
- *
- * @param {Object} wgs84Bounds - { minLon, minLat, maxLon, maxLat }
- * @param {Object} options
- * @param {string[]} options.themes - Themes to fetch (default: ['base', 'buildings', 'transportation'])
- * @param {string} options.release - Tiles release date
- * @returns {Promise<Object>} { theme: { layers: { layerName: Feature[] } } }
- */
-export async function fetchSceneContext(wgs84Bounds, options = {}) {
-  const {
-    themes = ['base'],
-    release = DEFAULT_TILES_RELEASE,
-  } = options;
-
-  if (!wgs84Bounds) return {};
-
-  // Choose zoom level based on scene extent
-  const spanLon = wgs84Bounds.maxLon - wgs84Bounds.minLon;
-  const spanLat = wgs84Bounds.maxLat - wgs84Bounds.minLat;
-  const maxSpan = Math.max(spanLon, spanLat);
-
-  // Pick zoom: ~2° span → z6, ~0.5° → z8, ~0.1° → z10
-  const zoom = Math.max(2, Math.min(10, Math.round(Math.log2(360 / maxSpan) - 1)));
-
-  console.log(`[Overture] Fetching scene context at z${zoom} for [${wgs84Bounds.minLon.toFixed(2)}, ${wgs84Bounds.minLat.toFixed(2)}, ${wgs84Bounds.maxLon.toFixed(2)}, ${wgs84Bounds.maxLat.toFixed(2)}]`);
-
-  // Convert bbox to tile coordinates
-  const n = Math.pow(2, zoom);
-  const xMin = Math.floor(((wgs84Bounds.minLon + 180) / 360) * n);
-  const xMax = Math.floor(((wgs84Bounds.maxLon + 180) / 360) * n);
-  const yMin = Math.floor((1 - Math.log(Math.tan(wgs84Bounds.maxLat * Math.PI / 180) + 1 / Math.cos(wgs84Bounds.maxLat * Math.PI / 180)) / Math.PI) / 2 * n);
-  const yMax = Math.floor((1 - Math.log(Math.tan(wgs84Bounds.minLat * Math.PI / 180) + 1 / Math.cos(wgs84Bounds.minLat * Math.PI / 180)) / Math.PI) / 2 * n);
-
-  const result = {};
-
-  for (const theme of themes) {
-    const allLayers = {};
-    const fetches = [];
-
-    for (let x = Math.max(0, xMin); x <= Math.min(n - 1, xMax); x++) {
-      for (let y = Math.max(0, yMin); y <= Math.min(n - 1, yMax); y++) {
-        fetches.push(
-          fetchOvertureTile(theme, zoom, x, y, release).then(decoded => {
-            for (const [layerName, features] of Object.entries(decoded.layers)) {
-              if (!allLayers[layerName]) allLayers[layerName] = [];
-              allLayers[layerName].push(...features);
-            }
-          })
-        );
-      }
-    }
-
-    await Promise.all(fetches);
-    result[theme] = { layers: allLayers };
-  }
-
-  const totalFeatures = Object.values(result).reduce(
-    (sum, r) => sum + Object.values(r.layers).reduce((s, fs) => s + fs.length, 0), 0
-  );
-  console.log(`[Overture] Scene context: ${totalFeatures} features across ${themes.join(', ')}`);
-
+  debugLog(`[Overture] Coastlines loaded: ${land.length} land, ${water.length} water features`);
   return result;
 }

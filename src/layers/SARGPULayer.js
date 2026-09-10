@@ -3,6 +3,7 @@ import { Model, Geometry } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 import { applyWebGLFilter, FILTER_TYPE_IDS } from '../gpu/webgl-spatial-filter.js';
+import { debugLog } from '../utils/debug-log.js';
 
 /**
  * Colorblind mode IDs for shader uniform.
@@ -400,7 +401,7 @@ export class SARGPULayer extends Layer {
       };
 
       this.handleContextRestored = () => {
-        console.log('[SARGPULayer] WebGL context restored, recreating resources');
+        debugLog('[SARGPULayer] WebGL context restored, recreating resources');
         this.setState({
           contextLost: false,
           needsGeometryUpdate: true,

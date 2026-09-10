@@ -258,7 +258,9 @@ check('uses createStretchFn from stretch.js', () => {
 });
 
 check('has CPU dB conversion', () => {
-  assertContains(cpuBitmapContent, 'Math.log10', 'CPU dB conversion');
+  // dB conversion is consolidated in toDb (src/utils/stats.js) — the CPU
+  // fallback must go through it, not an inline Math.log10.
+  assertContains(cpuBitmapContent, 'toDb(', 'CPU dB conversion via toDb');
 });
 
 check('creates ImageData output', () => {

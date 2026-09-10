@@ -1,5 +1,7 @@
 import GeoTIFF, { fromUrl, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
+import { debugLog } from '../utils/debug-log.js';
+import { toDb } from '../utils/stats.js';
 
 /**
  * Extract a classification color table from a GeoTIFF's file directory.
@@ -149,15 +151,15 @@ export function looksCategorical(data, maxSamples = 4096) {
  * @returns {Promise<{getTile: Function, bounds: Array, crs: string, width: number, height: number}>}
  */
 export async function loadCOG(url) {
-  console.log('[COG Loader] Loading COG from:', url);
+  debugLog('[COG Loader] Loading COG from:', url);
   const normalizedUrl = normalizeS3Url(url);
-  console.log('[COG Loader] Normalized URL:', normalizedUrl);
+  debugLog('[COG Loader] Normalized URL:', normalizedUrl);
 
   const tiff = await fromUrl(normalizedUrl);
-  console.log('[COG Loader] GeoTIFF loaded, fetching first image...');
+  debugLog('[COG Loader] GeoTIFF loaded, fetching first image...');
 
   const image = await tiff.getImage();
-  console.log('[COG Loader] Image metadata retrieved');
+  debugLog('[COG Loader] Image metadata retrieved');
 
   // Validate COG structure
   const imageCount = await tiff.getImageCount();
@@ -165,7 +167,7 @@ export async function loadCOG(url) {
   const tileHeight = image.getTileHeight();
   const fileDirectory = image.getFileDirectory();
 
-  console.log('[COG Loader] COG validation:', {
+  debugLog('[COG Loader] COG validation:', {
     imageCount,
     tileWidth,
     tileHeight,
@@ -184,7 +186,7 @@ export async function loadCOG(url) {
       console.warn('[COG Loader] - No overviews found (will be slow at lower zoom levels)');
     }
   } else {
-    console.log('[COG Loader] ✓ Valid Cloud Optimized GeoTIFF detected');
+    debugLog('[COG Loader] ✓ Valid Cloud Optimized GeoTIFF detected');
   }
 
   // Extract metadata
@@ -202,16 +204,16 @@ export async function loadCOG(url) {
 
     // Get file directory for debugging
     const fileDirectory = image.getFileDirectory();
-    console.log('[COG Loader] Available GeoTIFF tags:', Object.keys(fileDirectory));
+    debugLog('[COG Loader] Available GeoTIFF tags:', Object.keys(fileDirectory));
 
     // Try different methods to get georeferencing info
     const tiepoints = image.getTiePoints();
     const pixelScale = fileDirectory.ModelPixelScale;
     const modelTransformation = fileDirectory.ModelTransformation;
 
-    console.log('[COG Loader] Tiepoints:', tiepoints);
-    console.log('[COG Loader] ModelPixelScale:', pixelScale);
-    console.log('[COG Loader] ModelTransformation:', modelTransformation);
+    debugLog('[COG Loader] Tiepoints:', tiepoints);
+    debugLog('[COG Loader] ModelPixelScale:', pixelScale);
+    debugLog('[COG Loader] ModelTransformation:', modelTransformation);
 
     if (modelTransformation && modelTransformation.length === 16) {
       // Use model transformation matrix
@@ -228,12 +230,12 @@ export async function loadCOG(url) {
       const minY = f + (height * e);
 
       bbox = [minX, minY, maxX, maxY];
-      console.log('[COG Loader] Calculated bounds from ModelTransformation:', bbox);
+      debugLog('[COG Loader] Calculated bounds from ModelTransformation:', bbox);
     } else if (tiepoints && tiepoints.length >= 6) {
       // Tiepoints can be stored as:
       // 1. Flat array: [i, j, k, x, y, z] (6 elements)
       // 2. Array of objects: [{i, j, k, x, y, z}]
-      console.log('[COG Loader] Tiepoint array length:', tiepoints.length);
+      debugLog('[COG Loader] Tiepoint array length:', tiepoints.length);
 
       let i, j, k, x, y, z;
 
@@ -241,11 +243,11 @@ export async function loadCOG(url) {
       if (tiepoints.length === 6 && typeof tiepoints[0] === 'number') {
         // Flat array format: [i, j, k, x, y, z]
         [i, j, k, x, y, z] = tiepoints;
-        console.log('[COG Loader] Using flat tiepoint array:', { i, j, k, x, y, z });
+        debugLog('[COG Loader] Using flat tiepoint array:', { i, j, k, x, y, z });
       } else if (Array.isArray(tiepoints[0])) {
         // Array of tiepoint arrays
         [i, j, k, x, y, z] = tiepoints[0];
-        console.log('[COG Loader] Using tiepoint from array:', { i, j, k, x, y, z });
+        debugLog('[COG Loader] Using tiepoint from array:', { i, j, k, x, y, z });
       } else {
         // Object format
         const tiepoint = tiepoints[0];
@@ -255,7 +257,7 @@ export async function loadCOG(url) {
         x = tiepoint.x;
         y = tiepoint.y;
         z = tiepoint.z;
-        console.log('[COG Loader] Using tiepoint object:', { i, j, k, x, y, z });
+        debugLog('[COG Loader] Using tiepoint object:', { i, j, k, x, y, z });
       }
 
       // Try to get pixel scale - might be in different places
@@ -267,7 +269,7 @@ export async function loadCOG(url) {
         // Fallback to resolution from getResolution()
         scaleX = Math.abs(resolution[0]);
         scaleY = Math.abs(resolution[1]);
-        console.log('[COG Loader] Using resolution as pixel scale:', { scaleX, scaleY });
+        debugLog('[COG Loader] Using resolution as pixel scale:', { scaleX, scaleY });
       } else {
         throw new Error('ModelPixelScale not found - cannot calculate bounds');
       }
@@ -279,7 +281,7 @@ export async function loadCOG(url) {
       const minY = y + (height - j) * (-scaleY);
 
       bbox = [minX, minY, maxX, maxY];
-      console.log('[COG Loader] Calculated bounds from tiepoints:', bbox);
+      debugLog('[COG Loader] Calculated bounds from tiepoints:', bbox);
     } else {
       console.error('[COG Loader] No georeferencing information found');
       console.error('[COG Loader] Tiepoints available:', !!tiepoints);
@@ -313,7 +315,7 @@ export async function loadCOG(url) {
 
   // Check if bounds are in projected coordinates (typically > 180 or < -180)
   const isProjected = Math.abs(bounds[0]) > 180 || Math.abs(bounds[2]) > 180;
-  console.log('[COG Loader] Coordinate system:', isProjected ? 'Projected' : 'Geographic', bounds);
+  debugLog('[COG Loader] Coordinate system:', isProjected ? 'Projected' : 'Geographic', bounds);
 
   // tileWidth and tileHeight already retrieved during validation above
 
@@ -325,7 +327,7 @@ export async function loadCOG(url) {
     const img = await tiff.getImage(i);
     overviewCache.set(i, { image: img, width: img.getWidth(), height: img.getHeight() });
   }
-  console.log(`[COG Loader] Cached ${overviewCache.size} overview levels, maxZoom: ${maxZoom}`);
+  debugLog(`[COG Loader] Cached ${overviewCache.size} overview levels, maxZoom: ${maxZoom}`);
 
   /**
    * Get tile data for deck.gl TileLayer
@@ -364,11 +366,11 @@ export async function loadCOG(url) {
 
       // Check if tile is out of bounds
       if (left >= imgWidth || top >= imgHeight || right <= 0 || bottom <= 0) {
-        console.log(`[COG Loader] Tile x:${x}, y:${y}, z:${z} is out of bounds`);
+        debugLog(`[COG Loader] Tile x:${x}, y:${y}, z:${z} is out of bounds`);
         return null;
       }
 
-      console.log(`[COG Loader] Reading tile window: [${left}, ${top}, ${right}, ${bottom}]`);
+      debugLog(`[COG Loader] Reading tile window: [${left}, ${top}, ${right}, ${bottom}]`);
 
       // Read the tile data
       const rasters = await targetImage.readRasters({
@@ -381,7 +383,7 @@ export async function loadCOG(url) {
       // Reuse raster directly if already Float32Array, otherwise convert
       const data = rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]);
 
-      console.log(`[COG Loader] Tile x:${x}, y:${y}, z:${z} loaded successfully (${data.length} pixels)`);
+      debugLog(`[COG Loader] Tile x:${x}, y:${y}, z:${z} loaded successfully (${data.length} pixels)`);
 
       return {
         data,
@@ -494,7 +496,7 @@ export async function loadCOG(url) {
     imageCount,
   };
 
-  console.log('[COG Loader] COG loaded successfully:', {
+  debugLog('[COG Loader] COG loaded successfully:', {
     width,
     height,
     bounds,
@@ -520,7 +522,7 @@ export async function loadCOG(url) {
  * @returns {Promise<{data: Float32Array, width: number, height: number, bounds: Array, crs: string}>}
  */
 export async function loadCOGFullImage(url, maxSize = 2048) {
-  console.log('[COG Loader] Loading full COG image from:', url);
+  debugLog('[COG Loader] Loading full COG image from:', url);
   const normalizedUrl = normalizeS3Url(url);
   const tiff = await fromUrl(normalizedUrl);
 
@@ -554,23 +556,23 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
   let bbox;
   try {
     bbox = mainImage.getBoundingBox();
-    console.log('[COG Loader] Got bounding box from main image');
+    debugLog('[COG Loader] Got bounding box from main image');
   } catch (e) {
     console.warn('[COG Loader] getBoundingBox() failed, calculating manually:', e.message);
 
     // Get file directory for debugging - use main image for georeferencing
     const fileDirectory = mainImage.getFileDirectory();
     const resolution = mainImage.getResolution();
-    console.log('[COG Loader] Available GeoTIFF tags:', Object.keys(fileDirectory));
+    debugLog('[COG Loader] Available GeoTIFF tags:', Object.keys(fileDirectory));
 
     // Try different methods to get georeferencing info from main image
     const tiepoints = mainImage.getTiePoints();
     const pixelScale = fileDirectory.ModelPixelScale;
     const modelTransformation = fileDirectory.ModelTransformation;
 
-    console.log('[COG Loader] Tiepoints:', tiepoints);
-    console.log('[COG Loader] ModelPixelScale:', pixelScale);
-    console.log('[COG Loader] ModelTransformation:', modelTransformation);
+    debugLog('[COG Loader] Tiepoints:', tiepoints);
+    debugLog('[COG Loader] ModelPixelScale:', pixelScale);
+    debugLog('[COG Loader] ModelTransformation:', modelTransformation);
 
     if (modelTransformation && modelTransformation.length === 16) {
       // Use model transformation matrix - use main image dimensions
@@ -587,12 +589,12 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
       const minY = f + (mainHeight * e);
 
       bbox = [minX, minY, maxX, maxY];
-      console.log('[COG Loader] Calculated bounds from ModelTransformation:', bbox);
+      debugLog('[COG Loader] Calculated bounds from ModelTransformation:', bbox);
     } else if (tiepoints && tiepoints.length >= 6) {
       // Tiepoints can be stored as:
       // 1. Flat array: [i, j, k, x, y, z] (6 elements)
       // 2. Array of objects: [{i, j, k, x, y, z}]
-      console.log('[COG Loader] Tiepoint array length:', tiepoints.length);
+      debugLog('[COG Loader] Tiepoint array length:', tiepoints.length);
 
       let i, j, k, x, y, z;
 
@@ -600,11 +602,11 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
       if (tiepoints.length === 6 && typeof tiepoints[0] === 'number') {
         // Flat array format: [i, j, k, x, y, z]
         [i, j, k, x, y, z] = tiepoints;
-        console.log('[COG Loader] Using flat tiepoint array:', { i, j, k, x, y, z });
+        debugLog('[COG Loader] Using flat tiepoint array:', { i, j, k, x, y, z });
       } else if (Array.isArray(tiepoints[0])) {
         // Array of tiepoint arrays
         [i, j, k, x, y, z] = tiepoints[0];
-        console.log('[COG Loader] Using tiepoint from array:', { i, j, k, x, y, z });
+        debugLog('[COG Loader] Using tiepoint from array:', { i, j, k, x, y, z });
       } else {
         // Object format
         const tiepoint = tiepoints[0];
@@ -614,7 +616,7 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
         x = tiepoint.x;
         y = tiepoint.y;
         z = tiepoint.z;
-        console.log('[COG Loader] Using tiepoint object:', { i, j, k, x, y, z });
+        debugLog('[COG Loader] Using tiepoint object:', { i, j, k, x, y, z });
       }
 
       // Try to get pixel scale - might be in different places
@@ -626,7 +628,7 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
         // Fallback to resolution from getResolution()
         scaleX = Math.abs(resolution[0]);
         scaleY = Math.abs(resolution[1]);
-        console.log('[COG Loader] Using resolution as pixel scale:', { scaleX, scaleY });
+        debugLog('[COG Loader] Using resolution as pixel scale:', { scaleX, scaleY });
       } else {
         throw new Error('ModelPixelScale not found - cannot calculate bounds');
       }
@@ -639,7 +641,7 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
       const minY = y + (mainHeight - j) * (-scaleY);
 
       bbox = [minX, minY, maxX, maxY];
-      console.log('[COG Loader] Calculated bounds from tiepoints:', bbox);
+      debugLog('[COG Loader] Calculated bounds from tiepoints:', bbox);
     } else {
       console.error('[COG Loader] No georeferencing information found');
       console.error('[COG Loader] Tiepoints available:', !!tiepoints);
@@ -670,13 +672,13 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
     crs = `EPSG:${geoKeys.GeographicTypeGeoKey}`;
   }
 
-  console.log(`[COG Loader] Loading overview ${selectedIndex}, size: ${width}x${height}`);
+  debugLog(`[COG Loader] Loading overview ${selectedIndex}, size: ${width}x${height}`);
 
   // Read the full raster
   const rasters = await selectedImage.readRasters();
   const data = new Float32Array(rasters[0]);
 
-  console.log('[COG Loader] Full image loaded:', {
+  debugLog('[COG Loader] Full image loaded:', {
     width,
     height,
     bounds,
@@ -716,12 +718,12 @@ export async function loadLocalTIF(file, onProgress) {
 
   let tiff;
   if (isUrl) {
-    console.log('[COG Loader] Loading TIF from URL:', file);
+    debugLog('[COG Loader] Loading TIF from URL:', file);
     progress(5);
     tiff = await fromUrl(normalizeS3Url(file));
     progress(20);
   } else {
-    console.log('[COG Loader] Loading local TIF:', file.name, `(${(file.size / 1e6).toFixed(1)} MB)`);
+    debugLog('[COG Loader] Loading local TIF:', file.name, `(${(file.size / 1e6).toFixed(1)} MB)`);
     progress(5);
     const arrayBuffer = await file.arrayBuffer();
     progress(15);
@@ -768,8 +770,8 @@ export async function loadLocalTIF(file, onProgress) {
     const fd = image.getFileDirectory();
     colorTable = extractColorTable(fd);
     classNames = extractClassNames(fd);
-    if (colorTable) console.log(`[COG Loader] Embedded class color table: ${colorTable.entries} entries`);
-    if (classNames) console.log(`[COG Loader] Class names: ${Object.keys(classNames).length} labels`);
+    if (colorTable) debugLog(`[COG Loader] Embedded class color table: ${colorTable.entries} entries`);
+    if (classNames) debugLog(`[COG Loader] Class names: ${Object.keys(classNames).length} labels`);
   } catch (_) {}
 
   // GDAL_NODATA tag (e.g. -3.4028234663852886e+38 for float rasters). geotiff.js
@@ -781,21 +783,21 @@ export async function loadLocalTIF(file, onProgress) {
     const nd = image.getGDALNoData();
     if (nd !== null && Number.isFinite(nd)) nodata = nd;
   } catch (_) {}
-  if (nodata !== null) console.log(`[COG Loader] GDAL_NODATA = ${nodata}`);
+  if (nodata !== null) debugLog(`[COG Loader] GDAL_NODATA = ${nodata}`);
 
   // --- Data loading: COGs skip full read, plain TIFs read everything ---
   let fullData = null;
 
   if (isCOG) {
-    console.log(`[COG Loader] COG detected: ${imageCount} overviews, tiles ${tileWidth}x${tileHeight}`);
+    debugLog(`[COG Loader] COG detected: ${imageCount} overviews, tiles ${tileWidth}x${tileHeight}`);
     progress(85);
   } else {
-    console.log('[COG Loader] Plain TIF — reading full raster...');
+    debugLog('[COG Loader] Plain TIF — reading full raster...');
     progress(30);
     const rasters = await image.readRasters();
     fullData = new Float32Array(rasters[0]);
     progress(85);
-    console.log(`[COG Loader] Raster read: ${width}x${height} (${(fullData.byteLength / 1e6).toFixed(1)} MB)`);
+    debugLog(`[COG Loader] Raster read: ${width}x${height} (${(fullData.byteLength / 1e6).toFixed(1)} MB)`);
   }
 
   // Categorical detection: an embedded color table is definitive; otherwise
@@ -815,7 +817,7 @@ export async function loadLocalTIF(file, onProgress) {
       if (!isFloat && bps <= 16 && sniffImg.getWidth() * sniffImg.getHeight() <= 4_000_000) {
         const sample = await sniffImg.readRasters();
         sniffedCategorical = looksCategorical(sample[0]);
-        if (sniffedCategorical) console.log('[COG Loader] Categorical sniff (overview): integer class map');
+        if (sniffedCategorical) debugLog('[COG Loader] Categorical sniff (overview): integer class map');
       }
     } catch (_) { /* stay continuous on any failure */ }
   }
@@ -930,7 +932,7 @@ export async function loadLocalTIF(file, onProgress) {
    */
   async function readFullData() {
     if (fullData) return fullData;
-    console.log(`[COG Loader] Reading full raster for ${displayName}...`);
+    debugLog(`[COG Loader] Reading full raster for ${displayName}...`);
     const rasters = await image.readRasters();
     fullData = new Float32Array(rasters[0]);
     return fullData;
@@ -938,7 +940,7 @@ export async function loadLocalTIF(file, onProgress) {
 
   progress(100);
 
-  console.log(`[COG Loader] Local TIF ready: ${width}x${height}, isCOG=${isCOG}, crs=${crs}, categorical=${isCategorical}`);
+  debugLog(`[COG Loader] Local TIF ready: ${width}x${height}, isCOG=${isCOG}, crs=${crs}, categorical=${isCategorical}`);
 
   return {
     ...(fullData ? { data: fullData } : {}),
@@ -981,7 +983,7 @@ export async function loadLocalTIFs(files, onProgress) {
   if (!files || files.length === 0) throw new Error('No files provided');
   if (files.length === 1) return loadLocalTIF(files[0], onProgress);
 
-  console.log(`[COG Loader] Loading ${files.length} local TIFs for mosaic`);
+  debugLog(`[COG Loader] Loading ${files.length} local TIFs for mosaic`);
 
   // Load all files in parallel
   const perFileWeight = 80 / files.length;
@@ -1005,7 +1007,7 @@ export async function loadLocalTIFs(files, onProgress) {
     if (gb[3] > gMaxY) gMaxY = gb[3];
   }
   const unionGeoBounds = [gMinX, gMinY, gMaxX, gMaxY];
-  console.log('[COG Loader] Union geoBounds:', unionGeoBounds);
+  debugLog('[COG Loader] Union geoBounds:', unionGeoBounds);
 
   // Determine output resolution from the finest-resolution slice
   let bestResX = Infinity, bestResY = Infinity;
@@ -1028,10 +1030,10 @@ export async function loadLocalTIFs(files, onProgress) {
     bestResY /= scale;
     mosaicWidth = Math.round((gMaxX - gMinX) / bestResX);
     mosaicHeight = Math.round((gMaxY - gMinY) / bestResY);
-    console.log(`[COG Loader] Mosaic downsampled to fit memory: ${mosaicWidth}x${mosaicHeight}`);
+    debugLog(`[COG Loader] Mosaic downsampled to fit memory: ${mosaicWidth}x${mosaicHeight}`);
   }
 
-  console.log(`[COG Loader] Mosaic: ${mosaicWidth}x${mosaicHeight} (res: ${bestResX.toExponential(3)}, ${bestResY.toExponential(3)})`);
+  debugLog(`[COG Loader] Mosaic: ${mosaicWidth}x${mosaicHeight} (res: ${bestResX.toExponential(3)}, ${bestResY.toExponential(3)})`);
 
   progress(85);
 
@@ -1085,7 +1087,7 @@ export async function loadLocalTIFs(files, onProgress) {
       }
     }
 
-    console.log(`[COG Loader] Placed slice ${si} (${files[si].name}): dst (${dstCol0}, ${dstRow0}) ${dstW}x${dstH}, yFlip=${yFlip}`);
+    debugLog(`[COG Loader] Placed slice ${si} (${files[si].name}): dst (${dstCol0}, ${dstRow0}) ${dstW}x${dstH}, yFlip=${yFlip}`);
   }
 
   progress(95);
@@ -1142,16 +1144,12 @@ export async function loadLocalTIFs(files, onProgress) {
     sliceNames: files.map(f => f.name),
   };
 
-  console.log('[COG Loader] Mosaic complete:', {
+  debugLog('[COG Loader] Mosaic complete:', {
     slices: files.length, width: mosaicWidth, height: mosaicHeight,
     geoBounds: unionGeoBounds, crs,
   });
 
   return result;
-}
-
-export async function loadMultipleCOGs(urls) {
-  return Promise.all(urls.map(loadCOG));
 }
 
 /**
@@ -1195,8 +1193,8 @@ export async function loadMultiBandCOG(config) {
   const bandNames = Object.keys(bandMapping);
   const bandUrls = bandNames.map(name => bandMapping[name]);
 
-  console.log(`[loadMultiBandCOG] Loading ${bandNames.length} bands:`, bandNames);
-  console.log(`[loadMultiBandCOG] URLs:`, bandUrls);
+  debugLog(`[loadMultiBandCOG] Loading ${bandNames.length} bands:`, bandNames);
+  debugLog(`[loadMultiBandCOG] URLs:`, bandUrls);
 
   // Load metadata from first band as reference
   let referenceBand;
@@ -1417,7 +1415,7 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
         const v = data[j];
         if (!isNaN(v) && v > 0) {
           sum += v; sumSq += v * v; count++;
-          const d = 10 * Math.log10(v);
+          const d = toDb(v, 0);
           dbSum += d; dbSumSq += d * d;
         }
       }
@@ -1440,7 +1438,7 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
     }
   }));
 
-  console.log(`[loadCOGRGBComposite] ${polNames.join('+')} ${width}x${height} ${crs}, composite ${compositeId}`);
+  debugLog(`[loadCOGRGBComposite] ${polNames.join('+')} ${width}x${height} ${crs}, composite ${compositeId}`);
 
   return {
     getRGBTile,
@@ -1516,7 +1514,7 @@ function detectBandNames(urls) {
     }
   });
 
-  console.log('[detectBandNames] Detected bands:', Object.keys(bandMapping));
+  debugLog('[detectBandNames] Detected bands:', Object.keys(bandMapping));
 
   return bandMapping;
 }
@@ -1544,7 +1542,7 @@ export async function loadTemporalCOGs(acquisitions) {
     throw new Error('No valid acquisitions with URLs provided');
   }
 
-  console.log(`[loadTemporalCOGs] Loading ${validAcquisitions.length} acquisitions`);
+  debugLog(`[loadTemporalCOGs] Loading ${validAcquisitions.length} acquisitions`);
 
   // Sort by date
   const sorted = [...validAcquisitions].sort((a, b) => {

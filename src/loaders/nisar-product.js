@@ -359,20 +359,6 @@ export function extractPhaseFromComplex(data, rows, cols) {
 }
 
 /**
- * Extract magnitude from interleaved CFloat32 data.
- */
-export function extractMagnitudeFromComplex(data, rows, cols) {
-  const pixelCount = rows * cols;
-  const mag = new Float32Array(pixelCount);
-  for (let i = 0; i < pixelCount; i++) {
-    const re = data[2 * i];
-    const im = data[2 * i + 1];
-    mag[i] = Math.sqrt(re * re + im * im);
-  }
-  return mag;
-}
-
-/**
  * Simple box-filter multilook for Float32 data.
  */
 export function multilookFloat32(data, rows, cols, ml) {

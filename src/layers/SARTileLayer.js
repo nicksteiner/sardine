@@ -1,8 +1,7 @@
 import { TileLayer } from '@deck.gl/geo-layers';
-import { getColormap } from '../utils/colormap.js';
 import { computeRGBBands } from '../utils/sar-composites.js';
-import { createStretchFn } from '../utils/stretch.js';
 import { SARGPULayer } from './SARGPULayer.js';
+import { debugLog } from '../utils/debug-log.js';
 
 /**
  * SARTileLayer - A deck.gl TileLayer specialized for SAR imagery
@@ -209,7 +208,7 @@ export class SARTileLayer extends TileLayer {
                   if (d[i] < min) min = d[i];
                   if (d[i] > max) max = d[i];
                 }
-                console.log(`[SARTileLayer] iono tile(0,0): min=${min.toFixed(3)} max=${max.toFixed(3)} nan=${nanCount}/${d.length}`);
+                debugLog(`[SARTileLayer] iono tile(0,0): min=${min.toFixed(3)} max=${max.toFixed(3)} nan=${nanCount}/${d.length}`);
                 const pd = tileData.data;
                 let pmin = Infinity, pmax = -Infinity, pnan = 0;
                 for (let i = 0; i < pd.length; i++) {
@@ -217,7 +216,7 @@ export class SARTileLayer extends TileLayer {
                   if (pd[i] < pmin) pmin = pd[i];
                   if (pd[i] > pmax) pmax = pd[i];
                 }
-                console.log(`[SARTileLayer] phase tile(0,0): min=${pmin.toFixed(3)} max=${pmax.toFixed(3)} nan=${pnan}/${pd.length}`);
+                debugLog(`[SARTileLayer] phase tile(0,0): min=${pmin.toFixed(3)} max=${pmax.toFixed(3)} nan=${pnan}/${pd.length}`);
               }
             }
             // Full-extent cube corrections: tropo, SET, ramp — need imageBounds for UV remap
@@ -244,7 +243,7 @@ export class SARTileLayer extends TileLayer {
             // Debug: log which corrections are active and their stats
             if (subProps.tile.index.x === 0 && subProps.tile.index.y === 0) {
               const active = Object.entries(corProps).filter(([k, v]) => k.startsWith('cor') && v === true).map(([k]) => k);
-              console.log(`[SARTileLayer] corrections active:`, active, 'imageBounds:', bounds);
+              debugLog(`[SARTileLayer] corrections active:`, active, 'imageBounds:', bounds);
               for (const [k, v] of Object.entries(corProps)) {
                 if (v instanceof Float32Array) {
                   let mn = Infinity, mx = -Infinity, nn = 0;
@@ -253,7 +252,7 @@ export class SARTileLayer extends TileLayer {
                     if (v[i] < mn) mn = v[i];
                     if (v[i] > mx) mx = v[i];
                   }
-                  console.log(`[SARTileLayer] ${k}: min=${mn.toFixed(3)} max=${mx.toFixed(3)} nan=${nn}`);
+                  debugLog(`[SARTileLayer] ${k}: min=${mn.toFixed(3)} max=${mx.toFixed(3)} nan=${nn}`);
                 }
               }
             }
@@ -313,46 +312,6 @@ export class SARTileLayer extends TileLayer {
 
     return texture;
   }
-}
-
-/**
- * Create an RGBA texture from SAR data
- *
- * @deprecated Use SARGPULayer for GPU-accelerated rendering.
- * Retained ONLY for export/histogram computation (needs CPU pixel data).
- *
- * This CPU implementation is 240-720x slower than GPU rendering.
- */
-function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear') {
-  const [min, max] = contrastLimits;
-  const colormapFunc = getColormap(colormap);
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
-  const stretchFn = needsStretch ? createStretchFn(stretchMode, gamma) : null;
-
-  for (let i = 0; i < data.length; i++) {
-    const amplitude = data[i];
-    let value;
-
-    if (useDecibels) {
-      const db = 10 * Math.log10(Math.max(amplitude, 1e-10));
-      value = (db - min) / (max - min);
-    } else {
-      value = (amplitude - min) / (max - min);
-    }
-
-    value = Math.max(0, Math.min(1, value));
-    if (stretchFn !== null) value = stretchFn(value);
-
-    const [r, g, b] = colormapFunc(value);
-    const idx = i * 4;
-    rgba[idx] = r;
-    rgba[idx + 1] = g;
-    rgba[idx + 2] = b;
-    rgba[idx + 3] = amplitude === 0 || isNaN(amplitude) ? 0 : 255;
-  }
-
-  return new ImageData(rgba, width, height);
 }
 
 export default SARTileLayer;

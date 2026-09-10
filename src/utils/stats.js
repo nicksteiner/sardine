@@ -4,6 +4,22 @@
  */
 
 /**
+ * Convert linear SAR power to decibels — the ONE place this formula lives.
+ *
+ * toDb(v)      → 10·log10(max(v, 1e-10))   nodata-safe: 0/NaN floor to −100 dB
+ * toDb(v, 0)   → 10·log10(v)               raw: −Inf/NaN pass through, for
+ *                                          values already validated positive
+ *
+ * @param {number} power - Linear power value
+ * @param {number} floor - Minimum clamp before log (0 disables clamping)
+ * @returns {number} Value in dB
+ */
+export function toDb(power, floor = 1e-10) {
+  return 10 * Math.log10(floor > 0 ? Math.max(power, floor) : power);
+}
+
+
+/**
  * Filter + optionally-dB-convert a value array in one pass, caching valid
  * outputs into a Float32Array. SAR nodata (0 or NaN/Inf) is skipped; dB mode
  * additionally drops non-positive values (log10 undefined).
@@ -26,7 +42,7 @@ function filterAndConvert(data, useDecibels, stride = 1) {
     if (isNaN(val) || !isFinite(val)) continue;
     if (useDecibels) {
       if (val <= 0) continue;
-      val = 10 * Math.log10(val);
+      val = toDb(val, 0);
     } else {
       if (val === 0) continue;
     }
@@ -166,7 +182,7 @@ export function autoContrastWithDbDetect(data) {
   const useDecibels = !hasNegatives && p98 > 1;
 
   const displayVals = useDecibels
-    ? vals.map((v) => 10 * Math.log10(Math.max(v, 1e-10)))
+    ? vals.map((v) => toDb(v))
     : vals;
   const lowIdx = Math.floor(0.02 * displayVals.length);
   const highIdx = Math.floor(0.98 * displayVals.length);
@@ -199,7 +215,7 @@ export function computeHistogram(data, useDecibels = true, numBins = 256, range 
       if (isNaN(val) || !isFinite(val)) continue;
       if (useDecibels) {
         if (val <= 0) continue;
-        val = 10 * Math.log10(val);
+        val = toDb(val, 0);
       } else {
         if (val === 0) continue;
       }
@@ -258,7 +274,7 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
             if (isNaN(val) || !isFinite(val)) continue;
             if (useDecibels) {
               if (val <= 0) continue;
-              val = 10 * Math.log10(val);
+              val = toDb(val, 0);
             } else {
               if (val === 0) continue;
             }
@@ -295,7 +311,7 @@ export async function sampleTileStats(getTile, sampleSize = 9, useDecibels = tru
       if (isNaN(val) || !isFinite(val)) continue;
       if (useDecibels) {
         if (val <= 0) continue;
-        val = 10 * Math.log10(val);
+        val = toDb(val, 0);
       } else {
         if (val === 0) continue;
       }
@@ -447,7 +463,7 @@ export async function sampleViewportStats(
         if (isNaN(v) || !isFinite(v)) continue;
         if (useDecibels) {
           if (v <= 0) continue;
-          v = 10 * Math.log10(v);
+          v = toDb(v, 0);
         } else {
           if (v === 0) continue;
         }
@@ -473,7 +489,7 @@ export async function sampleViewportStats(
       if (isNaN(v) || !isFinite(v)) continue;
       if (useDecibels) {
         if (v <= 0) continue;
-        v = 10 * Math.log10(v);
+        v = toDb(v, 0);
       } else {
         if (v === 0) continue;
       }

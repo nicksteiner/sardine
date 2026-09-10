@@ -6,6 +6,7 @@
  * head-training loop. Presentational: orchestration lives in main.jsx.
  */
 import React, { useRef, useEffect, useState } from 'react';
+import { toDb } from '../utils/stats.js';
 
 const BACKEND_CHIP = {
   'builtin-heuristic': { label: 'HEURISTIC', color: '#ffc832' },
@@ -38,7 +39,7 @@ function RasterPreview({ data, width, height, label }) {
     const vals = [];
     for (let i = 0; i < data.length; i += Math.max(1, Math.floor(data.length / 5000))) {
       const v = data[i];
-      if (Number.isFinite(v) && v > 0) vals.push(10 * Math.log10(v));
+      if (Number.isFinite(v) && v > 0) vals.push(toDb(v, 0));
     }
     vals.sort((a, b) => a - b);
     const lo = vals[Math.floor(vals.length * 0.02)] ?? -25;
@@ -52,7 +53,7 @@ function RasterPreview({ data, width, height, label }) {
       const v = data[i];
       let g = 0;
       if (Number.isFinite(v) && v > 0) {
-        g = Math.max(0, Math.min(255, ((10 * Math.log10(v) - lo) / span) * 255));
+        g = Math.max(0, Math.min(255, ((toDb(v, 0) - lo) / span) * 255));
       }
       img.data[i * 4] = g; img.data[i * 4 + 1] = g; img.data[i * 4 + 2] = g;
       img.data[i * 4 + 3] = 255;

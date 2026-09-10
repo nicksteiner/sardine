@@ -1214,10 +1214,9 @@ When adding support for a new HDF5-based SAR product (e.g., ALOS-2 PALSAR-2, Sen
 
 ### 18.2 Debugging Approach
 
-1. **Run the debug script** to see what h5chunk discovers:
-   ```bash
-   node test/debug-h5chunk-datasets.mjs path/to/file.h5
-   ```
+1. **List what h5chunk discovers** — call `listNISARDatasets(file)` (or
+   `streamReader.getDatasets()`) from a scratch script or the browser console
+   and inspect the returned dataset paths/shapes.
 
 2. **Compare with h5py** to identify missing datasets:
    ```python

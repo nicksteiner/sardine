@@ -15,6 +15,8 @@
  * See: docs/NISAR_GUNW.md
  */
 
+import { debugLog } from '../utils/debug-log.js';
+
 import {
   nisarPaths,
   detectBand,
@@ -203,7 +205,7 @@ async function readGUNWMetadata(streamReader, paths, freq = 'A') {
   }
 
   if (Object.keys(meta.appliedCorrections).length > 0) {
-    console.log('[nisar-gunw] Processing correction flags:', meta.appliedCorrections);
+    debugLog('[nisar-gunw] Processing correction flags:', meta.appliedCorrections);
   }
 
   return meta;
@@ -280,7 +282,7 @@ export async function listNISARGUNWDatasets(file, options = {}) {
   // Await metadata (was started in parallel with dataset discovery)
   const metadata = await metadataPromise;
 
-  console.log('[nisar-gunw] Product metadata:', metadata);
+  debugLog('[nisar-gunw] Product metadata:', metadata);
 
   return {
     source: file.name || file,

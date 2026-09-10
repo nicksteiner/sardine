@@ -9,6 +9,8 @@
  * as a fallback.
  */
 
+import { debugLog } from './debug-log.js';
+
 // ─── S3 ListObjectsV2 ───────────────────────────────────────────────────
 
 /**
@@ -55,14 +57,14 @@ export async function listBucket(bucketUrl, opts = {}) {
   if (continuationToken) params.set('continuation-token', continuationToken);
 
   const url = `${base}?${params.toString()}`;
-  console.log(`[Bucket] Listing: ${url}`);
+  debugLog(`[Bucket] Listing: ${url}`);
 
   const response = await fetch(url);
 
   if (!response.ok) {
     // If S3 listing fails, try HTML directory listing fallback
     if (response.status === 403 || response.status === 404) {
-      console.log('[Bucket] S3 listing denied, trying HTTP directory index...');
+      debugLog('[Bucket] S3 listing denied, trying HTTP directory index...');
       return listHTTPDirectory(base, prefix);
     }
     throw new Error(`Bucket listing failed: ${response.status} ${response.statusText}`);
@@ -217,7 +219,7 @@ async function listSardineServer(apiUrl, prefix) {
   if (prefix) params.set('prefix', prefix);
 
   const url = params.toString() ? `${apiUrl}?${params}` : apiUrl;
-  console.log(`[Bucket] sardine-launch listing: ${url}`);
+  debugLog(`[Bucket] sardine-launch listing: ${url}`);
 
   const response = await fetch(url);
   if (!response.ok) {
@@ -253,7 +255,7 @@ async function listSardineServer(apiUrl, prefix) {
  */
 export async function listBucketViaServer(serverOrigin, opts = {}) {
   const url = `${serverOrigin}/api/s3/list`;
-  console.log(`[Bucket] Server-mediated S3 listing: ${opts.bucket}/${opts.prefix || ''}`);
+  debugLog(`[Bucket] Server-mediated S3 listing: ${opts.bucket}/${opts.prefix || ''}`);
 
   const response = await fetch(url, {
     method: 'POST',

@@ -14,6 +14,7 @@ import { GeoJsonLayer } from '@deck.gl/layers';
 import { COORDINATE_SYSTEM } from '@deck.gl/core';
 import { OVERTURE_THEMES } from '../loaders/overture-loader.js';
 import { makeReproject, reprojectFeature } from '../utils/overture-projection.js';
+import { debugLog } from '../utils/debug-log.js';
 
 /**
  * Extract non-boundary edges from polygons as LineString features.
@@ -109,7 +110,7 @@ export function createOvertureLayers(overtureData, options = {}) {
   // we've reprojected — that's the actual fix for "overlay loads but doesn't show."
   const coordSys = needsReproject ? COORDINATE_SYSTEM.CARTESIAN : COORDINATE_SYSTEM.LNGLAT;
 
-  console.log(`[OvertureLayer] crs=${crs} projection=${!!projection} reproject=${needsReproject} coordSys=${needsReproject ? 'CARTESIAN' : 'LNGLAT'} imageBounds=${bounds ? `[${bounds.map(n => n.toFixed(0)).join(', ')}]` : 'unknown'} worldBounds=${worldBounds ? `[${worldBounds.map(n => n.toFixed(3)).join(', ')}]` : 'unknown'}`);
+  debugLog(`[OvertureLayer] crs=${crs} projection=${!!projection} reproject=${needsReproject} coordSys=${needsReproject ? 'CARTESIAN' : 'LNGLAT'} imageBounds=${bounds ? `[${bounds.map(n => n.toFixed(0)).join(', ')}]` : 'unknown'} worldBounds=${worldBounds ? `[${worldBounds.map(n => n.toFixed(3)).join(', ')}]` : 'unknown'}`);
 
   for (const [themeKey, featureCollection] of Object.entries(overtureData)) {
     if (!featureCollection?.features?.length) continue;
@@ -139,11 +140,11 @@ export function createOvertureLayers(overtureData, options = {}) {
         }
       }
 
-      console.log(`[OvertureLayer] ${themeKey}: ${featureCollection.tileGroups.length} tiles, ${edgesBefore} polygon edges → ${edgesAfter} coastline edges (${edgesBefore - edgesAfter} boundary edges removed), ${allLineFeatures.length} line features`);
+      debugLog(`[OvertureLayer] ${themeKey}: ${featureCollection.tileGroups.length} tiles, ${edgesBefore} polygon edges → ${edgesAfter} coastline edges (${edgesBefore - edgesAfter} boundary edges removed), ${allLineFeatures.length} line features`);
 
       if (allLineFeatures.length > 0) {
         const sample = allLineFeatures[0]?.geometry?.coordinates?.[0];
-        console.log(`[OvertureLayer] ${themeKey} sample coord:`, sample);
+        debugLog(`[OvertureLayer] ${themeKey} sample coord:`, sample);
       }
 
       if (allLineFeatures.length === 0) continue;
@@ -185,7 +186,7 @@ export function createOvertureLayers(overtureData, options = {}) {
               : typeof c[0]?.[0]?.[0] === 'number' ? c[0][0]
               : null;
       }
-      console.log(`[OvertureLayer] ${themeKey}: ${data.features?.length || 0} features, sample coord:`, sample);
+      debugLog(`[OvertureLayer] ${themeKey}: ${data.features?.length || 0} features, sample coord:`, sample);
     }
 
     // coastlineStroke themes without tileGroups (e.g. legacy data, retry path):

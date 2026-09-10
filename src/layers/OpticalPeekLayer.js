@@ -1,6 +1,7 @@
 import { Layer, project32 } from '@deck.gl/core';
 import { Model, Geometry } from '@luma.gl/core';
 import proj4 from 'proj4';
+import { debugLog } from '../utils/debug-log.js';
 import {
   TILE_PX,
   proj4DefFor,
@@ -481,7 +482,7 @@ export class OpticalPeekLayer extends Layer {
       if (this.state.atlasTex) gl.deleteTexture(this.state.atlasTex);
       if (this.state.warpTex) gl.deleteTexture(this.state.warpTex);
       this.setState({ atlasTex, warpTex, warpSize: result.warpSize, baseZ: result.z });
-      console.log(`[OpticalPeek] built base atlas: ${result.atlasW}×${result.atlasH} (z=${result.z}, ${result.tilesFetched} tiles), warp ${result.warpSize}²`);
+      debugLog(`[OpticalPeek] built base atlas: ${result.atlasW}×${result.atlasH} (z=${result.z}, ${result.tilesFetched} tiles), warp ${result.warpSize}²`);
       this._status('info', `Optical base z${result.z} (${result.tilesFetched} tiles)`);
       this.setNeedsRedraw('optical-peek rebuilt');
 
@@ -576,7 +577,7 @@ export class OpticalPeekLayer extends Layer {
         detailRect: uvRect,
         detailKey: key,
       });
-      console.log(`[OpticalPeek] built detail atlas: ${result.atlasW}×${result.atlasH} (z=${result.z}, ${result.tilesFetched} tiles)`);
+      debugLog(`[OpticalPeek] built detail atlas: ${result.atlasW}×${result.atlasH} (z=${result.z}, ${result.tilesFetched} tiles)`);
       this._status('info', `Optical detail z${result.z} (${result.tilesFetched} tiles)`);
       this.setNeedsRedraw('optical-peek detail rebuilt');
     } catch (err) {

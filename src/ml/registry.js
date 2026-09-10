@@ -17,6 +17,7 @@ import { runHeuristic } from './backends/heuristic.js';
 import { runClassical } from './backends/classical.js';
 import { runOnnx } from './backends/onnx.js';
 import { SPECKLE_SMOOTH_DEMO_ONNX_B64 } from './demo/speckle-smooth-demo.onnx.b64.js';
+import { toDb } from '../utils/stats.js';
 
 /** Apply the manifest's declared per-band transform. Input bands from the
  *  loaders are linear power; dB = 10·log10(power), non-positive → NaN. */
@@ -27,7 +28,7 @@ export function applyTransform(bands, transform) {
       const out = new Float32Array(b.length);
       for (let i = 0; i < b.length; i++) {
         const v = b[i];
-        out[i] = v > 0 ? 10 * Math.log10(v) : NaN;
+        out[i] = v > 0 ? toDb(v, 0) : NaN;
       }
       return out;
     });

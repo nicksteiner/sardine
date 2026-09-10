@@ -3,6 +3,7 @@ import { SARBitmapLayer } from './SARBitmapLayer.js';
 import { fromUrl } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
 import { smartToneMap } from '../utils/tone-mapping.js';
+import { debugLog } from '../utils/debug-log.js';
 
 /**
  * SARTiledCOGLayer - A deck.gl layer for COGs in arbitrary projections
@@ -131,7 +132,7 @@ export class SARTiledCOGLayer extends CompositeLayer {
 
     // Only log on overview change
     if (bestOverview !== this.state.lastOverview) {
-      console.log(`[SARTiledCOGLayer] Overview ${bestOverview}/${imageCount - 1} (${selectedWidth}x${selectedHeight} px)`);
+      debugLog(`[SARTiledCOGLayer] Overview ${bestOverview}/${imageCount - 1} (${selectedWidth}x${selectedHeight} px)`);
     }
 
     return bestOverview;

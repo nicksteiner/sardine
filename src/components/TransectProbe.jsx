@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
 import { pixelToWorld } from '../utils/geo-overlays.js';
+import { toDb } from '../utils/stats.js';
 
 /**
  * TransectProbe — Bloomberg-terminal-style live transect graph.
@@ -110,7 +111,7 @@ export function TransectProbe({
       let y;
       if (Number.isNaN(v)) { transformed[i] = NaN; continue; }
       if (useDecibels) {
-        y = (v <= 0) ? NaN : 10 * Math.log10(v);
+        y = (v <= 0) ? NaN : toDb(v, 0);
       } else {
         y = v;
       }

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { pixelToWorld } from '../utils/geo-overlays.js';
+import { toDb } from '../utils/stats.js';
 
 /**
  * PixelExplorer — hover tooltip + sampling-window bounding box.
@@ -156,7 +157,7 @@ function PixelTooltip({ info, useDecibels, windowSize, geoLabel }) {
     if (v === null || (typeof v === 'number' && isNaN(v))) return 'nodata';
     if (useDecibels) {
       if (v === 0) return 'nodata';
-      return `${(10 * Math.log10(v)).toFixed(2)} dB`;
+      return `${(toDb(v, 0)).toFixed(2)} dB`;
     }
     // Linear mode: format with appropriate precision
     const abs = Math.abs(v);

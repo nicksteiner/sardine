@@ -7,6 +7,7 @@
  */
 
 import React, { useRef, useEffect, useMemo } from 'react';
+import { toDb } from '../utils/stats.js';
 
 const PLOT_W = 280;
 const PLOT_H = 180;
@@ -76,7 +77,7 @@ export async function sampleScatterData(imageData, maxSamples = 5000) {
     if (angle === null || isNaN(angle)) continue;
 
     // Convert backscatter to dB
-    const dB = 10 * Math.log10(Math.max(val, 1e-10));
+    const dB = toDb(val);
     if (!isFinite(dB)) continue;
 
     angles.push(angle);

@@ -172,7 +172,7 @@ console.log('══════════════════════�
 if (useUrl) {
   console.log(`  Source: URL (remote)`);
   skip('Local file tests', 'using --url mode');
-  console.log('\nURL mode not implemented in this test yet. Use test-chunk-pipeline.mjs.');
+  console.log('\nURL mode not implemented in this test yet.');
   process.exit(0);
 }
 
