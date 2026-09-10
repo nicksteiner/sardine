@@ -318,14 +318,14 @@ function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {
       borderLeft: '2px solid #4ec9d4',
       padding: '6px 10px',
       color: '#e8edf5',
-      fontSize: '0.68rem',
+      fontSize: 'var(--text-xs)',
       fontFamily: 'var(--font-mono, monospace)',
       lineHeight: 1.5,
       pointerEvents: 'none',
       zIndex: 10,
       minWidth: 220,
     }}>
-      <div style={{ color: '#5a7099', fontSize: '0.6rem', letterSpacing: 1, marginBottom: 2 }}>
+      <div style={{ color: '#5a7099', fontSize: 'var(--text-xs)', letterSpacing: 1, marginBottom: 2 }}>
         ANALYTICAL · MEDICAL
       </div>
       {readout ? (
@@ -340,12 +340,12 @@ function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {
       ) : (
         <div style={{ color: '#5a7099', fontStyle: 'italic' }}>move cursor over data</div>
       )}
-      <div style={{ borderTop: '1px solid #1a1a1a', marginTop: 4, paddingTop: 3, color: '#5a7099', fontSize: '0.6rem' }}>
+      <div style={{ borderTop: '1px solid #1a1a1a', marginTop: 4, paddingTop: 3, color: '#5a7099', fontSize: 'var(--text-xs)' }}>
         {win !== null && (
           <>W {win.toFixed(2)}{unit} · L {ctr.toFixed(2)}{unit}</>
         )}
       </div>
-      <div style={{ color: '#3a4a5f', fontSize: '0.55rem', marginTop: 2 }}>
+      <div style={{ color: '#3a4a5f', fontSize: 'var(--text-xs)', marginTop: 2 }}>
         right-drag X=window Y=level
       </div>
     </div>
@@ -369,14 +369,14 @@ function ControlRail({ onSigma, onPercentile, onSnap, inverted, setInverted, has
     border: '1px solid #2a2a2a',
     color: '#e8edf5',
     padding: '3px 8px',
-    fontSize: '0.65rem',
+    fontSize: 'var(--text-xs)',
     fontFamily: 'var(--font-mono, monospace)',
     cursor: 'pointer',
     borderRadius: 0,
   };
   const sectionLabel = {
     color: '#5a7099',
-    fontSize: '0.55rem',
+    fontSize: 'var(--text-xs)',
     letterSpacing: 1,
     margin: '2px 0',
   };

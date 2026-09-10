@@ -15,7 +15,7 @@
 export function ROIProfilePanel({ profileData, show = { v: true, h: true, i: true }, useDecibels = true }) {
   if (!profileData) {
     return (
-      <div style={{ padding: '8px 4px', color: 'var(--text-muted)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
+      <div style={{ padding: '8px 4px', color: 'var(--text-muted)', fontSize: 'var(--text-sm)', fontFamily: 'var(--font-mono)' }}>
         Shift+drag on the viewer to select a region.
       </div>
     );
@@ -155,7 +155,7 @@ export function ROIProfilePanel({ profileData, show = { v: true, h: true, i: tru
   return (
     <div style={{ padding: '2px 0' }}>
       {nothing && (
-        <div style={{ padding: '4px', color: C.muted, fontSize: '0.72rem', fontFamily: C.mono }}>
+        <div style={{ padding: '4px', color: C.muted, fontSize: 'var(--text-sm)', fontFamily: C.mono }}>
           All profiles hidden — toggle from the command palette (⌘K).
         </div>
       )}

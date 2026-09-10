@@ -103,7 +103,7 @@ export function ComparisonViewer({
     color: 'var(--text-primary, #e8edf5)',
     padding: '5px 10px',
     borderRadius: 'var(--radius-sm, 4px)',
-    fontSize: '0.75rem',
+    fontSize: 'var(--text-sm)',
     fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
     fontWeight: '600',
     letterSpacing: '0.5px',

@@ -21,7 +21,6 @@ import { SAR_COMPOSITES, COLORBLIND_MATRICES } from './sar-composites.js';
 import { drawHistogramCanvas } from '../components/HistogramOverlay.jsx';
 import { drawArrow as drawAnnArrow, drawTextLabel as drawAnnText } from './annotation-render.js';
 import {
-  THEME,
   CHANNEL_COLORS,
   isProjectedBounds,
   computeVisibleExtent,
@@ -38,7 +37,6 @@ import {
 import { FONTS } from './theme-tokens.js';
 
 const FONT_MONO  = FONTS.mono;
-const FONT_SERIF = FONTS.serif;
 
 // ── Attribution (CSDA + vendor copyright) ───────────────────────────────────
 
@@ -1091,96 +1089,6 @@ function drawClassLegend(ctx, W, H, { classPalette, classNames, classLegend }, s
   if (truncated) {
     ctx.fillStyle = S.inkMuted;
     ctx.fillText('…', boxX + pad + swatch + s(7), cy);
-  }
-}
-
-// ── 6. Metadata panel ───────────────────────────────────────────────────────
-
-function drawMetadata(ctx, W, H, meta, s) {
-  const { filename, crs, compositeId, useDecibels, viewState, bounds, projected, identification } = meta;
-  const id = identification || {};
-
-  // Build label:value pairs with semantic colors
-  const entries = [];
-
-  if (filename) {
-    entries.push({ label: 'SOURCE', value: filename, color: THEME.textPrimary, serif: true });
-  }
-
-  // NISAR identification fields
-  if (id.zeroDopplerStartTime) {
-    const t = id.zeroDopplerStartTime;
-    // Format: "2025-11-27T10:56:34" → "2025-11-27 10:56 UTC"
-    const timeStr = typeof t === 'string' ? t.replace('T', ' ').slice(0, 16) + ' UTC' : String(t);
-    entries.push({ label: 'TIME', value: timeStr, color: THEME.textSecondary });
-  }
-  if (id.orbitPassDirection) {
-    entries.push({ label: 'ORBIT DIR', value: id.orbitPassDirection, color: THEME.cyan });
-  }
-  if (id.trackNumber != null) {
-    entries.push({ label: 'TRACK', value: String(id.trackNumber), color: THEME.textSecondary });
-  }
-  if (id.frameNumber != null) {
-    entries.push({ label: 'FRAME', value: String(id.frameNumber), color: THEME.textSecondary });
-  }
-  if (id.absoluteOrbitNumber != null) {
-    entries.push({ label: 'ORBIT', value: String(id.absoluteOrbitNumber), color: THEME.textSecondary });
-  }
-
-  // Fallback fields for non-NISAR data
-  if (!id.zeroDopplerStartTime) {
-    if (compositeId) {
-      const preset = SAR_COMPOSITES[compositeId];
-      entries.push({ label: 'COMPOSITE', value: preset?.name || compositeId, color: THEME.cyan });
-    }
-    if (crs) {
-      entries.push({ label: 'CRS', value: crs, color: THEME.orange });
-    }
-    entries.push({ label: 'SCALE', value: useDecibels ? 'dB' : 'linear', color: THEME.textSecondary });
-  }
-
-  const labelFontSize = s(9);
-  const valueFontSize = s(11);
-  const lineH = s(16);
-  const pad = s(10);
-  const labelWidth = s(72);  // fixed label column width
-
-  // Measure max value width
-  ctx.font = `${valueFontSize}px ${FONT_MONO}`;
-  let maxValueW = 0;
-  for (const e of entries) {
-    maxValueW = Math.max(maxValueW, ctx.measureText(e.value).width);
-  }
-
-  const boxW = labelWidth + maxValueW + pad * 2 + s(4);
-  const boxH = entries.length * lineH + pad * 2;
-  const boxX = W - s(16) - boxW;
-  const boxY = H - s(16) - boxH;
-
-  // Background
-  ctx.fillStyle = 'rgba(15, 31, 56, 0.85)';
-  roundRect(ctx, boxX, boxY, boxW, boxH, s(THEME.radiusMd));
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(30, 58, 95, 0.80)';
-  ctx.lineWidth = s(1);
-  ctx.stroke();
-
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    const y = boxY + pad + i * lineH;
-
-    // Label — uppercase, letter-spaced, muted
-    ctx.font = `600 ${labelFontSize}px ${FONT_MONO}`;
-    ctx.fillStyle = THEME.textMuted;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillText(e.label, boxX + pad, y);
-
-    // Value — semantic color, serif for descriptive values
-    const valueFont = e.serif ? FONT_SERIF : FONT_MONO;
-    ctx.font = `${valueFontSize}px ${valueFont}`;
-    ctx.fillStyle = e.color;
-    ctx.fillText(e.value, boxX + pad + labelWidth, y);
   }
 }
 

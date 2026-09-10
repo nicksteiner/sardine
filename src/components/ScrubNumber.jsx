@@ -125,7 +125,7 @@ export function ScrubNumber({
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
-      fontFamily: 'var(--font-mono, monospace)', fontSize: '0.7rem',
+      fontFamily: 'var(--font-mono, monospace)', fontSize: 'var(--text-sm)',
     }}>
       {label && <span style={{ color: '#5a7099' }}>{label}</span>}
       <span

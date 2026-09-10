@@ -341,11 +341,11 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
         <>
           {/* Browse mode selector */}
           <div className="control-group">
-            <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Browse Mode</label>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>Browse Mode</label>
             <select
               value={browseMode}
               onChange={(e) => setBrowseMode(e.target.value)}
-              style={{ fontSize: '0.75rem' }}
+              style={{ fontSize: 'var(--text-sm)' }}
             >
               <option value="direct">Public Bucket (direct)</option>
               <option value="server-s3">Private S3 (via server)</option>
@@ -363,7 +363,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                   onChange={(e) => setBucketUrl(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
                   placeholder="https://bucket.s3.amazonaws.com"
-                  style={{ fontSize: '0.75rem' }}
+                  style={{ fontSize: 'var(--text-sm)' }}
                 />
               </div>
             </>
@@ -377,7 +377,7 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                   onChange={(e) => setS3Bucket(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
                   placeholder="my-private-bucket"
-                  style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)' }}
                 />
               </div>
               <div className="control-group">
@@ -388,18 +388,18 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
                   onChange={(e) => setS3Region(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleConnect()}
                   placeholder="us-west-2"
-                  style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem' }}
+                  style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--text-sm)' }}
                 />
               </div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: '4px' }}>
                 Server uses AWS credentials from environment
               </div>
             </>
           )}
 
           {PRESET_BUCKETS.length > 0 && (
-            <div className="control-group" style={{ fontSize: '0.7rem' }}>
-              <label style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Presets</label>
+            <div className="control-group" style={{ fontSize: 'var(--text-sm)' }}>
+              <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>Presets</label>
               {PRESET_BUCKETS.map((p, i) => (
                 <button
                   key={i}
@@ -617,14 +617,14 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
               className="btn-secondary"
               onClick={handleLoadMore}
               disabled={loading}
-              style={{ width: '100%', marginTop: '4px', fontSize: '0.7rem' }}
+              style={{ width: '100%', marginTop: '4px', fontSize: 'var(--text-sm)' }}
             >
               {loading ? 'Loading...' : `Load More (${directories.length + files.length} shown)`}
             </button>
           )}
 
           {/* Count */}
-          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px', textAlign: 'right' }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '2px', textAlign: 'right' }}>
             {directories.length} dirs · {filteredFiles.length}{filteredFiles.length !== files.length ? `/${files.length}` : ''} files
             {isTruncated && ' (truncated)'}
           </div>

@@ -212,7 +212,7 @@ body {
 
 .header h1 {
   font-family: var(--font-mono);
-  font-size: 1.4rem;
+  font-size: var(--text-2xl);
   font-weight: 700;
   letter-spacing: -1px;
   color: var(--text-primary);
@@ -224,7 +224,7 @@ body {
 
 .header .subtitle {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -263,7 +263,7 @@ body {
 
 .control-section h3 {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 2px;
@@ -334,14 +334,14 @@ body {
 /* Labels are sans; mono is reserved for data values (.value-display, metadata values) */
 .control-group label {
   font-family: var(--font-body);
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
 .control-group input[type="text"],
 .control-group select {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-sm);
   border: 1px solid var(--sardine-border);
@@ -378,7 +378,7 @@ body {
 
 .control-group input[type="file"] {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -396,7 +396,7 @@ body {
 
 .control-row label {
   font-family: var(--font-body);
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   color: var(--text-primary);
 }
 
@@ -404,7 +404,7 @@ body {
 /* ─── BUTTONS ─── */
 button {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   font-weight: 500;
   letter-spacing: 0.5px;
   padding: 10px 20px;
@@ -492,7 +492,7 @@ button.btn-danger:hover {
 
 .state-panel-header h3 {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: 0.5px;
@@ -500,7 +500,7 @@ button.btn-danger:hover {
 
 .state-panel-header .badge {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--sardine-cyan);
   background: var(--sardine-cyan-bg);
   border: 1px solid var(--sardine-border);
@@ -525,7 +525,7 @@ button.btn-danger:hover {
   background: var(--sardine-bg);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   line-height: 1.6;
   padding: var(--space-md);
   resize: none;
@@ -550,7 +550,7 @@ button.btn-danger:hover {
   left: 50%;
   transform: translate(-50%, -50%);
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   color: var(--text-muted);
   letter-spacing: 1px;
 }
@@ -561,7 +561,7 @@ button.btn-danger:hover {
   left: 50%;
   transform: translate(-50%, -50%);
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   color: var(--status-flood);
   text-align: center;
   padding: var(--space-lg);
@@ -576,7 +576,7 @@ button.btn-danger:hover {
 .value-display {
   font-family: var(--font-mono);
   color: var(--sardine-cyan);
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
 }
 
 
@@ -586,7 +586,7 @@ button.btn-danger:hover {
   align-items: center;
   gap: var(--space-sm);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   letter-spacing: 0.5px;
   padding: 4px 12px;
   border-radius: var(--radius-sm);
@@ -668,7 +668,7 @@ button.btn-danger:hover {
   border-radius: var(--radius-md);
   z-index: 100;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   transition: width var(--transition-med), max-height var(--transition-med);
@@ -699,7 +699,7 @@ button.btn-danger:hover {
 }
 
 .metadata-panel-title {
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 1.5px;
   text-transform: uppercase;
@@ -711,7 +711,7 @@ button.btn-danger:hover {
 }
 
 .metadata-panel-toggle {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   transition: transform var(--transition-fast);
 }
@@ -733,7 +733,7 @@ button.btn-danger:hover {
 }
 
 .metadata-section-title {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 1.5px;
@@ -755,7 +755,7 @@ button.btn-danger:hover {
 .metadata-label {
   font-family: var(--font-body);
   color: var(--text-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
   margin-right: 8px;
   flex-shrink: 0;
@@ -763,7 +763,7 @@ button.btn-danger:hover {
 
 .metadata-value {
   color: var(--text-secondary);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   text-align: right;
   word-break: break-word;
 }
@@ -792,7 +792,7 @@ button.btn-danger:hover {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   z-index: 1010;
   transition: bottom 0.3s ease, background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
@@ -826,7 +826,7 @@ button.btn-danger:hover {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   z-index: 1010;
   transition: bottom 0.3s ease, background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
@@ -852,10 +852,10 @@ button.btn-danger:hover {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-md);
   z-index: 1010;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
@@ -873,10 +873,10 @@ button.btn-danger:hover {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-md);
   z-index: 1010;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
@@ -907,7 +907,7 @@ button.btn-danger:hover {
 }
 
 .overview-map-title {
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 1.2px;
   text-transform: uppercase;
@@ -947,7 +947,7 @@ button.btn-danger:hover {
   border: 1px solid var(--sardine-border-subtle);
   border-radius: var(--radius-sm, 4px);
   color: var(--text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   font-family: var(--font-mono);
   cursor: pointer;
   transition: background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
@@ -975,7 +975,7 @@ button.btn-danger:hover {
 }
 
 .overview-map-zoom-label {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--sardine-cyan);
   min-width: 28px;
   text-align: center;
@@ -997,7 +997,7 @@ button.btn-danger:hover {
   justify-content: space-between;
   align-items: center;
   padding: 4px 10px;
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   letter-spacing: 0.3px;
 }
@@ -1073,7 +1073,7 @@ button.btn-danger:hover {
 /* ─── DATA DISCOVERY / BUCKET BROWSER ─── */
 
 .data-discovery {
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
 }
 
 .discovery-header {
@@ -1089,7 +1089,7 @@ button.btn-danger:hover {
 
 .discovery-url {
   font-family: var(--font-mono, monospace);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--sardine-cyan, #4ec9d4);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1099,7 +1099,7 @@ button.btn-danger:hover {
 .discovery-disconnect-btn {
   flex-shrink: 0;
   padding: 1px 6px !important;
-  font-size: 0.7rem !important;
+  font-size: var(--text-sm) !important;
   line-height: 1;
   min-width: auto !important;
   background: transparent !important;
@@ -1115,7 +1115,7 @@ button.btn-danger:hover {
   flex-wrap: wrap;
   gap: 1px;
   margin-bottom: 6px;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-family: var(--font-mono, monospace);
 }
 
@@ -1125,7 +1125,7 @@ button.btn-danger:hover {
   color: var(--sardine-cyan, #4ec9d4);
   cursor: pointer;
   padding: 1px 3px;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-family: inherit;
 }
 .discovery-crumb:hover {
@@ -1172,7 +1172,7 @@ button.btn-danger:hover {
 
 .discovery-icon {
   flex-shrink: 0;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   width: 16px;
   text-align: center;
 }
@@ -1182,12 +1182,12 @@ button.btn-danger:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
 }
 
 .discovery-size {
   flex-shrink: 0;
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--text-muted, #5a7099);
   font-family: var(--font-mono, monospace);
 }
@@ -1215,7 +1215,7 @@ button.btn-danger:hover {
   text-align: center;
   color: var(--text-muted, #5a7099);
   font-style: italic;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
 }
 
 .discovery-error {
@@ -1225,7 +1225,7 @@ button.btn-danger:hover {
   border: 1px solid rgba(231, 76, 60, 0.3);
   border-radius: 4px;
   color: var(--sardine-red, #e74c3c);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   word-break: break-word;
 }
 
@@ -1234,13 +1234,13 @@ button.btn-danger:hover {
   width: 100%;
   text-align: left;
   margin-bottom: 3px;
-  font-size: 0.7rem !important;
+  font-size: var(--text-sm) !important;
   padding: 3px 8px !important;
 }
 
 .discovery-auth-badge {
   float: right;
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 
 .discovery-filter-bar {
@@ -1257,7 +1257,7 @@ button.btn-danger:hover {
   background: var(--sardine-bg-raised, #162033);
   border: 1px solid var(--sardine-border, #1e3a5f);
   color: var(--text-secondary, #b0bec5);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   padding: 2px 8px;
   border-radius: 3px;
   cursor: pointer;
@@ -1280,7 +1280,7 @@ button.btn-danger:hover {
   border-radius: 7px;
   background: var(--sardine-cyan, #4ec9d4);
   color: var(--sardine-bg, #0a1628);
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   line-height: 1;
 }
@@ -1289,7 +1289,7 @@ button.btn-danger:hover {
   background: none;
   border: none;
   color: var(--text-muted, #5a7099);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   padding: 2px 4px;
   font-family: inherit;
@@ -1316,14 +1316,14 @@ button.btn-danger:hover {
 }
 
 .discovery-filter-group label {
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
   color: var(--text-muted, #5a7099);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .discovery-filter-group select {
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   padding: 1px 2px;
   background: var(--sardine-bg, #0a1628);
   color: var(--text-primary, #e0e8f0);
@@ -1386,7 +1386,7 @@ button.btn-danger:hover {
 
 .rail-label {
   font-family: var(--font-mono);
-  font-size: 0.48rem;
+  font-size: var(--text-xs);
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
@@ -1424,7 +1424,7 @@ button.btn-danger:hover {
   border-radius: 0;
   color: var(--text-primary);
   font-family: inherit;
-  font-size: 0.72rem;
+  font-size: var(--text-sm);
   text-align: left;
   cursor: pointer;
 }
@@ -1441,7 +1441,7 @@ button.btn-danger:hover {
 
 .context-menu-shortcut {
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
   padding: 0 4px;
   border: 1px solid var(--sardine-border);
   border-radius: 2px;

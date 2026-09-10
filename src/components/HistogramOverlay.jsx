@@ -464,21 +464,21 @@ export function HistogramOverlay({
     }} onClick={(e) => e.stopPropagation()}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px 0 12px', flexShrink: 0 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.5px' }}>
+        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
           <span style={{ color: '#4ec9d4' }}>Histogram</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <button onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
             background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-            fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
+            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>&#8635;</button>
           <button onClick={handleExportSVG} title="Export SVG" style={{
             background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-            fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
+            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>SVG</button>
           <button onClick={onClose} style={{
             background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
-            fontSize: 16, padding: '0 4px', lineHeight: 1,
+            fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
           }}>&times;</button>
         </div>
       </div>

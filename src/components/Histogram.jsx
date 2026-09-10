@@ -176,7 +176,7 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
 
   const numLabelStyle = {
     fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
-    fontSize: '0.6rem',
+    fontSize: 'var(--text-xs)',
     color: 'var(--sardine-cyan, #4ec9d4)',
     cursor: 'pointer',
     minWidth: '42px',
@@ -189,7 +189,7 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
 
   const numInputStyle = {
     fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
-    fontSize: '0.6rem',
+    fontSize: 'var(--text-xs)',
     color: 'var(--text-primary, #e8edf5)',
     background: 'var(--sardine-bg, #0a1628)',
     border: '1px solid var(--sardine-cyan, #4ec9d4)',
@@ -208,8 +208,8 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
             width: 10, height: 10, borderRadius: 2, marginRight: 4,
             backgroundColor: color,
           }} />
-          <span style={{ fontSize: '0.7rem', fontWeight: '600', color: 'var(--text-primary, #e8edf5)' }}>{label}</span>
-          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted, #5a7099)', marginLeft: 'auto' }}>
+          <span style={{ fontSize: 'var(--text-sm)', fontWeight: '600', color: 'var(--text-primary, #e8edf5)' }}>{label}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted, #5a7099)', marginLeft: 'auto' }}>
             {fmt(lo)} – {fmt(hi)}
           </span>
         </div>
@@ -226,7 +226,7 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
       />
       {/* Min slider */}
       <div style={{ marginTop: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-        <span style={{ ...numLabelStyle, color: 'var(--text-muted, #5a7099)', fontSize: '0.55rem', minWidth: '20px' }}>Lo</span>
+        <span style={{ ...numLabelStyle, color: 'var(--text-muted, #5a7099)', fontSize: 'var(--text-xs)', minWidth: '20px' }}>Lo</span>
         {editingMin ? (
           <input
             type="text"
@@ -263,7 +263,7 @@ function ChannelHistogram({ stats, color, label, limits, useDecibels, logScale =
       </div>
       {/* Max slider */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-        <span style={{ ...numLabelStyle, color: 'var(--text-muted, #5a7099)', fontSize: '0.55rem', minWidth: '20px' }}>Hi</span>
+        <span style={{ ...numLabelStyle, color: 'var(--text-muted, #5a7099)', fontSize: 'var(--text-xs)', minWidth: '20px' }}>Hi</span>
         {editingMax ? (
           <input
             type="text"
