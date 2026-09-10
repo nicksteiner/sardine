@@ -53,11 +53,15 @@ test('no px font sizes anywhere in src/components/ui/', () => {
 });
 
 test('every var() the primitives use is defined in the theme', () => {
-  const defined = new Set(
-    [...themeCss.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/(--[\w-]+)\s*:/g)].map(m => m[1]));
+  const declared = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/(--[\w-]+)\s*:/g)].map(m => m[1]);
+  const defined = new Set(declared(themeCss));
   for (const f of files) {
-    for (const m of read(f).matchAll(/var\(\s*(--[\w-]+)\s*\)/g)) {
-      assert.ok(defined.has(m[1]), `${f} uses undefined token var(${m[1]})`);
+    const src = read(f);
+    // A primitive may declare its own local custom property (a variant hook);
+    // what it may not do is reference a token nothing defines.
+    const scope = new Set([...defined, ...declared(src)]);
+    for (const m of src.matchAll(/var\(\s*(--[\w-]+)\s*\)/g)) {
+      assert.ok(scope.has(m[1]), `${f} uses undefined token var(${m[1]})`);
     }
   }
 });
