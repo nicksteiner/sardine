@@ -400,3 +400,237 @@
 .dataset-picker__slot--R .field__label { color: var(--channel-r); }
 .dataset-picker__slot--G .field__label { color: var(--channel-g); }
 .dataset-picker__slot--B .field__label { color: var(--channel-b); }
+
+/* ═══════════════ UTILITIES ═══════════════ */
+/*
+ * The narrow escape hatch.  W028 replaced 232 inline style blocks in
+ * main.jsx; most became primitives, but a residue is genuine one-off layout
+ * (a flex row, a hidden file input, a hint line) that does not deserve a
+ * component.  Those get a utility class here rather than a fresh style object
+ * at the call site, so a restyle stays a change in ONE file.
+ *
+ * Rule of thumb: if you reach for a utility three times in a row, you wanted
+ * a primitive.
+ */
+.u-hidden      { display: none; }
+.u-flex1       { flex: 1; min-width: 0; }
+.u-full        { width: 100%; }
+.u-nowrap      { white-space: nowrap; }
+.u-break       { word-break: break-all; }
+.u-mono        { font-family: var(--font-mono); }
+
+/* text roles */
+.u-sm          { font-size: var(--text-sm); }
+.u-xs          { font-size: var(--text-xs); }
+.u-note        { font-size: var(--text-sm); color: var(--text-muted); }
+.u-note-2      { font-size: var(--text-sm); color: var(--text-secondary); }
+.u-hint        { font-size: var(--text-xs); color: var(--text-muted); line-height: 1.4; }
+.u-lede        { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.4; }
+.u-accent      { color: var(--sardine-cyan); }
+.u-warn        { color: var(--status-warning); }
+.u-ok          { color: var(--status-success); }
+.u-err         { color: var(--sardine-red); }
+
+/* layout */
+.u-row         { display: flex; align-items: center; gap: var(--space-2xs); }
+.u-row-sm      { display: flex; align-items: center; gap: var(--space-xs); }
+.u-between     { display: flex; align-items: center; justify-content: space-between; }
+.u-stack       { display: flex; flex-direction: column; gap: var(--space-2xs); }
+
+/* rhythm — the only margins that should appear at a call site */
+.u-mt-2xs      { margin-top: var(--space-3xs); }
+.u-mt-xs       { margin-top: var(--space-2xs); }
+.u-mt-sm       { margin-top: var(--space-xs); }
+.u-mt-md       { margin-top: var(--space-sm); }
+.u-mb-xs       { margin-top: 0; margin-bottom: var(--space-2xs); }
+.u-mb-sm       { margin-top: 0; margin-bottom: var(--space-xs); }
+.u-ml-xs       { margin-left: var(--space-2xs); }
+.u-ml-sm       { margin-left: var(--space-xs); }
+.u-m0          { margin: 0; }
+
+/* a text input that fills its row */
+.u-input {
+  width: 100%;
+  padding: var(--space-2xs) var(--space-xs);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  background: var(--sardine-bg-panel);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+
+/* ═══════════════ APP SHELL ODDMENTS ═══════════════ */
+/* One-instance chrome that has no reusable shape but still does not belong
+   in a style object at the call site. */
+
+.pages-banner {
+  position: relative;
+  padding: var(--space-xs) var(--space-2xl) var(--space-xs) var(--space-md);
+  background: var(--sardine-bg-panel);
+  border-bottom: 1px solid var(--sardine-cyan);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  text-align: center;
+}
+.pages-banner__close { position: absolute; top: var(--space-2xs); right: var(--space-sm); }
+
+.dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dragdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sardine-cyan-bg);
+  border: 3px dashed var(--sardine-cyan-dim);
+  pointer-events: none;
+}
+.dropzone__label {
+  padding: var(--space-xl) var(--space-3xl);
+  border-radius: var(--radius-lg);
+  background: var(--overlay-bg);
+  color: var(--text-primary);
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+
+.feature-popup {
+  position: fixed;
+  z-index: var(--z-toast);
+  max-width: 360px;
+  max-height: 400px;
+  overflow: auto;
+  padding: var(--space-md) var(--space-lg);
+  background: var(--overlay-bg);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.feature-popup__title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--status-dry);
+}
+.feature-popup__layer { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-xs); }
+.feature-popup__table { border-collapse: collapse; width: 100%; }
+.feature-popup__table tr { border-bottom: 1px solid var(--sardine-border-subtle); }
+.feature-popup__table th {
+  padding: var(--space-3xs) var(--space-sm) var(--space-3xs) 0;
+  color: var(--text-muted);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.feature-popup__table td { padding: var(--space-3xs) 0; word-break: break-word; }
+.feature-popup__empty { color: var(--text-muted); font-style: italic; }
+
+/* ═══════════════ MULTI-VIEWER SHELL ═══════════════ */
+/* The main / ROI-RGB / ROI-time-series side-by-side panes.  Twenty inline
+   style blocks lived here, including the three accent hexes (#ffc832 main,
+   #4ec9d4 rgb, #2ecc71 time-series) that mark which pane is active. */
+.viewer-split { display: flex; width: 100%; height: 100%; position: relative; }
+
+.viewer-splitter {
+  width: 3px;
+  flex-shrink: 0;
+  background: var(--sardine-border);
+}
+
+.viewer-pane {
+  flex: 1;
+  position: relative;
+  height: 100%;
+  outline-offset: -2px;
+  --pane-accent: var(--sardine-cyan);
+}
+.viewer-pane--main { --pane-accent: var(--status-dry); }
+.viewer-pane--rgb  { --pane-accent: var(--sardine-cyan); }
+.viewer-pane--ts   { --pane-accent: var(--status-success); }
+.viewer-pane--active { outline: 2px solid var(--pane-accent); }
+
+.viewer-loading {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay-bg);
+  pointer-events: none;
+}
+.viewer-loading__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--sardine-cyan);
+  letter-spacing: 0.08em;
+}
+
+/* A label drawn over imagery: ink on a halo, per the theme's OVERLAY RULE. */
+.viewer-badge {
+  position: absolute;
+  top: var(--space-sm);
+  left: var(--space-sm);
+  z-index: var(--z-overlay);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--overlay-halo);
+  font-size: var(--text-sm);
+  pointer-events: none;
+}
+.viewer-badge--rgb { color: var(--sardine-cyan); }
+.viewer-badge--ts  { color: var(--status-success); }
+
+.viewer-actions {
+  position: absolute;
+  z-index: var(--z-overlay);
+}
+.viewer-actions--tr { top: var(--space-sm); right: var(--space-sm); }
+
+.viewer-action {
+  background: var(--overlay-halo);
+  color: var(--text-muted);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3xs) var(--space-sm);
+  font-size: var(--text-xs);
+}
+.viewer-action:hover:not(:disabled) { background: var(--overlay-halo); color: var(--text-primary); }
+.viewer-action--tr {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  z-index: var(--z-overlay);
+}
+.viewer-action--ts { color: var(--status-success); border-color: var(--status-success); }
+.viewer-action--ts:hover:not(:disabled) { color: var(--status-success); }
+
+.viewer-playbar {
+  position: absolute;
+  bottom: var(--space-md);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--overlay-halo);
+  font-size: var(--text-sm);
+}
+.viewer-playbar__btn {
+  background: none;
+  border: none;
+  padding: 0 var(--space-2xs);
+  color: var(--status-success);
+  font-size: var(--text-lg);
+}
+.viewer-playbar__btn:hover:not(:disabled) { background: none; color: var(--status-success); }
+.viewer-playbar__scrub { width: 100px; accent-color: var(--status-success); }
+.viewer-playbar__label { color: var(--status-success); min-width: 70px; text-align: center; }

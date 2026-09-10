@@ -343,41 +343,15 @@ function PagesBanner() {
     try { localStorage.setItem('sardine.pages-banner.dismissed', '1'); } catch {}
   };
   return (
-    <div style={{
-      position: 'relative',
-      padding: '6px 36px 6px 12px',
-      background: 'var(--sardine-bg-panel, #122240)',
-      borderBottom: '1px solid var(--sardine-cyan, #4ec9d4)',
-      color: 'var(--sardine-text-primary, #e8edf5)',
-      fontSize: 'var(--text-sm)',
-      lineHeight: 1.4,
-      textAlign: 'center',
-    }}>
-      <strong style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>SARdine</strong>{' '}
+    <div className="pages-banner">
+      <strong className="u-accent">SARdine</strong>{' '}
       runs entirely in your browser — drop a GeoTIFF, NISAR HDF5, or GeoJSON file to start.{' '}
       Earthdata-authenticated streaming and the STAC catalog browser need the local dev server (
-      <a href="https://github.com/nicksteiner/sardine#getting-started" target="_blank" rel="noopener noreferrer"
-         style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>
+      <a href="https://github.com/nicksteiner/sardine#getting-started" target="_blank" rel="noopener noreferrer" className="u-accent">
         npm run dev
       </a>
       ).
-      <button
-        onClick={close}
-        title="Dismiss"
-        aria-label="Dismiss"
-        style={{
-          position: 'absolute', top: 4, right: 8,
-          background: 'transparent',
-          border: 'none',
-          color: 'var(--sardine-text-secondary, #8fa4c4)',
-          cursor: 'pointer',
-          fontSize: 'var(--text-md)',
-          lineHeight: 1,
-          padding: '2px 6px',
-        }}
-      >
-        ×
-      </button>
+      <CloseButton onClick={close} label="Dismiss" className="pages-banner__close" />
     </div>
   );
 }
@@ -6271,70 +6245,39 @@ function App() {
       />
       {/* Drag-and-drop overlay */}
       {dragOver && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 9999,
-          background: 'rgba(0, 180, 220, 0.15)',
-          border: '3px dashed rgba(0, 180, 220, 0.6)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          pointerEvents: 'none',
-        }}>
-          <div style={{
-            padding: '24px 48px', borderRadius: '12px',
-            background: 'rgba(0, 0, 0, 0.7)', color: '#fff',
-            fontSize: 'var(--text-xl)', fontWeight: 600,
-          }}>
+        <div className="dropzone">
+          <p className="dropzone__label">
             {fileType === 'local-tif' && mosaicFiles.length > 0
               ? `Drop GeoTIFFs to add to mosaic (${mosaicFiles.length} loaded)`
               : (fileType === 'nisar' && nisarProductType === 'GCOV' && nisarFile)
                 ? `Drop GCOV files to add to mosaic (${gcovMosaicFiles.length} secondary)`
                 : 'Drop HDF5, GeoTIFF, or GeoJSON file'}
-          </div>
+          </p>
         </div>
       )}
       {/* GeoJSON feature popup */}
       {geojsonPopup && (
         <div
-          style={{
-            position: 'fixed',
-            left: geojsonPopup.x + 12,
-            top: geojsonPopup.y - 12,
-            zIndex: 10000,
-            background: 'rgba(20, 20, 30, 0.95)',
-            border: '1px solid rgba(255, 255, 255, 0.2)',
-            borderRadius: '8px',
-            padding: '12px 16px',
-            color: '#fff',
-            fontSize: 'var(--text-md)',
-            maxWidth: '360px',
-            maxHeight: '400px',
-            overflow: 'auto',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-            fontFamily: 'monospace',
-          }}
+          className="feature-popup"
+          role="dialog"
+          aria-label="Feature properties"
+          style={{ left: geojsonPopup.x + 12, top: geojsonPopup.y - 12 }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontWeight: 600, color: '#ffcc00', fontSize: 'var(--text-md)' }}>
-              {geojsonPopup.geometry?.type || 'Feature'}
-            </span>
-            <button
-              onClick={() => setGeojsonPopup(null)}
-              style={{
-                background: 'none', border: 'none', color: '#aaa', cursor: 'pointer',
-                fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
-              }}
-            >x</button>
-          </div>
-          <div style={{ fontSize: 'var(--text-sm)', color: '#888', marginBottom: '6px' }}>{geojsonPopup.layer}</div>
-          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+          <header className="u-between u-mb-sm">
+            <h2 className="feature-popup__title">{geojsonPopup.geometry?.type || 'Feature'}</h2>
+            <CloseButton onClick={() => setGeojsonPopup(null)} label="Close feature popup" />
+          </header>
+          <p className="feature-popup__layer">{geojsonPopup.layer}</p>
+          <table className="feature-popup__table">
             <tbody>
               {Object.entries(geojsonPopup.properties).map(([key, val]) => (
-                <tr key={key} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <td style={{ padding: '3px 8px 3px 0', color: '#aaa', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{key}</td>
-                  <td style={{ padding: '3px 0', wordBreak: 'break-word' }}>{String(val ?? '')}</td>
+                <tr key={key}>
+                  <th scope="row">{key}</th>
+                  <td>{String(val ?? '')}</td>
                 </tr>
               ))}
               {Object.keys(geojsonPopup.properties).length === 0 && (
-                <tr><td style={{ color: '#666', fontStyle: 'italic' }}>No properties</td></tr>
+                <tr><td className="feature-popup__empty">No properties</td></tr>
               )}
             </tbody>
           </table>
@@ -6363,7 +6306,7 @@ function App() {
             onClick={() => setSheetExpanded(v => !v)}
           />
           {!imageData && (activePanel === 'analysis' || (activePanel === 'export' && !compareMode)) && (
-            <div className="control-section" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            <div className="control-section u-note">
               Load a scene to enable {activePanel === 'analysis'
                 ? 'ROI, annotation, and profile tools'
                 : 'export and share options'}.
@@ -6386,13 +6329,13 @@ function App() {
           {/* Earthdata Login — only relevant for hosted builds, but always
               shown so users can configure even in dev. */}
           <CollapsibleSection title="Earthdata Login" defaultOpen={isHostedBuild() && !edlToken}>
-            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+            <div className="u-lede u-mb-sm">
               {isHostedBuild()
                 ? 'Required for streaming NISAR / Sentinel-1 / OPERA from NASA DAACs. Your token is stored only in this browser.'
                 : 'Optional in dev (the Vite proxy bypasses auth). Useful for testing the hosted flow.'}
             </div>
             <div className="control-group">
-              <label style={{ fontSize: 'var(--text-sm)' }}>EDL token</label>
+              <label className="u-sm">EDL token</label>
               <input
                 type="password"
                 placeholder="Paste your Earthdata Login token"
@@ -6410,28 +6353,26 @@ function App() {
                   borderRadius: '2px',
                 }}
               />
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '2px', lineHeight: 1.4 }}>
-                <a href="https://urs.earthdata.nasa.gov/profile" target="_blank" rel="noopener noreferrer"
-                   style={{ color: 'var(--sardine-cyan)' }}>
+              <div className="u-hint u-mt-2xs">
+                <a href="https://urs.earthdata.nasa.gov/profile" target="_blank" rel="noopener noreferrer" className="u-accent">
                   Open Earthdata profile →
                 </a>
                 <br/>
                 Then click <strong>Generate Token</strong> in the left sidebar.
               </div>
-              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '6px', lineHeight: 1.45 }}>
+              <div className="u-hint u-mt-sm">
                 <strong>Where your token goes:</strong> it stays in this browser's
                 localStorage and is sent only to NASA servers{isHostedBuild()
                   ? ' via the relay Worker below (needed because DAACs don’t send CORS headers). SARdine is a research project — the Worker doesn’t log or store tokens, and its ~200-line source is in the repo (sardine-edl-proxy/). Don’t want to take our word for it? Deploy your own copy and paste its URL below.'
                   : ' (the local dev proxy relays it).'}{' '}
                 EDL tokens are read-only data-access credentials for mostly-public
                 data, they expire, and you can{' '}
-                <a href="https://urs.earthdata.nasa.gov/user_tokens" target="_blank" rel="noopener noreferrer"
-                   style={{ color: 'var(--sardine-cyan)' }}>revoke them anytime</a>.
+                <a href="https://urs.earthdata.nasa.gov/user_tokens" target="_blank" rel="noopener noreferrer" className="u-accent">revoke them anytime</a>.
               </div>
             </div>
             {isHostedBuild() && (
               <div className="control-group">
-                <label style={{ fontSize: 'var(--text-sm)' }}>Proxy URL</label>
+                <label className="u-sm">Proxy URL</label>
                 <input
                   type="text"
                   value={edlProxyUrl}
@@ -6450,7 +6391,7 @@ function App() {
                 />
               </div>
             )}
-            <div className="control-group" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <div className="control-group u-row-sm">
               <button
                 onClick={async () => {
                   setEdlValidating(true);
@@ -6461,13 +6402,11 @@ function App() {
                   if (result.ok) addStatusLog('success', `Earthdata token valid — ${result.username}`);
                   else addStatusLog('error', `Earthdata token check failed: ${result.error}`);
                 }}
-                disabled={!edlToken || edlValidating}
-                style={{ flex: 1, fontSize: 'var(--text-sm)' }}
-              >
+                disabled={!edlToken || edlValidating} className="u-flex1 u-sm">
                 {edlValidating ? 'Checking…' : 'Test token'}
               </button>
               {edlValidation?.ok && (
-                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-cyan)' }}>
+                <span className="u-sm u-accent">
                   ✓ {edlValidation.username}
                 </span>
               )}
@@ -6487,14 +6426,14 @@ function App() {
               emits a ?compare= link from the URL-backed panels. */}
           {activePanel === 'export' && (sharedRawUrl || imageData || compareMode) && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
-              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+              <div className="u-lede u-mb-sm">
                 {compareMode
                   ? 'Compare grid — the link reopens the grid with its URL-loaded panels. Local-file panels cannot travel in a URL and are skipped.'
                   : sharedRawUrl
                     ? 'Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.'
                     : 'Local file — the link carries the render + view state (no data travels). Open it, then load the same file to reproduce this view.'}
               </div>
-              <div className="control-group" style={{ display: 'flex', gap: '6px' }}>
+              <div className="control-group u-row-sm">
                 <button
                   disabled={!compareMode && !sharedRawUrl && !localShareName}
                   title={compareMode
@@ -6576,9 +6515,7 @@ function App() {
                     } catch (e) {
                       addStatusLog('error', `Failed to copy share link: ${e.message}`);
                     }
-                  }}
-                  style={{ flex: 1, fontSize: 'var(--text-sm)' }}
-                >
+                  }} className="u-flex1 u-sm">
                   Copy share link
                 </button>
               </div>
@@ -6595,8 +6532,7 @@ function App() {
                   type="file"
                   accept=".tif,.tiff"
                   multiple
-                  id="local-tif-input"
-                  style={{ display: 'none' }}
+                  id="local-tif-input" className="u-hidden"
                   onChange={(e) => {
                     const files = Array.from(e.target.files || []);
                     if (files.length === 0) return;
@@ -6608,16 +6544,16 @@ function App() {
                   }}
                 />
                 <button
-                  className="btn-secondary"
+                  className="btn-secondary u-full"
                   onClick={() => document.getElementById('local-tif-input').click()}
-                  style={{ width: '100%' }}
+                  
                 >
                   {imageData?.sliceCount > 1
                     ? `${imageData.sliceCount} files loaded - Change...`
                     : imageData?.data ? 'Change File...' : 'Choose File(s)...'}
                 </button>
                 {loading && loadProgress > 0 && loadProgress < 100 && (
-                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                  <div className="progress-track u-mt-sm">
                     <div className="progress-fill" style={{ width: `${loadProgress}%`, transition: 'width 0.3s ease' }} />
                   </div>
                 )}
@@ -6630,8 +6566,7 @@ function App() {
                   type="file"
                   accept=".tif,.tiff,.h5,.hdf5,.he5"
                   multiple
-                  id="compare-grid-input"
-                  style={{ display: 'none' }}
+                  id="compare-grid-input" className="u-hidden"
                   onChange={(e) => {
                     const files = Array.from(e.target.files || []);
                     if (files.length === 0) return;
@@ -6653,24 +6588,23 @@ function App() {
               </div>
 
               {imageData?.sliceCount > 1 && (
-                <div className="control-group" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+                <div className="control-group u-note">
                   Mosaic: {imageData.sliceCount} slices, {imageData.width}x{imageData.height} px
                   {imageData.crs && <span> · CRS: {imageData.crs}</span>}
                 </div>
               )}
               {imageData?.sliceNames && (
-                <div className="control-group" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                <div className="control-group u-note u-break">
                   {imageData.sliceNames.join(', ')}
                 </div>
               )}
               {mosaicFiles.length > 0 && (
-                <div className="control-group" style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+                <div className="control-group u-row-sm">
                   <input
                     type="file"
                     accept=".tif,.tiff"
                     multiple
-                    id="local-tif-add-input"
-                    style={{ display: 'none' }}
+                    id="local-tif-add-input" className="u-hidden"
                     onChange={(e) => {
                       const files = Array.from(e.target.files || []);
                       if (files.length > 0) appendMosaicTIFs(files);
@@ -6678,18 +6612,18 @@ function App() {
                     }}
                   />
                   <button
-                    className="btn-secondary"
+                    className="btn-secondary u-flex1"
                     onClick={() => document.getElementById('local-tif-add-input').click()}
-                    style={{ flex: 1 }}
+                    
                     title="Add more GeoTIFFs to the current mosaic (must share CRS)"
                   >
                     + Add to Mosaic
                   </button>
                   {mosaicFiles.length > 1 && (
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-flex1"
                       onClick={clearMosaic}
-                      style={{ flex: 1 }}
+                      
                       title="Remove all mosaicked files"
                     >
                       Clear Mosaic
@@ -6708,8 +6642,7 @@ function App() {
                 <input
                   type="file"
                   accept=".h5,.hdf5,.he5"
-                  id="nisar-file-input"
-                  style={{ display: 'none' }}
+                  id="nisar-file-input" className="u-hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
@@ -6718,16 +6651,16 @@ function App() {
                   }}
                 />
                 <button
-                  className="btn-secondary"
+                  className="btn-secondary u-full"
                   onClick={() => document.getElementById('nisar-file-input').click()}
-                  style={{ width: '100%' }}
+                  
                 >
                   {nisarFile ? 'Change File...' : 'Choose File...'}
                 </button>
               </div>
 
               {nisarFile && (
-                <div className="control-group" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+                <div className="control-group u-hint u-break">
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
               )}
@@ -6735,13 +6668,12 @@ function App() {
               {/* GCOV mosaic — visible only for GCOV (not GUNW) */}
               {fileType === 'nisar' && nisarProductType === 'GCOV' && nisarFile && (
                 <>
-                  <div className="control-group" style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+                  <div className="control-group u-row-sm">
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
                       multiple
-                      id="gcov-mosaic-add-input"
-                      style={{ display: 'none' }}
+                      id="gcov-mosaic-add-input" className="u-hidden"
                       onChange={(e) => {
                         const files = Array.from(e.target.files || []);
                         if (files.length > 0) appendGcovMosaicFiles(files);
@@ -6749,18 +6681,18 @@ function App() {
                       }}
                     />
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-flex1"
                       onClick={() => document.getElementById('gcov-mosaic-add-input').click()}
-                      style={{ flex: 1 }}
+                      
                       title="Add NISAR GCOV files to mosaic alongside the primary (must share CRS)"
                     >
                       + Add GCOV to Mosaic
                     </button>
                     {(gcovMosaicFiles.length > 0 || gcovMosaicLayers.length > 0) && (
                       <button
-                        className="btn-secondary"
+                        className="btn-secondary u-flex1"
                         onClick={clearGcovMosaic}
-                        style={{ flex: 1 }}
+                        
                         title="Remove all secondary GCOV layers"
                       >
                         Clear Mosaic
@@ -6768,10 +6700,10 @@ function App() {
                     )}
                   </div>
                   {gcovMosaicFiles.length > 0 && (
-                    <div className="control-group" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+                    <div className="control-group u-note">
                       Mosaic: {gcovMosaicLayers.length} of {gcovMosaicFiles.length} secondary
                       {gcovMosaicFiles.length === 1 ? ' file' : ' files'} loaded
-                      <div style={{ fontSize: 'var(--text-xs)', wordBreak: 'break-all', marginTop: '4px' }}>
+                      <div className="u-xs u-break u-mt-xs">
                         {gcovMosaicFiles.map(f => f.name).join(', ')}
                       </div>
                     </div>
@@ -6902,7 +6834,7 @@ function App() {
           {nisarDatasets.length > 0 && (
             <CollapsibleSection title="Dataset" defaultOpen={true}>
               {/* Source indicator */}
-              <div className="control-group" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+              <div className="control-group u-hint u-break">
                 {nisarFile ? nisarFile.name : remoteName || 'Remote'}
                 {nisarFile && ` (${(nisarFile.size / 1e9).toFixed(2)} GB)`}
                 {nisarProductType !== 'GCOV' && (
@@ -7064,7 +6996,7 @@ function App() {
                       <option key={i.id} value={i.id}>{i.name}</option>
                     ))}
                   </select>
-                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div className="u-note u-mt-2xs">
                     {availableIndices.find(i => i.id === indexId)?.description || ''}
                     {' · '}
                     {indexForm === 'quad' ? 'quad-pol form' : 'dual-pol form'}
@@ -7085,7 +7017,7 @@ function App() {
                       </option>
                     ))}
                   </select>
-                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div className="u-note u-mt-2xs">
                     {availableComposites.find(c => c.id === compositeId)?.description || ''}
                   </div>
                 </div>
@@ -7098,48 +7030,46 @@ function App() {
                     File 1 (R) — already selected above
                   </label>
                   {/* File 2 → Green */}
-                  <div style={{ marginTop: '6px' }}>
-                    <label style={{ fontSize: 'var(--text-sm)' }}>File 2 (G)</label>
+                  <div className="u-mt-sm">
+                    <label className="u-sm">File 2 (G)</label>
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
-                      id="nisar-file2-input"
-                      style={{ display: 'none' }}
+                      id="nisar-file2-input" className="u-hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) setNisarFile2(f);
                       }}
                     />
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-full u-mt-2xs"
                       onClick={() => document.getElementById('nisar-file2-input').click()}
-                      style={{ width: '100%', marginTop: '2px' }}
+                      
                     >
                       {nisarFile2 ? nisarFile2.name.slice(0, 30) + (nisarFile2.name.length > 30 ? '…' : '') : 'Choose File 2...'}
                     </button>
                   </div>
                   {/* File 3 → Blue */}
-                  <div style={{ marginTop: '6px' }}>
-                    <label style={{ fontSize: 'var(--text-sm)' }}>File 3 (B)</label>
+                  <div className="u-mt-sm">
+                    <label className="u-sm">File 3 (B)</label>
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
-                      id="nisar-file3-input"
-                      style={{ display: 'none' }}
+                      id="nisar-file3-input" className="u-hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) setNisarFile3(f);
                       }}
                     />
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-full u-mt-2xs"
                       onClick={() => document.getElementById('nisar-file3-input').click()}
-                      style={{ width: '100%', marginTop: '2px' }}
+                      
                     >
                       {nisarFile3 ? nisarFile3.name.slice(0, 30) + (nisarFile3.name.length > 30 ? '…' : '') : 'Choose File 3...'}
                     </button>
                   </div>
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  <div className="u-hint u-mt-xs">
                     {nisarProductType === 'GUNW'
                       ? `Same ${selectedLayer}/${selectedGunwDataset} (${selectedPolarization}) loaded from each file.`
                       : `Same ${selectedFrequency}/${selectedPolarization} dataset loaded from each file.`}
@@ -7161,8 +7091,8 @@ function App() {
                   </div>
                   {useCoherenceMask && (
                     <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Threshold</span>
+                      <div className="u-between u-mt-xs">
+                        <span className="u-note">Threshold</span>
                         <span className="value-display">{coherenceThreshold.toFixed(2)}</span>
                       </div>
                       <input
@@ -7178,12 +7108,10 @@ function App() {
                 </div>
               )}
 
-              <div style={{ display: 'flex', gap: '4px' }}>
+              <div className="u-row">
                 <button
                   onClick={remoteUrl ? handleLoadRemoteNISAR : handleLoadNISAR}
-                  disabled={loading}
-                  style={{ flex: 1 }}
-                >
+                  disabled={loading} className="u-flex1">
                   {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : displayMode === 'multi-temporal' ? 'Load Multi-temporal RGB' : 'Load Dataset'}
                 </button>
 
@@ -7256,7 +7184,7 @@ function App() {
               Auto-hides when there's only one image segment (typical case). */}
           {fileType === 'nitf' && nitfDatasets.length > 1 && (
             <CollapsibleSection title="NITF Image Segments" defaultOpen={true}>
-              <div className="control-group" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+              <div className="control-group u-hint u-break">
                 {nitfFile?.name}
                 {nitfFile && ` (${(nitfFile.size / 1e9).toFixed(2)} GB)`}
               </div>
@@ -7392,7 +7320,7 @@ function App() {
                 />
                 <label htmlFor="overtureEnabled">
                   Enable Overlay
-                  {overtureLoading && <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>⟳</span>}
+                  {overtureLoading && <span className="u-accent u-ml-sm">⟳</span>}
                 </label>
               </div>
             </div>
@@ -7432,7 +7360,7 @@ function App() {
                 </div>
 
                 <div className="control-group">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <div className="u-between">
                     <label>Opacity</label>
                     <span className="value-display">{(overtureOpacity * 100).toFixed(0)}%</span>
                   </div>
@@ -7447,7 +7375,7 @@ function App() {
                 </div>
 
                 {overtureData && (
-                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
+                  <div className="u-note">
                     {Object.entries(overtureData).map(([key, fc]) => (
                       <div key={key}>{OVERTURE_THEMES[key]?.label}: {fc.features?.length || 0} features</div>
                     ))}
@@ -7549,7 +7477,7 @@ function App() {
                     <option value="label">Label</option>
                   </optgroup>
                 </select>
-                <div className="control-row" style={{ marginTop: 4 }}>
+                <div className="control-row u-mt-xs">
                   <input
                     type="checkbox"
                     id="reverseColormap"
@@ -7618,7 +7546,7 @@ function App() {
           <CollapsibleSection title="Export Settings">
             {imageData && imageData.getExportStripe && (
               <div className="control-group">
-                <label style={{ fontSize: 'var(--text-sm)', marginBottom: '4px', display: 'block' }}>
+                <label className="u-sm u-mb-xs">
                   Multilook Window (Export)
                 </label>
                 <div style={{ display: 'flex', gap: '4px', marginBottom: '4px' }}>
@@ -7635,7 +7563,7 @@ function App() {
                   ))}
                 </div>
                 {imageData.pixelSpacing && (
-                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div className="u-hint u-mt-2xs">
                     Source: {imageData.pixelSpacing.x?.toFixed(1)}m × {imageData.pixelSpacing.y?.toFixed(1)}m posting
                     {exportMultilookWindow > 1 && ` → ${(imageData.pixelSpacing.x * exportMultilookWindow).toFixed(1)}m export`}
                   </div>
@@ -7645,11 +7573,11 @@ function App() {
 
             {/* Export mode toggle */}
             {imageData && imageData.getExportStripe && (
-              <div className="control-group" style={{ marginTop: '8px' }}>
-                <label style={{ fontSize: 'var(--text-sm)', marginBottom: '4px', display: 'block' }}>
+              <div className="control-group u-mt-md">
+                <label className="u-sm u-mb-xs">
                   Export Data
                 </label>
-                <div style={{ display: 'flex', gap: '4px' }}>
+                <div className="u-row">
                   {[
                     { id: 'raw', label: 'Raw', desc: 'Float32 linear power — for analysis (QGIS, Python)' },
                     { id: 'rendered', label: 'Displayed', desc: 'RGBA with current dB/contrast/colormap — as seen on screen' },
@@ -7665,7 +7593,7 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '2px' }}>
+                <div className="u-hint u-mt-2xs">
                   {exportMode === 'raw'
                     ? 'Float32 linear power values — suitable for analysis'
                     : `RGBA with ${effectiveUseDecibels ? 'dB' : 'linear'} stretch, ${colormap} colormap`}
@@ -7680,7 +7608,7 @@ function App() {
           {activePanel === 'analysis' && imageData && (
           <CollapsibleSection title="Region of Interest">
             {imageData && (
-              <div style={{ fontSize: 'var(--text-sm)' }}>
+              <div className="u-sm">
                 {roi ? (
                   <div style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -7692,7 +7620,7 @@ function App() {
                     <span style={{ color: '#ffc832' }}>
                       ROI: {roi.width} × {roi.height} px
                     </span>
-                    <div style={{ display: 'flex', gap: 4 }}>
+                    <div className="u-row">
                       <button
                         onClick={() => setClassifierOpen(prev => !prev)}
                         title="Feature space classifier (C)"
@@ -7730,7 +7658,7 @@ function App() {
                     border: '1px solid rgba(78, 201, 212, 0.2)',
                     borderRadius: 'var(--radius-sm)',
                   }}>
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <div className="u-row">
                       <select
                         value={roiCompositeId || ''}
                         onChange={(e) => setRoiCompositeId(e.target.value || null)}
@@ -7778,7 +7706,7 @@ function App() {
                     border: '1px solid rgba(46, 204, 113, 0.2)',
                     borderRadius: 'var(--radius-sm)',
                   }}>
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <div className="u-row">
                       <label style={{
                         flex: 1, fontSize: 'var(--text-xs)', cursor: 'pointer',
                         color: 'var(--text-muted)',
@@ -7786,8 +7714,7 @@ function App() {
                         <input
                           type="file"
                           multiple
-                          accept=".h5,.hdf5"
-                          style={{ display: 'none' }}
+                          accept=".h5,.hdf5" className="u-hidden"
                           onChange={(e) => setRoiTSFiles(Array.from(e.target.files || []))}
                         />
                         {roiTSFiles.length > 0
@@ -7819,8 +7746,8 @@ function App() {
                 )}
 
                 {/* WKT ROI Input */}
-                <div style={{ marginTop: '4px' }}>
-                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                <div className="u-mt-xs">
+                  <div className="u-row">
                     <input
                       type="text"
                       value={wktInput}
@@ -7867,13 +7794,11 @@ function App() {
           <CollapsibleSection title="Export">
             {(imageData || compareMode) && (
               <div>
-                <div style={{ display: 'flex', gap: '6px' }}>
+                <div className="u-row-sm">
                 {imageData?.getExportStripe && (
                   <button
                     onClick={handleExportGeoTIFF}
-                    disabled={exporting}
-                    style={{ flex: 1 }}
-                  >
+                    disabled={exporting} className="u-flex1">
                     {exporting
                       ? `Exporting... ${exportProgress}%`
                       : `Export ${roi ? 'ROI ' : ''}GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
@@ -7900,25 +7825,23 @@ function App() {
                 {imageData && (
                 <button
                   onClick={handleSaveFigureGeoTIFF}
-                  title="Save current viewport as georeferenced GeoTIFF"
-                  style={{ flex: 1 }}
-                >
+                  title="Save current viewport as georeferenced GeoTIFF" className="u-flex1">
                   Save Figure (GeoTIFF)
                 </button>
                 )}
                 </div>
                 {exporting && (
-                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                  <div className="progress-track u-mt-sm">
                     <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
                   </div>
                 )}
                 {/* Figure style — publication (light) vs presentation (dark). */}
-                <div className="control-group" style={{ marginTop: '8px' }}>
-                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }} title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
+                <div className="control-group u-mt-md">
+                  <div className="control-row u-between">
+                    <label className="u-note-2" title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
                       Figure style
                     </label>
-                    <div style={{ display: 'flex' }}>
+                    <div className="u-row">
                       {[['publication', 'Publication'], ['dark', 'Presentation']].map(([val, lbl], i) => (
                         <button
                           key={val}
@@ -7939,12 +7862,12 @@ function App() {
                   </div>
                 </div>
                 {/* Figure coordinate grid — full gridlines, edge ticks only, or none. */}
-                <div className="control-group" style={{ marginTop: '6px' }}>
-                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }} title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
+                <div className="control-group u-mt-sm">
+                  <div className="control-row u-between">
+                    <label className="u-note-2" title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
                       Figure grid
                     </label>
-                    <div style={{ display: 'flex' }}>
+                    <div className="u-row">
                       {[['lines', 'Lines'], ['ticks', 'Ticks'], ['off', 'Off']].map(([val, lbl], i, arr) => (
                         <button
                           key={val}
@@ -7965,9 +7888,9 @@ function App() {
                   </div>
                 </div>
                 {/* Colorbar caption — always editable; empty falls back to dB/linear. */}
-                <div className="control-group" style={{ marginTop: '6px' }}>
-                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label htmlFor="colorbarLabel" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }} title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
+                <div className="control-group u-mt-sm">
+                  <div className="control-row u-between">
+                    <label htmlFor="colorbarLabel" className="u-note-2" title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
                       Colorbar label
                     </label>
                     <input
@@ -7984,7 +7907,7 @@ function App() {
                 {/* Attribution stamps the single-scene export; compare-grid
                     panels don't carry it. */}
                 {imageData && (
-                <div className="control-group" style={{ marginTop: '6px' }}>
+                <div className="control-group u-mt-sm">
                   <div className="control-row">
                     <input
                       type="checkbox"
@@ -8061,13 +7984,13 @@ function App() {
           {activePanel === 'analysis' && imageData && (
           <CollapsibleSection title="Annotate">
                 <div className="control-group">
-                  <label style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-text-secondary, #8fa4c4)' }}>
+                  <label className="u-note-2">
                     Annotate
                     {annotations.length > 0 && (
-                      <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>· {annotations.length}</span>
+                      <span className="u-accent u-ml-sm">· {annotations.length}</span>
                     )}
                   </label>
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                  <div className="u-row u-mt-xs">
                     {[
                       { key: 'off',   label: 'Off' },
                       { key: 'arrow', label: 'Arrow' },
@@ -8097,7 +8020,7 @@ function App() {
                     ))}
                   </div>
                   {/* Size presets — standardized S/M/L (line weight + text scale together) */}
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                  <div className="u-row u-mt-xs">
                     {[
                       { key: 'small',  label: 'S' },
                       { key: 'medium', label: 'M' },
@@ -8173,7 +8096,7 @@ function App() {
                     </button>
                   </div>
                   {/* Markup GeoJSON I/O (W004) — annotations + ROI + class regions */}
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                  <div className="u-row u-mt-xs">
                     <button
                       onClick={handleSaveMarkup}
                       disabled={annotations.length === 0 && !roi && classRegions.length === 0}
@@ -8211,8 +8134,7 @@ function App() {
                     <input
                       ref={markupFileInputRef}
                       type="file"
-                      accept=".geojson,.json"
-                      style={{ display: 'none' }}
+                      accept=".geojson,.json" className="u-hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) handleLoadMarkupFile(f);
@@ -8295,8 +8217,8 @@ function App() {
             {/* Histogram scope toggle — shown when histogram exists, or always in RGB mode so
                 user can trigger the first computation via the Viewport/ROI buttons */}
             {(histogramData || (imageData && isRGBDisplayMode)) && (
-              <div className="control-group" style={{ marginBottom: '6px' }}>
-                <div style={{ display: 'flex', gap: '4px' }}>
+              <div className="control-group u-mb-sm">
+                <div className="u-row">
                   {['global', 'viewport', 'roi'].map(scope => {
                     const hasH5Stats = (imageData?.stats?.mean_value > 0 && imageData?.stats?.sample_stddev > 0)
                       || (isRGBDisplayMode && imageData?.bandStats && Object.keys(imageData.bandStats).length > 0);
@@ -8415,7 +8337,7 @@ function App() {
               <div className="control-group">
                 {/* LOS displacement toggle (radians → meters) */}
                 {(selectedGunwDataset === 'unwrappedPhase' || selectedGunwDataset === 'wrappedInterferogram' || selectedGunwDataset === 'ionospherePhaseScreen') && (
-                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                  <div className="control-row u-mb-sm">
                     <input
                       type="checkbox"
                       id="losToggle"
@@ -8442,7 +8364,7 @@ function App() {
                     />
                     <label htmlFor="losToggle">
                       LOS Displacement
-                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      <span className="u-hint u-ml-xs">
                         {losDisplacement ? '(m)' : '(rad)'}
                       </span>
                     </label>
@@ -8451,7 +8373,7 @@ function App() {
 
                 {/* Vertical displacement toggle — requires incidence angle grid */}
                 {losDisplacement && gunwIncidenceAngleGrid && (
-                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                  <div className="control-row u-mb-sm">
                     <input
                       type="checkbox"
                       id="vertDispToggle"
@@ -8460,7 +8382,7 @@ function App() {
                     />
                     <label htmlFor="vertDispToggle">
                       Vertical Displacement
-                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      <span className="u-hint u-ml-xs">
                         d<sub>vert</sub> = d<sub>LOS</sub> / cos({'\u03B8'})
                       </span>
                     </label>
@@ -8548,7 +8470,7 @@ function App() {
                   return (
                     <div style={{ marginTop: '8px', borderTop: '1px solid var(--sardine-border)', paddingTop: '6px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Phase Corrections</span>
+                        <span className="u-note">Phase Corrections</span>
                         <button
                           style={{ ...btnStyle(allEnabled), fontSize: 'var(--text-xs)', padding: '2px 5px' }}
                           onClick={() => { setEnabledCorrections(allEnabled ? new Set() : new Set(availableKeys)); resetContrast(); }}
@@ -8597,7 +8519,7 @@ function App() {
             {/* Brightness (Window/Level) slider — shifts window center (single-band only) */}
             {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="u-between">
                   <label>Brightness</label>
                   <ScrubNumber
                     value={(contrastMin + contrastMax) / 2}
@@ -8661,7 +8583,7 @@ function App() {
 
             {(stretchMode === 'gamma' || stretchMode === 'sigmoid') && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="u-between">
                   <label>Gamma</label>
                   <ScrubNumber value={gamma} onChange={setGamma} min={0.1} max={5.0} step={0.02} precision={2} width={56} />
                 </div>
@@ -8679,7 +8601,7 @@ function App() {
             {/* Saturation — only shown in RGB display modes */}
             {isRGBDisplayMode && imageData?.getRGBTile && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="u-between">
                   <label>Saturation</label>
                   <ScrubNumber value={rgbSaturation} onChange={setRgbSaturation} min={0} max={3} step={0.02} precision={2} width={56} />
                 </div>
@@ -8733,9 +8655,9 @@ function App() {
                         : 'Invalid mask disabled');
                     }}
                   />
-                  <label htmlFor="maskInvalid" style={{ margin: 0 }}>
+                  <label htmlFor="maskInvalid" className="u-m0">
                     Mask invalid
-                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span className="u-hint u-ml-xs">
                       {maskInvalid ? '(0, 255)' : '(off)'}
                     </span>
                   </label>
@@ -8752,9 +8674,9 @@ function App() {
                         : 'Layover/shadow mask disabled');
                     }}
                   />
-                  <label htmlFor="maskLayoverShadow" style={{ margin: 0 }}>
+                  <label htmlFor="maskLayoverShadow" className="u-m0">
                     Mask layover/shadow
-                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span className="u-hint u-ml-xs">
                       {maskLayoverShadow ? '(active)' : '(off)'}
                     </span>
                   </label>
@@ -8774,15 +8696,15 @@ function App() {
                   />
                   <label htmlFor="incAngleMask">
                     Incidence Angle Mask
-                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span className="u-hint u-ml-xs">
                       {useIncidenceAngleMask ? `${incAngleMin}°–${incAngleMax}°` : '(off)'}
                     </span>
                   </label>
                 </div>
                 {useIncidenceAngleMask && (
                   <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Near range (min)</span>
+                    <div className="u-between u-mt-xs">
+                      <span className="u-note">Near range (min)</span>
                       <span className="value-display">{incAngleMin}°</span>
                     </div>
                     <input
@@ -8791,7 +8713,7 @@ function App() {
                       onChange={(e) => setIncAngleMin(Number(e.target.value))}
                     />
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
-                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Far range (max)</span>
+                      <span className="u-note">Far range (max)</span>
                       <span className="value-display">{incAngleMax}°</span>
                     </div>
                     <input
@@ -8809,8 +8731,7 @@ function App() {
                     onAngleRangeChange={({ min, max }) => {
                       if (min !== undefined) setIncAngleMin(min);
                       if (max !== undefined) setIncAngleMax(max);
-                    }}
-                    style={{ marginTop: '6px' }}
+                    }} className="u-mt-sm"
                   />
                 )}
               </div>
@@ -8909,31 +8830,17 @@ function App() {
           )}
 
           {imageData && !gunwPairedView && !compareMode && (
-            <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
+            <div className="viewer-split">
               {/* Loading overlay — shown on top of existing data while new data streams */}
               {loading && (
-                <div style={{
-                  position: 'absolute', inset: 0, zIndex: 10,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'var(--overlay-bg, rgba(10, 22, 40, 0.75))',
-                  pointerEvents: 'none',
-                }}>
-                  <div style={{
-                    fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)',
-                    color: 'var(--sardine-cyan, #4ec9d4)', letterSpacing: '1px',
-                  }}>
-                    Loading dataset...
-                  </div>
+                <div className="viewer-loading">
+                  <p className="viewer-loading__label">Loading dataset...</p>
                 </div>
               )}
               {/* Main viewer (single-channel full extent) */}
               <div
                 onClick={() => roiRGBData && setActiveViewer('main')}
-                style={{
-                  flex: 1, position: 'relative', height: '100%',
-                  outline: roiRGBData && activeViewer === 'main' ? '2px solid #ffc832' : 'none',
-                  outlineOffset: '-2px',
-                }}>
+                className={`viewer-pane${roiRGBData && activeViewer === 'main' ? ' viewer-pane--active viewer-pane--main' : ''}`}>
                 <SARViewer
                   ref={viewerRef}
                   cogUrl={imageData?.cogUrl}
@@ -9015,33 +8922,14 @@ function App() {
               {/* ROI RGB viewer (side-by-side, only when ROI RGB loaded) */}
               {roiRGBData && roiRGBBounds && roiRGBContrastLimits && (
                 <>
-                  <div style={{
-                    width: '3px', background: 'var(--sardine-border)',
-                    flexShrink: 0,
-                  }} />
+                  <div className="viewer-splitter" role="separator" />
                   <div
                     onClick={() => setActiveViewer('roi-rgb')}
-                    style={{
-                      flex: 1, position: 'relative', height: '100%',
-                      outline: activeViewer === 'roi-rgb' ? '2px solid #4ec9d4' : 'none',
-                      outlineOffset: '-2px',
-                    }}>
-                    <div style={{
-                      position: 'absolute', top: '8px', left: '8px', zIndex: 10,
-                      background: 'rgba(0,0,0,0.7)', color: '#4ec9d4',
-                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
-                      fontSize: 'var(--text-sm)', pointerEvents: 'none',
-                    }}>
-                      ROI RGB: {roiCompositeId}
-                    </div>
+                    className={`viewer-pane viewer-pane--rgb${activeViewer === 'roi-rgb' ? ' viewer-pane--active' : ''}`}>
+                    <p className="viewer-badge viewer-badge--rgb">ROI RGB: {roiCompositeId}</p>
                     <button
                       onClick={() => { setRoiRGBData(null); setRoiRGBBounds(null); setRoiRGBContrastLimits(null); setRoiRGBHistogramData(null); setActiveViewer('main'); }}
-                      style={{
-                        position: 'absolute', top: '8px', right: '8px', zIndex: 10,
-                        background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                        border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
-                        padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
-                      }}
+                      className="viewer-action viewer-action--tr"
                     >
                       Close
                     </button>
@@ -9068,69 +8956,44 @@ function App() {
               {/* ROI Time-Series viewer (side-by-side, only when frames loaded) */}
               {roiTSFrames && roiTSBounds && roiTSContrastLimits && (
                 <>
-                  <div style={{
-                    width: '3px', background: 'var(--sardine-border)',
-                    flexShrink: 0,
-                  }} />
+                  <div className="viewer-splitter" role="separator" />
                   <div
                     onClick={() => setActiveViewer('roi-ts')}
-                    style={{
-                      flex: 1, position: 'relative', height: '100%',
-                      outline: activeViewer === 'roi-ts' ? '2px solid #2ecc71' : 'none',
-                      outlineOffset: '-2px',
-                    }}>
-                    <div style={{
-                      position: 'absolute', top: '8px', left: '8px', zIndex: 10,
-                      background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
-                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
-                      fontSize: 'var(--text-sm)', pointerEvents: 'none',
-                    }}>
+                    className={`viewer-pane viewer-pane--ts${activeViewer === 'roi-ts' ? ' viewer-pane--active' : ''}`}>
+                    <p className="viewer-badge viewer-badge--ts">
                       {roiTSFrames[roiTSIndex]?.label || 'Frame ' + roiTSIndex}
                       {' '}({roiTSIndex + 1}/{roiTSFrames.length})
-                    </div>
-                    <div style={{ position: 'absolute', top: '8px', right: '8px', zIndex: 10, display: 'flex', gap: '4px' }}>
+                    </p>
+                    <Toolbar className="viewer-actions viewer-actions--tr">
                       {roiTSFrames[roiTSIndex]?.getExportStripe && (
                         <button
                           onClick={(e) => { e.stopPropagation(); handleExportTSFrame(); }}
                           disabled={exporting}
-                          style={{
-                            background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
-                            border: '1px solid #2ecc71', borderRadius: 'var(--radius-sm)',
-                            padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: exporting ? 'not-allowed' : 'pointer',
-                          }}
+                          className="viewer-action viewer-action--ts"
                         >
                           {exporting ? `${exportProgress}%` : `Export GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
                         </button>
                       )}
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSFrames(null); setRoiTSBounds(null); setRoiTSContrastLimits(null); setRoiTSHistogramData(null); setRoiTSPlaying(false); setActiveViewer('main'); }}
-                        style={{
-                          background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                          border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
-                          padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
-                        }}
+                        className="viewer-action"
                       >
                         Close
                       </button>
-                    </div>
+                    </Toolbar>
                     {/* Playback controls */}
-                    <div style={{
-                      position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)',
-                      zIndex: 10, display: 'flex', alignItems: 'center', gap: '8px',
-                      background: 'rgba(0,0,0,0.8)', padding: '6px 12px',
-                      borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-sm)',
-                    }}>
+                    <div className="viewer-playbar" role="group" aria-label="Time-series playback">
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev - 1 + roiTSFrames.length) % roiTSFrames.length); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: 'var(--text-lg)', padding: '0 4px' }}
+                        className="viewer-playbar__btn" aria-label="Previous frame"
                       >◀</button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSPlaying(prev => !prev); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: 'var(--text-lg)', padding: '0 4px' }}
+                        className="viewer-playbar__btn" aria-label={roiTSPlaying ? 'Pause' : 'Play'}
                       >{roiTSPlaying ? '⏸' : '▶'}</button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev + 1) % roiTSFrames.length); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: 'var(--text-lg)', padding: '0 4px' }}
+                        className="viewer-playbar__btn" aria-label="Next frame"
                       >▶</button>
                       <input
                         type="range"
@@ -9139,9 +9002,10 @@ function App() {
                         value={roiTSIndex}
                         onChange={(e) => { e.stopPropagation(); setRoiTSIndex(Number(e.target.value)); }}
                         onClick={(e) => e.stopPropagation()}
-                        style={{ width: '100px', accentColor: '#2ecc71' }}
+                        className="viewer-playbar__scrub"
+                        aria-label="Frame"
                       />
-                      <span style={{ color: '#2ecc71', minWidth: '70px', textAlign: 'center' }}>
+                      <span className="viewer-playbar__label">
                         {roiTSFrames[roiTSIndex]?.label}
                       </span>
                     </div>
