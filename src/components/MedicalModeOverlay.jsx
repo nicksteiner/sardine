@@ -315,9 +315,9 @@ function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {
       left: 44, // clear of the home button at left:10
       background: 'rgba(0, 0, 0, 0.78)',
       border: '1px solid #2a2a2a',
-      borderLeft: '2px solid #4ec9d4',
+      borderLeft: '2px solid var(--sardine-cyan)',
       padding: '6px 10px',
-      color: '#e8edf5',
+      color: 'var(--text-primary)',
       fontSize: 'var(--text-xs)',
       fontFamily: 'var(--font-mono, monospace)',
       lineHeight: 1.5,
@@ -325,9 +325,7 @@ function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {
       zIndex: 10,
       minWidth: 220,
     }}>
-      <div style={{ color: '#5a7099', fontSize: 'var(--text-xs)', letterSpacing: 1, marginBottom: 2 }}>
-        ANALYTICAL · MEDICAL
-      </div>
+      <h2 className="medical-readout__title">Analytical · Medical</h2>
       {readout ? (
         <>
           <Row label="px" val={`(${readout.col}, ${readout.row})`} />
@@ -338,14 +336,14 @@ function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {
           <Row label="σ 5×5" val={fmtRaw(readout.std)} />
         </>
       ) : (
-        <div style={{ color: '#5a7099', fontStyle: 'italic' }}>move cursor over data</div>
+        <div style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>move cursor over data</div>
       )}
-      <div style={{ borderTop: '1px solid #1a1a1a', marginTop: 4, paddingTop: 3, color: '#5a7099', fontSize: 'var(--text-xs)' }}>
+      <div style={{ borderTop: '1px solid var(--sardine-border)', marginTop: 4, paddingTop: 3, color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
         {win !== null && (
           <>W {win.toFixed(2)}{unit} · L {ctr.toFixed(2)}{unit}</>
         )}
       </div>
-      <div style={{ color: '#3a4a5f', fontSize: 'var(--text-xs)', marginTop: 2 }}>
+      <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)', marginTop: 2 }}>
         right-drag X=window Y=level
       </div>
     </div>
@@ -355,7 +353,7 @@ function ReadoutPanel({ readout, useDecibels, geoLabel, contrastLimits }) {
 function Row({ label, val, accent }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-      <span style={{ color: '#5a7099' }}>{label}</span>
+      <span style={{ color: 'var(--text-muted)' }}>{label}</span>
       <span style={{ color: accent ? '#4ec9d4' : '#e8edf5', fontWeight: accent ? 500 : 400 }}>
         {val}
       </span>
@@ -367,7 +365,7 @@ function ControlRail({ onSigma, onPercentile, onSnap, inverted, setInverted, has
   const btn = {
     background: 'rgba(0, 0, 0, 0.78)',
     border: '1px solid #2a2a2a',
-    color: '#e8edf5',
+    color: 'var(--text-primary)',
     padding: '3px 8px',
     fontSize: 'var(--text-xs)',
     fontFamily: 'var(--font-mono, monospace)',
@@ -375,7 +373,7 @@ function ControlRail({ onSigma, onPercentile, onSnap, inverted, setInverted, has
     borderRadius: 0,
   };
   const sectionLabel = {
-    color: '#5a7099',
+    color: 'var(--text-muted)',
     fontSize: 'var(--text-xs)',
     letterSpacing: 1,
     margin: '2px 0',

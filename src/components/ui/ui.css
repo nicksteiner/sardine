@@ -1,0 +1,680 @@
+/*
+ * ui.css — W028 UI primitives.
+ * ============================
+ * The one place chrome is styled.  Every rule here is expressed in W027
+ * tokens: no bare hex, no px font sizes, no !important.  If a surface needs
+ * a colour or a size that is not a token, the token is missing — add it to
+ * sardine-theme.css rather than hard-coding it here.
+ *
+ * Specificity discipline: single-class selectors only.  The primitives must
+ * be overridable by a caller's className without an escalation war — that
+ * war is exactly what the old global `button` CTA rule started.
+ */
+
+/* ═══════════════ BUTTON ═══════════════ */
+/* `.btn` is the shape; the variant carries the colour.  Default variant is
+   `secondary` (quiet) — one primary action per view, the rest recede. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  padding: var(--space-2xs) var(--space-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.btn--md {
+  font-size: var(--text-md);
+  padding: var(--space-xs) var(--space-md);
+}
+
+.btn--block { width: 100%; }
+
+.btn--icon {
+  padding: var(--space-3xs);
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  font-size: var(--text-md);
+  letter-spacing: 0;
+}
+
+/* ─── variant: primary (the CTA the old global rule applied to everything) ─── */
+.btn--primary {
+  background: var(--sardine-cyan);
+  border-color: var(--sardine-cyan);
+  color: var(--sardine-bg);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--sardine-cyan-dim);
+  border-color: var(--sardine-cyan-dim);
+}
+
+/* ─── variant: secondary (default) ─── */
+.btn--secondary {
+  background: var(--sardine-bg-raised);
+  border-color: var(--sardine-border);
+  color: var(--text-secondary);
+}
+.btn--secondary:hover:not(:disabled) {
+  background: var(--sardine-bg-hover);
+  border-color: var(--sardine-cyan-dim);
+  color: var(--text-primary);
+}
+
+/* ─── variant: ghost (dense tool chrome — no chrome until touched) ─── */
+.btn--ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: var(--sardine-bg-hover);
+  color: var(--text-primary);
+}
+
+/* ─── variant: danger ─── */
+.btn--danger {
+  background: transparent;
+  border-color: var(--sardine-red);
+  color: var(--sardine-red);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--sardine-red);
+  color: var(--sardine-bg);
+}
+
+/* ─── selected / active (a toggle that is on) ─── */
+.btn.is-active,
+.btn[aria-pressed='true'] {
+  background: var(--sardine-cyan-bg);
+  border-color: var(--sardine-cyan);
+  color: var(--sardine-cyan);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ═══════════════ TOOLBAR ═══════════════ */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  flex-wrap: wrap;
+}
+.toolbar--wrap    { flex-wrap: wrap; }
+.toolbar--nowrap  { flex-wrap: nowrap; }
+.toolbar--between { justify-content: space-between; }
+.toolbar--end     { justify-content: flex-end; }
+.toolbar--grow > * { flex: 1 1 0; }
+.toolbar--stack {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* ═══════════════ FIELD ═══════════════ */
+/* label ↔ control pairing lives here so no caller has to remember it. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3xs);
+  margin-bottom: var(--space-xs);
+}
+
+.field__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.field__control { display: flex; align-items: center; gap: var(--space-xs); }
+.field__control > input[type='range'] { flex: 1; }
+.field__control > select,
+.field__control > input[type='text'],
+.field__control > input[type='number'],
+.field__control > input[type='search'] { flex: 1; min-width: 0; }
+
+.field__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.field__hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.field__error {
+  font-size: var(--text-xs);
+  color: var(--sardine-red);
+}
+
+/* inline: label sits beside the control (checkboxes, compact rows) */
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.field--inline .field__label {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: var(--text-sm);
+  font-family: var(--font-body);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.field--inline .field__control { flex: 0 0 auto; }
+
+.field--disabled { opacity: 0.5; }
+
+/* ═══════════════ SECTION ═══════════════ */
+/* The shape lives in the theme's .control-section / .collapsible / .section-body
+   rules, which W028 does not disturb.  What is new is the <button> inside the
+   heading: it must look exactly like the heading did, so it resets itself to
+   inherit and lets the h3 keep carrying the type. */
+.ui-section__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ui-section__toggle:hover:not(:disabled) { background: none; color: inherit; }
+
+.ui-section__aside {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  letter-spacing: 0;
+}
+
+/* ═══════════════ PANEL ═══════════════ */
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--sardine-bg-panel);
+  border: 1px var(--panel-border-style) var(--sardine-border);
+  border-radius: var(--radius-md);
+}
+
+.panel--flush { border: none; border-radius: 0; background: transparent; }
+
+.panel--floating {
+  background: var(--overlay-bg);
+  backdrop-filter: blur(6px);
+  border-color: var(--sardine-border);
+  border-radius: var(--radius-lg);
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle);
+}
+
+.panel__title {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.panel__actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-3xs); }
+
+.panel__body { padding: var(--space-sm); overflow: auto; min-height: 0; }
+.panel__body--flush { padding: 0; }
+
+/* ═══════════════ DIALOG ═══════════════ */
+.dialog__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  justify-content: center;
+  background: var(--overlay-halo);
+}
+.dialog__scrim--top    { align-items: flex-start; padding-top: 12vh; }
+.dialog__scrim--center { align-items: center; }
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(38rem, calc(100vw - var(--space-xl)));
+  max-height: 70vh;
+  min-height: 0;
+  background: var(--sardine-bg-panel);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+.dialog--wide { width: min(60rem, calc(100vw - var(--space-xl))); }
+
+.dialog__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-bottom: 1px solid var(--sardine-border-subtle);
+}
+
+.dialog__title {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.dialog__actions { margin-left: auto; display: flex; align-items: center; gap: var(--space-3xs); }
+
+.dialog__body { padding: var(--space-md); overflow: auto; min-height: 0; }
+.dialog__body--flush { padding: 0; }
+
+.dialog__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  border-top: 1px solid var(--sardine-border-subtle);
+}
+
+/* ═══════════════ COMMAND PALETTE ═══════════════ */
+/* Lives with the primitives because it is pure Dialog chrome.  It used to be
+   hardcoded dark (#0d1620 on #e8edf5) and so stayed navy over the light
+   theme; every value here is a token, so it follows the theme now. */
+.cmdk { border-top: 2px solid var(--sardine-cyan); }
+
+.cmdk__input {
+  width: 100%;
+  padding: var(--space-md) var(--space-md);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--sardine-border-subtle);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  outline: none;
+}
+
+.cmdk__list { max-height: 50vh; overflow-y: auto; }
+
+.cmdk__empty {
+  padding: var(--space-md);
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: var(--text-sm);
+}
+
+.cmdk__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.cmdk__row--selected {
+  background: var(--sardine-cyan-bg);
+  border-left-color: var(--sardine-cyan);
+}
+.cmdk__row--selected .cmdk__label { color: var(--sardine-cyan); }
+
+.cmdk__group {
+  min-width: 60px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+}
+.cmdk__label { flex: 1; color: var(--text-primary); }
+.cmdk__hint  { color: var(--text-muted); font-size: var(--text-xs); }
+.cmdk__shortcut {
+  padding: var(--space-3xs) var(--space-2xs);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.cmdk__count { margin-left: auto; color: var(--text-muted); }
+.cmdk .dialog__foot {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* ═══════════════ DATASET PICKER ═══════════════ */
+.dataset-picker__only { font-size: var(--text-sm); color: var(--text-muted); }
+.dataset-picker__slot--R .field__label { color: var(--channel-r); }
+.dataset-picker__slot--G .field__label { color: var(--channel-g); }
+.dataset-picker__slot--B .field__label { color: var(--channel-b); }
+
+/* ═══════════════ UTILITIES ═══════════════ */
+/*
+ * The narrow escape hatch.  W028 replaced 232 inline style blocks in
+ * main.jsx; most became primitives, but a residue is genuine one-off layout
+ * (a flex row, a hidden file input, a hint line) that does not deserve a
+ * component.  Those get a utility class here rather than a fresh style object
+ * at the call site, so a restyle stays a change in ONE file.
+ *
+ * Rule of thumb: if you reach for a utility three times in a row, you wanted
+ * a primitive.
+ */
+.u-hidden      { display: none; }
+.u-flex1       { flex: 1; min-width: 0; }
+.u-full        { width: 100%; }
+.u-nowrap      { white-space: nowrap; }
+.u-break       { word-break: break-all; }
+.u-mono        { font-family: var(--font-mono); }
+
+/* text roles */
+.u-sm          { font-size: var(--text-sm); }
+.u-xs          { font-size: var(--text-xs); }
+.u-note        { font-size: var(--text-sm); color: var(--text-muted); }
+.u-note-2      { font-size: var(--text-sm); color: var(--text-secondary); }
+.u-hint        { font-size: var(--text-xs); color: var(--text-muted); line-height: 1.4; }
+.u-lede        { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.4; }
+.u-accent      { color: var(--sardine-cyan); }
+.u-warn        { color: var(--status-warning); }
+.u-ok          { color: var(--status-success); }
+.u-err         { color: var(--sardine-red); }
+
+/* layout */
+.u-row         { display: flex; align-items: center; gap: var(--space-2xs); }
+.u-row-sm      { display: flex; align-items: center; gap: var(--space-xs); }
+.u-between     { display: flex; align-items: center; justify-content: space-between; }
+.u-stack       { display: flex; flex-direction: column; gap: var(--space-2xs); }
+
+/* rhythm — the only margins that should appear at a call site */
+.u-mt-2xs      { margin-top: var(--space-3xs); }
+.u-mt-xs       { margin-top: var(--space-2xs); }
+.u-mt-sm       { margin-top: var(--space-xs); }
+.u-mt-md       { margin-top: var(--space-sm); }
+.u-mb-xs       { margin-top: 0; margin-bottom: var(--space-2xs); }
+.u-mb-sm       { margin-top: 0; margin-bottom: var(--space-xs); }
+.u-ml-xs       { margin-left: var(--space-2xs); }
+.u-ml-sm       { margin-left: var(--space-xs); }
+.u-m0          { margin: 0; }
+
+/* a text input that fills its row */
+.u-input {
+  width: 100%;
+  padding: var(--space-2xs) var(--space-xs);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+  background: var(--sardine-bg-panel);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+
+/* ═══════════════ APP SHELL ODDMENTS ═══════════════ */
+/* One-instance chrome that has no reusable shape but still does not belong
+   in a style object at the call site. */
+
+.pages-banner {
+  position: relative;
+  padding: var(--space-xs) var(--space-2xl) var(--space-xs) var(--space-md);
+  background: var(--sardine-bg-panel);
+  border-bottom: 1px solid var(--sardine-cyan);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  text-align: center;
+}
+.pages-banner__close { position: absolute; top: var(--space-2xs); right: var(--space-sm); }
+
+.dropzone {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dragdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sardine-cyan-bg);
+  border: 3px dashed var(--sardine-cyan-dim);
+  pointer-events: none;
+}
+.dropzone__label {
+  padding: var(--space-xl) var(--space-3xl);
+  border-radius: var(--radius-lg);
+  background: var(--overlay-bg);
+  color: var(--text-primary);
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+
+.feature-popup {
+  position: fixed;
+  z-index: var(--z-toast);
+  max-width: 360px;
+  max-height: 400px;
+  overflow: auto;
+  padding: var(--space-md) var(--space-lg);
+  background: var(--overlay-bg);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+}
+.feature-popup__title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--status-dry);
+}
+.feature-popup__layer { font-size: var(--text-sm); color: var(--text-muted); margin-bottom: var(--space-xs); }
+.feature-popup__table { border-collapse: collapse; width: 100%; }
+.feature-popup__table tr { border-bottom: 1px solid var(--sardine-border-subtle); }
+.feature-popup__table th {
+  padding: var(--space-3xs) var(--space-sm) var(--space-3xs) 0;
+  color: var(--text-muted);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.feature-popup__table td { padding: var(--space-3xs) 0; word-break: break-word; }
+.feature-popup__empty { color: var(--text-muted); font-style: italic; }
+
+/* ═══════════════ MULTI-VIEWER SHELL ═══════════════ */
+/* The main / ROI-RGB / ROI-time-series side-by-side panes.  Twenty inline
+   style blocks lived here, including the three accent hexes (#ffc832 main,
+   #4ec9d4 rgb, #2ecc71 time-series) that mark which pane is active. */
+.viewer-split { display: flex; width: 100%; height: 100%; position: relative; }
+
+.viewer-splitter {
+  width: 3px;
+  flex-shrink: 0;
+  background: var(--sardine-border);
+}
+
+.viewer-pane {
+  flex: 1;
+  position: relative;
+  height: 100%;
+  outline-offset: -2px;
+  --pane-accent: var(--sardine-cyan);
+}
+.viewer-pane--main { --pane-accent: var(--status-dry); }
+.viewer-pane--rgb  { --pane-accent: var(--sardine-cyan); }
+.viewer-pane--ts   { --pane-accent: var(--status-success); }
+.viewer-pane--active { outline: 2px solid var(--pane-accent); }
+
+.viewer-loading {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--overlay-bg);
+  pointer-events: none;
+}
+.viewer-loading__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  color: var(--sardine-cyan);
+  letter-spacing: 0.08em;
+}
+
+/* A label drawn over imagery: ink on a halo, per the theme's OVERLAY RULE. */
+.viewer-badge {
+  position: absolute;
+  top: var(--space-sm);
+  left: var(--space-sm);
+  z-index: var(--z-overlay);
+  padding: var(--space-2xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--overlay-halo);
+  font-size: var(--text-sm);
+  pointer-events: none;
+}
+.viewer-badge--rgb { color: var(--sardine-cyan); }
+.viewer-badge--ts  { color: var(--status-success); }
+
+.viewer-actions {
+  position: absolute;
+  z-index: var(--z-overlay);
+}
+.viewer-actions--tr { top: var(--space-sm); right: var(--space-sm); }
+
+.viewer-action {
+  background: var(--overlay-halo);
+  color: var(--text-muted);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3xs) var(--space-sm);
+  font-size: var(--text-xs);
+}
+.viewer-action:hover:not(:disabled) { background: var(--overlay-halo); color: var(--text-primary); }
+.viewer-action--tr {
+  position: absolute;
+  top: var(--space-sm);
+  right: var(--space-sm);
+  z-index: var(--z-overlay);
+}
+.viewer-action--ts { color: var(--status-success); border-color: var(--status-success); }
+.viewer-action--ts:hover:not(:disabled) { color: var(--status-success); }
+
+.viewer-playbar {
+  position: absolute;
+  bottom: var(--space-md);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-overlay);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--overlay-halo);
+  font-size: var(--text-sm);
+}
+.viewer-playbar__btn {
+  background: none;
+  border: none;
+  padding: 0 var(--space-2xs);
+  color: var(--status-success);
+  font-size: var(--text-lg);
+}
+.viewer-playbar__btn:hover:not(:disabled) { background: none; color: var(--status-success); }
+.viewer-playbar__scrub { width: 100px; accent-color: var(--status-success); }
+.viewer-playbar__label { color: var(--status-success); min-width: 70px; text-align: center; }
+
+/* ═══════════════ CRASH SCREEN ═══════════════ */
+/* The error boundary's last resort.  It is the one screen a user may see
+   with nothing else rendered, so it gets a real <main> and an <h1>. */
+.crash {
+  display: block;
+  height: 100vh;
+  padding: var(--space-2xl);
+  background: var(--sardine-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.crash__title { font-size: var(--text-2xl); margin-bottom: var(--space-md); }
+.crash__message {
+  white-space: pre-wrap;
+  color: var(--sardine-red);
+  margin-bottom: var(--space-lg);
+}
+
+/* ═══════════════ PANEL HEADINGS AT CALL SITES ═══════════════ */
+/* Panels that own their own positioning still use the Panel head/title
+   classes for their heading row, so a restyle reaches them too. */
+.medical-readout__title {
+  margin: 0 0 var(--space-3xs);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.model-panel__heading {
+  flex: 1;
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.status-window__heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+.status-window__tab { text-transform: uppercase; letter-spacing: 0.05em; }
+.status-window__count { margin-left: var(--space-xs); color: var(--text-muted); }
+.nisar-search__results-heading {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.nisar-search__results-heading > span { color: var(--sardine-cyan); margin-left: var(--space-xs); }

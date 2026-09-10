@@ -1277,7 +1277,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
           style={{
             ...autoStretchBtnStyle,
             ...(panel.reverseColormap
-              ? { background: 'rgba(78,201,212,0.85)', color: '#0a1628', borderColor: 'var(--sardine-cyan, #4ec9d4)' }
+              ? { background: 'var(--sardine-cyan)', color: 'var(--sardine-bg)', borderColor: 'var(--sardine-cyan)' }
               : {}),
           }}
           title={panel.reverseColormap ? 'Colormap reversed — click to restore' : 'Reverse colormap'}

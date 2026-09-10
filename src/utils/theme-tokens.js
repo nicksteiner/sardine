@@ -166,6 +166,29 @@ export const CHANNEL_COLORS = Object.freeze({
   B: DARK.cyan,
 });
 
+/** `#rrggbb` + alpha → `rgba(r, g, b, a)`.  Canvas needs literals, not var(). */
+export function withAlpha(hex, alpha) {
+  const h = hex.replace('#', '');
+  const n = h.length === 3
+    ? parseInt(h.split('').map(c => c + c).join(''), 16)
+    : parseInt(h, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/**
+ * Canvas fill/stroke/legend triples for the R/G/B channels plus the
+ * single-band case.  Canvas 2D cannot resolve `var(--…)`, so the literals
+ * are DERIVED from the tokens above rather than re-picked by hand — which is
+ * what HistogramOverlay used to do, shadowing this export with a completely
+ * different palette (#e74c3c/#2ecc71/#3498db).  One source, three uses.
+ */
+export const CHANNEL_PLOT_COLORS = Object.freeze({
+  R:      { fill: withAlpha(CHANNEL_COLORS.R, 0.45), stroke: withAlpha(CHANNEL_COLORS.R, 0.9),  legend: CHANNEL_COLORS.R },
+  G:      { fill: withAlpha(CHANNEL_COLORS.G, 0.40), stroke: withAlpha(CHANNEL_COLORS.G, 0.85), legend: CHANNEL_COLORS.G },
+  B:      { fill: withAlpha(CHANNEL_COLORS.B, 0.40), stroke: withAlpha(CHANNEL_COLORS.B, 0.85), legend: CHANNEL_COLORS.B },
+  single: { fill: withAlpha(DARK.cyan, 0.35),        stroke: withAlpha(DARK.cyan, 0.85),        legend: DARK.cyan },
+});
+
 // ── Font stacks ─────────────────────────────────────────────────────────────
 
 export const FONTS = Object.freeze({
