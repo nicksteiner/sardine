@@ -65,6 +65,56 @@ function normalizePol(pol) {
   return p;
 }
 
+
+/**
+ * Terrain geometry — the imaging model, not an optional enrichment.
+ *
+ * Radar is a side-looking ranging instrument, so terrain is not context
+ * around the measurement; it participates in forming it. Layover, shadow and
+ * foreshortening are terrain effects, and sigma-0 is defined against the
+ * LOCAL incidence angle, which is a function of slope. A backscatter value
+ * read without terrain is not a calibrated measurement.
+ *
+ * NISAR GCOV carries this in-product, so no external DEM fetch is needed:
+ *   - a metadata cube (JPL D-102274 §5.8) with per-pixel incidenceAngle
+ *     and elevationAngle, interpolated at the pixel's height
+ *   - a `mask` layer flagging shadow / layover / out-of-swath
+ *   - power values of exactly 0, meaning zero illuminated area — which is
+ *     itself a shadow/layover indicator (docs/NISAR_GCOV.md)
+ *
+ * For products WITHOUT these (a plain COG), terrain is unknown, and that
+ * absence must be reported rather than papered over: an unknown-terrain view
+ * cannot exclude shadow, and the ambiguity set must say so.
+ */
+export function describeTerrain(imageData = {}, render = {}) {
+  const cube = imageData?.metadataCube || null;
+  const hasCube = !!cube && typeof cube.getIncidenceAngle === 'function';
+  const hasMask = !!imageData?.hasMask;
+  const maskApplied = !!render.maskLayoverShadow;
+
+  // Report only what the product actually provides.
+  const source = hasCube
+    ? 'NISAR metadata cube (per-pixel incidence/elevation angle)'
+    : null;
+
+  return {
+    available: hasCube || hasMask,
+    source,
+    // Per-pixel incidence angle is the quantity sigma-0 is defined against.
+    incidenceAngleAvailable: hasCube,
+    // A shadow/layover flag layer exists in the product.
+    terrainMaskAvailable: hasMask,
+    // ...and whether the user is currently applying it.
+    terrainMaskApplied: maskApplied,
+    // GCOV encodes zero-illuminated-area as exactly 0, so even without the
+    // mask layer applied, zero-valued pixels indicate shadow/layover.
+    zeroMeansNoIllumination: !!imageData?.isGCOV,
+    note: hasCube
+      ? 'Per-pixel incidence angle is available from the product metadata cube; sigma-0 is defined against the local incidence angle, so slope-driven brightness variation can be distinguished from surface change.'
+      : 'No terrain geometry accompanies this product. Local incidence angle is unknown, so brightness variation caused by slope cannot be separated from variation caused by surface properties. Radar shadow cannot be excluded.',
+  };
+}
+
 /**
  * Enumerate what this view genuinely cannot settle.
  *
@@ -72,23 +122,43 @@ function normalizePol(pol) {
  * ambiguity, why it is unresolved *here*, and what would resolve it — so an
  * agent can defer or request a measurement instead of guessing.
  */
-export function describeAmbiguities({ identification = {}, render = {}, hasTerrainMask = false }) {
+export function describeAmbiguities({ identification = {}, render = {}, terrain = {} }) {
   const out = [];
   const pol = normalizePol(render.polarization);
+  const shadowExcluded = !!terrain.terrainMaskApplied;
 
   // The canonical SAR error. Low backscatter has several distinct causes that
-  // are visually identical in a rendered image.
+  // are visually identical in a rendered image. Terrain determines how much of
+  // that ambiguity can actually be retired.
   out.push({
     id: 'dark-target-ambiguity',
     question: 'Does a dark region indicate open water?',
     resolved: false,
-    why: hasTerrainMask
-      ? 'A layover/shadow mask is applied, which removes geometric shadow — but smooth dry surfaces (dry lakebeds, roads, bare smooth soil) still produce specular low backscatter indistinguishable from calm water in a single image.'
-      : 'Low backscatter is consistent with open water (specular reflection away from the sensor), radar shadow (terrain occlusion), AND smooth dry surfaces. No layover/shadow mask is applied in this view, so terrain shadow is not excluded.',
-    resolveWith: hasTerrainMask
-      ? ['ROI statistics (open water is low-variance)', 'multi-temporal change', 'ancillary land cover']
-      : ['enable the layover/shadow mask', 'ROI statistics', 'a DEM or second look geometry'],
+    candidateCauses: shadowExcluded
+      ? ['open water (specular reflection)', 'smooth dry surface (playa, road, bare smooth soil)']
+      : ['open water (specular reflection)', 'radar shadow (terrain occlusion)', 'smooth dry surface'],
+    why: shadowExcluded
+      ? 'A layover/shadow mask is applied, so geometric shadow is excluded — but smooth dry surfaces (dry lakebeds, roads, bare smooth soil) still produce specular low backscatter indistinguishable from calm water in a single image.'
+      : terrain.terrainMaskAvailable
+        ? 'Low backscatter is consistent with open water, radar shadow, AND smooth dry surfaces. This product carries a shadow/layover mask but it is NOT currently applied, so terrain shadow is not excluded.'
+        : 'Low backscatter is consistent with open water, radar shadow, AND smooth dry surfaces. No terrain geometry accompanies this product, so radar shadow cannot be excluded at all.',
+    resolveWith: shadowExcluded
+      ? ['ROI statistics (open water is low-variance)', 'multi-temporal change', 'ancillary land cover (as comparison, not ground truth)']
+      : terrain.terrainMaskAvailable
+        ? ['enable the layover/shadow mask (available in this product)', 'ROI statistics', 'multi-temporal change']
+        : ['a DEM or terrain mask', 'a second look geometry', 'ROI statistics'],
   });
+
+  // Without local incidence angle, slope and surface change are confounded.
+  if (!terrain.incidenceAngleAvailable) {
+    out.push({
+      id: 'slope-vs-surface',
+      question: 'Is a brightness difference caused by terrain or by the surface?',
+      resolved: false,
+      why: 'Sigma-0 is defined against the LOCAL incidence angle, which depends on slope. Without per-pixel incidence angle, slope-driven brightness variation cannot be separated from genuine surface change.',
+      resolveWith: ['a product with a metadata cube (NISAR GCOV)', 'an external DEM to derive local incidence angle', 'radiometric terrain correction'],
+    });
+  }
 
   // Speckle is multiplicative and can be mistaken for texture or change.
   if (!render.multiLook && render.speckleFilterType === 'none') {
@@ -128,6 +198,7 @@ export function buildGrounding(imageData = {}, render = {}) {
   const physics = band ? BAND_PHYSICS[String(band).toUpperCase()] || null : null;
   const pol = normalizePol(render.selectedPolarization || imageData?.polarization);
 
+  const terrain = describeTerrain(imageData, render);
   const isDb = render.useDecibels !== false;
   const lo = Number.isFinite(render.contrastMin) ? render.contrastMin : null;
   const hi = Number.isFinite(render.contrastMax) ? render.contrastMax : null;
@@ -172,6 +243,9 @@ export function buildGrounding(imageData = {}, render = {}) {
       compositeId: render.compositeId || null,
     },
 
+    // ── The imaging geometry (terrain is part of the measurement) ───
+    terrain,
+
     // ── What this view cannot settle ────────────────────────────────
     ambiguities: describeAmbiguities({
       identification: id,
@@ -180,7 +254,7 @@ export function buildGrounding(imageData = {}, render = {}) {
         multiLook: render.multiLook,
         speckleFilterType: render.speckleFilterType,
       },
-      hasTerrainMask: !!render.maskLayoverShadow,
+      terrain,
     }),
 
     // ── How the agent is expected to behave ─────────────────────────

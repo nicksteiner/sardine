@@ -2307,6 +2307,10 @@ async function loadNISARGCOVStreaming(file, options = {}) {
     /** Full-resolution northing coordinates (Float64Array, length = height). */
     yCoords,
     metadataCube,  // NEW: Metadata cube for incidence angle, slant range, etc.
+    // Terrain-geometry availability, surfaced for agent grounding (W018):
+    // GCOV encodes zero illuminated area (shadow/layover) as power 0, and
+    // ships a shadow/layover mask layer when present.
+    isGCOV: true,
     hasMask: maskDatasetId != null,
     _streaming: true,
     _h5chunk: streamReader,
@@ -2725,6 +2729,14 @@ export async function loadNISARGCOV(file, options = {}) {
     /** Full-resolution northing coordinates (Float64Array, length = height). */
     yCoords,
     metadataCube,  // NEW: Metadata cube for incidence angle, slant range, etc.
+    // Terrain-geometry availability, surfaced for agent grounding (W018):
+    // GCOV encodes zero illuminated area (shadow/layover) as power 0, and
+    // ships a shadow/layover mask layer when present.
+    isGCOV: true,
+    // The full-image path does not open the mask layer, so terrain-mask
+    // availability is unknown here rather than false — grounding must not
+    // claim a product lacks a mask it was simply never asked for.
+    hasMask: null,
     _fullLoaded: fullLoaded,
     _h5file: h5file,
   };

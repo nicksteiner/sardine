@@ -7,7 +7,7 @@
  * view's unresolvable questions are declared rather than glossed over.
  */
 
-import { buildGrounding, describeAmbiguities } from '../../src/utils/sar-grounding.js';
+import { buildGrounding, describeAmbiguities, describeTerrain } from '../../src/utils/sar-grounding.js';
 import assert from 'node:assert';
 
 let passed = 0, failed = 0;
@@ -124,8 +124,77 @@ test('interpretation contract forbids optical reading and demands verification',
 });
 
 test('describeAmbiguities is usable standalone', () => {
-  const a = describeAmbiguities({ render: {}, hasTerrainMask: false });
+  const a = describeAmbiguities({ render: {}, terrain: {} });
   assert.ok(Array.isArray(a) && a.length > 0);
+});
+
+// ── Terrain: the imaging model, not an enrichment ──────────────────
+
+const GCOV_TERRAIN = {
+  ...NISAR_L,
+  isGCOV: true,
+  hasMask: true,
+  metadataCube: { getIncidenceAngle: () => 35.2 },
+};
+
+test('COG without terrain reports it as unavailable, not assumed flat', () => {
+  const t = describeTerrain({ resolution: [20, 20] }, {});
+  assert.strictEqual(t.available, false);
+  assert.strictEqual(t.incidenceAngleAvailable, false);
+  assert.match(t.note, /Radar shadow cannot be excluded/i);
+});
+
+test('GCOV metadata cube supplies per-pixel incidence angle', () => {
+  const t = describeTerrain(GCOV_TERRAIN, {});
+  assert.strictEqual(t.available, true);
+  assert.strictEqual(t.incidenceAngleAvailable, true);
+  assert.match(t.source, /metadata cube/i);
+});
+
+test('GCOV zero-power encodes zero illuminated area (shadow/layover)', () => {
+  assert.strictEqual(describeTerrain(GCOV_TERRAIN, {}).zeroMeansNoIllumination, true);
+  assert.strictEqual(describeTerrain({ resolution: [20, 20] }, {}).zeroMeansNoIllumination, false);
+});
+
+test('no terrain → slope-vs-surface confound is declared', () => {
+  const g = buildGrounding({ resolution: [20, 20] }, RENDER_DB);
+  const slope = g.ambiguities.find((a) => a.id === 'slope-vs-surface');
+  assert.ok(slope, 'must flag that slope and surface change are confounded');
+  assert.match(slope.why, /local incidence angle/i);
+});
+
+test('per-pixel incidence angle retires the slope confound', () => {
+  const g = buildGrounding(GCOV_TERRAIN, RENDER_DB);
+  assert.ok(!g.ambiguities.some((a) => a.id === 'slope-vs-surface'));
+});
+
+test('dark-target candidate causes shrink as terrain knowledge improves', () => {
+  // No terrain at all: water, shadow, and smooth-dry all remain possible.
+  const none = buildGrounding({ resolution: [20, 20] }, RENDER_DB)
+    .ambiguities.find((a) => a.id === 'dark-target-ambiguity');
+  assert.strictEqual(none.candidateCauses.length, 3);
+  assert.match(none.why, /No terrain geometry/i);
+
+  // Mask present but not applied: still three, and the payload says why.
+  const unapplied = buildGrounding(GCOV_TERRAIN, RENDER_DB)
+    .ambiguities.find((a) => a.id === 'dark-target-ambiguity');
+  assert.strictEqual(unapplied.candidateCauses.length, 3);
+  assert.match(unapplied.why, /NOT currently applied/i);
+  assert.match(unapplied.resolveWith.join(' '), /available in this product/i);
+
+  // Mask applied: shadow is excluded, two causes remain.
+  const applied = buildGrounding(GCOV_TERRAIN, { ...RENDER_DB, maskLayoverShadow: true })
+    .ambiguities.find((a) => a.id === 'dark-target-ambiguity');
+  assert.strictEqual(applied.candidateCauses.length, 2);
+  assert.ok(!applied.candidateCauses.some((c) => /shadow/i.test(c)));
+});
+
+test('shadow is never silently dropped — only an applied mask removes it', () => {
+  // The failure mode this guards: terrain data existing is NOT the same as
+  // terrain being accounted for.
+  const g = buildGrounding(GCOV_TERRAIN, { ...RENDER_DB, maskLayoverShadow: false });
+  const dark = g.ambiguities.find((a) => a.id === 'dark-target-ambiguity');
+  assert.ok(dark.candidateCauses.some((c) => /shadow/i.test(c)));
 });
 
 console.log(`\nsar-grounding: ${passed} passed, ${failed} failed\n`);
