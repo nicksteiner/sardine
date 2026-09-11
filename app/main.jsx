@@ -3608,7 +3608,19 @@ function App() {
     // Never print token material, even truncated — consoles get screenshotted.
     debugLog(`[SARdine] Token: ${cleanToken ? 'set' : 'none'}, URL: ${url.slice(0, 80)}`);
     if (!cleanToken) {
-      addStatusLog('warning', 'No Earthdata token — DAAC data URLs require authentication');
+      // An Earthdata host without a token will 302 to EDL's OAuth endpoint and
+      // 401 there, which reads like "your token is bad" when in fact none was
+      // ever sent. Name the real cause up front for those hosts.
+      const isEarthdataHost = (() => {
+        try { return /(^|\.)(earthdata|earthdatacloud)\.nasa\.gov$/.test(new URL(url).hostname); }
+        catch { return false; }
+      })();
+      if (isEarthdataHost) {
+        addStatusLog('error',
+          'No Earthdata token — this DAAC URL needs one. Open the Earthdata Login panel and paste a token, then reload the scene.');
+      } else {
+        addStatusLog('warning', 'No Earthdata token — DAAC data URLs require authentication');
+      }
     }
 
     // Route external URLs through the appropriate CORS proxy
@@ -6653,8 +6665,14 @@ function App() {
                 </span>
               )}
               {edlValidation && !edlValidation.ok && (
-                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-orange)' }} title={edlValidation.error}>
-                  ✗ failed
+                // Show the reason inline. It used to live in a `title` tooltip,
+                // which is invisible to touch and keyboard users and hid the one
+                // detail that makes the failure actionable (401 = expired or
+                // mistyped token, vs. a network/proxy error).
+                <span className="u-xs" style={{ color: 'var(--sardine-orange)' }} role="alert">
+                  ✗ {/^401\b/.test(edlValidation.error || '')
+                    ? 'Token rejected — it may have expired (EDL tokens last 60 days) or be incomplete. Generate a new one and paste the whole token.'
+                    : edlValidation.error}
                 </span>
               )}
             </div>
@@ -6995,6 +7013,11 @@ function App() {
                     name: sceneInfo.name,
                     size: sceneInfo.size || 0,
                     type: sceneInfo.type || 'nisar',
+                    // A catalog feature may carry its own token; otherwise fall
+                    // back to the stored EDL token. Without this the request
+                    // goes out unauthenticated and the DAAC's OAuth redirect
+                    // 401s with no indication the token was simply missing.
+                    token: sceneInfo.token || getEDLToken() || undefined,
                   });
                 }}
                 onStatus={addStatusLog}
