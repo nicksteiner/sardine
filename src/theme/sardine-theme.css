@@ -593,7 +593,7 @@ button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: 
   flex-direction: column;
   gap: var(--space-sm);
   padding: var(--space-lg);
-  background: var(--sardine-panel, rgba(20, 24, 28, 0.92));
+  background: var(--sardine-bg-panel);
   border: 1px solid var(--sardine-border);
   border-radius: var(--radius-md);
   text-align: center;
