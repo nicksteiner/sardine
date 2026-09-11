@@ -41,6 +41,9 @@ export function getEDLToken() {
 
 export function setEDLToken(token) {
   try { localStorage.setItem(LS_PROXY_TOKEN, token || ''); } catch {}
+  // `storage` only fires in *other* tabs, so panels in this one need their own
+  // signal. Without it a token pasted in one panel stays invisible to another.
+  try { window.dispatchEvent(new Event('sardine:edl-token')); } catch {}
 }
 
 /**
