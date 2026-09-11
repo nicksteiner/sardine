@@ -382,13 +382,13 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
       {/* Results header + multi-select toggle */}
       {granules.length > 0 && (
         <>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
+          <div className="u-between">
+            <h3 className="nisar-search__results-heading">
               {granules.length}{hits != null ? ` of ${hits}` : ''} granules
-              <span style={{ color: 'var(--sardine-cyan)', marginLeft: '6px' }}>
+              <span>
                 {'\u25CF'} {granules.filter(g => g.geometry).length} footprints
               </span>
-            </div>
+            </h3>
             <label style={{ fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer' }}>
               <input
                 type="checkbox"

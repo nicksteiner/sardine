@@ -9,6 +9,7 @@
  *   - "server-s3"  — private S3 buckets via sardine-launch server (server holds credentials)
  */
 import React, { useState, useCallback, useRef, useMemo } from 'react';
+import { CloseButton } from './ui/index.js';
 import {
   listBucket,
   listBucketViaServer,
@@ -422,17 +423,17 @@ export function DataDiscovery({ onSelectFile, onStatus, serverOrigin = '' }) {
       ) : (
         <>
           {/* Connected header */}
-          <div className="discovery-header">
-            <span className="discovery-url" title={browseMode === 'server-s3' ? `s3://${s3Bucket}` : bucketUrl}>
+          <header className="discovery-header">
+            <h3 className="discovery-url" title={browseMode === 'server-s3' ? `s3://${s3Bucket}` : bucketUrl}>
               {connectedLabel}
               {connectedLabel.length > 30 ? '...' : ''}
-            </span>
-            <button
-              className="btn-secondary discovery-disconnect-btn"
+            </h3>
+            <CloseButton
+              className="discovery-disconnect-btn"
               onClick={handleDisconnect}
-              title="Disconnect"
-            >✕</button>
-          </div>
+              label="Disconnect"
+            />
+          </header>
 
           {/* Breadcrumbs */}
           <div className="discovery-breadcrumbs">

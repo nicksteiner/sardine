@@ -16,17 +16,13 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { SAR_COMPOSITES } from '../utils/sar-composites.js';
 import { generateHistogramSVG, downloadSVG } from '../utils/svg-export.js';
+// W028: this file used to define its own CHANNEL_COLORS, shadowing the export
+// with a different palette.  The plot colours are derived from the tokens now.
+import { CHANNEL_PLOT_COLORS as CHANNEL_COLORS } from '../utils/theme-tokens.js';
+import { Button, CloseButton, Toolbar } from './ui/index.js';
 
 const DPR = typeof window !== 'undefined' ? (window.devicePixelRatio || 1) : 1;
 
-// ─── Publication-quality palette ─────────────────────────────────────────
-// Colors chosen for perceptual separability on dark backgrounds and in print.
-const CHANNEL_COLORS = {
-  R:      { fill: 'rgba(231, 76, 60, 0.45)',   stroke: 'rgba(231, 76, 60, 0.9)',   legend: '#e74c3c' },
-  G:      { fill: 'rgba(46, 204, 113, 0.40)',   stroke: 'rgba(46, 204, 113, 0.85)', legend: '#2ecc71' },
-  B:      { fill: 'rgba(52, 152, 219, 0.40)',   stroke: 'rgba(52, 152, 219, 0.85)', legend: '#3498db' },
-  single: { fill: 'rgba(78, 201, 212, 0.35)',   stroke: 'rgba(78, 201, 212, 0.85)', legend: '#4ec9d4' },
-};
 
 /**
  * Derive legend labels from the composite preset.
@@ -452,36 +448,25 @@ export function HistogramOverlay({
       width: 460,
       height: 260,
       background: 'rgba(10, 22, 40, 0.94)',
-      border: '1px solid #1e3a5f',
+      border: '1px solid var(--sardine-border)',
       borderRadius: 8,
       zIndex: 30,
       fontFamily: "'JetBrains Mono', monospace",
-      color: '#e8edf5',
+      color: 'var(--text-primary)',
       boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
       display: 'flex',
       flexDirection: 'column',
       overflow: 'hidden',
     }} onClick={(e) => e.stopPropagation()}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px 0 12px', flexShrink: 0 }}>
-        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
-          <span style={{ color: '#4ec9d4' }}>Histogram</span>
-        </span>
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button onClick={() => setDrawCount(c => c + 1)} title="Redraw histogram" style={{
-            background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-          }}>&#8635;</button>
-          <button onClick={handleExportSVG} title="Export SVG" style={{
-            background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-          }}>SVG</button>
-          <button onClick={onClose} style={{
-            background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
-            fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
-          }}>&times;</button>
-        </div>
-      </div>
+      <header className="panel__head">
+        <h2 className="panel__title">Histogram</h2>
+        <Toolbar className="panel__actions" wrap={false}>
+          <Button variant="ghost" icon label="Redraw histogram" onClick={() => setDrawCount(c => c + 1)}>&#8635;</Button>
+          <Button variant="ghost" label="Export SVG" onClick={handleExportSVG}>SVG</Button>
+          <CloseButton onClick={onClose} label="Close histogram" />
+        </Toolbar>
+      </header>
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
       </div>

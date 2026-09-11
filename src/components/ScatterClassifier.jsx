@@ -9,6 +9,7 @@
 
 import React, { useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect } from 'react';
 import { generateScatterSVG, generateClassMapSVG, downloadSVG } from '../utils/svg-export.js';
+import { Button, CloseButton, Toolbar } from './ui/index.js';
 
 const CLASS_COLORS = [
   '#3498db',  // blue   (water)
@@ -520,37 +521,26 @@ export default function ScatterClassifier({
       bottom: 16,
       right: 16,
       background: 'rgba(10, 22, 40, 0.94)',
-      border: '1px solid #1e3a5f',
+      border: '1px solid var(--sardine-border)',
       borderRadius: 8,
       padding: 12,
       zIndex: 30,
       fontFamily: "'JetBrains Mono', monospace",
-      color: '#e8edf5',
+      color: 'var(--text-primary)',
       minWidth: totalW + 24,
       boxShadow: '0 4px 24px rgba(0,0,0,0.5)',
     }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
-          <span style={{ color: '#4ec9d4' }}>{isSingleChannel ? 'Histogram' : 'Feature Space'}</span>
-        </span>
-        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-          <button onClick={handleExportSVG} title="Export scatter SVG" style={{
-            background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-          }}>SVG</button>
+      <header className="panel__head">
+        <h2 className="panel__title">{isSingleChannel ? 'Histogram' : 'Feature Space'}</h2>
+        <Toolbar className="panel__actions" wrap={false}>
+          <Button variant="ghost" label="Export scatter SVG" onClick={handleExportSVG}>SVG</Button>
           {classificationMap && (
-            <button onClick={handleExportClassMap} title="Export class map SVG" style={{
-              background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-              fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
-            }}>Map</button>
+            <Button variant="ghost" label="Export class map SVG" onClick={handleExportClassMap}>Map</Button>
           )}
-          <button onClick={onClose} style={{
-            background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
-            fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
-          }}>&times;</button>
-        </div>
-      </div>
+          <CloseButton onClick={onClose} label="Close feature space" />
+        </Toolbar>
+      </header>
 
       {/* Scatter canvas */}
       <canvas
@@ -561,13 +551,13 @@ export default function ScatterClassifier({
 
       {/* Drawing mode indicator */}
       {drawingClass >= 0 && (
-        <div style={{ fontSize: 'var(--text-xs)', color: '#e8833a', marginTop: 4, textAlign: 'center' }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-orange)', marginTop: 4, textAlign: 'center' }}>
           Draw rectangle for: {classRegions[drawingClass]?.name || `Class ${drawingClass + 1}`}
         </div>
       )}
 
       {/* Class list */}
-      <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8 }}>
+      <div style={{ marginTop: 8, borderTop: '1px solid var(--sardine-border)', paddingTop: 8 }}>
         {classRegions.map((r, i) => (
           <div key={i} style={{
             display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4,
@@ -583,21 +573,21 @@ export default function ScatterClassifier({
               value={r.name}
               onChange={(e) => renameClass(i, e.target.value)}
               style={{
-                background: 'transparent', border: 'none', color: '#e8edf5',
+                background: 'transparent', border: 'none', color: 'var(--text-primary)',
                 fontSize: 'var(--text-xs)', fontFamily: 'inherit', width: 100, padding: '1px 2px',
                 borderBottom: '1px solid transparent',
               }}
               onFocus={(e) => { e.target.style.borderBottomColor = '#4ec9d4'; }}
               onBlur={(e) => { e.target.style.borderBottomColor = 'transparent'; }}
             />
-            <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
               {classCounts[i] != null ? formatCount(classCounts[i]) : '—'}
             </span>
             <button
               onClick={() => redrawClass(i)}
               title="Redraw region"
               style={{
-                background: 'none', border: 'none', color: '#4ec9d4', cursor: 'pointer',
+                background: 'none', border: 'none', color: 'var(--sardine-cyan)', cursor: 'pointer',
                 fontSize: 'var(--text-xs)', padding: '0 2px',
               }}
             >&#9998;</button>
@@ -605,7 +595,7 @@ export default function ScatterClassifier({
               onClick={() => removeClass(i)}
               title="Remove class"
               style={{
-                background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer',
+                background: 'none', border: 'none', color: 'var(--sardine-red)', cursor: 'pointer',
                 fontSize: 'var(--text-sm)', padding: '0 2px', lineHeight: 1,
               }}
             >&times;</button>
@@ -616,7 +606,7 @@ export default function ScatterClassifier({
             background: 'rgba(78,201,212,0.12)',
             border: '1px solid rgba(78,201,212,0.3)',
             borderRadius: 4,
-            color: '#4ec9d4',
+            color: 'var(--sardine-cyan)',
             fontSize: 'var(--text-xs)',
             fontFamily: 'inherit',
             cursor: 'pointer',
@@ -629,7 +619,7 @@ export default function ScatterClassifier({
 
       {/* Incidence angle filter */}
       {!scatterData?.incidence && (
-        <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8, fontSize: 'var(--text-xs)', color: '#5a7099' }}>
+        <div style={{ marginTop: 8, borderTop: '1px solid var(--sardine-border)', paddingTop: 8, fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
           No incidence angle data (NISAR HDF5 only)
         </div>
       )}
@@ -647,12 +637,12 @@ export default function ScatterClassifier({
         dataMax = Math.ceil(dataMax);
         const [curMin, curMax] = incidenceRange;
         return (
-          <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8 }}>
-            <div style={{ fontSize: 'var(--text-xs)', color: '#5a7099', marginBottom: 4 }}>
+          <div style={{ marginTop: 8, borderTop: '1px solid var(--sardine-border)', paddingTop: 8 }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: 4 }}>
               Incidence Angle Filter ({curMin}°–{curMax}°)
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', width: 22, textAlign: 'right' }}>{curMin}°</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', width: 22, textAlign: 'right' }}>{curMin}°</span>
               <input type="range" min={dataMin} max={dataMax} step={1} value={curMin}
                 onChange={(e) => {
                   const v = Number(e.target.value);
@@ -662,7 +652,7 @@ export default function ScatterClassifier({
               />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', width: 22, textAlign: 'right' }}>{curMax}°</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', width: 22, textAlign: 'right' }}>{curMax}°</span>
               <input type="range" min={dataMin} max={dataMax} step={1} value={curMax}
                 onChange={(e) => {
                   const v = Number(e.target.value);
