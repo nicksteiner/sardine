@@ -3713,10 +3713,17 @@ function App() {
       }
     } catch (e) {
       const isAuthErr = e.message?.includes('401') || e.message?.includes('403') || e.message?.includes('Unauthorized');
+      // Say which of the two cases this is. A token that is present and
+      // unexpired but still 401s is an authorisation problem (the granule needs
+      // an approved EULA), not a bad credential — sending the user to
+      // regenerate a working token is the wrong advice.
+      const tokenState = validateEDLToken(token || getEDLToken());
       const hint = isAuthErr
-        ? (token
-            ? ' — Token may be expired. Run: curl -n https://urs.earthdata.nasa.gov/api/users/tokens and paste the access_token value'
-            : ' — Set your Earthdata token in the NISAR Search panel')
+        ? (!tokenState.ok
+            ? ` — ${tokenState.error} Open the Earthdata Login panel to set it.`
+            : ` — Token looks valid (${tokenState.username}, expires `
+              + `${tokenState.expiresAt.toISOString().slice(0, 10)}), so this is likely a permissions `
+              + 'issue: accept the product EULA at urs.earthdata.nasa.gov → Applications → Authorized Apps.')
         : '';
       if (!isAbortError(e)) {
         setError(`Failed to read remote NISAR file: ${e.message}${hint}`);

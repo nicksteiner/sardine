@@ -16,6 +16,7 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { NISAR_PRODUCTS, searchGranules } from '../loaders/cmr-client.js';
+import { getEDLToken, setEDLToken } from '../utils/proxy.js';
 
 export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLayersChange, onGranulesChange, onTokenChange, viewBounds, onZoomToBounds }) {
   // ─── Search state ───────────────────────────────────────────────────
@@ -27,8 +28,27 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
   const [frame, setFrame] = useState('');
 
   // ─── Auth ───────────────────────────────────────────────────────────
-  const [token, setToken] = useState('');
+  // One token for the whole app. This panel used to keep its own in-memory
+  // token, so a token pasted into the Earthdata Login panel was invisible here
+  // and every search-initiated load went out unauthenticated — a 401 whose
+  // message told the user to set the token they had already set.
+  const [token, setTokenState] = useState(() => getEDLToken());
+  const setToken = useCallback((value) => {
+    setTokenState(value);
+    setEDLToken(value);
+  }, []);
   const [showAuth, setShowAuth] = useState(false);
+
+  // Pick up a token pasted into the Earthdata Login panel while this one is open.
+  useEffect(() => {
+    const sync = () => setTokenState(getEDLToken());
+    window.addEventListener('storage', sync);           // other tabs
+    window.addEventListener('sardine:edl-token', sync); // this tab
+    return () => {
+      window.removeEventListener('storage', sync);
+      window.removeEventListener('sardine:edl-token', sync);
+    };
+  }, []);
 
   // ─── Results ────────────────────────────────────────────────────────
   const [granules, setGranules] = useState([]);
@@ -305,11 +325,11 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             borderRadius: 'var(--radius-sm)',
           }}>
             <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: '4px' }}>
-              Required for data download. Get a token:<br />
-              <code style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-cyan)', userSelect: 'all' }}>
-                curl -n https://urs.earthdata.nasa.gov/api/users/tokens
-              </code>
-              <br />Paste the <code>access_token</code> value. Stored in memory only.
+              Required for data download. Generate one from your{' '}
+              <a href="https://urs.earthdata.nasa.gov/profile" target="_blank" rel="noopener noreferrer"
+                style={{ color: 'var(--sardine-cyan)' }}>Earthdata profile</a>
+              {' '}→ <strong>Generate Token</strong>.
+              <br />Shared with the Earthdata Login panel — set it in either place.
             </div>
             <input
               type="password"

@@ -97,3 +97,44 @@ test('EDL validation failure shows the reason inline, not only in a title toolti
   assert.match(failureBlock[0], /role="alert"/,
     'the failure should be announced to assistive technology');
 });
+
+test('there is exactly one EDL token store — panels must not keep their own', () => {
+  // NISARSearch used to hold `useState('')` for its own token, "stored in
+  // memory only". A token pasted into the Earthdata Login panel was therefore
+  // invisible to it, and every search-initiated load went out unauthenticated —
+  // producing a 401 whose message told the user to set the token they had set.
+  const search = readFileSync(
+    join(rootDir, 'src', 'components', 'NISARSearch.jsx'), 'utf8');
+
+  assert.match(search, /import\s*\{[^}]*getEDLToken[^}]*\}\s*from\s*'\.\.\/utils\/proxy\.js'/,
+    'NISARSearch must import the shared token store');
+  assert.match(search, /useState\(\(\)\s*=>\s*getEDLToken\(\)\)/,
+    'the token state must be SEEDED from the shared store, not from an empty string');
+  assert.match(search, /setEDLToken\(/,
+    'NISARSearch must write back to the shared store');
+  assert.doesNotMatch(search, /const \[token, setToken\] = useState\(\s*''\s*\)/,
+    'the token must not be panel-local state');
+  assert.doesNotMatch(search, /Stored in memory only/,
+    'stale help text: the token is shared and persisted');
+});
+
+test('setEDLToken notifies same-tab listeners', () => {
+  // `storage` fires only in OTHER tabs, so without an explicit event a second
+  // panel in this tab never sees a token pasted in the first.
+  const proxy = readFileSync(join(rootDir, 'src', 'utils', 'proxy.js'), 'utf8');
+  const fn = proxy.match(/export function setEDLToken[\s\S]{0,400}?\n}/);
+  assert.ok(fn, 'setEDLToken not found');
+  assert.match(fn[0], /dispatchEvent/,
+    'setEDLToken must broadcast so other panels resync');
+});
+
+test('a 401 with a valid token is not blamed on the token', () => {
+  // The old hint told the user to regenerate a token that was fine, and pointed
+  // at a curl command against an endpoint that rejects user tokens.
+  assert.doesNotMatch(mainSrc, /Token may be expired\. Run: curl/,
+    'stale advice: that endpoint needs Basic auth, not the user token');
+  assert.match(mainSrc, /const tokenState = validateEDLToken\(/,
+    'the auth-error hint must distinguish a bad token from a permissions issue');
+  assert.match(mainSrc, /EULA|Authorized Apps/,
+    'a valid-but-401 token should point at product authorisation');
+});
