@@ -583,7 +583,7 @@ export const SARViewer = forwardRef(function SARViewer({
             justifyContent: 'center',
             padding: 0,
             zIndex: 10,
-            fontSize: '14px',
+            fontSize: 'var(--text-md)',
             lineHeight: 1,
           }}
         >
@@ -612,7 +612,7 @@ export const SARViewer = forwardRef(function SARViewer({
           left: '50%',
           transform: 'translateX(-50%)',
           fontFamily: "'JetBrains Mono', monospace",
-          fontSize: '0.7rem',
+          fontSize: 'var(--text-sm)',
           fontWeight: 700,
           letterSpacing: '1px',
           pointerEvents: 'none',
@@ -678,7 +678,7 @@ function ColorbarOverlay({ colormap, reverseColormap = false, contrastLimits, us
     padding: 'var(--space-md, 16px)',
     borderRadius: 'var(--radius-md)',
     color: 'var(--text-primary)',
-    fontSize: '0.75rem',
+    fontSize: 'var(--text-sm)',
     fontFamily: 'var(--font-mono)',
   };
 
@@ -724,7 +724,7 @@ function ColorbarOverlay({ colormap, reverseColormap = false, contrastLimits, us
           <div key={key} style={{ display: 'flex', alignItems: 'center', marginBottom: '3px' }}>
             <div style={{ width: 12, height: 12, backgroundColor: color, marginRight: 6, borderRadius: 2 }} />
             <span style={{ marginRight: 6 }}>{getLabel(key)}</span>
-            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{fmtLim(key)}</span>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>{fmtLim(key)}</span>
           </div>
         ))}
       </div>

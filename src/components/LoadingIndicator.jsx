@@ -23,7 +23,7 @@ export function LoadingIndicator({ tilesLoading, tilesLoaded, totalTiles, curren
         color: 'var(--text-primary, #e8edf5)',
         padding: '10px 14px',
         borderRadius: 'var(--radius-sm, 4px)',
-        fontSize: '0.75rem',
+        fontSize: 'var(--text-sm)',
         fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
         zIndex: 10000,
         display: 'flex',
@@ -58,7 +58,7 @@ export function LoadingIndicator({ tilesLoading, tilesLoaded, totalTiles, curren
         </div>
       </div>
       {currentOverview !== undefined && totalOverviews > 0 && (
-        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted, #5a7099)' }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted, #5a7099)' }}>
           Overview: {currentOverview} / {totalOverviews - 1} (Level {currentOverview})
         </div>
       )}

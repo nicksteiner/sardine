@@ -1,43 +1,59 @@
 /*
  * SARdine Design System — sardine-theme.css
  * ===========================================
- * Dark-first SAR analysis workstation theme.
+ * Dark-first SAR analysis workstation theme.  THE source of truth for chrome.
+ *
+ * Authority direction:  this file  →  src/utils/theme-tokens.js
+ *   The CSS is authoritative; the JS mirror follows it.  Never reconcile the
+ *   other way.  test/unit/theme-mirror.test.mjs fails the build on drift in
+ *   either direction, and `npm run lint:tokens` fails on token bypass.
  *
  * Themes:
- *   (default) "dark"          Neutral near-black. Optimal for raster work:
- *                             a chromatically neutral, low-luminance surround
- *                             (radiology reading-room practice) so the
- *                             imagery's tones and colors read true.
+ *   (default) "dark"          Warm neutral near-black.  Optimal for raster work:
+ *                             a low-chroma, low-luminance surround (radiology
+ *                             reading-room practice) so the imagery's tones read
+ *                             true, with a hint of warmth in the greys so the
+ *                             chrome does not read as dead machine grey.
  *   [data-theme="sardine"]    Navy-tinted brand variant.
  *   [data-theme="light"]      Light theme.
  *
- * Fonts: JetBrains Mono (data values), Space Grotesk (headings), IBM Plex Sans (body/labels)
+ * Fonts loaded from app/index.html (preconnect + non-blocking <link>); every
+ * stack below carries a real system fallback so an air-gapped network degrades.
+ *
  * Color rule: surfaces and text are neutral; cyan is the single interactive
  * accent; green/magenta/orange are reserved for data semantics (polarization
  * channels, alerts) — never for chrome.
+ *
+ * OVERLAY RULE (measured, not a preference): no flat colour is legible across
+ * the grey range SAR imagery occupies.  Cyan #4ec9d4 scores 8.31:1 on panel but
+ * 2.00:1 on mid-grey #808080 and 1.28:1 on bright #d0d0d0; clay and amber do
+ * worse; even #ffffff and #000000 bottom out at 1.00:1.  Therefore the chrome
+ * accent NEVER appears over imagery.  Anything drawn on the raster (ROI,
+ * annotations, transects, class overlays, scale bar, coordinate grid) uses the
+ * --overlay-ink / --overlay-halo pair — ink plus a contrasting halo — which is
+ * legible over any grey because the pair, not the colour, carries the contrast.
  */
 
-/* ─── WEB FONTS ─── */
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Serif:wght@300;400;500;600;700&display=swap');
+@import '../components/ui/ui.css';
 
 /* ═══════════════════════════════════════════════
    DESIGN TOKENS (CSS Custom Properties)
    ═══════════════════════════════════════════════ */
 :root {
-  /* ─── PRIMARY PALETTE (dark — default) ─── */
-  /* Neutral near-black ramp, per display literature for image interpretation:
-     zero hue in the surround (a tinted surround shifts perceived color
-     balance via simultaneous contrast), luminance low but slightly above
-     pure black so panel structure stays legible and the eye's adaptation
-     level suits dB-grayscale reading. */
-  --sardine-bg:            #0a0a0b;
-  --sardine-bg-raised:     #121316;
-  --sardine-bg-panel:      #16171b;
-  --sardine-bg-hover:      #1e2024;
-  --sardine-border:        #292b31;
-  --sardine-border-subtle: #1e2025;
+  /* ─── SURFACES (dark — default) ─── */
+  /* Warm neutral ramp.  Values are AA-verified against the ink ramp below. */
+  --sardine-bg:            #1a1917;
+  --sardine-bg-raised:     #282523;
+  --sardine-bg-panel:      #211f1d;
+  --sardine-bg-hover:      #302d2a;
+  --sardine-border:        #35312d;
+  --sardine-border-subtle: #2a2724;
 
   /* ─── ACCENT: SAR SIGNAL CYAN (single interactive accent) ─── */
+  /* W027 decision: KEEP cyan.  It is the strongest AA performer on panel
+     (8.31:1), reads as instrumentation rather than marketing, and swapping it
+     would cost 21 literals plus every screenshot for no legibility gain.
+     Chrome surfaces only — see OVERLAY RULE above. */
   --sardine-cyan:       #4ec9d4;
   --sardine-cyan-dim:   #2a8a93;
   --sardine-cyan-glow:  transparent;  /* flat states — glows retired, tokens kept for compat */
@@ -59,46 +75,101 @@
   --sardine-magenta-dim:  #9a3db8;
   --sardine-magenta-glow: transparent;
 
+  /* ─── DATA SEMANTICS: RGB COMPOSITE CHANNELS ─── */
+  /* Mirrored by CHANNEL_COLORS in theme-tokens.js.  Chrome that *labels* a
+     channel (the R/G/B dataset pickers, histogram legends) uses these; they
+     are data semantics, not the interactive accent. */
+  --channel-r: var(--sardine-magenta);
+  --channel-g: var(--sardine-green);
+  --channel-b: var(--sardine-cyan);
+
   /* ─── STATUS RED (errors, destructive actions) ─── */
   --sardine-red: #e74c3c;
 
-  /* ─── TEXT (neutral grays — no blue tint) ─── */
-  --text-primary:   #e8eaed;
-  --text-secondary: #a0a6ad;
-  --text-muted:     #6e747b;
-  --text-disabled:  #4a4f55;
+  /* ─── INK (text ramp — warm neutral, AA-verified) ─── */
+  /* --ink-muted is #9c9389 because that is the MINIMUM value clearing 4.5:1 on
+     the worst surface (--sardine-bg-hover #302d2a → 4.53:1).  Do not lower it. */
+  --ink:       #ede9e3;  /* 14.53:1 on bg — primary   */
+  --ink-soft:  #b8b0a6;  /*  8.20:1      — secondary  */
+  --ink-muted: #9c9389;  /*  4.53:1 worst case — AA floor, do not lower */
+  --ink-faint: #6b625a;  /*  2.94:1 — NON-TEXT ONLY: rules, disabled fills.
+                              Below AA by design.  Linted; never use for text. */
+
+  /* Legacy semantic aliases — the ink ramp is canonical. */
+  --text-primary:   var(--ink);
+  --text-secondary: var(--ink-soft);
+  --text-muted:     var(--ink-muted);
+  --text-disabled:  var(--ink-faint);
 
   /* Aliases consumed by component inline styles */
-  --sardine-text-primary:   var(--text-primary);
-  --sardine-text-secondary: var(--text-secondary);
-  --sardine-text-muted:     var(--text-muted);
-  --sardine-text-disabled:  var(--text-disabled);
+  --sardine-text-primary:   var(--ink);
+  --sardine-text-secondary: var(--ink-soft);
+  --sardine-text-muted:     var(--ink-muted);
+  --sardine-text-disabled:  var(--ink-faint);
+
+  /* Referenced by inline styles; defined here so they resolve. */
+  --surface-2:   var(--sardine-bg-raised);
+  --surface-alt: var(--sardine-bg-panel);
+
+  /* ─── OVERLAY INK (drawn OVER imagery — read the OVERLAY RULE above) ─── */
+  /* Always draw ink on halo (stroke/shadow), never ink alone: the pair is what
+     carries contrast across the full SAR grey range. */
+  --overlay-ink:  #ffffff;
+  --overlay-halo: rgba(0, 0, 0, 0.72);
 
   /* ─── CHROME BEHAVIOR ─── */
   --panel-border-style: solid;
-  --overlay-bg:         rgba(16, 17, 20, 0.92); /* floating panels over the viewer */
-  --overlay-bg-hover:   rgba(30, 32, 36, 0.95);
+  --overlay-bg:         rgba(26, 25, 23, 0.92); /* floating panels over the viewer */
+  --overlay-bg-hover:   rgba(48, 45, 42, 0.95);
 
   /* ─── STATUS ─── */
   --status-flood:   #ff5c5c;
   --status-water:   #4ea8ff;
   --status-dry:     #c4a35a;
   --status-success: #3ddc84;
+  --status-warning: #e8a33a;
 
   /* ─── TYPOGRAPHY ─── */
-  --font-mono:    'JetBrains Mono', 'Fira Code', monospace;
-  --font-display: 'Space Grotesk', sans-serif;
-  --font-body:    'IBM Plex Sans', sans-serif;
-  --font-serif:   'IBM Plex Serif', Georgia, serif;
+  --font-mono:    'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-body:    'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --font-serif:   'IBM Plex Serif', Georgia, 'Times New Roman', serif;
+  --sardine-font-mono: var(--font-mono);
+
+  /* ─── TYPE SCALE ─── */
+  /* Six steps, floor 11px, all rem (px sizes ignore the user's font-size
+     preference — linted).  Replaces 31 ad-hoc sizes clustering in 0.02rem
+     steps: too small to read as hierarchy, large enough to look misaligned. */
+  --text-xs:  0.6875rem;  /* 11px — dense numerics, table cells */
+  --text-sm:  0.75rem;    /* 12px — default UI (the workhorse)  */
+  --text-md:  0.875rem;   /* 14px — body, panel copy            */
+  --text-lg:  1rem;       /* 16px — section titles              */
+  --text-xl:  1.25rem;    /* 20px — panel/dialog titles         */
+  --text-2xl: 1.5rem;     /* 24px — app title, empty-state head */
 
   /* ─── SPACING ─── */
-  --space-xs:  4px;
+  /* The low end exists because the measured rhythm is a 2–8px continuum; the
+     old 4/8/16/24/32/48/64 scale had no 2/6/12 step, which is why ~90% of
+     spacing bypassed it. */
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs:  6px;
   --space-sm:  8px;
-  --space-md:  16px;
-  --space-lg:  24px;
-  --space-xl:  32px;
-  --space-2xl: 48px;
-  --space-3xl: 64px;
+  --space-md:  12px;
+  --space-lg:  16px;
+  --space-xl:  24px;
+  --space-2xl: 32px;
+  --space-3xl: 48px;
+
+  /* ─── Z-SCALE ─── */
+  --z-base:     0;
+  --z-overlay:  100;
+  --z-panel:    200;
+  --z-sheet:    300;
+  --z-dropdown: 400;
+  --z-modal:    500;
+  --z-toast:    600;
+  --z-dragdrop: 700;
 
   /* ─── RADII ─── */
   --radius-sm: 2px;
@@ -151,7 +222,7 @@ body {
 
 .header h1 {
   font-family: var(--font-mono);
-  font-size: 1.4rem;
+  font-size: var(--text-2xl);
   font-weight: 700;
   letter-spacing: -1px;
   color: var(--text-primary);
@@ -163,7 +234,7 @@ body {
 
 .header .subtitle {
   font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   letter-spacing: 2px;
   text-transform: uppercase;
@@ -202,7 +273,7 @@ body {
 
 .control-section h3 {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 2px;
@@ -226,7 +297,7 @@ body {
   color: var(--text-secondary);
 }
 
-.control-section h3.collapsible::after {
+.control-section h3.collapsible .ui-section__toggle::after {
   content: '';
   width: 0;
   height: 0;
@@ -241,7 +312,7 @@ body {
   border-bottom-color: transparent;
 }
 
-.control-section h3.collapsible.collapsed::after {
+.control-section h3.collapsible.collapsed .ui-section__toggle::after {
   transform: rotate(-90deg);
 }
 
@@ -271,16 +342,24 @@ body {
 }
 
 /* Labels are sans; mono is reserved for data values (.value-display, metadata values) */
-.control-group label {
-  font-family: var(--font-body);
-  font-size: 0.75rem;
-  color: var(--text-secondary);
+/* W028: a control-group label reads the same whether or not its row has been
+   migrated to Field — a mono micro-label, matching .field__label.  Without
+   this the panel mixes two label styles for the duration of the migration.
+   Checkbox rows (.control-row label) keep sentence case: there the label is
+   the click target for the box, not a caption above a control. */
+.control-group > label,
+.control-group .field__label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .control-group input[type="text"],
 .control-group select {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   padding: var(--space-sm) var(--space-md);
   border-radius: var(--radius-sm);
   border: 1px solid var(--sardine-border);
@@ -317,7 +396,7 @@ body {
 
 .control-group input[type="file"] {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
 }
 
@@ -335,72 +414,64 @@ body {
 
 .control-row label {
   font-family: var(--font-body);
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   color: var(--text-primary);
 }
 
 
 /* ─── BUTTONS ─── */
+/*
+ * W028: this rule used to BE a primary CTA — solid accent fill, 10px 20px,
+ * uppercase, letter-spaced.  Applied to the element selector, it meant every
+ * one of the app's 125 buttons rendered as a maximum-emphasis call to action,
+ * and every button that was not one had to fight it with an inline style (59
+ * such piles in main.jsx alone) or with an importance escape
+ * (.discovery-disconnect-btn needed one twice).  That single over-specific rule was the direct cause of
+ * the inline-style problem W028 exists to fix.
+ *
+ * It is now the QUIET default: shape and affordance only.  The accent fill
+ * moved to `.btn--primary`, which is opt-in — one primary action per view.
+ * Restraint is the design, not an accident of what got migrated first.
+ */
 button {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-sm);
   font-weight: 500;
-  letter-spacing: 0.5px;
-  padding: 10px 20px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  padding: var(--space-2xs) var(--space-sm);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--sardine-cyan);
-  background: var(--sardine-cyan);
-  color: var(--sardine-bg);
+  border: 1px solid var(--sardine-border);
+  background: var(--sardine-bg-raised);
+  color: var(--text-secondary);
   cursor: pointer;
-  transition: all var(--transition-fast);
-  text-transform: uppercase;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
 }
 
-button:hover {
-  background: #5ed8e6;
+button:hover:not(:disabled) {
+  background: var(--sardine-bg-hover);
+  border-color: var(--sardine-cyan-dim);
+  color: var(--text-primary);
 }
 
 button:disabled {
-  background: var(--sardine-border);
-  border-color: var(--sardine-border);
-  color: var(--text-disabled);
+  opacity: 0.45;
   cursor: not-allowed;
-  box-shadow: none;
 }
 
-/* Secondary / ghost button variant */
-button.btn-secondary {
-  background: transparent;
-  color: var(--sardine-cyan);
-  border-color: var(--sardine-cyan-dim);
-}
+/* Legacy variant classes — kept as thin aliases while surfaces migrate to
+   <Button variant="…">.  New code uses the primitive, not these. */
+button.btn-primary { background: var(--sardine-cyan); border-color: var(--sardine-cyan); color: var(--sardine-bg); text-transform: uppercase; letter-spacing: 0.05em; }
+button.btn-primary:hover:not(:disabled) { background: var(--sardine-cyan-dim); border-color: var(--sardine-cyan-dim); }
 
-button.btn-secondary:hover {
-  background: var(--sardine-cyan-bg);
-  border-color: var(--sardine-cyan);
-}
+button.btn-secondary { background: transparent; color: var(--sardine-cyan); border-color: var(--sardine-cyan-dim); }
+button.btn-secondary:hover:not(:disabled) { background: var(--sardine-cyan-bg); border-color: var(--sardine-cyan); }
 
-/* Alert button variant */
-button.btn-alert {
-  background: var(--sardine-orange);
-  border-color: var(--sardine-orange);
-  color: var(--sardine-bg);
-}
+button.btn-alert { background: var(--sardine-orange); border-color: var(--sardine-orange); color: var(--sardine-bg); }
+button.btn-alert:hover:not(:disabled) { background: var(--sardine-orange-dim); border-color: var(--sardine-orange-dim); }
 
-button.btn-alert:hover {
-}
-
-/* Danger button variant */
-button.btn-danger {
-  background: rgba(255, 92, 92, 0.1);
-  color: var(--status-flood);
-  border-color: rgba(255, 92, 92, 0.3);
-}
-
-button.btn-danger:hover {
-  background: rgba(255, 92, 92, 0.2);
-  border-color: var(--status-flood);
-}
+button.btn-danger { background: transparent; color: var(--sardine-red); border-color: var(--sardine-red); }
+button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: var(--sardine-bg); }
 
 
 /* ─── VIEWER CONTAINER ─── */
@@ -431,7 +502,7 @@ button.btn-danger:hover {
 
 .state-panel-header h3 {
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   font-weight: 600;
   color: var(--text-primary);
   letter-spacing: 0.5px;
@@ -439,7 +510,7 @@ button.btn-danger:hover {
 
 .state-panel-header .badge {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--sardine-cyan);
   background: var(--sardine-cyan-bg);
   border: 1px solid var(--sardine-border);
@@ -464,7 +535,7 @@ button.btn-danger:hover {
   background: var(--sardine-bg);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: var(--text-md);
   line-height: 1.6;
   padding: var(--space-md);
   resize: none;
@@ -489,7 +560,7 @@ button.btn-danger:hover {
   left: 50%;
   transform: translate(-50%, -50%);
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   color: var(--text-muted);
   letter-spacing: 1px;
 }
@@ -500,7 +571,7 @@ button.btn-danger:hover {
   left: 50%;
   transform: translate(-50%, -50%);
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: var(--text-md);
   color: var(--status-flood);
   text-align: center;
   padding: var(--space-lg);
@@ -511,11 +582,204 @@ button.btn-danger:hover {
 }
 
 
+/* ─── W030: LOAD PANEL (determinate progress + cancel) ─── */
+.load-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(360px, 80%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  background: var(--sardine-bg-panel);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-md);
+  text-align: center;
+  z-index: 20;
+}
+
+.load-panel-title {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  letter-spacing: 1px;
+  color: var(--text-primary);
+}
+
+.load-panel-detail {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.load-cancel {
+  align-self: center;
+  min-height: 32px;
+  padding: 4px 18px;
+}
+
+/* ─── W030: ERROR STACK (dismissible, no last-error-wins) ─── */
+.error-stack {
+  position: absolute;
+  top: var(--space-lg);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 90%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  z-index: 30;
+}
+
+.error-stack .error {
+  position: static;
+  transform: none;
+  max-width: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  text-align: left;
+  padding: var(--space-sm) var(--space-md);
+  background: rgba(255, 92, 92, 0.12);
+}
+
+.error-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.error-count {
+  color: var(--text-muted);
+}
+
+.error-dismiss {
+  flex-shrink: 0;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  line-height: 1;
+  font-size: 1rem;
+  background: transparent;
+  border: none;
+  color: var(--status-flood);
+  cursor: pointer;
+}
+
+.error-dismiss:hover {
+  color: var(--text-primary);
+}
+
+.error-dismiss-all {
+  align-self: flex-end;
+  min-height: 26px;
+  padding: 2px 12px;
+  font-size: 0.7rem;
+}
+
+/* ─── W030: EMPTY STATE (first thing a new user sees) ─── */
+.empty-state {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(520px, 88%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  text-align: center;
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: var(--text-primary);
+}
+
+.empty-state-lede {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.empty-state-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.empty-state-actions .btn-primary {
+  min-height: 36px;
+  padding: 6px 20px;
+}
+
+.empty-state-or {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.empty-state-url {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.empty-state-url label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.empty-state-url-row {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.empty-state-url-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-primary);
+  background: var(--sardine-bg, #0d1117);
+  border: 1px solid var(--sardine-border);
+  border-radius: var(--radius-sm);
+}
+
+.empty-state-url-row .btn-secondary {
+  flex-shrink: 0;
+  min-height: 30px;
+  padding: 4px 14px;
+}
+
+.empty-state-demo {
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.72rem;
+  color: var(--sardine-cyan);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.empty-state-demo:hover {
+  color: var(--text-primary);
+}
+
+
 /* ─── VALUE DISPLAY (monospace data) ─── */
 .value-display {
   font-family: var(--font-mono);
   color: var(--sardine-cyan);
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
 }
 
 
@@ -525,7 +789,7 @@ button.btn-danger:hover {
   align-items: center;
   gap: var(--space-sm);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   letter-spacing: 0.5px;
   padding: 4px 12px;
   border-radius: var(--radius-sm);
@@ -607,7 +871,7 @@ button.btn-danger:hover {
   border-radius: var(--radius-md);
   z-index: 100;
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   transition: width var(--transition-med), max-height var(--transition-med);
@@ -638,7 +902,7 @@ button.btn-danger:hover {
 }
 
 .metadata-panel-title {
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 1.5px;
   text-transform: uppercase;
@@ -650,7 +914,7 @@ button.btn-danger:hover {
 }
 
 .metadata-panel-toggle {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   transition: transform var(--transition-fast);
 }
@@ -662,6 +926,20 @@ button.btn-danger:hover {
 }
 
 /* ─── METADATA SECTIONS ─── */
+/* W028: .metadata-section is now a Section (.control-section) modifier —
+   the panel is dense, so it drops the card chrome and tightens the rhythm. */
+.control-section.metadata-section {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+.control-section.metadata-section h3.collapsible {
+  font-size: var(--text-xs);
+  letter-spacing: 1px;
+  margin-bottom: var(--space-2xs);
+}
+
 .metadata-section {
   padding: 6px 4px;
   border-bottom: 1px var(--panel-border-style) var(--sardine-border-subtle);
@@ -672,7 +950,7 @@ button.btn-danger:hover {
 }
 
 .metadata-section-title {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 1.5px;
@@ -694,7 +972,7 @@ button.btn-danger:hover {
 .metadata-label {
   font-family: var(--font-body);
   color: var(--text-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   white-space: nowrap;
   margin-right: 8px;
   flex-shrink: 0;
@@ -702,7 +980,7 @@ button.btn-danger:hover {
 
 .metadata-value {
   color: var(--text-secondary);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   text-align: right;
   word-break: break-word;
 }
@@ -731,7 +1009,7 @@ button.btn-danger:hover {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   z-index: 1010;
   transition: bottom 0.3s ease, background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
@@ -765,7 +1043,7 @@ button.btn-danger:hover {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-sm, 6px);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   z-index: 1010;
   transition: bottom 0.3s ease, background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
@@ -791,10 +1069,10 @@ button.btn-danger:hover {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-md);
   z-index: 1010;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
@@ -812,10 +1090,10 @@ button.btn-danger:hover {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--sardine-border);
-  border-radius: var(--radius-md, 8px);
+  border-radius: var(--radius-md);
   z-index: 1010;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   overflow: hidden;
   box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5);
@@ -846,7 +1124,7 @@ button.btn-danger:hover {
 }
 
 .overview-map-title {
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 1.2px;
   text-transform: uppercase;
@@ -886,7 +1164,7 @@ button.btn-danger:hover {
   border: 1px solid var(--sardine-border-subtle);
   border-radius: var(--radius-sm, 4px);
   color: var(--text-secondary);
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
   font-family: var(--font-mono);
   cursor: pointer;
   transition: background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
@@ -914,7 +1192,7 @@ button.btn-danger:hover {
 }
 
 .overview-map-zoom-label {
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--sardine-cyan);
   min-width: 28px;
   text-align: center;
@@ -936,7 +1214,7 @@ button.btn-danger:hover {
   justify-content: space-between;
   align-items: center;
   padding: 4px 10px;
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   letter-spacing: 0.3px;
 }
@@ -953,10 +1231,10 @@ button.btn-danger:hover {
   --sardine-border:        #35486c;
   --sardine-border-subtle: #283a58;
 
-  --text-primary:   #e8edf5;
-  --text-secondary: #a7b7d4;
-  --text-muted:     #7389ad;
-  --text-disabled:  #4d6182;
+  --ink:       #e8edf5;
+  --ink-soft:  #a7b7d4;
+  --ink-muted: #8ea3c4;  /* AA floor on this ramp's hover surface */
+  --ink-faint: #4d6182;  /* NON-TEXT ONLY */
 
   --overlay-bg:       rgba(24, 35, 56, 0.92);
   --overlay-bg-hover: rgba(43, 61, 96, 0.95);
@@ -995,15 +1273,16 @@ button.btn-danger:hover {
   --sardine-magenta-dim:  #7a2f94;
   --sardine-magenta-glow: transparent;
 
-  --text-primary:   #1a2233;
-  --text-secondary: #4a5568;
-  --text-muted:     #7a8599;
-  --text-disabled:  #b0b8c4;
+  --ink:       #1a2233;
+  --ink-soft:  #4a5568;
+  --ink-muted: #6b7688;  /* AA floor on --sardine-bg-hover #edeae4 → 4.53:1 */
+  --ink-faint: #b0b8c4;  /* NON-TEXT ONLY */
 
   --status-flood:   #cc3333;
   --status-water:   #2a7acc;
   --status-dry:     #9a8030;
   --status-success: #1a8a4a;
+  --status-warning: #b5701a;
 }
 
 
@@ -1011,7 +1290,7 @@ button.btn-danger:hover {
 /* ─── DATA DISCOVERY / BUCKET BROWSER ─── */
 
 .data-discovery {
-  font-size: 0.75rem;
+  font-size: var(--text-sm);
 }
 
 .discovery-header {
@@ -1026,26 +1305,31 @@ button.btn-danger:hover {
 }
 
 .discovery-url {
+  margin: 0;
+  font-weight: 400;
   font-family: var(--font-mono, monospace);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   color: var(--sardine-cyan, #4ec9d4);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* W028: seven importance escapes here existed solely to outrank the old
+   global CTA rule.  The rule is quiet now, so a plain class wins on its own. */
 .discovery-disconnect-btn {
   flex-shrink: 0;
-  padding: 1px 6px !important;
-  font-size: 0.7rem !important;
+  padding: var(--space-3xs) var(--space-xs);
+  font-size: var(--text-sm);
   line-height: 1;
-  min-width: auto !important;
-  background: transparent !important;
-  color: var(--text-muted) !important;
-  border: none !important;
+  min-width: auto;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
 }
 .discovery-disconnect-btn:hover {
-  color: var(--sardine-red, #e74c3c) !important;
+  color: var(--sardine-red);
+  background: transparent;
 }
 
 .discovery-breadcrumbs {
@@ -1053,7 +1337,7 @@ button.btn-danger:hover {
   flex-wrap: wrap;
   gap: 1px;
   margin-bottom: 6px;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-family: var(--font-mono, monospace);
 }
 
@@ -1063,7 +1347,7 @@ button.btn-danger:hover {
   color: var(--sardine-cyan, #4ec9d4);
   cursor: pointer;
   padding: 1px 3px;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   font-family: inherit;
 }
 .discovery-crumb:hover {
@@ -1110,7 +1394,7 @@ button.btn-danger:hover {
 
 .discovery-icon {
   flex-shrink: 0;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   width: 16px;
   text-align: center;
 }
@@ -1120,12 +1404,12 @@ button.btn-danger:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
 }
 
 .discovery-size {
   flex-shrink: 0;
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   color: var(--text-muted, #5a7099);
   font-family: var(--font-mono, monospace);
 }
@@ -1153,7 +1437,7 @@ button.btn-danger:hover {
   text-align: center;
   color: var(--text-muted, #5a7099);
   font-style: italic;
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
 }
 
 .discovery-error {
@@ -1163,7 +1447,7 @@ button.btn-danger:hover {
   border: 1px solid rgba(231, 76, 60, 0.3);
   border-radius: 4px;
   color: var(--sardine-red, #e74c3c);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   word-break: break-word;
 }
 
@@ -1172,13 +1456,13 @@ button.btn-danger:hover {
   width: 100%;
   text-align: left;
   margin-bottom: 3px;
-  font-size: 0.7rem !important;
-  padding: 3px 8px !important;
+  font-size: var(--text-sm);
+  padding: var(--space-3xs) var(--space-sm);
 }
 
 .discovery-auth-badge {
   float: right;
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
 }
 
 .discovery-filter-bar {
@@ -1195,7 +1479,7 @@ button.btn-danger:hover {
   background: var(--sardine-bg-raised, #162033);
   border: 1px solid var(--sardine-border, #1e3a5f);
   color: var(--text-secondary, #b0bec5);
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   padding: 2px 8px;
   border-radius: 3px;
   cursor: pointer;
@@ -1218,7 +1502,7 @@ button.btn-danger:hover {
   border-radius: 7px;
   background: var(--sardine-cyan, #4ec9d4);
   color: var(--sardine-bg, #0a1628);
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
   font-weight: 700;
   line-height: 1;
 }
@@ -1227,7 +1511,7 @@ button.btn-danger:hover {
   background: none;
   border: none;
   color: var(--text-muted, #5a7099);
-  font-size: 0.65rem;
+  font-size: var(--text-xs);
   cursor: pointer;
   padding: 2px 4px;
   font-family: inherit;
@@ -1254,14 +1538,14 @@ button.btn-danger:hover {
 }
 
 .discovery-filter-group label {
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
   color: var(--text-muted, #5a7099);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .discovery-filter-group select {
-  font-size: 0.7rem;
+  font-size: var(--text-sm);
   padding: 1px 2px;
   background: var(--sardine-bg, #0a1628);
   color: var(--text-primary, #e0e8f0);
@@ -1324,7 +1608,7 @@ button.btn-danger:hover {
 
 .rail-label {
   font-family: var(--font-mono);
-  font-size: 0.48rem;
+  font-size: var(--text-xs);
   letter-spacing: 0.5px;
   text-transform: uppercase;
 }
@@ -1362,7 +1646,7 @@ button.btn-danger:hover {
   border-radius: 0;
   color: var(--text-primary);
   font-family: inherit;
-  font-size: 0.72rem;
+  font-size: var(--text-sm);
   text-align: left;
   cursor: pointer;
 }
@@ -1379,7 +1663,7 @@ button.btn-danger:hover {
 
 .context-menu-shortcut {
   color: var(--text-muted);
-  font-size: 0.6rem;
+  font-size: var(--text-xs);
   padding: 0 4px;
   border: 1px solid var(--sardine-border);
   border-radius: 2px;
@@ -1392,6 +1676,105 @@ button.btn-danger:hover {
 }
 
 /* ─── RESPONSIVE ─── */
+
+/* ═══════════════════════════════════════════════
+   APP FOOTER + STATUS DOCK
+   ═══════════════════════════════════════════════
+   W028: this geometry used to be set inline on the elements, which is why the
+   mobile overrides below needed importance escapes — an inline style outranks any
+   stylesheet rule, so the media query had no other way to win.  Chrome lives
+   in CSS; those three escapes are gone with it. */
+.app-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  /* 1000/1001, not var(--z-toast): the dock sits above the activity rail
+     (z-index 900), and the z-scale tops out at --z-dragdrop (700).  The scale
+     does not yet describe the app's real stacking — reconciling it is W027
+     follow-up work, and guessing here would silently re-order the shell. */
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 0 var(--space-md);
+  background: var(--sardine-bg);
+  border-top: 1px dashed var(--sardine-border);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+.app-footer a { color: inherit; text-decoration: none; }
+.app-footer__gpu { color: var(--status-warning); }
+.app-footer__workers { margin-bottom: 0; }
+.app-footer__workers input[type="range"] { width: 60px; accent-color: var(--sardine-cyan); }
+.app-footer__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--sardine-cyan);
+  opacity: 0.6;
+}
+
+.status-pulltab {
+  position: fixed;
+  bottom: 24px;               /* sits directly above the footer */
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1001;   /* above the activity rail — see .app-footer */
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-3xs) var(--space-md);
+  background: var(--sardine-bg-panel);
+  border: 1px solid var(--sardine-border);
+  border-bottom: none;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.status-pulltab:hover {
+  color: var(--sardine-cyan);
+  border-color: var(--sardine-cyan-dim);
+}
+.status-pulltab__count {
+  min-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--space-2xs);
+  border-radius: 8px;
+  background: var(--sardine-cyan-bg);
+  color: var(--sardine-cyan);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.status-window {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1001;   /* above the activity rail — see .app-footer */
+  max-height: 300px;
+  overflow: hidden;
+  background: var(--sardine-bg-raised);
+  border-top: 1px solid var(--sardine-border);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  transition: max-height var(--transition-med);
+}
+
+
 @media (max-width: 768px) {
   .header .subtitle {
     display: none;
@@ -1477,7 +1860,7 @@ button.btn-danger:hover {
 
   /* Credits strip is desktop-only; the tab bar owns the bottom edge */
   .app-footer {
-    display: none !important;
+    display: none;
   }
 
   /* Map toggles/panels sit below the bottom sheet on mobile */
@@ -1489,11 +1872,11 @@ button.btn-danger:hover {
   }
 
   .status-pulltab {
-    bottom: calc(54px + env(safe-area-inset-bottom, 0px)) !important;
+    bottom: calc(54px + env(safe-area-inset-bottom, 0px));
   }
 
   .status-window {
-    bottom: calc(52px + env(safe-area-inset-bottom, 0px)) !important;
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
   }
 
   .state-panel {

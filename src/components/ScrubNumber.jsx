@@ -125,9 +125,9 @@ export function ScrubNumber({
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
-      fontFamily: 'var(--font-mono, monospace)', fontSize: '0.7rem',
+      fontFamily: 'var(--font-mono, monospace)', fontSize: 'var(--text-sm)',
     }}>
-      {label && <span style={{ color: '#5a7099' }}>{label}</span>}
+      {label && <span style={{ color: 'var(--text-muted)' }}>{label}</span>}
       <span
         ref={elRef}
         style={{
@@ -136,7 +136,7 @@ export function ScrubNumber({
           background: editing ? '#0d1620' : 'transparent',
           border: '1px solid #2a3a4a',
           borderRadius: 2,
-          color: '#e8edf5',
+          color: 'var(--text-primary)',
           cursor: disabled ? 'default' : (editing ? 'text' : 'ew-resize'),
           textAlign: 'right',
           userSelect: 'none',
@@ -158,7 +158,7 @@ export function ScrubNumber({
             }}
             style={{
               width: '100%', background: 'transparent', border: 'none',
-              color: '#4ec9d4', fontFamily: 'inherit', fontSize: 'inherit',
+              color: 'var(--sardine-cyan)', fontFamily: 'inherit', fontSize: 'inherit',
               padding: 0, textAlign: 'right', outline: 'none',
               boxSizing: 'border-box',
             }}
@@ -167,7 +167,7 @@ export function ScrubNumber({
           formatDisplay(value)
         )}
       </span>
-      {suffix && <span style={{ color: '#5a7099' }}>{suffix}</span>}
+      {suffix && <span style={{ color: 'var(--text-muted)' }}>{suffix}</span>}
     </span>
   );
 }

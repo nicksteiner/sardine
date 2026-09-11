@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { Field } from './ui/index.js';
 
 /**
  * Unified dataset picker. Driven entirely off the Dataset[] returned
@@ -71,46 +72,43 @@ export function DatasetPicker({
   if (datasets.length === 1) {
     const only = datasets[0];
     return (
-      <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+      <p className="control-group dataset-picker__only">
         {only.label}
         {only.shape?.[0] > 0 && (
-          <span style={{ marginLeft: '6px' }}>
-            {only.shape[1]}×{only.shape[0]}
+          <span>
+            {' '}{only.shape[1]}×{only.shape[0]}
             {only.isComplex && ' · complex'}
           </span>
         )}
-      </div>
+      </p>
     );
   }
 
   if (mode === 'rgb') {
     const slots = ['R', 'G', 'B'];
-    const labelColor = { R: '#ff6464', G: '#64ff64', B: '#6496ff' };
+
     return (
       <>
         {showRGBToggle && (
-          <div className="control-group">
-            <label>Display Mode</label>
+          <Field label="Display Mode" className="control-group">
             <select value="rgb" onChange={(e) => onModeChange?.(e.target.value)}>
               <option value="single">Single Band</option>
               <option value="rgb">RGB Composite</option>
             </select>
-          </div>
+          </Field>
         )}
         {presets.length > 0 && (
-          <div className="control-group">
-            <label>Preset</label>
+          <Field label="Preset" className="control-group">
             <select value={presetId || ''} onChange={(e) => onPresetChange?.(e.target.value || null)}>
               <option value="">Custom…</option>
               {presets.map(p => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
-          </div>
+          </Field>
         )}
         {slots.map(slot => (
-          <div key={slot} className="control-group">
-            <label style={{ color: labelColor[slot] }}>{slot}</label>
+          <Field key={slot} label={slot} className={`control-group dataset-picker__slot dataset-picker__slot--${slot}`}>
             <select
               value={selectedRGB?.[slot] || ''}
               onChange={(e) => onSelectRGB?.({ ...selectedRGB, [slot]: e.target.value })}
@@ -118,7 +116,7 @@ export function DatasetPicker({
               <option value="">— None —</option>
               {renderOptions()}
             </select>
-          </div>
+          </Field>
         ))}
       </>
     );
@@ -127,23 +125,21 @@ export function DatasetPicker({
   return (
     <>
       {showRGBToggle && (
-        <div className="control-group">
-          <label>Display Mode</label>
+        <Field label="Display Mode" className="control-group">
           <select value="single" onChange={(e) => onModeChange?.(e.target.value)}>
             <option value="single">Single Band</option>
             <option value="rgb">RGB Composite</option>
           </select>
-        </div>
+        </Field>
       )}
-      <div className="control-group">
-        <label>Dataset</label>
+      <Field label="Dataset" className="control-group">
         <select
           value={selectedId || ''}
           onChange={(e) => onSelect?.(e.target.value)}
         >
           {renderOptions()}
         </select>
-      </div>
+      </Field>
     </>
   );
 }

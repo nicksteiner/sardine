@@ -243,7 +243,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
 
       {/* Catalog info */}
       {catalog && (
-        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+        <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
           {catalogName} — {catalog.features.length} scenes
           {signed && <span style={{ color: 'var(--status-success)', marginLeft: '6px' }}>signed</span>}
         </div>
@@ -256,7 +256,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
             onClick={() => setShowCredentials(s => !s)}
             style={{
               cursor: 'pointer',
-              fontSize: '0.75rem',
+              fontSize: 'var(--text-sm)',
               color: 'var(--sardine-cyan)',
               userSelect: 'none',
               marginBottom: showCredentials ? 'var(--space-xs)' : 0,
@@ -272,7 +272,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               border: '1px solid var(--sardine-border)',
               borderRadius: 'var(--radius-sm)',
             }}>
-              <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>
                 Credentials are stored in memory only and never persisted.
               </div>
               <input
@@ -324,7 +324,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
               value={filterText}
               onChange={e => setFilterText(e.target.value)}
               placeholder="Filter by name, track, frame..."
-              style={{ fontSize: '0.75rem' }}
+              style={{ fontSize: 'var(--text-sm)' }}
             />
           </div>
           <div style={{
@@ -347,7 +347,7 @@ export function SceneCatalog({ onSelectScene, onStatus, onLayersChange }) {
                   style={{
                     padding: '4px 8px',
                     cursor: 'pointer',
-                    fontSize: '0.7rem',
+                    fontSize: 'var(--text-sm)',
                     fontFamily: 'var(--font-mono)',
                     background: isSelected ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
                     borderBottom: '1px solid var(--sardine-border)',

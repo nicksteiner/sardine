@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import { Section } from './ui/index.js';
 import { fetchWorldCoastlines } from '../loaders/overture-loader.js';
 import { toDb } from '../utils/stats.js';
 
@@ -185,7 +186,7 @@ function MiniMap({ wgs84Bounds, style }) {
       width={svgW}
       height={svgH}
       style={{
-        background: '#060e1a',
+        background: 'var(--sardine-bg)',
         borderRadius: '4px',
         border: '1px solid var(--sardine-border, #1e3a5f)',
         ...style,
@@ -306,24 +307,16 @@ function MetadataRow({ label, value, accent = false, mono = true }) {
 
 
 /**
- * CollapsibleSection — Sub-section with toggle expand/collapse.
+ * CollapsibleSection — MetadataPanel used to define its own copy of the
+ * control panel's collapsible section, a second implementation of the same
+ * idea with a different DOM, a different toggle glyph and no heading at all.
+ * W028 converged both on the Section primitive; `count` maps to its `aside`.
  */
 function CollapsibleSection({ title, defaultOpen = false, children, count }) {
-  const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="metadata-section">
-      <div
-        className="metadata-section-title"
-        onClick={() => setOpen(o => !o)}
-        style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-      >
-        <span>{open ? '▾' : '▸'} {title}</span>
-        {count != null && (
-          <span style={{ fontSize: '0.55rem', color: 'var(--text-disabled)', fontFamily: 'var(--font-mono)' }}>{count}</span>
-        )}
-      </div>
-      {open && children}
-    </div>
+    <Section title={title} defaultOpen={defaultOpen} aside={count} className="metadata-section">
+      {children}
+    </Section>
   );
 }
 
@@ -415,9 +408,9 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
   return (
     <div className={`metadata-panel ${collapsed ? 'collapsed' : ''}`}>
       <div className="metadata-panel-header" onClick={() => setCollapsed(c => !c)}>
-        <span className="metadata-panel-title">
-          <span style={{ color: 'var(--sardine-cyan)' }}>◈</span> Metadata
-        </span>
+        <h2 className="metadata-panel-title">
+          <span className="u-accent" aria-hidden="true">◈</span> Metadata
+        </h2>
         <span className="metadata-panel-toggle">{collapsed ? '◀' : '▶'}</span>
       </div>
 
@@ -465,7 +458,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
               {id.boundingPolygon && (
                 <div style={{
                   marginTop: '4px',
-                  fontSize: '0.55rem',
+                  fontSize: 'var(--text-xs)',
                   color: 'var(--text-disabled)',
                   wordBreak: 'break-all',
                   fontFamily: 'var(--font-mono)',
@@ -605,7 +598,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
               )}
               <div style={{
                 marginTop: '4px',
-                fontSize: '0.55rem',
+                fontSize: 'var(--text-xs)',
                 color: 'var(--text-disabled)',
                 lineHeight: 1.4,
               }}>
@@ -618,7 +611,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
           {fileName && (
             <CollapsibleSection title="File" defaultOpen={false}>
               <div style={{
-                fontSize: '0.6rem',
+                fontSize: 'var(--text-xs)',
                 color: 'var(--text-muted)',
                 wordBreak: 'break-all',
                 fontFamily: 'var(--font-mono)',
@@ -633,7 +626,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
           {fileType === 'nisar' && (
             <div style={{
               padding: '6px 8px',
-              fontSize: '0.5rem',
+              fontSize: 'var(--text-xs)',
               color: 'var(--text-disabled)',
               borderTop: '1px dashed var(--sardine-border, #1e3a5f)',
               fontFamily: 'var(--font-mono)',

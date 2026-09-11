@@ -809,7 +809,7 @@ export const CompareGrid = forwardRef(function CompareGrid(
           ...style,
         }}
       >
-        <div style={{ fontSize: '0.95rem', fontFamily: 'var(--font-mono, monospace)' }}>
+        <div style={{ fontSize: 'var(--text-md)', fontFamily: 'var(--font-mono, monospace)' }}>
           Compare grid — drop up to {MAX_PANELS} GeoTIFFs or NISAR .h5 (+ .geojson overlays), or
         </div>
         <button type="button" onClick={() => fileInputRef.current?.click()} style={pickButtonStyle}>
@@ -947,7 +947,7 @@ export const CompareGrid = forwardRef(function CompareGrid(
             </button>
           </>
         )}
-        {loading && <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>loading…</span>}
+        {loading && <span style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>loading…</span>}
         <input
           ref={fileInputRef}
           type="file"
@@ -1251,7 +1251,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
             />
             Classes
           </label>
-          <span style={{ fontSize: '0.6rem', color: 'var(--text-muted, #9bb0d0)' }}>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted, #9bb0d0)' }}>
             {panel.hasColorTable ? 'color table' : 'auto colors'}
             {panel.classPaletteEntries ? ` · ${panel.classPaletteEntries}` : ''}
           </span>
@@ -1277,7 +1277,7 @@ function PanelControls({ panel, onChange, onColormap, onReverse, onAutoStretch, 
           style={{
             ...autoStretchBtnStyle,
             ...(panel.reverseColormap
-              ? { background: 'rgba(78,201,212,0.85)', color: '#0a1628', borderColor: 'var(--sardine-cyan, #4ec9d4)' }
+              ? { background: 'var(--sardine-cyan)', color: 'var(--sardine-bg)', borderColor: 'var(--sardine-cyan)' }
               : {}),
           }}
           title={panel.reverseColormap ? 'Colormap reversed — click to restore' : 'Reverse colormap'}
@@ -1387,7 +1387,7 @@ const legendStyle = {
   border: '1px solid var(--sardine-border, #1e3a5f)',
   borderRadius: 'var(--radius-sm, 4px)',
   color: 'var(--text-primary, #e8edf5)',
-  fontSize: '0.66rem',
+  fontSize: 'var(--text-xs)',
   fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
   zIndex: 1200,
   overflow: 'hidden',
@@ -1404,7 +1404,7 @@ const legendHeaderStyle = {
   color: 'var(--text-primary, #e8edf5)',
   padding: '3px 7px',
   cursor: 'pointer',
-  fontSize: '0.66rem',
+  fontSize: 'var(--text-xs)',
   fontFamily: 'inherit',
 };
 
@@ -1431,7 +1431,7 @@ const pickButtonStyle = {
   borderRadius: 'var(--radius-sm, 4px)',
   cursor: 'pointer',
   fontFamily: 'var(--font-mono, monospace)',
-  fontSize: '0.8rem',
+  fontSize: 'var(--text-md)',
 };
 
 // Optical Peek toggle — pinned to the panel's upper-right corner.
@@ -1443,7 +1443,7 @@ const opticalToggleStyle = {
   border: '1px solid var(--sardine-border, #1e3a5f)',
   borderRadius: 'var(--radius-sm, 4px)',
   padding: '2px 8px',
-  fontSize: '0.62rem',
+  fontSize: 'var(--text-xs)',
   fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
   cursor: 'pointer',
 };
@@ -1461,7 +1461,7 @@ const panelLabelStyle = {
   color: 'var(--text-primary, #e8edf5)',
   padding: '4px 6px',
   borderRadius: 'var(--radius-sm, 4px)',
-  fontSize: '0.7rem',
+  fontSize: 'var(--text-sm)',
   fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
   zIndex: 1000,
 };
@@ -1474,7 +1474,7 @@ const ctrlRowStyle = {
 };
 
 const sliderLabelStyle = {
-  fontSize: '0.62rem',
+  fontSize: 'var(--text-xs)',
   color: 'var(--text-muted, #9bb0d0)',
   minWidth: '34px',
   textAlign: 'center',
@@ -1486,7 +1486,7 @@ const autoStretchBtnStyle = {
   border: '1px solid var(--sardine-border, #1e3a5f)',
   color: 'var(--text-primary, #e8edf5)',
   borderRadius: '3px',
-  fontSize: '0.6rem',
+  fontSize: 'var(--text-xs)',
   padding: '1px 5px',
   cursor: 'pointer',
 };
@@ -1497,7 +1497,7 @@ const numFieldStyle = {
   color: 'var(--text-primary, #e8edf5)',
   border: '1px solid var(--sardine-border, #1e3a5f)',
   borderRadius: '3px',
-  fontSize: '0.62rem',
+  fontSize: 'var(--text-xs)',
   fontVariantNumeric: 'tabular-nums',
   textAlign: 'center',
   padding: '1px 2px',
@@ -1509,7 +1509,7 @@ const miniSelectStyle = {
   color: 'var(--text-primary, #e8edf5)',
   border: '1px solid var(--sardine-border, #1e3a5f)',
   borderRadius: '3px',
-  fontSize: '0.65rem',
+  fontSize: 'var(--text-xs)',
   padding: '1px 2px',
 };
 
@@ -1517,7 +1517,7 @@ const dbToggleStyle = {
   display: 'flex',
   alignItems: 'center',
   gap: '2px',
-  fontSize: '0.65rem',
+  fontSize: 'var(--text-xs)',
   cursor: 'pointer',
 };
 
@@ -1526,7 +1526,7 @@ const removeButtonStyle = {
   border: 'none',
   color: 'var(--text-muted, #5a7099)',
   cursor: 'pointer',
-  fontSize: '1rem',
+  fontSize: 'var(--text-lg)',
   lineHeight: 1,
   padding: '0 2px',
 };
@@ -1551,7 +1551,7 @@ const syncLabelStyle = {
   alignItems: 'center',
   gap: '5px',
   color: 'var(--text-primary, #e8edf5)',
-  fontSize: '0.72rem',
+  fontSize: 'var(--text-sm)',
   fontFamily: 'var(--font-mono, monospace)',
   cursor: 'pointer',
 };
@@ -1563,7 +1563,7 @@ const addButtonStyle = {
   padding: '3px 10px',
   borderRadius: '3px',
   cursor: 'pointer',
-  fontSize: '0.72rem',
+  fontSize: 'var(--text-sm)',
   fontFamily: 'var(--font-mono, monospace)',
 };
 
@@ -1577,7 +1577,7 @@ const dropHintStyle = {
   border: '2px dashed var(--sardine-cyan, #4ec9d4)',
   color: 'var(--sardine-cyan, #4ec9d4)',
   fontFamily: 'var(--font-mono, monospace)',
-  fontSize: '0.95rem',
+  fontSize: 'var(--text-md)',
   pointerEvents: 'none',
   zIndex: 1800,
 };
@@ -1604,7 +1604,7 @@ const overlayChipStyle = {
   borderRadius: 'var(--radius-sm, 4px)',
   padding: '2px 6px',
   color: 'var(--text-primary, #e8edf5)',
-  fontSize: '0.68rem',
+  fontSize: 'var(--text-xs)',
   fontFamily: 'var(--font-mono, monospace)',
 };
 

@@ -1,6 +1,10 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import './theme/sardine-theme.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
+// The single stylesheet. app/theme/sardine-theme.css used to hold a byte-identical
+// copy of this file and was the one the app actually loaded, so edits to the
+// canonical src/theme/ copy silently did nothing. Import the real one (W030).
+import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
 import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
@@ -10,6 +14,7 @@ import { URLFile } from '../src/loaders/url-file.js';
 import { listLocalCOGDatasets, loadLocalCOGDataset } from '../src/loaders/cog-loader.js';
 import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
+import { Button, CloseButton, Field, Section, Panel, Toolbar, Dialog } from '../src/components/ui/index.js';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds, reprojectBbox, bboxToPixelRange, roiIntersectsFile } from '../src/utils/roi-subset.js';
@@ -258,23 +263,11 @@ function generateMarkdownState(state) {
   return lines.join('\n');
 }
 
-/**
- * CollapsibleSection - A control panel section with a clickable header to collapse/expand.
- */
-function CollapsibleSection({ title, defaultOpen = true, children }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className="control-section">
-      <h3
-        className={`collapsible${open ? '' : ' collapsed'}`}
-        onClick={() => setOpen(o => !o)}
-      >{title}</h3>
-      <div className={`section-body${open ? '' : ' collapsed'}`}>
-        {children}
-      </div>
-    </div>
-  );
-}
+// CollapsibleSection was defined here and used 21 times; W028 promoted it
+// verbatim to src/components/ui/Section.jsx (which also absorbed
+// MetadataPanel's private copy) and gave it a keyboard-operable heading.
+// The alias keeps the 21 call sites reading the way they always did.
+const CollapsibleSection = Section;
 
 // Activity rail groups — each id gates a cluster of control sections in the
 // panel (one group visible at a time, VS Code activity-bar style).
@@ -330,6 +323,54 @@ function computeLogNormalHist(mean, std, numBins = 128, syntheticCount = 100000)
  * (Earthdata-authenticated NISAR streaming, some STAC endpoints).
  * Dismissible; remembered in localStorage.
  */
+// ─── W030: load-progress + empty-state copy ─────────────────────────────────
+
+/** Human label for the current load phase. */
+function loadPhaseLabel(detail) {
+  switch (detail?.phase) {
+    case 'opening':  return 'Opening file';
+    case 'metadata': return 'Reading metadata';
+    case 'index':    return 'Building chunk index';
+    case 'chunks':   return detail.fromCache ? 'Reading cached chunks' : 'Streaming chunks';
+    case 'done':     return 'Ready';
+    default:         return 'Loading';
+  }
+}
+
+/** "142 / 380 chunks · 412 MB" — the counts, not just a percentage. */
+function loadDetailText(pct, detail) {
+  const rounded = `${Math.round(pct)}%`;
+  if (!detail || detail.chunksTotal <= 0) return rounded;
+  const parts = [`${detail.chunksDone} / ${detail.chunksTotal} chunks`];
+  if (detail.bytes > 0) {
+    const mb = detail.bytes / (1024 * 1024);
+    parts.push(mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`);
+  }
+  // A warm L2 (IndexedDB) cache means no network fetch happened — saying so
+  // keeps a near-instant reload from looking like a broken progress bar.
+  if (detail.cachedChunks > 0) {
+    parts.push(detail.fromCache ? 'from cache' : `${detail.cachedChunks} cached`);
+  }
+  return `${rounded} · ${parts.join(' · ')}`;
+}
+
+/** What to do next, per source — instructions, not a description of the app. */
+const EMPTY_STATE_HINTS = {
+  nisar: 'Drop a NISAR L2 GCOV .h5 file here, or paste a URL to one. Nothing uploads — it streams from your disk (or by HTTP range) straight to the GPU.',
+  'local-tif': 'Drop one or more SAR GeoTIFFs here, or choose them below. Multiple files load as a mosaic.',
+  remote: 'Paste a direct URL to a GCOV granule or a Cloud Optimized GeoTIFF. Only the chunks in view are fetched.',
+  cog: 'Paste a URL to a Cloud Optimized GeoTIFF. Only the tiles in view are fetched.',
+  catalog: 'Load a GeoJSON scene catalog, then pick a scene from it.',
+  cmr: 'Search NASA CMR for a granule, pick one, then load a dataset from it.',
+};
+
+/**
+ * Deep link to the hosted hero scene (Pacaya-Samiria floodplain, dual-pol
+ * L-band RGB). Same parameters as the README hero image, so the demo the docs
+ * advertise is one click from the empty viewer.
+ */
+const HERO_DEMO_QUERY = '?cog=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hh.tif,https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid&c=12233,7038&z=-1.5';
+
 function PagesBanner() {
   const isPages = import.meta.env.VITE_DEPLOY_TARGET === 'github-pages';
   const [dismissed, setDismissed] = useState(() => {
@@ -341,41 +382,15 @@ function PagesBanner() {
     try { localStorage.setItem('sardine.pages-banner.dismissed', '1'); } catch {}
   };
   return (
-    <div style={{
-      position: 'relative',
-      padding: '6px 36px 6px 12px',
-      background: 'var(--sardine-bg-panel, #122240)',
-      borderBottom: '1px solid var(--sardine-cyan, #4ec9d4)',
-      color: 'var(--sardine-text-primary, #e8edf5)',
-      fontSize: '0.75rem',
-      lineHeight: 1.4,
-      textAlign: 'center',
-    }}>
-      <strong style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>SARdine</strong>{' '}
+    <div className="pages-banner">
+      <strong className="u-accent">SARdine</strong>{' '}
       runs entirely in your browser — drop a GeoTIFF, NISAR HDF5, or GeoJSON file to start.{' '}
       Earthdata-authenticated streaming and the STAC catalog browser need the local dev server (
-      <a href="https://github.com/nicksteiner/sardine#getting-started" target="_blank" rel="noopener noreferrer"
-         style={{ color: 'var(--sardine-cyan, #4ec9d4)' }}>
+      <a href="https://github.com/nicksteiner/sardine#getting-started" target="_blank" rel="noopener noreferrer" className="u-accent">
         npm run dev
       </a>
       ).
-      <button
-        onClick={close}
-        title="Dismiss"
-        aria-label="Dismiss"
-        style={{
-          position: 'absolute', top: 4, right: 8,
-          background: 'transparent',
-          border: 'none',
-          color: 'var(--sardine-text-secondary, #8fa4c4)',
-          cursor: 'pointer',
-          fontSize: '0.9rem',
-          lineHeight: 1,
-          padding: '2px 6px',
-        }}
-      >
-        ×
-      </button>
+      <CloseButton onClick={close} label="Dismiss" className="pages-banner__close" />
     </div>
   );
 }
@@ -415,7 +430,39 @@ function App() {
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
   const [loading, setLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
-  const [error, setError] = useState(null);
+  // W030: the counts behind the bar — {phase, chunksDone, chunksTotal, bytes,
+  // cachedChunks, fromCache}. "142 / 380 chunks · 412 MB" tells a SAR user more
+  // than a percentage, and a warm L2 reload must not imply a network fetch.
+  const [loadDetail, setLoadDetail] = useState(null);
+
+  // W030: errors accumulate instead of overwriting each other. A dozen async
+  // paths used to race on one string, so the last failure to land was the only
+  // one anybody saw. setError(msg) is kept as-is for the ~32 existing call
+  // sites; setError(null) still clears, which is the established "starting a
+  // load" idiom.
+  const [errors, setErrors] = useState([]);
+  const errorIdRef = useRef(0);
+  const setError = useCallback((message) => {
+    if (message == null) { setErrors([]); return; }
+    const text = String(message);
+    setErrors(prev => {
+      // Repeated identical failures (a retried tile, a re-entered effect) stack
+      // a count rather than a wall of duplicates.
+      const existing = prev.findIndex(e => e.message === text);
+      if (existing >= 0) {
+        const next = prev.slice();
+        next[existing] = { ...next[existing], count: next[existing].count + 1, at: Date.now() };
+        return next;
+      }
+      const entry = { id: ++errorIdRef.current, message: text, count: 1, at: Date.now() };
+      return [...prev, entry].slice(-5); // oldest fall off; five is already a lot
+    });
+  }, []);
+  const dismissError = useCallback((id) => {
+    setErrors(prev => prev.filter(e => e.id !== id));
+  }, []);
+  // Most-recent error, for the many `!error` / `error &&` guards downstream.
+  const error = errors.length > 0 ? errors[errors.length - 1].message : null;
 
   // Load generation counter — incremented on each new load to discard stale results
   const loadGenRef = useRef(0);
@@ -1310,6 +1357,124 @@ function App() {
       return next.length > 500 ? next.slice(-500) : next;
     });
   }, []);
+
+  // ── W030: load-scoped cancellation ────────────────────────────────────────
+  // One AbortController per load operation, aborted when the user presses
+  // Cancel or when a new load supersedes it. This is NOT the per-tile deck.gl
+  // signal: W003 established that forwarding that one into readChunksBatch
+  // breaks tiles during viewport stabilisation and poisons the adaptive
+  // concurrency estimator. This signal cancels a whole load and reaches the
+  // h5chunk range reads, which is the only way Cancel can be honest — a cancel
+  // that stops the spinner while bytes keep arriving is worse than none.
+  const loadAbortRef = useRef(null);
+  const [loadCancellable, setLoadCancellable] = useState(false);
+
+  /** Register a load's controller as the active one, superseding any previous. */
+  const beginLoadAbort = useCallback((controller) => {
+    loadAbortRef.current?.abort();
+    loadAbortRef.current = controller;
+    setLoadCancellable(true);
+    return controller.signal;
+  }, []);
+
+  /** Retire a load's controller (success or failure) if it is still current. */
+  const endLoadAbort = useCallback((controller) => {
+    if (loadAbortRef.current === controller) {
+      loadAbortRef.current = null;
+      setLoadCancellable(false);
+    }
+  }, []);
+
+  /** Progress sink shared by every load path — pct plus the real counts. */
+  const handleLoadProgress = useCallback((pct, detail) => {
+    setLoadProgress(pct);
+    if (detail) setLoadDetail(detail);
+  }, []);
+
+  /** Reset the progress surface once a load settles. */
+  const resetLoadProgress = useCallback(() => {
+    setLoadProgress(0);
+    setLoadDetail(null);
+  }, []);
+
+  const cancelActiveLoad = useCallback(() => {
+    const controller = loadAbortRef.current;
+    if (!controller) return;
+    controller.abort();
+    loadAbortRef.current = null;
+    setLoadCancellable(false);
+    setLoading(false);
+    resetLoadProgress();
+    addStatusLog('warn', 'Load cancelled', 'In-flight range reads were aborted');
+  }, [addStatusLog, resetLoadProgress]);
+
+  /** True when an error is just this cancellation coming back up the stack. */
+  const isAbortError = (e) => e?.name === 'AbortError';
+
+  // ── W030: mobile bottom-sheet drag ────────────────────────────────────────
+  // sardine-theme.css already declares cursor:grab, touch-action:none and two
+  // detents (45dvh / 82dvh) on .controls-panel — but the handle was a plain
+  // onClick, so the sheet looked draggable and was not. These handlers make the
+  // affordance true; a tap still toggles between the same two detents.
+  const controlsPanelRef = useRef(null);
+  const sheetDragRef = useRef(null);
+  const sheetTapSuppressedRef = useRef(false);
+  const SHEET_DETENTS = [0.45, 0.82]; // must match sardine-theme.css
+  const SHEET_DRAG_SLOP = 8;          // px before a tap counts as a drag
+
+  const handleSheetPointerDown = useCallback((e) => {
+    // The sheet only exists in the mobile layout; desktop keeps the toggle.
+    if (!window.matchMedia('(max-width: 768px)').matches) return;
+    const el = controlsPanelRef.current;
+    if (!el) return;
+    const height = el.getBoundingClientRect().height;
+    sheetDragRef.current = { startY: e.clientY, startH: height, lastH: height, moved: 0 };
+    el.style.transition = 'none';
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not captureable */ }
+  }, []);
+
+  const handleSheetPointerMove = useCallback((e) => {
+    const drag = sheetDragRef.current;
+    const el = controlsPanelRef.current;
+    if (!drag || !el) return;
+    const dy = drag.startY - e.clientY; // up is positive, sheet grows
+    drag.moved = Math.max(drag.moved, Math.abs(dy));
+    const vh = window.innerHeight;
+    // Clamp a little outside the detents so the drag has somewhere to go.
+    const h = Math.min(vh * 0.92, Math.max(vh * 0.2, drag.startH + dy));
+    drag.lastH = h;
+    el.style.height = `${h}px`;
+  }, []);
+
+  const handleSheetPointerUp = useCallback((e) => {
+    const drag = sheetDragRef.current;
+    const el = controlsPanelRef.current;
+    sheetDragRef.current = null;
+    if (!drag || !el) return;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    el.style.transition = '';
+    el.style.height = ''; // hand height back to the CSS detent
+    if (drag.moved < SHEET_DRAG_SLOP) return; // a tap — let onClick toggle
+    sheetTapSuppressedRef.current = true;
+    const frac = drag.lastH / window.innerHeight;
+    const midpoint = (SHEET_DETENTS[0] + SHEET_DETENTS[1]) / 2;
+    setSheetExpanded(frac >= midpoint);
+  }, []);
+
+  const handleSheetClick = useCallback(() => {
+    // A drag already chose a detent; don't toggle back on the trailing click.
+    if (sheetTapSuppressedRef.current) {
+      sheetTapSuppressedRef.current = false;
+      return;
+    }
+    setSheetExpanded(v => !v);
+  }, []);
+
+  /** W030 empty state: open the hosted hero scene via its deep link. */
+  const openHeroDemo = useCallback(() => {
+    addStatusLog('info', 'Opening the demo scene (Pacaya-Samiria dual-pol RGB)');
+    window.location.search = HERO_DEMO_QUERY;
+  }, [addStatusLog]);
 
   // One-time status log of which histogram compute path is active (W007).
   // Emitted the first time histogram stats are actually computed.
@@ -3468,9 +3633,14 @@ function App() {
     setLoading(true);
     setError(null);
 
+    // W030: metadata streaming is cancellable too — a mis-pasted multi-GB URL
+    // should be stoppable before any band is loaded.
+    const metaController = new AbortController();
+    const metaSignal = beginLoadAbort(metaController);
+
     try {
       addStatusLog('info', `Streaming NISAR metadata from: ${name}`);
-      const result = await listNISARDatasetsFromUrl(resolvedUrl, { fetchHeaders });
+      const result = await listNISARDatasetsFromUrl(resolvedUrl, { fetchHeaders, signal: metaSignal });
       const datasets = result.datasets || result;
       // Store the stream reader to reuse when loading (avoids re-downloading metadata)
       if (result._streamReader) {
@@ -3536,12 +3706,15 @@ function App() {
             ? ' — Token may be expired. Run: curl -n https://urs.earthdata.nasa.gov/api/users/tokens and paste the access_token value'
             : ' — Set your Earthdata token in the NISAR Search panel')
         : '';
-      setError(`Failed to read remote NISAR file: ${e.message}${hint}`);
-      addStatusLog('error', `Remote metadata read failed${hint}`, e.message);
+      if (!isAbortError(e)) {
+        setError(`Failed to read remote NISAR file: ${e.message}${hint}`);
+        addStatusLog('error', `Remote metadata read failed${hint}`, e.message);
+      }
     } finally {
+      endLoadAbort(metaController);
       setLoading(false);
     }
-  }, [addStatusLog]);
+  }, [addStatusLog, beginLoadAbort, endLoadAbort]);
 
   // Keep the forward-ref pointed at the latest handleRemoteFileSelect so the
   // share-link effect can invoke it after mount (and after a token is pasted).
@@ -3594,8 +3767,21 @@ function App() {
     if (!remoteUrl) return;
     const gen = ++loadGenRef.current;
 
+    // W030: load-scoped controller — Cancel must stop the range reads on the
+    // wire, not just discard whatever comes back (that is what the pre-existing
+    // `cancelled` flag idiom did, and why the transfer kept running).
+    const loadController = new AbortController();
+    const loadSignal = beginLoadAbort(loadController);
+
     setLoading(true);
+    setLoadProgress(0);
+    setLoadDetail(null);
     setError(null);
+
+    // W030: the overview prefetch runs on past the load promise and is where a
+    // remote granule's bytes actually move. Keep the bar and Cancel alive for
+    // it — `loading` still clears on time so the first tiles can paint.
+    let streamingTail = null;
 
     try {
       let data;
@@ -3698,6 +3884,10 @@ function App() {
           polarization: selectedPolarization,
           _streamReader: handleRemoteFileSelect._cachedReader || null,
           fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+          // W030: progress stays live across prefetchOverviewChunks() below —
+          // that is where a remote granule actually spends its bytes.
+          onProgress: handleLoadProgress,
+          signal: loadSignal,
           // W016: deep-link region (WGS84) — scopes overview prefetch +
           // Phase-2 refinement to the intersecting chunks. Read pre-
           // consumption; applyDeepLinkRoi below consumes the ref.
@@ -3713,9 +3903,10 @@ function App() {
           // Keep the promise: the background histogram waits on it so its
           // tile sampling doesn't compete with the first-paint chunk fetch.
           if (data.prefetchOverviewChunks) {
-            data._prefetchPromise = data.prefetchOverviewChunks().catch(e =>
-              console.warn('[SARdine] Overview prefetch failed:', e.message)
-            );
+            data._prefetchPromise = data.prefetchOverviewChunks().catch(e => {
+              if (!isAbortError(e)) console.warn('[SARdine] Overview prefetch failed:', e.message);
+            });
+            streamingTail = data._prefetchPromise;
           }
         }
 
@@ -3858,12 +4049,20 @@ function App() {
         })();
       }
     } catch (e) {
-      setError(`Failed to load remote NISAR: ${e.message}`);
-      addStatusLog('error', 'Remote load failed', e.message);
+      if (!isAbortError(e)) {
+        setError(`Failed to load remote NISAR: ${e.message}`);
+        addStatusLog('error', 'Remote load failed', e.message);
+      }
     } finally {
       setLoading(false);
+      if (streamingTail) {
+        streamingTail.finally(() => { endLoadAbort(loadController); resetLoadProgress(); });
+      } else {
+        endLoadAbort(loadController);
+        resetLoadProgress();
+      }
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, applyDeepLinkRoi, logHistogramPathOnce]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, applyDeepLinkRoi, logHistogramPathOnce, beginLoadAbort, endLoadAbort, handleLoadProgress, resetLoadProgress]);
 
   // Keep the forward-ref current so the deep-link auto-load (bbox links only,
   // W016) can fire it from handleRemoteFileSelect, which is defined earlier.
@@ -3883,7 +4082,13 @@ function App() {
       return;
     }
 
+    // W030: a load-scoped controller so Cancel actually stops the read stream.
+    const loadController = new AbortController();
+    const loadSignal = beginLoadAbort(loadController);
+
     setLoading(true);
+    setLoadProgress(0);
+    setLoadDetail(null);
     setError(null);
 
     try {
@@ -4111,6 +4316,8 @@ function App() {
         data = await loadNISARGCOV(nisarFile, {
           frequency: selectedFrequency,
           polarization: selectedPolarization,
+          onProgress: handleLoadProgress,
+          signal: loadSignal,
         });
 
         addStatusLog('success', 'NISAR dataset loaded',
@@ -4257,14 +4464,19 @@ function App() {
 
       addStatusLog('success', `NISAR ${nisarProductType} loaded and ready to display`);
     } catch (e) {
-      setError(`Failed to load NISAR dataset: ${e.message}`);
-      setImageData(null);
-      addStatusLog('error', 'Failed to load NISAR dataset', e.message);
-      console.error('NISAR loading error:', e);
+      // A user cancel is not a failure — it already logged itself.
+      if (!isAbortError(e)) {
+        setError(`Failed to load NISAR dataset: ${e.message}`);
+        setImageData(null);
+        addStatusLog('error', 'Failed to load NISAR dataset', e.message);
+        console.error('NISAR loading error:', e);
+      }
     } finally {
+      endLoadAbort(loadController);
       setLoading(false);
+      resetLoadProgress();
     }
-  }, [nisarFile, nisarFile2, nisarFile3, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene]);
+  }, [nisarFile, nisarFile2, nisarFile3, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene, beginLoadAbort, endLoadAbort, handleLoadProgress, resetLoadProgress]);
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
@@ -6269,70 +6481,39 @@ function App() {
       />
       {/* Drag-and-drop overlay */}
       {dragOver && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 9999,
-          background: 'rgba(0, 180, 220, 0.15)',
-          border: '3px dashed rgba(0, 180, 220, 0.6)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          pointerEvents: 'none',
-        }}>
-          <div style={{
-            padding: '24px 48px', borderRadius: '12px',
-            background: 'rgba(0, 0, 0, 0.7)', color: '#fff',
-            fontSize: '1.2rem', fontWeight: 600,
-          }}>
+        <div className="dropzone">
+          <p className="dropzone__label">
             {fileType === 'local-tif' && mosaicFiles.length > 0
               ? `Drop GeoTIFFs to add to mosaic (${mosaicFiles.length} loaded)`
               : (fileType === 'nisar' && nisarProductType === 'GCOV' && nisarFile)
                 ? `Drop GCOV files to add to mosaic (${gcovMosaicFiles.length} secondary)`
                 : 'Drop HDF5, GeoTIFF, or GeoJSON file'}
-          </div>
+          </p>
         </div>
       )}
       {/* GeoJSON feature popup */}
       {geojsonPopup && (
         <div
-          style={{
-            position: 'fixed',
-            left: geojsonPopup.x + 12,
-            top: geojsonPopup.y - 12,
-            zIndex: 10000,
-            background: 'rgba(20, 20, 30, 0.95)',
-            border: '1px solid rgba(255, 255, 255, 0.2)',
-            borderRadius: '8px',
-            padding: '12px 16px',
-            color: '#fff',
-            fontSize: '0.82rem',
-            maxWidth: '360px',
-            maxHeight: '400px',
-            overflow: 'auto',
-            boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-            fontFamily: 'monospace',
-          }}
+          className="feature-popup"
+          role="dialog"
+          aria-label="Feature properties"
+          style={{ left: geojsonPopup.x + 12, top: geojsonPopup.y - 12 }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontWeight: 600, color: '#ffcc00', fontSize: '0.85rem' }}>
-              {geojsonPopup.geometry?.type || 'Feature'}
-            </span>
-            <button
-              onClick={() => setGeojsonPopup(null)}
-              style={{
-                background: 'none', border: 'none', color: '#aaa', cursor: 'pointer',
-                fontSize: '1rem', padding: '0 4px', lineHeight: 1,
-              }}
-            >x</button>
-          </div>
-          <div style={{ fontSize: '0.72rem', color: '#888', marginBottom: '6px' }}>{geojsonPopup.layer}</div>
-          <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+          <header className="u-between u-mb-sm">
+            <h2 className="feature-popup__title">{geojsonPopup.geometry?.type || 'Feature'}</h2>
+            <CloseButton onClick={() => setGeojsonPopup(null)} label="Close feature popup" />
+          </header>
+          <p className="feature-popup__layer">{geojsonPopup.layer}</p>
+          <table className="feature-popup__table">
             <tbody>
               {Object.entries(geojsonPopup.properties).map(([key, val]) => (
-                <tr key={key} style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-                  <td style={{ padding: '3px 8px 3px 0', color: '#aaa', whiteSpace: 'nowrap', verticalAlign: 'top' }}>{key}</td>
-                  <td style={{ padding: '3px 0', wordBreak: 'break-word' }}>{String(val ?? '')}</td>
+                <tr key={key}>
+                  <th scope="row">{key}</th>
+                  <td>{String(val ?? '')}</td>
                 </tr>
               ))}
               {Object.keys(geojsonPopup.properties).length === 0 && (
-                <tr><td style={{ color: '#666', fontStyle: 'italic' }}>No properties</td></tr>
+                <tr><td className="feature-popup__empty">No properties</td></tr>
               )}
             </tbody>
           </table>
@@ -6354,14 +6535,21 @@ function App() {
           onPalette={() => setCommandPaletteOpen(true)}
         />
         {/* Controls Panel — one rail group visible at a time */}
-        <div className={`controls-panel${panelOpen ? '' : ' closed'}${sheetExpanded ? ' expanded' : ''}`}>
+        <div
+          ref={controlsPanelRef}
+          className={`controls-panel${panelOpen ? '' : ' closed'}${sheetExpanded ? ' expanded' : ''}`}
+        >
           <button
             className="sheet-handle"
             aria-label={sheetExpanded ? 'Collapse panel' : 'Expand panel'}
-            onClick={() => setSheetExpanded(v => !v)}
+            onClick={handleSheetClick}
+            onPointerDown={handleSheetPointerDown}
+            onPointerMove={handleSheetPointerMove}
+            onPointerUp={handleSheetPointerUp}
+            onPointerCancel={handleSheetPointerUp}
           />
           {!imageData && (activePanel === 'analysis' || (activePanel === 'export' && !compareMode)) && (
-            <div className="control-section" style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            <div className="control-section u-note">
               Load a scene to enable {activePanel === 'analysis'
                 ? 'ROI, annotation, and profile tools'
                 : 'export and share options'}.
@@ -6384,13 +6572,13 @@ function App() {
           {/* Earthdata Login — only relevant for hosted builds, but always
               shown so users can configure even in dev. */}
           <CollapsibleSection title="Earthdata Login" defaultOpen={isHostedBuild() && !edlToken}>
-            <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+            <div className="u-lede u-mb-sm">
               {isHostedBuild()
                 ? 'Required for streaming NISAR / Sentinel-1 / OPERA from NASA DAACs. Your token is stored only in this browser.'
                 : 'Optional in dev (the Vite proxy bypasses auth). Useful for testing the hosted flow.'}
             </div>
             <div className="control-group">
-              <label style={{ fontSize: '0.7rem' }}>EDL token</label>
+              <label className="u-sm">EDL token</label>
               <input
                 type="password"
                 placeholder="Paste your Earthdata Login token"
@@ -6401,35 +6589,32 @@ function App() {
                   setEdlValidation(null);
                 }}
                 style={{
-                  width: '100%', padding: '4px 6px', fontSize: '0.7rem',
+                  width: '100%', padding: '4px 6px', fontSize: 'var(--text-sm)',
                   background: 'var(--sardine-bg-panel)',
                   border: '1px solid var(--sardine-border)',
                   color: 'var(--sardine-text-primary, #e8edf5)',
                   borderRadius: '2px',
                 }}
               />
-              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '2px', lineHeight: 1.4 }}>
-                <a href="https://urs.earthdata.nasa.gov/profile" target="_blank" rel="noopener noreferrer"
-                   style={{ color: 'var(--sardine-cyan)' }}>
+              <div className="u-hint u-mt-2xs">
+                <a href="https://urs.earthdata.nasa.gov/profile" target="_blank" rel="noopener noreferrer" className="u-accent">
                   Open Earthdata profile →
                 </a>
                 <br/>
                 Then click <strong>Generate Token</strong> in the left sidebar.
               </div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '6px', lineHeight: 1.45 }}>
+              <div className="u-hint u-mt-sm">
                 <strong>Where your token goes:</strong> it stays in this browser's
                 localStorage and is sent only to NASA servers{isHostedBuild()
                   ? ' via the relay Worker below (needed because DAACs don’t send CORS headers). SARdine is a research project — the Worker doesn’t log or store tokens, and its ~200-line source is in the repo (sardine-edl-proxy/). Don’t want to take our word for it? Deploy your own copy and paste its URL below.'
                   : ' (the local dev proxy relays it).'}{' '}
                 EDL tokens are read-only data-access credentials for mostly-public
                 data, they expire, and you can{' '}
-                <a href="https://urs.earthdata.nasa.gov/user_tokens" target="_blank" rel="noopener noreferrer"
-                   style={{ color: 'var(--sardine-cyan)' }}>revoke them anytime</a>.
+                <a href="https://urs.earthdata.nasa.gov/user_tokens" target="_blank" rel="noopener noreferrer" className="u-accent">revoke them anytime</a>.
               </div>
             </div>
             {isHostedBuild() && (
-              <div className="control-group">
-                <label style={{ fontSize: '0.7rem' }}>Proxy URL</label>
+              <Field label="Proxy URL" className="control-group">
                 <input
                   type="text"
                   value={edlProxyUrl}
@@ -6439,16 +6624,16 @@ function App() {
                     setEdlValidation(null);
                   }}
                   style={{
-                    width: '100%', padding: '4px 6px', fontSize: '0.7rem',
+                    width: '100%', padding: '4px 6px', fontSize: 'var(--text-sm)',
                     background: 'var(--sardine-bg-panel)',
                     border: '1px solid var(--sardine-border)',
                     color: 'var(--sardine-text-primary, #e8edf5)',
                     borderRadius: '2px',
                   }}
                 />
-              </div>
+              </Field>
             )}
-            <div className="control-group" style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <div className="control-group u-row-sm">
               <button
                 onClick={async () => {
                   setEdlValidating(true);
@@ -6459,18 +6644,16 @@ function App() {
                   if (result.ok) addStatusLog('success', `Earthdata token valid — ${result.username}`);
                   else addStatusLog('error', `Earthdata token check failed: ${result.error}`);
                 }}
-                disabled={!edlToken || edlValidating}
-                style={{ flex: 1, fontSize: '0.7rem' }}
-              >
+                disabled={!edlToken || edlValidating} className="u-flex1 u-sm">
                 {edlValidating ? 'Checking…' : 'Test token'}
               </button>
               {edlValidation?.ok && (
-                <span style={{ fontSize: '0.7rem', color: 'var(--sardine-cyan)' }}>
+                <span className="u-sm u-accent">
                   ✓ {edlValidation.username}
                 </span>
               )}
               {edlValidation && !edlValidation.ok && (
-                <span style={{ fontSize: '0.65rem', color: '#e8833a' }} title={edlValidation.error}>
+                <span style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-orange)' }} title={edlValidation.error}>
                   ✗ failed
                 </span>
               )}
@@ -6485,14 +6668,14 @@ function App() {
               emits a ?compare= link from the URL-backed panels. */}
           {activePanel === 'export' && (sharedRawUrl || imageData || compareMode) && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+              <div className="u-lede u-mb-sm">
                 {compareMode
                   ? 'Compare grid — the link reopens the grid with its URL-loaded panels. Local-file panels cannot travel in a URL and are skipped.'
                   : sharedRawUrl
                     ? 'Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.'
                     : 'Local file — the link carries the render + view state (no data travels). Open it, then load the same file to reproduce this view.'}
               </div>
-              <div className="control-group" style={{ display: 'flex', gap: '6px' }}>
+              <div className="control-group u-row-sm">
                 <button
                   disabled={!compareMode && !sharedRawUrl && !localShareName}
                   title={compareMode
@@ -6574,9 +6757,7 @@ function App() {
                     } catch (e) {
                       addStatusLog('error', `Failed to copy share link: ${e.message}`);
                     }
-                  }}
-                  style={{ flex: 1, fontSize: '0.7rem' }}
-                >
+                  }} className="u-flex1 u-sm">
                   Copy share link
                 </button>
               </div>
@@ -6593,8 +6774,7 @@ function App() {
                   type="file"
                   accept=".tif,.tiff"
                   multiple
-                  id="local-tif-input"
-                  style={{ display: 'none' }}
+                  id="local-tif-input" className="u-hidden"
                   onChange={(e) => {
                     const files = Array.from(e.target.files || []);
                     if (files.length === 0) return;
@@ -6606,30 +6786,28 @@ function App() {
                   }}
                 />
                 <button
-                  className="btn-secondary"
+                  className="btn-secondary u-full"
                   onClick={() => document.getElementById('local-tif-input').click()}
-                  style={{ width: '100%' }}
+                  
                 >
                   {imageData?.sliceCount > 1
                     ? `${imageData.sliceCount} files loaded - Change...`
                     : imageData?.data ? 'Change File...' : 'Choose File(s)...'}
                 </button>
                 {loading && loadProgress > 0 && loadProgress < 100 && (
-                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                  <div className="progress-track u-mt-sm">
                     <div className="progress-fill" style={{ width: `${loadProgress}%`, transition: 'width 0.3s ease' }} />
                   </div>
                 )}
               </div>
 
               {/* Compare grid — open up to 4 GeoTIFFs / NISAR .h5 side by side / 2×2 */}
-              <div className="control-group">
-                <label>Compare (up to 4, synced)</label>
+              <Field label="Compare (up to 4, synced)" className="control-group">
                 <input
                   type="file"
                   accept=".tif,.tiff,.h5,.hdf5,.he5"
                   multiple
-                  id="compare-grid-input"
-                  style={{ display: 'none' }}
+                  id="compare-grid-input" className="u-hidden"
                   onChange={(e) => {
                     const files = Array.from(e.target.files || []);
                     if (files.length === 0) return;
@@ -6648,27 +6826,26 @@ function App() {
                 >
                   {compareMode ? 'Exit Compare Grid' : 'Compare Files…'}
                 </button>
-              </div>
+              </Field>
 
               {imageData?.sliceCount > 1 && (
-                <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <div className="control-group u-note">
                   Mosaic: {imageData.sliceCount} slices, {imageData.width}x{imageData.height} px
                   {imageData.crs && <span> · CRS: {imageData.crs}</span>}
                 </div>
               )}
               {imageData?.sliceNames && (
-                <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                <div className="control-group u-note u-break">
                   {imageData.sliceNames.join(', ')}
                 </div>
               )}
               {mosaicFiles.length > 0 && (
-                <div className="control-group" style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+                <div className="control-group u-row-sm">
                   <input
                     type="file"
                     accept=".tif,.tiff"
                     multiple
-                    id="local-tif-add-input"
-                    style={{ display: 'none' }}
+                    id="local-tif-add-input" className="u-hidden"
                     onChange={(e) => {
                       const files = Array.from(e.target.files || []);
                       if (files.length > 0) appendMosaicTIFs(files);
@@ -6676,18 +6853,18 @@ function App() {
                     }}
                   />
                   <button
-                    className="btn-secondary"
+                    className="btn-secondary u-flex1"
                     onClick={() => document.getElementById('local-tif-add-input').click()}
-                    style={{ flex: 1 }}
+                    
                     title="Add more GeoTIFFs to the current mosaic (must share CRS)"
                   >
                     + Add to Mosaic
                   </button>
                   {mosaicFiles.length > 1 && (
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-flex1"
                       onClick={clearMosaic}
-                      style={{ flex: 1 }}
+                      
                       title="Remove all mosaicked files"
                     >
                       Clear Mosaic
@@ -6701,13 +6878,11 @@ function App() {
           {/* NISAR HDF5 Input */}
           {(fileType === 'nisar' || fileType === 'nisar-gunw') && (
             <CollapsibleSection title={`Load NISAR ${nisarProductType}`}>
-              <div className="control-group">
-                <label>HDF5 File</label>
+              <Field label="HDF5 File" className="control-group">
                 <input
                   type="file"
                   accept=".h5,.hdf5,.he5"
-                  id="nisar-file-input"
-                  style={{ display: 'none' }}
+                  id="nisar-file-input" className="u-hidden"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
@@ -6716,16 +6891,16 @@ function App() {
                   }}
                 />
                 <button
-                  className="btn-secondary"
+                  className="btn-secondary u-full"
                   onClick={() => document.getElementById('nisar-file-input').click()}
-                  style={{ width: '100%' }}
+                  
                 >
                   {nisarFile ? 'Change File...' : 'Choose File...'}
                 </button>
-              </div>
+              </Field>
 
               {nisarFile && (
-                <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+                <div className="control-group u-hint u-break">
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
               )}
@@ -6733,13 +6908,12 @@ function App() {
               {/* GCOV mosaic — visible only for GCOV (not GUNW) */}
               {fileType === 'nisar' && nisarProductType === 'GCOV' && nisarFile && (
                 <>
-                  <div className="control-group" style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+                  <div className="control-group u-row-sm">
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
                       multiple
-                      id="gcov-mosaic-add-input"
-                      style={{ display: 'none' }}
+                      id="gcov-mosaic-add-input" className="u-hidden"
                       onChange={(e) => {
                         const files = Array.from(e.target.files || []);
                         if (files.length > 0) appendGcovMosaicFiles(files);
@@ -6747,18 +6921,18 @@ function App() {
                       }}
                     />
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-flex1"
                       onClick={() => document.getElementById('gcov-mosaic-add-input').click()}
-                      style={{ flex: 1 }}
+                      
                       title="Add NISAR GCOV files to mosaic alongside the primary (must share CRS)"
                     >
                       + Add GCOV to Mosaic
                     </button>
                     {(gcovMosaicFiles.length > 0 || gcovMosaicLayers.length > 0) && (
                       <button
-                        className="btn-secondary"
+                        className="btn-secondary u-flex1"
                         onClick={clearGcovMosaic}
-                        style={{ flex: 1 }}
+                        
                         title="Remove all secondary GCOV layers"
                       >
                         Clear Mosaic
@@ -6766,10 +6940,10 @@ function App() {
                     )}
                   </div>
                   {gcovMosaicFiles.length > 0 && (
-                    <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <div className="control-group u-note">
                       Mosaic: {gcovMosaicLayers.length} of {gcovMosaicFiles.length} secondary
                       {gcovMosaicFiles.length === 1 ? ' file' : ' files'} loaded
-                      <div style={{ fontSize: '0.65rem', wordBreak: 'break-all', marginTop: '4px' }}>
+                      <div className="u-xs u-break u-mt-xs">
                         {gcovMosaicFiles.map(f => f.name).join(', ')}
                       </div>
                     </div>
@@ -6783,17 +6957,16 @@ function App() {
           {fileType === 'remote' && (
             <CollapsibleSection title="Browse Remote Data">
               {/* Direct URL input (pre-signed S3, HTTPS) */}
-              <div className="control-group">
-                <label>Direct URL</label>
+              <Field label="Direct URL" className="control-group">
                 <input
                   type="text"
                   value={directUrl}
                   onChange={(e) => setDirectUrl(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleDirectUrlSubmit(); }}
                   placeholder="https://…/*.h5 or *.tif (auto-detected)"
-                  style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}
+                  style={{ fontFamily: 'monospace', fontSize: 'var(--text-sm)' }}
                 />
-              </div>
+              </Field>
               <button
                 className="btn-secondary"
                 onClick={handleDirectUrlSubmit}
@@ -6900,7 +7073,7 @@ function App() {
           {nisarDatasets.length > 0 && (
             <CollapsibleSection title="Dataset" defaultOpen={true}>
               {/* Source indicator */}
-              <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+              <div className="control-group u-hint u-break">
                 {nisarFile ? nisarFile.name : remoteName || 'Remote'}
                 {nisarFile && ` (${(nisarFile.size / 1e9).toFixed(2)} GB)`}
                 {nisarProductType !== 'GCOV' && (
@@ -6910,8 +7083,7 @@ function App() {
                 )}
               </div>
 
-              <div className="control-group">
-                <label>Frequency</label>
+              <Field label="Frequency" className="control-group">
                 <select
                   value={selectedFrequency}
                   onChange={(e) => {
@@ -6938,12 +7110,11 @@ function App() {
                     <option key={f} value={f}>Frequency {f}</option>
                   ))}
                 </select>
-              </div>
+              </Field>
 
               {/* GUNW-specific: Layer group selector */}
               {nisarProductType === 'GUNW' && (
-                <div className="control-group">
-                  <label>Layer</label>
+                <Field label="Layer" className="control-group">
                   <select
                     value={selectedLayer}
                     onChange={(e) => {
@@ -6967,13 +7138,12 @@ function App() {
                       </option>
                     ))}
                   </select>
-                </div>
+                </Field>
               )}
 
               {/* GUNW-specific: Dataset selector within layer */}
               {nisarProductType === 'GUNW' && (
-                <div className="control-group">
-                  <label>Dataset</label>
+                <Field label="Dataset" className="control-group">
                   <select
                     value={selectedGunwDataset}
                     onChange={(e) => setSelectedGunwDataset(e.target.value)}
@@ -6990,11 +7160,10 @@ function App() {
                       </option>
                     ))}
                   </select>
-                </div>
+                </Field>
               )}
 
-              <div className="control-group">
-                <label>Polarization</label>
+              <Field label="Polarization" className="control-group">
                 <select
                   value={selectedPolarization}
                   onChange={(e) => {
@@ -7022,11 +7191,10 @@ function App() {
                     </option>
                   ))}
                 </select>
-              </div>
+              </Field>
 
               {/* Display mode — single band, RGB composite (GCOV only), or multi-temporal */}
-              <div className="control-group">
-                <label>Display Mode</label>
+              <Field label="Display Mode" className="control-group">
                 <select
                   value={displayMode}
                   onChange={(e) => setDisplayMode(e.target.value)}
@@ -7044,7 +7212,7 @@ function App() {
                   )}
                   <option value="multi-temporal">Multi-temporal RGB (3 dates)</option>
                 </select>
-              </div>
+              </Field>
 
               {displayMode === 'index' && availableIndices.length > 0 && nisarProductType === 'GCOV' && (
                 <div className="control-group">
@@ -7062,7 +7230,7 @@ function App() {
                       <option key={i.id} value={i.id}>{i.name}</option>
                     ))}
                   </select>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div className="u-note u-mt-2xs">
                     {availableIndices.find(i => i.id === indexId)?.description || ''}
                     {' · '}
                     {indexForm === 'quad' ? 'quad-pol form' : 'dual-pol form'}
@@ -7083,7 +7251,7 @@ function App() {
                       </option>
                     ))}
                   </select>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div className="u-note u-mt-2xs">
                     {availableComposites.find(c => c.id === compositeId)?.description || ''}
                   </div>
                 </div>
@@ -7092,52 +7260,50 @@ function App() {
               {/* Multi-temporal RGB: file pickers for Green and Blue acquisitions */}
               {displayMode === 'multi-temporal' && (
                 <div className="control-group">
-                  <label style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                  <label style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
                     File 1 (R) — already selected above
                   </label>
                   {/* File 2 → Green */}
-                  <div style={{ marginTop: '6px' }}>
-                    <label style={{ fontSize: '0.7rem' }}>File 2 (G)</label>
+                  <div className="u-mt-sm">
+                    <label className="u-sm">File 2 (G)</label>
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
-                      id="nisar-file2-input"
-                      style={{ display: 'none' }}
+                      id="nisar-file2-input" className="u-hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) setNisarFile2(f);
                       }}
                     />
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-full u-mt-2xs"
                       onClick={() => document.getElementById('nisar-file2-input').click()}
-                      style={{ width: '100%', marginTop: '2px' }}
+                      
                     >
                       {nisarFile2 ? nisarFile2.name.slice(0, 30) + (nisarFile2.name.length > 30 ? '…' : '') : 'Choose File 2...'}
                     </button>
                   </div>
                   {/* File 3 → Blue */}
-                  <div style={{ marginTop: '6px' }}>
-                    <label style={{ fontSize: '0.7rem' }}>File 3 (B)</label>
+                  <div className="u-mt-sm">
+                    <label className="u-sm">File 3 (B)</label>
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
-                      id="nisar-file3-input"
-                      style={{ display: 'none' }}
+                      id="nisar-file3-input" className="u-hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) setNisarFile3(f);
                       }}
                     />
                     <button
-                      className="btn-secondary"
+                      className="btn-secondary u-full u-mt-2xs"
                       onClick={() => document.getElementById('nisar-file3-input').click()}
-                      style={{ width: '100%', marginTop: '2px' }}
+                      
                     >
                       {nisarFile3 ? nisarFile3.name.slice(0, 30) + (nisarFile3.name.length > 30 ? '…' : '') : 'Choose File 3...'}
                     </button>
                   </div>
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  <div className="u-hint u-mt-xs">
                     {nisarProductType === 'GUNW'
                       ? `Same ${selectedLayer}/${selectedGunwDataset} (${selectedPolarization}) loaded from each file.`
                       : `Same ${selectedFrequency}/${selectedPolarization} dataset loaded from each file.`}
@@ -7159,8 +7325,8 @@ function App() {
                   </div>
                   {useCoherenceMask && (
                     <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Threshold</span>
+                      <div className="u-between u-mt-xs">
+                        <span className="u-note">Threshold</span>
                         <span className="value-display">{coherenceThreshold.toFixed(2)}</span>
                       </div>
                       <input
@@ -7176,12 +7342,10 @@ function App() {
                 </div>
               )}
 
-              <div style={{ display: 'flex', gap: '4px' }}>
+              <div className="u-row">
                 <button
                   onClick={remoteUrl ? handleLoadRemoteNISAR : handleLoadNISAR}
-                  disabled={loading}
-                  style={{ flex: 1 }}
-                >
+                  disabled={loading} className="u-flex1">
                   {loading ? 'Loading...' : displayMode === 'rgb' ? 'Load RGB Composite' : displayMode === 'multi-temporal' ? 'Load Multi-temporal RGB' : 'Load Dataset'}
                 </button>
 
@@ -7190,7 +7354,7 @@ function App() {
                   <button
                     className="btn-secondary"
                     disabled={loading}
-                    style={{ fontSize: '0.65rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                    style={{ fontSize: 'var(--text-xs)', padding: '4px 8px', whiteSpace: 'nowrap' }}
                     title="Load unwrapped phase + coherence side-by-side"
                     onClick={async () => {
                       setLoading(true);
@@ -7254,7 +7418,7 @@ function App() {
               Auto-hides when there's only one image segment (typical case). */}
           {fileType === 'nitf' && nitfDatasets.length > 1 && (
             <CollapsibleSection title="NITF Image Segments" defaultOpen={true}>
-              <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+              <div className="control-group u-hint u-break">
                 {nitfFile?.name}
                 {nitfFile && ` (${(nitfFile.size / 1e9).toFixed(2)} GB)`}
               </div>
@@ -7294,7 +7458,7 @@ function App() {
               }} />
               <div style={{
                 fontFamily: 'var(--font-mono)',
-                fontSize: '0.75rem',
+                fontSize: 'var(--text-sm)',
                 fontWeight: 600,
                 letterSpacing: '1px',
                 textTransform: 'uppercase',
@@ -7308,7 +7472,7 @@ function App() {
                 disabled={loading}
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.7rem',
+                  fontSize: 'var(--text-sm)',
                   color: 'var(--sardine-cyan)',
                   background: 'var(--sardine-cyan-bg)',
                   border: '1px solid var(--sardine-cyan-dim)',
@@ -7341,10 +7505,10 @@ function App() {
                 title="Reset view to image bounds"
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.7rem',
+                  fontSize: 'var(--text-sm)',
                   color: 'var(--text-muted)',
                   background: 'var(--surface-alt)',
-                  border: '1px solid var(--border)',
+                  border: '1px solid var(--sardine-border)',
                   padding: '4px 12px',
                   borderRadius: 'var(--radius-sm)',
                   cursor: imageData?.bounds ? 'pointer' : 'not-allowed',
@@ -7390,7 +7554,7 @@ function App() {
                 />
                 <label htmlFor="overtureEnabled">
                   Enable Overlay
-                  {overtureLoading && <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>⟳</span>}
+                  {overtureLoading && <span className="u-accent u-ml-sm">⟳</span>}
                 </label>
               </div>
             </div>
@@ -7430,7 +7594,7 @@ function App() {
                 </div>
 
                 <div className="control-group">
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <div className="u-between">
                     <label>Opacity</label>
                     <span className="value-display">{(overtureOpacity * 100).toFixed(0)}%</span>
                   </div>
@@ -7445,7 +7609,7 @@ function App() {
                 </div>
 
                 {overtureData && (
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                  <div className="u-note">
                     {Object.entries(overtureData).map(([key, fc]) => (
                       <div key={key}>{OVERTURE_THEMES[key]?.label}: {fc.features?.length || 0} features</div>
                     ))}
@@ -7476,8 +7640,7 @@ function App() {
 
             {opticalPeekEnabled && (
               <>
-                <div className="control-group">
-                  <label>Source</label>
+                <Field label="Source" className="control-group">
                   <select
                     value={opticalPeekProvider}
                     onChange={(e) => setOpticalPeekProvider(e.target.value)}
@@ -7485,7 +7648,7 @@ function App() {
                     <option value="esri">Esri World Imagery</option>
                     <option value="osm">OpenStreetMap</option>
                   </select>
-                </div>
+                </Field>
                 <div className="control-group">
                   <label>Opacity: {opticalPeekOpacity.toFixed(2)}</label>
                   <input
@@ -7504,14 +7667,13 @@ function App() {
           {activePanel === 'display' && (
           <CollapsibleSection title="Display">
 
-            <div className="control-group">
-              <label>UI Theme</label>
+            <Field label="UI Theme" className="control-group">
               <select value={uiTheme} onChange={(e) => setUiTheme(e.target.value)}>
                 <option value="">Dark</option>
                 <option value="sardine">SARdine (navy)</option>
                 <option value="light">Light</option>
               </select>
-            </div>
+            </Field>
 
             {/* Colormap selector — hidden in RGB composite mode */}
             {sidebarDisplayMode !== 'rgb' && (
@@ -7547,7 +7709,7 @@ function App() {
                     <option value="label">Label</option>
                   </optgroup>
                 </select>
-                <div className="control-row" style={{ marginTop: 4 }}>
+                <div className="control-row u-mt-xs">
                   <input
                     type="checkbox"
                     id="reverseColormap"
@@ -7595,7 +7757,7 @@ function App() {
                   <select
                     value={pixelWindowSize}
                     onChange={(e) => setPixelWindowSize(Number(e.target.value))}
-                    style={{ marginLeft: '8px', fontSize: '0.7rem', width: '55px' }}
+                    style={{ marginLeft: '8px', fontSize: 'var(--text-sm)', width: '55px' }}
                     title="Averaging window size around cursor"
                   >
                     <option value={1}>1×1</option>
@@ -7616,7 +7778,7 @@ function App() {
           <CollapsibleSection title="Export Settings">
             {imageData && imageData.getExportStripe && (
               <div className="control-group">
-                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+                <label className="u-sm u-mb-xs">
                   Multilook Window (Export)
                 </label>
                 <div style={{ display: 'flex', gap: '4px', marginBottom: '4px' }}>
@@ -7624,7 +7786,7 @@ function App() {
                     <button
                       key={size}
                       className={exportMultilookWindow === size ? '' : 'btn-secondary'}
-                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '3px 6px' }}
                       onClick={() => setExportMultilookWindow(size)}
                       title={size === 1 ? 'No multilook (full resolution)' : `${size}×${size} averaging window`}
                     >
@@ -7633,7 +7795,7 @@ function App() {
                   ))}
                 </div>
                 {imageData.pixelSpacing && (
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div className="u-hint u-mt-2xs">
                     Source: {imageData.pixelSpacing.x?.toFixed(1)}m × {imageData.pixelSpacing.y?.toFixed(1)}m posting
                     {exportMultilookWindow > 1 && ` → ${(imageData.pixelSpacing.x * exportMultilookWindow).toFixed(1)}m export`}
                   </div>
@@ -7643,11 +7805,11 @@ function App() {
 
             {/* Export mode toggle */}
             {imageData && imageData.getExportStripe && (
-              <div className="control-group" style={{ marginTop: '8px' }}>
-                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+              <div className="control-group u-mt-md">
+                <label className="u-sm u-mb-xs">
                   Export Data
                 </label>
-                <div style={{ display: 'flex', gap: '4px' }}>
+                <div className="u-row">
                   {[
                     { id: 'raw', label: 'Raw', desc: 'Float32 linear power — for analysis (QGIS, Python)' },
                     { id: 'rendered', label: 'Displayed', desc: 'RGBA with current dB/contrast/colormap — as seen on screen' },
@@ -7655,7 +7817,7 @@ function App() {
                     <button
                       key={mode.id}
                       className={exportMode === mode.id ? '' : 'btn-secondary'}
-                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '3px 6px' }}
                       onClick={() => setExportMode(mode.id)}
                       title={mode.desc}
                     >
@@ -7663,7 +7825,7 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                <div className="u-hint u-mt-2xs">
                   {exportMode === 'raw'
                     ? 'Float32 linear power values — suitable for analysis'
                     : `RGBA with ${effectiveUseDecibels ? 'dB' : 'linear'} stretch, ${colormap} colormap`}
@@ -7678,7 +7840,7 @@ function App() {
           {activePanel === 'analysis' && imageData && (
           <CollapsibleSection title="Region of Interest">
             {imageData && (
-              <div style={{ fontSize: '0.75rem' }}>
+              <div className="u-sm">
                 {roi ? (
                   <div style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -7687,10 +7849,10 @@ function App() {
                     borderRadius: 'var(--radius-sm)',
                     padding: '4px 8px',
                   }}>
-                    <span style={{ color: '#ffc832' }}>
+                    <span style={{ color: 'var(--status-dry)' }}>
                       ROI: {roi.width} × {roi.height} px
                     </span>
-                    <div style={{ display: 'flex', gap: 4 }}>
+                    <div className="u-row">
                       <button
                         onClick={() => setClassifierOpen(prev => !prev)}
                         title="Feature space classifier (C)"
@@ -7698,7 +7860,7 @@ function App() {
                           background: classifierOpen ? 'rgba(78,201,212,0.15)' : 'none',
                           border: classifierOpen ? '1px solid rgba(78,201,212,0.4)' : '1px solid transparent',
                           color: classifierOpen ? '#4ec9d4' : 'var(--text-muted)',
-                          cursor: 'pointer', padding: '0 4px', fontSize: '0.65rem', borderRadius: 3,
+                          cursor: 'pointer', padding: '0 4px', fontSize: 'var(--text-xs)', borderRadius: 3,
                         }}
                       >
                         Classify
@@ -7707,7 +7869,7 @@ function App() {
                         onClick={() => setROI(null)}
                         style={{
                           background: 'none', border: 'none', color: 'var(--text-muted)',
-                          cursor: 'pointer', padding: '0 2px', fontSize: '0.7rem',
+                          cursor: 'pointer', padding: '0 2px', fontSize: 'var(--text-sm)',
                         }}
                       >
                         Clear
@@ -7715,7 +7877,7 @@ function App() {
                     </div>
                   </div>
                 ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
                     Shift+drag on image to select ROI for export
                   </div>
                 )}
@@ -7728,14 +7890,14 @@ function App() {
                     border: '1px solid rgba(78, 201, 212, 0.2)',
                     borderRadius: 'var(--radius-sm)',
                   }}>
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <div className="u-row">
                       <select
                         value={roiCompositeId || ''}
                         onChange={(e) => setRoiCompositeId(e.target.value || null)}
                         style={{
-                          flex: 1, fontSize: '0.65rem',
-                          background: 'var(--surface-2)', color: 'var(--text)',
-                          border: '1px solid var(--border)',
+                          flex: 1, fontSize: 'var(--text-xs)',
+                          background: 'var(--surface-2)', color: 'var(--ink)',
+                          border: '1px solid var(--sardine-border)',
                           borderRadius: 'var(--radius-sm)', padding: '2px 4px',
                         }}
                       >
@@ -7748,10 +7910,10 @@ function App() {
                         onClick={handleLoadRoiRGB}
                         disabled={!roiCompositeId || roiRGBLoading}
                         style={{
-                          fontSize: '0.65rem', padding: '3px 8px',
+                          fontSize: 'var(--text-xs)', padding: '3px 8px',
                           background: roiCompositeId ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
                           border: '1px solid rgba(78, 201, 212, 0.3)',
-                          color: '#4ec9d4', borderRadius: 'var(--radius-sm)',
+                          color: 'var(--sardine-cyan)', borderRadius: 'var(--radius-sm)',
                           cursor: roiCompositeId ? 'pointer' : 'default',
                           opacity: roiCompositeId ? 1 : 0.4,
                           whiteSpace: 'nowrap',
@@ -7761,7 +7923,7 @@ function App() {
                       </button>
                     </div>
                     {roiRGBData && (
-                      <div style={{ fontSize: '0.6rem', color: '#4ec9d4', marginTop: '2px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-cyan)', marginTop: '2px' }}>
                         RGB overlay active ({roiCompositeId})
                       </div>
                     )}
@@ -7776,16 +7938,15 @@ function App() {
                     border: '1px solid rgba(46, 204, 113, 0.2)',
                     borderRadius: 'var(--radius-sm)',
                   }}>
-                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <div className="u-row">
                       <label style={{
-                        flex: 1, fontSize: '0.65rem', cursor: 'pointer',
+                        flex: 1, fontSize: 'var(--text-xs)', cursor: 'pointer',
                         color: 'var(--text-muted)',
                       }}>
                         <input
                           type="file"
                           multiple
-                          accept=".h5,.hdf5"
-                          style={{ display: 'none' }}
+                          accept=".h5,.hdf5" className="u-hidden"
                           onChange={(e) => setRoiTSFiles(Array.from(e.target.files || []))}
                         />
                         {roiTSFiles.length > 0
@@ -7796,10 +7957,10 @@ function App() {
                         onClick={handleLoadRoiTimeSeries}
                         disabled={!roiTSFiles.length || roiTSLoading}
                         style={{
-                          fontSize: '0.65rem', padding: '3px 8px',
+                          fontSize: 'var(--text-xs)', padding: '3px 8px',
                           background: roiTSFiles.length ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
                           border: '1px solid rgba(46, 204, 113, 0.3)',
-                          color: '#2ecc71', borderRadius: 'var(--radius-sm)',
+                          color: 'var(--status-success)', borderRadius: 'var(--radius-sm)',
                           cursor: roiTSFiles.length ? 'pointer' : 'default',
                           opacity: roiTSFiles.length ? 1 : 0.4,
                           whiteSpace: 'nowrap',
@@ -7809,7 +7970,7 @@ function App() {
                       </button>
                     </div>
                     {roiTSFrames && (
-                      <div style={{ fontSize: '0.6rem', color: '#2ecc71', marginTop: '2px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', color: 'var(--status-success)', marginTop: '2px' }}>
                         {roiTSFrames.length} frames loaded
                       </div>
                     )}
@@ -7817,8 +7978,8 @@ function App() {
                 )}
 
                 {/* WKT ROI Input */}
-                <div style={{ marginTop: '4px' }}>
-                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                <div className="u-mt-xs">
+                  <div className="u-row">
                     <input
                       type="text"
                       value={wktInput}
@@ -7826,9 +7987,9 @@ function App() {
                       onKeyDown={(e) => e.key === 'Enter' && handleWktApply()}
                       placeholder="BBOX(west, south, east, north) or POLYGON(...)"
                       style={{
-                        flex: 1, fontSize: '0.65rem',
-                        background: 'var(--surface-2)', color: 'var(--text)',
-                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--border)',
+                        flex: 1, fontSize: 'var(--text-xs)',
+                        background: 'var(--surface-2)', color: 'var(--ink)',
+                        border: wktError ? '1px solid var(--sardine-red)' : '1px solid var(--sardine-border)',
                         borderRadius: 'var(--radius-sm)', padding: '3px 6px',
                         fontFamily: "'JetBrains Mono', monospace",
                       }}
@@ -7837,10 +7998,10 @@ function App() {
                       onClick={handleWktApply}
                       disabled={!wktInput.trim()}
                       style={{
-                        fontSize: '0.65rem', padding: '3px 8px',
+                        fontSize: 'var(--text-xs)', padding: '3px 8px',
                         background: wktInput.trim() ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
                         border: '1px solid rgba(255, 200, 50, 0.3)',
-                        color: '#ffc832', borderRadius: 'var(--radius-sm)',
+                        color: 'var(--status-dry)', borderRadius: 'var(--radius-sm)',
                         cursor: wktInput.trim() ? 'pointer' : 'default',
                         opacity: wktInput.trim() ? 1 : 0.4,
                       }}
@@ -7849,7 +8010,7 @@ function App() {
                     </button>
                   </div>
                   {wktError && (
-                    <div style={{ color: '#e74c3c', fontSize: '0.6rem', marginTop: '2px' }}>
+                    <div style={{ color: 'var(--sardine-red)', fontSize: 'var(--text-xs)', marginTop: '2px' }}>
                       {wktError}
                     </div>
                   )}
@@ -7865,13 +8026,11 @@ function App() {
           <CollapsibleSection title="Export">
             {(imageData || compareMode) && (
               <div>
-                <div style={{ display: 'flex', gap: '6px' }}>
+                <div className="u-row-sm">
                 {imageData?.getExportStripe && (
                   <button
                     onClick={handleExportGeoTIFF}
-                    disabled={exporting}
-                    style={{ flex: 1 }}
-                  >
+                    disabled={exporting} className="u-flex1">
                     {exporting
                       ? `Exporting... ${exportProgress}%`
                       : `Export ${roi ? 'ROI ' : ''}GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
@@ -7898,32 +8057,30 @@ function App() {
                 {imageData && (
                 <button
                   onClick={handleSaveFigureGeoTIFF}
-                  title="Save current viewport as georeferenced GeoTIFF"
-                  style={{ flex: 1 }}
-                >
+                  title="Save current viewport as georeferenced GeoTIFF" className="u-flex1">
                   Save Figure (GeoTIFF)
                 </button>
                 )}
                 </div>
                 {exporting && (
-                  <div className="progress-track" style={{ marginTop: 'var(--space-xs)' }}>
+                  <div className="progress-track u-mt-sm">
                     <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
                   </div>
                 )}
                 {/* Figure style — publication (light) vs presentation (dark). */}
-                <div className="control-group" style={{ marginTop: '8px' }}>
-                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
+                <div className="control-group u-mt-md">
+                  <div className="control-row u-between">
+                    <label className="u-note-2" title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
                       Figure style
                     </label>
-                    <div style={{ display: 'flex' }}>
+                    <div className="u-row">
                       {[['publication', 'Publication'], ['dark', 'Presentation']].map(([val, lbl], i) => (
                         <button
                           key={val}
                           onClick={() => { setFigureTheme(val); try { localStorage.setItem('sardine.figureTheme', val); } catch {} }}
                           className={figureTheme === val ? '' : 'btn-secondary'}
                           style={{
-                            fontSize: '0.68rem', padding: '3px 10px',
+                            fontSize: 'var(--text-xs)', padding: '3px 10px',
                             borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
                             borderTopRightRadius: i === 0 ? 0 : undefined, borderBottomRightRadius: i === 0 ? 0 : undefined,
                             borderLeft: i === 0 ? undefined : 'none',
@@ -7937,19 +8094,19 @@ function App() {
                   </div>
                 </div>
                 {/* Figure coordinate grid — full gridlines, edge ticks only, or none. */}
-                <div className="control-group" style={{ marginTop: '6px' }}>
-                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
+                <div className="control-group u-mt-sm">
+                  <div className="control-row u-between">
+                    <label className="u-note-2" title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
                       Figure grid
                     </label>
-                    <div style={{ display: 'flex' }}>
+                    <div className="u-row">
                       {[['lines', 'Lines'], ['ticks', 'Ticks'], ['off', 'Off']].map(([val, lbl], i, arr) => (
                         <button
                           key={val}
                           onClick={() => { setFigureGridMode(val); try { localStorage.setItem('sardine.figureGrid', val); } catch {} }}
                           className={figureGridMode === val ? '' : 'btn-secondary'}
                           style={{
-                            fontSize: '0.68rem', padding: '3px 10px',
+                            fontSize: 'var(--text-xs)', padding: '3px 10px',
                             borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
                             borderTopRightRadius: i === arr.length - 1 ? undefined : 0, borderBottomRightRadius: i === arr.length - 1 ? undefined : 0,
                             borderLeft: i === 0 ? undefined : 'none',
@@ -7963,9 +8120,9 @@ function App() {
                   </div>
                 </div>
                 {/* Colorbar caption — always editable; empty falls back to dB/linear. */}
-                <div className="control-group" style={{ marginTop: '6px' }}>
-                  <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label htmlFor="colorbarLabel" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
+                <div className="control-group u-mt-sm">
+                  <div className="control-row u-between">
+                    <label htmlFor="colorbarLabel" className="u-note-2" title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
                       Colorbar label
                     </label>
                     <input
@@ -7975,14 +8132,14 @@ function App() {
                       placeholder="auto (dB / linear)"
                       onChange={(e) => { setColorbarLabel(e.target.value); try { localStorage.setItem('sardine.colorbarLabel', e.target.value); } catch {} }}
                       onKeyDown={(e) => e.stopPropagation()}
-                      style={{ width: '55%', fontSize: '0.72rem', padding: '3px 6px' }}
+                      style={{ width: '55%', fontSize: 'var(--text-sm)', padding: '3px 6px' }}
                     />
                   </div>
                 </div>
                 {/* Attribution stamps the single-scene export; compare-grid
                     panels don't carry it. */}
                 {imageData && (
-                <div className="control-group" style={{ marginTop: '6px' }}>
+                <div className="control-group u-mt-sm">
                   <div className="control-row">
                     <input
                       type="checkbox"
@@ -8010,7 +8167,7 @@ function App() {
                           width: '100%',
                           marginTop: '4px',
                           padding: '4px 6px',
-                          fontSize: '0.7rem',
+                          fontSize: 'var(--text-sm)',
                           background: 'var(--sardine-bg-panel)',
                           border: `1px solid ${effective ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
                           color: 'var(--sardine-text-primary, #e8edf5)',
@@ -8040,7 +8197,7 @@ function App() {
                         width: '100%',
                         marginTop: '4px',
                         padding: '4px 6px',
-                        fontSize: '0.7rem',
+                        fontSize: 'var(--text-sm)',
                         background: 'var(--sardine-bg-panel)',
                         border: '1px solid var(--sardine-border)',
                         color: 'var(--sardine-text-primary, #e8edf5)',
@@ -8059,13 +8216,13 @@ function App() {
           {activePanel === 'analysis' && imageData && (
           <CollapsibleSection title="Annotate">
                 <div className="control-group">
-                  <label style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)' }}>
+                  <label className="u-note-2">
                     Annotate
                     {annotations.length > 0 && (
-                      <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>· {annotations.length}</span>
+                      <span className="u-accent u-ml-sm">· {annotations.length}</span>
                     )}
                   </label>
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                  <div className="u-row u-mt-xs">
                     {[
                       { key: 'off',   label: 'Off' },
                       { key: 'arrow', label: 'Arrow' },
@@ -8082,7 +8239,7 @@ function App() {
                         style={{
                           flex: 1,
                           padding: '4px 6px',
-                          fontSize: '0.7rem',
+                          fontSize: 'var(--text-sm)',
                           background: annotationMode === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
                           color: annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
                           border: `1px solid ${annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
@@ -8095,7 +8252,7 @@ function App() {
                     ))}
                   </div>
                   {/* Size presets — standardized S/M/L (line weight + text scale together) */}
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                  <div className="u-row u-mt-xs">
                     {[
                       { key: 'small',  label: 'S' },
                       { key: 'medium', label: 'M' },
@@ -8120,7 +8277,7 @@ function App() {
                         style={{
                           flex: 1,
                           padding: '4px 6px',
-                          fontSize: '0.7rem',
+                          fontSize: 'var(--text-sm)',
                           fontWeight: 600,
                           background: annotationSize === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
                           color: annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
@@ -8159,7 +8316,7 @@ function App() {
                       style={{
                         marginLeft: 'auto',
                         padding: '2px 8px',
-                        fontSize: '0.65rem',
+                        fontSize: 'var(--text-xs)',
                         background: 'transparent',
                         color: annotations.length === 0 ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
                         border: '1px solid var(--sardine-border, #1e3a5f)',
@@ -8171,7 +8328,7 @@ function App() {
                     </button>
                   </div>
                   {/* Markup GeoJSON I/O (W004) — annotations + ROI + class regions */}
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px' }}>
+                  <div className="u-row u-mt-xs">
                     <button
                       onClick={handleSaveMarkup}
                       disabled={annotations.length === 0 && !roi && classRegions.length === 0}
@@ -8179,7 +8336,7 @@ function App() {
                       style={{
                         flex: 1,
                         padding: '4px 6px',
-                        fontSize: '0.7rem',
+                        fontSize: 'var(--text-sm)',
                         background: 'transparent',
                         color: (annotations.length === 0 && !roi && classRegions.length === 0)
                           ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
@@ -8196,7 +8353,7 @@ function App() {
                       style={{
                         flex: 1,
                         padding: '4px 6px',
-                        fontSize: '0.7rem',
+                        fontSize: 'var(--text-sm)',
                         background: 'transparent',
                         color: 'var(--sardine-text-secondary, #8fa4c4)',
                         border: '1px solid var(--sardine-border, #1e3a5f)',
@@ -8209,8 +8366,7 @@ function App() {
                     <input
                       ref={markupFileInputRef}
                       type="file"
-                      accept=".geojson,.json"
-                      style={{ display: 'none' }}
+                      accept=".geojson,.json" className="u-hidden"
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (f) handleLoadMarkupFile(f);
@@ -8272,7 +8428,7 @@ function App() {
                   onClick={() => handleExportColorbar('png')}
                   className="btn-secondary"
                   title="Export the ternary RGB colorbar as PNG"
-                  style={{ flex: 1, fontSize: '0.7rem', padding: '4px 8px', borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                  style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '4px 8px', borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
                 >
                   Export Colorbar (PNG)
                 </button>
@@ -8280,7 +8436,7 @@ function App() {
                   onClick={() => handleExportColorbar('svg')}
                   className="btn-secondary"
                   title="Export the colorbar as SVG — triangle embedded, labels and range table editable vector"
-                  style={{ fontSize: '0.7rem', padding: '4px 10px', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }}
+                  style={{ fontSize: 'var(--text-sm)', padding: '4px 10px', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }}
                 >
                   SVG
                 </button>
@@ -8293,8 +8449,8 @@ function App() {
             {/* Histogram scope toggle — shown when histogram exists, or always in RGB mode so
                 user can trigger the first computation via the Viewport/ROI buttons */}
             {(histogramData || (imageData && isRGBDisplayMode)) && (
-              <div className="control-group" style={{ marginBottom: '6px' }}>
-                <div style={{ display: 'flex', gap: '4px' }}>
+              <div className="control-group u-mb-sm">
+                <div className="u-row">
                   {['global', 'viewport', 'roi'].map(scope => {
                     const hasH5Stats = (imageData?.stats?.mean_value > 0 && imageData?.stats?.sample_stddev > 0)
                       || (isRGBDisplayMode && imageData?.bandStats && Object.keys(imageData.bandStats).length > 0);
@@ -8304,7 +8460,7 @@ function App() {
                       <button
                         key={scope}
                         className={histogramScope === scope ? '' : 'btn-secondary'}
-                        style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px', opacity: disabled ? 0.4 : 1 }}
+                        style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '3px 6px', opacity: disabled ? 0.4 : 1 }}
                         disabled={disabled}
                         onClick={() => {
                           if (histogramScope === scope) {
@@ -8327,14 +8483,14 @@ function App() {
             {(roiRGBData || roiTSFrames) && (
               <div className="control-group" style={{ padding: '2px 0' }}>
                 <div style={{
-                  display: 'flex', gap: '4px', fontSize: '0.65rem',
+                  display: 'flex', gap: '4px', fontSize: 'var(--text-xs)',
                 }}>
                   <button
                     onClick={() => setActiveViewer('main')}
                     style={{
                       flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                       background: activeViewer === 'main' ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
-                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--border)',
+                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--sardine-border)',
                       color: activeViewer === 'main' ? '#ffc832' : 'var(--text-muted)',
                       cursor: 'pointer',
                     }}
@@ -8347,7 +8503,7 @@ function App() {
                       style={{
                         flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                         background: activeViewer === 'roi-rgb' ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
-                        border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--border)',
+                        border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--sardine-border)',
                         color: activeViewer === 'roi-rgb' ? '#4ec9d4' : 'var(--text-muted)',
                         cursor: 'pointer',
                       }}
@@ -8361,7 +8517,7 @@ function App() {
                       style={{
                         flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                         background: activeViewer === 'roi-ts' ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
-                        border: activeViewer === 'roi-ts' ? '1px solid rgba(46, 204, 113, 0.4)' : '1px solid var(--border)',
+                        border: activeViewer === 'roi-ts' ? '1px solid rgba(46, 204, 113, 0.4)' : '1px solid var(--sardine-border)',
                         color: activeViewer === 'roi-ts' ? '#2ecc71' : 'var(--text-muted)',
                         cursor: 'pointer',
                       }}
@@ -8413,7 +8569,7 @@ function App() {
               <div className="control-group">
                 {/* LOS displacement toggle (radians → meters) */}
                 {(selectedGunwDataset === 'unwrappedPhase' || selectedGunwDataset === 'wrappedInterferogram' || selectedGunwDataset === 'ionospherePhaseScreen') && (
-                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                  <div className="control-row u-mb-sm">
                     <input
                       type="checkbox"
                       id="losToggle"
@@ -8440,7 +8596,7 @@ function App() {
                     />
                     <label htmlFor="losToggle">
                       LOS Displacement
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      <span className="u-hint u-ml-xs">
                         {losDisplacement ? '(m)' : '(rad)'}
                       </span>
                     </label>
@@ -8449,7 +8605,7 @@ function App() {
 
                 {/* Vertical displacement toggle — requires incidence angle grid */}
                 {losDisplacement && gunwIncidenceAngleGrid && (
-                  <div className="control-row" style={{ marginBottom: '6px' }}>
+                  <div className="control-row u-mb-sm">
                     <input
                       type="checkbox"
                       id="vertDispToggle"
@@ -8458,7 +8614,7 @@ function App() {
                     />
                     <label htmlFor="vertDispToggle">
                       Vertical Displacement
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      <span className="u-hint u-ml-xs">
                         d<sub>vert</sub> = d<sub>LOS</sub> / cos({'\u03B8'})
                       </span>
                     </label>
@@ -8467,7 +8623,7 @@ function App() {
 
                 {/* Symmetric range presets */}
                 <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', width: '100%', marginBottom: '2px' }}>Range Presets</span>
+                  <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', width: '100%', marginBottom: '2px' }}>Range Presets</span>
                   {(() => {
                     const scale = losDisplacement ? (gunwDatasets?.metadata?.wavelength || 0.2384) / (4 * Math.PI) : 1;
                     const unit = losDisplacement ? 'm' : 'rad';
@@ -8481,7 +8637,7 @@ function App() {
                       <button
                         key={p.label}
                         className="btn-secondary"
-                        style={{ flex: 1, fontSize: '0.65rem', padding: '2px 4px', minWidth: '40px' }}
+                        style={{ flex: 1, fontSize: 'var(--text-xs)', padding: '2px 4px', minWidth: '40px' }}
                         onClick={() => {
                           if (p.val === null) {
                             // Auto: use histogram p2/p98 if available
@@ -8510,12 +8666,12 @@ function App() {
                 {/* Phase corrections panel */}
                 {selectedGunwDataset === 'unwrappedPhase' && correctionLayers && Object.keys(correctionLayers).length > 0 && (() => {
                   const btnStyle = (active) => ({
-                    fontSize: '0.6rem',
+                    fontSize: 'var(--text-xs)',
                     padding: '3px 6px',
-                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--border)'}`,
+                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--sardine-border)'}`,
                     borderRadius: '3px',
                     background: active ? 'var(--sardine-cyan)' : 'transparent',
-                    color: active ? '#000' : 'var(--text)',
+                    color: active ? '#000' : 'var(--ink)',
                     cursor: 'pointer',
                     transition: 'all 0.15s',
                   });
@@ -8544,11 +8700,11 @@ function App() {
                   const availableKeys = Object.keys(CORRECTION_TYPES).filter(k => !!correctionLayers[k] && !alreadyApplied.has(k));
                   const allEnabled = availableKeys.length > 0 && availableKeys.every(k => enabledCorrections.has(k));
                   return (
-                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
+                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--sardine-border)', paddingTop: '6px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Phase Corrections</span>
+                        <span className="u-note">Phase Corrections</span>
                         <button
-                          style={{ ...btnStyle(allEnabled), fontSize: '0.55rem', padding: '2px 5px' }}
+                          style={{ ...btnStyle(allEnabled), fontSize: 'var(--text-xs)', padding: '2px 5px' }}
                           onClick={() => { setEnabledCorrections(allEnabled ? new Set() : new Set(availableKeys)); resetContrast(); }}
                         >{allEnabled ? 'Clear All' : 'Apply All'}</button>
                       </div>
@@ -8595,7 +8751,7 @@ function App() {
             {/* Brightness (Window/Level) slider — shifts window center (single-band only) */}
             {sidebarDisplayMode !== 'rgb' && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="u-between">
                   <label>Brightness</label>
                   <ScrubNumber
                     value={(contrastMin + contrastMax) / 2}
@@ -8648,18 +8804,17 @@ function App() {
             )}
 
             {/* Stretch mode + Gamma */}
-            <div className="control-group">
-              <label>Stretch</label>
+            <Field label="Stretch" className="control-group">
               <select value={stretchMode} onChange={(e) => setStretchMode(e.target.value)}>
                 {Object.entries(STRETCH_MODES).map(([id, mode]) => (
                   <option key={id} value={id}>{mode.name}</option>
                 ))}
               </select>
-            </div>
+            </Field>
 
             {(stretchMode === 'gamma' || stretchMode === 'sigmoid') && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="u-between">
                   <label>Gamma</label>
                   <ScrubNumber value={gamma} onChange={setGamma} min={0.1} max={5.0} step={0.02} precision={2} width={56} />
                 </div>
@@ -8677,7 +8832,7 @@ function App() {
             {/* Saturation — only shown in RGB display modes */}
             {isRGBDisplayMode && imageData?.getRGBTile && (
               <div className="control-group">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="u-between">
                   <label>Saturation</label>
                   <ScrubNumber value={rgbSaturation} onChange={setRgbSaturation} min={0} max={3} step={0.02} precision={2} width={56} />
                 </div>
@@ -8694,8 +8849,7 @@ function App() {
 
             {/* Color deficiency mode — only shown in RGB display modes */}
             {isRGBDisplayMode && imageData?.getRGBTile && (
-              <div className="control-group">
-                <label>Color deficiency</label>
+              <Field label="Color deficiency" className="control-group">
                 <select
                   value={colorblindMode}
                   onChange={(e) => {
@@ -8710,7 +8864,7 @@ function App() {
                   <option value="deuteranopia">Deuteranopia / Protanopia</option>
                   <option value="tritanopia">Tritanopia</option>
                 </select>
-              </div>
+              </Field>
             )}
 
             {/* Multi-look toggle — hidden on main branch, needs more work */}
@@ -8731,9 +8885,9 @@ function App() {
                         : 'Invalid mask disabled');
                     }}
                   />
-                  <label htmlFor="maskInvalid" style={{ margin: 0 }}>
+                  <label htmlFor="maskInvalid" className="u-m0">
                     Mask invalid
-                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span className="u-hint u-ml-xs">
                       {maskInvalid ? '(0, 255)' : '(off)'}
                     </span>
                   </label>
@@ -8750,9 +8904,9 @@ function App() {
                         : 'Layover/shadow mask disabled');
                     }}
                   />
-                  <label htmlFor="maskLayoverShadow" style={{ margin: 0 }}>
+                  <label htmlFor="maskLayoverShadow" className="u-m0">
                     Mask layover/shadow
-                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span className="u-hint u-ml-xs">
                       {maskLayoverShadow ? '(active)' : '(off)'}
                     </span>
                   </label>
@@ -8772,15 +8926,15 @@ function App() {
                   />
                   <label htmlFor="incAngleMask">
                     Incidence Angle Mask
-                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span className="u-hint u-ml-xs">
                       {useIncidenceAngleMask ? `${incAngleMin}°–${incAngleMax}°` : '(off)'}
                     </span>
                   </label>
                 </div>
                 {useIncidenceAngleMask && (
                   <>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Near range (min)</span>
+                    <div className="u-between u-mt-xs">
+                      <span className="u-note">Near range (min)</span>
                       <span className="value-display">{incAngleMin}°</span>
                     </div>
                     <input
@@ -8789,7 +8943,7 @@ function App() {
                       onChange={(e) => setIncAngleMin(Number(e.target.value))}
                     />
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Far range (max)</span>
+                      <span className="u-note">Far range (max)</span>
                       <span className="value-display">{incAngleMax}°</span>
                     </div>
                     <input
@@ -8807,8 +8961,7 @@ function App() {
                     onAngleRangeChange={({ min, max }) => {
                       if (min !== undefined) setIncAngleMin(min);
                       if (max !== undefined) setIncAngleMax(max);
-                    }}
-                    style={{ marginTop: '6px' }}
+                    }} className="u-mt-sm"
                   />
                 )}
               </div>
@@ -8834,23 +8987,87 @@ function App() {
           onPointerUp={cancelLongPress}
           onPointerCancel={cancelLongPress}
         >
-          {loading && <div className="loading">{fileType === 'cmr' ? 'Streaming NISAR metadata from DAAC...' : 'Loading...'}</div>}
+          {/* W030: determinate load panel — chunk counts, bytes, and a Cancel
+              that reaches the range reads. Stays up past `loading` while the
+              overview prefetch is still streaming bytes. */}
+          {(loading || loadProgress > 0) && (
+            <div className="load-panel" role="status" aria-live="polite">
+              <div className="load-panel-title">
+                {fileType === 'cmr' && loading && !loadDetail
+                  ? 'Streaming NISAR metadata from DAAC'
+                  : loadPhaseLabel(loadDetail)}
+              </div>
+              <div className="progress-track">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${Math.max(2, loadProgress)}%`, transition: 'width 0.3s ease' }}
+                />
+              </div>
+              <div className="load-panel-detail">{loadDetailText(loadProgress, loadDetail)}</div>
+              {loadCancellable && (
+                <button className="btn-secondary load-cancel" onClick={cancelActiveLoad}>Cancel</button>
+              )}
+            </div>
+          )}
 
-          {error && <div className="error">{error}</div>}
+          {/* W030: errors accumulate and are dismissed individually — the
+              previous single div meant the last failure to land was the only
+              one anybody ever saw. */}
+          {errors.length > 0 && (
+            <div className="error-stack">
+              {errors.map(err => (
+                <div className="error" role="alert" key={err.id}>
+                  <span className="error-text">
+                    {err.message}
+                    {err.count > 1 && <span className="error-count"> ×{err.count}</span>}
+                  </span>
+                  <button
+                    className="error-dismiss"
+                    aria-label="Dismiss this error"
+                    onClick={() => dismissError(err.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {errors.length > 1 && (
+                <button className="btn-secondary error-dismiss-all" onClick={() => setError(null)}>
+                  Dismiss all
+                </button>
+              )}
+            </div>
+          )}
 
-          {!loading && !error && !imageData && !compareMode && (
-            <div className="loading">
-              {fileType === 'cmr'
-                ? (nisarDatasets.length > 0
-                  ? 'Metadata loaded — select dataset options, then click "Load Dataset"'
-                  : 'Search CMR and select a granule to begin')
-                : fileType === 'local-tif'
-                ? 'Select one or more local GeoTIFF files to begin'
-                : fileType === 'remote'
-                ? 'Enter a URL or browse remote data to begin'
-                : fileType === 'catalog'
-                  ? 'Load a GeoJSON scene catalog and select a scene to begin'
-                  : 'Select a NISAR HDF5 file to begin'}
+          {!loading && loadProgress === 0 && !imageData && !compareMode && (
+            <div className="empty-state">
+              <h2 className="empty-state-title">Open a SAR scene</h2>
+              <p className="empty-state-lede">{EMPTY_STATE_HINTS[fileType] || EMPTY_STATE_HINTS.nisar}</p>
+              <div className="empty-state-actions">
+                <button
+                  className="btn-primary"
+                  onClick={() => document.getElementById('nisar-file-input')?.click()}
+                >
+                  Choose a NISAR .h5 file
+                </button>
+                <span className="empty-state-or">or drop one anywhere on this window</span>
+              </div>
+              <div className="empty-state-url">
+                <label htmlFor="empty-state-url-input">Paste a URL to a GCOV granule or COG</label>
+                <div className="empty-state-url-row">
+                  <input
+                    id="empty-state-url-input"
+                    type="text"
+                    placeholder="https://…/NISAR_L2_GCOV_….h5"
+                    value={directUrl}
+                    onChange={(e) => setDirectUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleDirectUrlSubmit(); }}
+                  />
+                  <button className="btn-secondary" onClick={handleDirectUrlSubmit}>Open</button>
+                </div>
+              </div>
+              <button className="empty-state-demo" onClick={openHeroDemo}>
+                Or open the demo scene: Pacaya-Samiria floodplain, dual-pol L-band
+              </button>
             </div>
           )}
 
@@ -8862,8 +9079,8 @@ function App() {
                 style={{
                   position: 'absolute', top: '8px', right: '8px', zIndex: 2000,
                   background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                  border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
                 }}
               >
                 Close Compare
@@ -8889,8 +9106,8 @@ function App() {
                 style={{
                   position: 'absolute', top: '8px', right: '8px', zIndex: 10,
                   background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                  border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
                 }}
               >
                 Close Paired View
@@ -8907,31 +9124,17 @@ function App() {
           )}
 
           {imageData && !gunwPairedView && !compareMode && (
-            <div style={{ display: 'flex', width: '100%', height: '100%', position: 'relative' }}>
+            <div className="viewer-split">
               {/* Loading overlay — shown on top of existing data while new data streams */}
               {loading && (
-                <div style={{
-                  position: 'absolute', inset: 0, zIndex: 10,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: 'var(--overlay-bg, rgba(10, 22, 40, 0.75))',
-                  pointerEvents: 'none',
-                }}>
-                  <div style={{
-                    fontFamily: 'var(--font-mono)', fontSize: '0.9rem',
-                    color: 'var(--sardine-cyan, #4ec9d4)', letterSpacing: '1px',
-                  }}>
-                    Loading dataset...
-                  </div>
+                <div className="viewer-loading">
+                  <p className="viewer-loading__label">Loading dataset...</p>
                 </div>
               )}
               {/* Main viewer (single-channel full extent) */}
               <div
                 onClick={() => roiRGBData && setActiveViewer('main')}
-                style={{
-                  flex: 1, position: 'relative', height: '100%',
-                  outline: roiRGBData && activeViewer === 'main' ? '2px solid #ffc832' : 'none',
-                  outlineOffset: '-2px',
-                }}>
+                className={`viewer-pane${roiRGBData && activeViewer === 'main' ? ' viewer-pane--active viewer-pane--main' : ''}`}>
                 <SARViewer
                   ref={viewerRef}
                   cogUrl={imageData?.cogUrl}
@@ -9013,33 +9216,14 @@ function App() {
               {/* ROI RGB viewer (side-by-side, only when ROI RGB loaded) */}
               {roiRGBData && roiRGBBounds && roiRGBContrastLimits && (
                 <>
-                  <div style={{
-                    width: '3px', background: 'var(--border)',
-                    flexShrink: 0,
-                  }} />
+                  <div className="viewer-splitter" role="separator" />
                   <div
                     onClick={() => setActiveViewer('roi-rgb')}
-                    style={{
-                      flex: 1, position: 'relative', height: '100%',
-                      outline: activeViewer === 'roi-rgb' ? '2px solid #4ec9d4' : 'none',
-                      outlineOffset: '-2px',
-                    }}>
-                    <div style={{
-                      position: 'absolute', top: '8px', left: '8px', zIndex: 10,
-                      background: 'rgba(0,0,0,0.7)', color: '#4ec9d4',
-                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.7rem', pointerEvents: 'none',
-                    }}>
-                      ROI RGB: {roiCompositeId}
-                    </div>
+                    className={`viewer-pane viewer-pane--rgb${activeViewer === 'roi-rgb' ? ' viewer-pane--active' : ''}`}>
+                    <p className="viewer-badge viewer-badge--rgb">ROI RGB: {roiCompositeId}</p>
                     <button
                       onClick={() => { setRoiRGBData(null); setRoiRGBBounds(null); setRoiRGBContrastLimits(null); setRoiRGBHistogramData(null); setActiveViewer('main'); }}
-                      style={{
-                        position: 'absolute', top: '8px', right: '8px', zIndex: 10,
-                        background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                        padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
-                      }}
+                      className="viewer-action viewer-action--tr"
                     >
                       Close
                     </button>
@@ -9066,69 +9250,44 @@ function App() {
               {/* ROI Time-Series viewer (side-by-side, only when frames loaded) */}
               {roiTSFrames && roiTSBounds && roiTSContrastLimits && (
                 <>
-                  <div style={{
-                    width: '3px', background: 'var(--border)',
-                    flexShrink: 0,
-                  }} />
+                  <div className="viewer-splitter" role="separator" />
                   <div
                     onClick={() => setActiveViewer('roi-ts')}
-                    style={{
-                      flex: 1, position: 'relative', height: '100%',
-                      outline: activeViewer === 'roi-ts' ? '2px solid #2ecc71' : 'none',
-                      outlineOffset: '-2px',
-                    }}>
-                    <div style={{
-                      position: 'absolute', top: '8px', left: '8px', zIndex: 10,
-                      background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
-                      padding: '4px 10px', borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.7rem', pointerEvents: 'none',
-                    }}>
+                    className={`viewer-pane viewer-pane--ts${activeViewer === 'roi-ts' ? ' viewer-pane--active' : ''}`}>
+                    <p className="viewer-badge viewer-badge--ts">
                       {roiTSFrames[roiTSIndex]?.label || 'Frame ' + roiTSIndex}
                       {' '}({roiTSIndex + 1}/{roiTSFrames.length})
-                    </div>
-                    <div style={{ position: 'absolute', top: '8px', right: '8px', zIndex: 10, display: 'flex', gap: '4px' }}>
+                    </p>
+                    <Toolbar className="viewer-actions viewer-actions--tr">
                       {roiTSFrames[roiTSIndex]?.getExportStripe && (
                         <button
                           onClick={(e) => { e.stopPropagation(); handleExportTSFrame(); }}
                           disabled={exporting}
-                          style={{
-                            background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
-                            border: '1px solid #2ecc71', borderRadius: 'var(--radius-sm)',
-                            padding: '2px 8px', fontSize: '0.65rem', cursor: exporting ? 'not-allowed' : 'pointer',
-                          }}
+                          className="viewer-action viewer-action--ts"
                         >
                           {exporting ? `${exportProgress}%` : `Export GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
                         </button>
                       )}
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSFrames(null); setRoiTSBounds(null); setRoiTSContrastLimits(null); setRoiTSHistogramData(null); setRoiTSPlaying(false); setActiveViewer('main'); }}
-                        style={{
-                          background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                          padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
-                        }}
+                        className="viewer-action"
                       >
                         Close
                       </button>
-                    </div>
+                    </Toolbar>
                     {/* Playback controls */}
-                    <div style={{
-                      position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)',
-                      zIndex: 10, display: 'flex', alignItems: 'center', gap: '8px',
-                      background: 'rgba(0,0,0,0.8)', padding: '6px 12px',
-                      borderRadius: 'var(--radius-sm)', fontSize: '0.7rem',
-                    }}>
+                    <div className="viewer-playbar" role="group" aria-label="Time-series playback">
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev - 1 + roiTSFrames.length) % roiTSFrames.length); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                        className="viewer-playbar__btn" aria-label="Previous frame"
                       >◀</button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSPlaying(prev => !prev); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                        className="viewer-playbar__btn" aria-label={roiTSPlaying ? 'Pause' : 'Play'}
                       >{roiTSPlaying ? '⏸' : '▶'}</button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev + 1) % roiTSFrames.length); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                        className="viewer-playbar__btn" aria-label="Next frame"
                       >▶</button>
                       <input
                         type="range"
@@ -9137,9 +9296,10 @@ function App() {
                         value={roiTSIndex}
                         onChange={(e) => { e.stopPropagation(); setRoiTSIndex(Number(e.target.value)); }}
                         onClick={(e) => e.stopPropagation()}
-                        style={{ width: '100px', accentColor: '#2ecc71' }}
+                        className="viewer-playbar__scrub"
+                        aria-label="Frame"
                       />
-                      <span style={{ color: '#2ecc71', minWidth: '70px', textAlign: 'center' }}>
+                      <span className="viewer-playbar__label">
                         {roiTSFrames[roiTSIndex]?.label}
                       </span>
                     </div>
@@ -9261,33 +9421,15 @@ function App() {
       />
 
       {/* Footer */}
-      <footer className="app-footer" style={{
-        position: 'fixed',
-        bottom: 0,
-        left: 0,
-        right: 0,
-        height: '24px',
-        background: 'var(--sardine-bg, #0a1628)',
-        borderTop: '1px dashed rgba(78, 201, 212, 0.15)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 12px',
-        fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
-        fontSize: '0.6rem',
-        color: 'var(--text-muted, #5a7099)',
-        zIndex: 1000,
-        letterSpacing: '0.03em',
-      }}>
-        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'none' }}>SARdine</a> v1.0 · MIT</span>
+      <footer className="app-footer">
+        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer">SARdine</a> v1.0 · MIT</span>
         <span>steinerlab - ccny</span>
-        <span style={{ color: 'var(--sardine-cyan, #4ec9d4)', opacity: 0.6, display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <Toolbar className="app-footer__meta" wrap={false}>
           deck.gl{multiLook ? ' · multi-look' : ''}
           {gpuInfo.webgpu
             ? ' · WebGPU'
-            : <span style={{ color: '#f5a623' }}> · no WebGPU (histogram CPU-only)</span>}
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-            · workers:
+            : <span className="app-footer__gpu"> · no WebGPU (histogram CPU-only)</span>}
+          <Field label="workers" inline value={workerCount} className="app-footer__workers">
             <input
               type="range"
               min={1}
@@ -9298,11 +9440,9 @@ function App() {
                 setWorkerCount(n);
                 setPoolWorkerCount(n);
               }}
-              style={{ width: '60px', accentColor: 'var(--sardine-cyan, #4ec9d4)' }}
             />
-            {workerCount}
-          </span>
-        </span>
+          </Field>
+        </Toolbar>
       </footer>
 
       {/* Histogram overlay moved inside viewer-container */}
@@ -9324,14 +9464,13 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '2rem', color: '#e0e0e0', background: '#1a1a2e', height: '100vh', fontFamily: 'monospace' }}>
-          <h2>Something went wrong</h2>
-          <pre style={{ whiteSpace: 'pre-wrap', color: '#ff6b6b' }}>{this.state.error?.message}</pre>
-          <button onClick={() => this.setState({ hasError: false, error: null })}
-            style={{ padding: '0.5rem 1rem', marginTop: '1rem', cursor: 'pointer' }}>
+        <main className="crash">
+          <h1 className="crash__title">Something went wrong</h1>
+          <pre className="crash__message">{this.state.error?.message}</pre>
+          <Button variant="primary" size="md" onClick={() => this.setState({ hasError: false, error: null })}>
             Try Again
-          </button>
-        </div>
+          </Button>
+        </main>
       );
     }
     return this.props.children;

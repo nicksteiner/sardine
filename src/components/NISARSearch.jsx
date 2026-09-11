@@ -269,14 +269,14 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
         <select
           value={product}
           onChange={e => setProduct(e.target.value)}
-          style={{ fontSize: '0.75rem' }}
+          style={{ fontSize: 'var(--text-sm)' }}
         >
           {NISAR_PRODUCTS.map(p => (
             <option key={p.id} value={p.id}>{p.label}</option>
           ))}
         </select>
         {currentProduct && (
-          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '2px' }}>
             {currentProduct.description}
           </div>
         )}
@@ -288,13 +288,13 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
           onClick={() => setShowAuth(v => !v)}
           style={{
             cursor: 'pointer',
-            fontSize: '0.75rem',
+            fontSize: 'var(--text-sm)',
             color: token ? 'var(--status-success)' : 'var(--sardine-cyan)',
             userSelect: 'none',
           }}
         >
           {showAuth ? '\u25BC' : '\u25B6'} Earthdata Token
-          {token && <span style={{ fontSize: '0.6rem', marginLeft: '4px' }}>(set)</span>}
+          {token && <span style={{ fontSize: 'var(--text-xs)', marginLeft: '4px' }}>(set)</span>}
         </div>
         {showAuth && (
           <div style={{
@@ -304,9 +304,9 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             border: '1px solid var(--sardine-border)',
             borderRadius: 'var(--radius-sm)',
           }}>
-            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginBottom: '4px' }}>
               Required for data download. Get a token:<br />
-              <code style={{ fontSize: '0.6rem', color: 'var(--sardine-cyan)', userSelect: 'all' }}>
+              <code style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-cyan)', userSelect: 'all' }}>
                 curl -n https://urs.earthdata.nasa.gov/api/users/tokens
               </code>
               <br />Paste the <code>access_token</code> value. Stored in memory only.
@@ -316,7 +316,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
               value={token}
               onChange={e => { setToken(e.target.value); onTokenChange?.(e.target.value); }}
               placeholder="Earthdata bearer token"
-              style={{ width: '100%', fontSize: '0.75rem' }}
+              style={{ width: '100%', fontSize: 'var(--text-sm)' }}
             />
           </div>
         )}
@@ -330,14 +330,14 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             type="date"
             value={dateStart}
             onChange={e => setDateStart(e.target.value)}
-            style={{ flex: 1, fontSize: '0.7rem' }}
+            style={{ flex: 1, fontSize: 'var(--text-sm)' }}
             title="Start date"
           />
           <input
             type="date"
             value={dateEnd}
             onChange={e => setDateEnd(e.target.value)}
-            style={{ flex: 1, fontSize: '0.7rem' }}
+            style={{ flex: 1, fontSize: 'var(--text-sm)' }}
             title="End date"
           />
         </div>
@@ -347,7 +347,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             value={track}
             onChange={e => setTrack(e.target.value)}
             placeholder="Track"
-            style={{ flex: 1, fontSize: '0.7rem' }}
+            style={{ flex: 1, fontSize: 'var(--text-sm)' }}
             title="NISAR Track number"
           />
           <input
@@ -355,11 +355,11 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             value={frame}
             onChange={e => setFrame(e.target.value)}
             placeholder="Frame"
-            style={{ flex: 1, fontSize: '0.7rem' }}
+            style={{ flex: 1, fontSize: 'var(--text-sm)' }}
             title="NISAR Frame number"
           />
         </div>
-        <label style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
+        <label style={{ fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
           <input
             type="checkbox"
             checked={useBbox}
@@ -367,7 +367,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
           />
           Limit to overview map extent
           {useBbox && !viewBounds && (
-            <span style={{ color: 'var(--status-warning)', fontSize: '0.6rem' }}>(pan overview map first)</span>
+            <span style={{ color: 'var(--status-warning)', fontSize: 'var(--text-xs)' }}>(pan overview map first)</span>
           )}
         </label>
         <button
@@ -382,14 +382,14 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
       {/* Results header + multi-select toggle */}
       {granules.length > 0 && (
         <>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+          <div className="u-between">
+            <h3 className="nisar-search__results-heading">
               {granules.length}{hits != null ? ` of ${hits}` : ''} granules
-              <span style={{ color: 'var(--sardine-cyan)', marginLeft: '6px' }}>
+              <span>
                 {'\u25CF'} {granules.filter(g => g.geometry).length} footprints
               </span>
-            </div>
-            <label style={{ fontSize: '0.65rem', display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer' }}>
+            </h3>
+            <label style={{ fontSize: 'var(--text-xs)', display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 checked={multiSelect}
@@ -404,7 +404,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
           <button
             className="btn-secondary"
             onClick={handleZoomToResults}
-            style={{ width: '100%', fontSize: '0.7rem' }}
+            style={{ width: '100%', fontSize: 'var(--text-sm)' }}
           >
             Zoom to Results
           </button>
@@ -423,14 +423,14 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
           <button
             onClick={handleLoadTimeSeries}
             disabled={selectedIndices.size < 2}
-            style={{ fontSize: '0.65rem', flex: 1 }}
+            style={{ fontSize: 'var(--text-xs)', flex: 1 }}
           >
             Load {selectedIndices.size} as Time Series
           </button>
           <button
             className="btn-secondary"
             onClick={handleSelectAll}
-            style={{ fontSize: '0.6rem', padding: '2px 6px' }}
+            style={{ fontSize: 'var(--text-xs)', padding: '2px 6px' }}
           >
             All
           </button>
@@ -438,7 +438,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             <button
               className="btn-secondary"
               onClick={() => setSelectedIndices(new Set())}
-              style={{ fontSize: '0.6rem', padding: '2px 6px' }}
+              style={{ fontSize: 'var(--text-xs)', padding: '2px 6px' }}
             >
               Clear
             </button>
@@ -473,7 +473,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
                 style={{
                   padding: '4px 8px',
                   cursor: hasData ? 'pointer' : 'default',
-                  fontSize: '0.7rem',
+                  fontSize: 'var(--text-sm)',
                   fontFamily: 'var(--font-mono)',
                   background: isSelected ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
                   borderBottom: '1px solid var(--sardine-border)',
@@ -495,7 +495,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
                       background: isSelected ? 'var(--sardine-cyan)' : 'transparent',
                       flexShrink: 0,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontSize: '0.55rem', color: 'var(--sardine-bg)',
+                      fontSize: 'var(--text-xs)', color: 'var(--sardine-bg)',
                     }}>
                       {isSelected ? '\u2713' : ''}
                     </span>
@@ -517,7 +517,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
                   }} />
                 </div>
                 <div style={{
-                  fontSize: '0.6rem',
+                  fontSize: 'var(--text-xs)',
                   color: 'var(--text-muted)',
                   marginTop: '1px',
                 }}>
@@ -540,7 +540,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
           className="btn-secondary"
           onClick={() => handleSearch(true)}
           disabled={searching}
-          style={{ width: '100%', fontSize: '0.7rem' }}
+          style={{ width: '100%', fontSize: 'var(--text-sm)' }}
         >
           {searching ? 'Loading...' : `Load More (${granules.length}/${hits})`}
         </button>
