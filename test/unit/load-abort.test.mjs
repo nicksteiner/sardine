@@ -226,4 +226,43 @@ test('a load cancelled before it starts reads nothing', async () => {
     `${file.sliceCount} reads were issued for an already-cancelled load`);
 });
 
+test('a cancellation keeps its AbortError identity through the loader wrapper', async () => {
+  // listNISARDatasetsFromUrl wraps failures as `Failed to read remote NISAR
+  // file: ...` with a plain `new Error(...)`, which silently dropped
+  // `name: 'AbortError'`. The UI's isAbortError() guard then failed to
+  // recognise its own cancellation and surfaced it as a load failure —
+  // "Failed to read remote NISAR file: ... Load cancelled", deduped to x2 when
+  // a superseding load aborted the first.
+  //
+  // The abort must land INSIDE the wrapping try: the entry guard at the top of
+  // listNISARDatasetsFromUrl throws before it and would not exercise the bug.
+  const { listNISARDatasetsFromUrl } = await import('../../src/loaders/nisar-loader.js');
+
+  const controller = new AbortController();
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    controller.abort();
+    // Reject exactly as a real aborted fetch does, so the loader's wrapper sees
+    // an AbortError rather than a generic network failure.
+    const e = new Error('The operation was aborted.');
+    e.name = 'AbortError';
+    throw e;
+  };
+
+  let threw = null;
+  try {
+    await listNISARDatasetsFromUrl('https://example.invalid/x.h5', { signal: controller.signal });
+  } catch (e) {
+    threw = e;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  assert(threw, 'expected the cancelled load to reject');
+  assert(threw.name === 'AbortError',
+    `a cancelled load must stay an AbortError, got ${threw.name}: ${threw.message}`);
+  assert(!/Failed to read remote NISAR file/.test(threw.message || ''),
+    `a cancellation must not be re-wrapped as a read failure: ${threw.message}`);
+});
+
 await run();
