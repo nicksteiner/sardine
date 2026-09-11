@@ -17,6 +17,15 @@ import { getDecodePool } from './decode-pool.js';
 import { decodeBytes } from './decode-core.js';
 import { debugLog } from '../utils/debug-log.js';
 
+/**
+ * How many 512 KB read-ahead windows to keep while walking metadata. One was
+ * not enough: B-tree and heap traversal jumps around, so a single window was
+ * evicted on nearly every read and small reads re-fetched the same region
+ * repeatedly (measured 4.2x amplification on a NISAR GCOV). Eight windows cap
+ * the cache at 4 MB.
+ */
+const READ_AHEAD_WINDOWS = 8;
+
 // Re-export pool controls so existing consumers (app/main.jsx) keep working.
 export { setWorkerCount, getWorkerPoolInfo } from './decode-pool.js';
 
@@ -1394,12 +1403,21 @@ export class H5Chunk {
       const slice = this.file.slice(offset, offset + length);
       return slice.arrayBuffer();
     } else if (this.url) {
-      // Check the read-ahead cache first
-      if (this._readAheadCache) {
-        const { start, buffer } = this._readAheadCache;
-        const end = start + buffer.byteLength;
-        if (offset >= start && offset + length <= end) {
-          return buffer.slice(offset - start, offset - start + length);
+      // Check the read-ahead windows. Tree-walking jumps backwards and
+      // sideways constantly, so a single cached window was evicted almost every
+      // read: five consecutive 256-byte reads around the same part of the file
+      // fetched 2.6 MB to cover 0.6 MB. Keep a few windows instead.
+      if (this._readAheadWindows) {
+        for (let i = 0; i < this._readAheadWindows.length; i++) {
+          const w = this._readAheadWindows[i];
+          if (offset >= w.start && offset + length <= w.start + w.buffer.byteLength) {
+            // Move to front (LRU) so hot windows survive.
+            if (i > 0) {
+              this._readAheadWindows.splice(i, 1);
+              this._readAheadWindows.unshift(w);
+            }
+            return w.buffer.slice(offset - w.start, offset - w.start + length);
+          }
         }
       }
 
@@ -1411,9 +1429,14 @@ export class H5Chunk {
       });
       const fullBuffer = await response.arrayBuffer();
 
-      // Cache the full fetch for subsequent reads in the same region
+      // Cache the full fetch for subsequent reads in the same region.
       if (actualLength > length) {
-        this._readAheadCache = { start: offset, buffer: fullBuffer };
+        if (!this._readAheadWindows) this._readAheadWindows = [];
+        this._readAheadWindows.unshift({ start: offset, buffer: fullBuffer });
+        // Bounded: 8 x 512 KB = 4 MB worst case, well under the metadata window.
+        if (this._readAheadWindows.length > READ_AHEAD_WINDOWS) {
+          this._readAheadWindows.length = READ_AHEAD_WINDOWS;
+        }
       }
 
       return length < fullBuffer.byteLength
