@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
-import './theme/sardine-theme.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
 import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
@@ -347,7 +348,7 @@ function PagesBanner() {
       background: 'var(--sardine-bg-panel, #122240)',
       borderBottom: '1px solid var(--sardine-cyan, #4ec9d4)',
       color: 'var(--sardine-text-primary, #e8edf5)',
-      fontSize: '0.75rem',
+      fontSize: 'var(--text-sm)',
       lineHeight: 1.4,
       textAlign: 'center',
     }}>
@@ -369,7 +370,7 @@ function PagesBanner() {
           border: 'none',
           color: 'var(--sardine-text-secondary, #8fa4c4)',
           cursor: 'pointer',
-          fontSize: '0.9rem',
+          fontSize: 'var(--text-md)',
           lineHeight: 1,
           padding: '2px 6px',
         }}
@@ -6279,7 +6280,7 @@ function App() {
           <div style={{
             padding: '24px 48px', borderRadius: '12px',
             background: 'rgba(0, 0, 0, 0.7)', color: '#fff',
-            fontSize: '1.2rem', fontWeight: 600,
+            fontSize: 'var(--text-xl)', fontWeight: 600,
           }}>
             {fileType === 'local-tif' && mosaicFiles.length > 0
               ? `Drop GeoTIFFs to add to mosaic (${mosaicFiles.length} loaded)`
@@ -6302,7 +6303,7 @@ function App() {
             borderRadius: '8px',
             padding: '12px 16px',
             color: '#fff',
-            fontSize: '0.82rem',
+            fontSize: 'var(--text-md)',
             maxWidth: '360px',
             maxHeight: '400px',
             overflow: 'auto',
@@ -6311,18 +6312,18 @@ function App() {
           }}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontWeight: 600, color: '#ffcc00', fontSize: '0.85rem' }}>
+            <span style={{ fontWeight: 600, color: '#ffcc00', fontSize: 'var(--text-md)' }}>
               {geojsonPopup.geometry?.type || 'Feature'}
             </span>
             <button
               onClick={() => setGeojsonPopup(null)}
               style={{
                 background: 'none', border: 'none', color: '#aaa', cursor: 'pointer',
-                fontSize: '1rem', padding: '0 4px', lineHeight: 1,
+                fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
               }}
             >x</button>
           </div>
-          <div style={{ fontSize: '0.72rem', color: '#888', marginBottom: '6px' }}>{geojsonPopup.layer}</div>
+          <div style={{ fontSize: 'var(--text-sm)', color: '#888', marginBottom: '6px' }}>{geojsonPopup.layer}</div>
           <table style={{ borderCollapse: 'collapse', width: '100%' }}>
             <tbody>
               {Object.entries(geojsonPopup.properties).map(([key, val]) => (
@@ -6361,7 +6362,7 @@ function App() {
             onClick={() => setSheetExpanded(v => !v)}
           />
           {!imageData && (activePanel === 'analysis' || (activePanel === 'export' && !compareMode)) && (
-            <div className="control-section" style={{ fontSize: '0.72rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+            <div className="control-section" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', lineHeight: 1.5 }}>
               Load a scene to enable {activePanel === 'analysis'
                 ? 'ROI, annotation, and profile tools'
                 : 'export and share options'}.
@@ -6384,13 +6385,13 @@ function App() {
           {/* Earthdata Login — only relevant for hosted builds, but always
               shown so users can configure even in dev. */}
           <CollapsibleSection title="Earthdata Login" defaultOpen={isHostedBuild() && !edlToken}>
-            <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+            <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
               {isHostedBuild()
                 ? 'Required for streaming NISAR / Sentinel-1 / OPERA from NASA DAACs. Your token is stored only in this browser.'
                 : 'Optional in dev (the Vite proxy bypasses auth). Useful for testing the hosted flow.'}
             </div>
             <div className="control-group">
-              <label style={{ fontSize: '0.7rem' }}>EDL token</label>
+              <label style={{ fontSize: 'var(--text-sm)' }}>EDL token</label>
               <input
                 type="password"
                 placeholder="Paste your Earthdata Login token"
@@ -6401,14 +6402,14 @@ function App() {
                   setEdlValidation(null);
                 }}
                 style={{
-                  width: '100%', padding: '4px 6px', fontSize: '0.7rem',
+                  width: '100%', padding: '4px 6px', fontSize: 'var(--text-sm)',
                   background: 'var(--sardine-bg-panel)',
                   border: '1px solid var(--sardine-border)',
                   color: 'var(--sardine-text-primary, #e8edf5)',
                   borderRadius: '2px',
                 }}
               />
-              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '2px', lineHeight: 1.4 }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '2px', lineHeight: 1.4 }}>
                 <a href="https://urs.earthdata.nasa.gov/profile" target="_blank" rel="noopener noreferrer"
                    style={{ color: 'var(--sardine-cyan)' }}>
                   Open Earthdata profile →
@@ -6416,7 +6417,7 @@ function App() {
                 <br/>
                 Then click <strong>Generate Token</strong> in the left sidebar.
               </div>
-              <div style={{ fontSize: '0.65rem', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '6px', lineHeight: 1.45 }}>
+              <div style={{ fontSize: 'var(--text-xs)', color: 'var(--sardine-text-muted, #5a7099)', marginTop: '6px', lineHeight: 1.45 }}>
                 <strong>Where your token goes:</strong> it stays in this browser's
                 localStorage and is sent only to NASA servers{isHostedBuild()
                   ? ' via the relay Worker below (needed because DAACs don’t send CORS headers). SARdine is a research project — the Worker doesn’t log or store tokens, and its ~200-line source is in the repo (sardine-edl-proxy/). Don’t want to take our word for it? Deploy your own copy and paste its URL below.'
@@ -6429,7 +6430,7 @@ function App() {
             </div>
             {isHostedBuild() && (
               <div className="control-group">
-                <label style={{ fontSize: '0.7rem' }}>Proxy URL</label>
+                <label style={{ fontSize: 'var(--text-sm)' }}>Proxy URL</label>
                 <input
                   type="text"
                   value={edlProxyUrl}
@@ -6439,7 +6440,7 @@ function App() {
                     setEdlValidation(null);
                   }}
                   style={{
-                    width: '100%', padding: '4px 6px', fontSize: '0.7rem',
+                    width: '100%', padding: '4px 6px', fontSize: 'var(--text-sm)',
                     background: 'var(--sardine-bg-panel)',
                     border: '1px solid var(--sardine-border)',
                     color: 'var(--sardine-text-primary, #e8edf5)',
@@ -6460,17 +6461,17 @@ function App() {
                   else addStatusLog('error', `Earthdata token check failed: ${result.error}`);
                 }}
                 disabled={!edlToken || edlValidating}
-                style={{ flex: 1, fontSize: '0.7rem' }}
+                style={{ flex: 1, fontSize: 'var(--text-sm)' }}
               >
                 {edlValidating ? 'Checking…' : 'Test token'}
               </button>
               {edlValidation?.ok && (
-                <span style={{ fontSize: '0.7rem', color: 'var(--sardine-cyan)' }}>
+                <span style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-cyan)' }}>
                   ✓ {edlValidation.username}
                 </span>
               )}
               {edlValidation && !edlValidation.ok && (
-                <span style={{ fontSize: '0.65rem', color: '#e8833a' }} title={edlValidation.error}>
+                <span style={{ fontSize: 'var(--text-xs)', color: '#e8833a' }} title={edlValidation.error}>
                   ✗ failed
                 </span>
               )}
@@ -6485,7 +6486,7 @@ function App() {
               emits a ?compare= link from the URL-backed panels. */}
           {activePanel === 'export' && (sharedRawUrl || imageData || compareMode) && (
             <CollapsibleSection title="Share Link" defaultOpen={false}>
-              <div style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
+              <div style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-text-secondary, #8fa4c4)', marginBottom: '6px', lineHeight: 1.4 }}>
                 {compareMode
                   ? 'Compare grid — the link reopens the grid with its URL-loaded panels. Local-file panels cannot travel in a URL and are skipped.'
                   : sharedRawUrl
@@ -6575,7 +6576,7 @@ function App() {
                       addStatusLog('error', `Failed to copy share link: ${e.message}`);
                     }
                   }}
-                  style={{ flex: 1, fontSize: '0.7rem' }}
+                  style={{ flex: 1, fontSize: 'var(--text-sm)' }}
                 >
                   Copy share link
                 </button>
@@ -6651,13 +6652,13 @@ function App() {
               </div>
 
               {imageData?.sliceCount > 1 && (
-                <div className="control-group" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                <div className="control-group" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
                   Mosaic: {imageData.sliceCount} slices, {imageData.width}x{imageData.height} px
                   {imageData.crs && <span> · CRS: {imageData.crs}</span>}
                 </div>
               )}
               {imageData?.sliceNames && (
-                <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
+                <div className="control-group" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', wordBreak: 'break-all' }}>
                   {imageData.sliceNames.join(', ')}
                 </div>
               )}
@@ -6725,7 +6726,7 @@ function App() {
               </div>
 
               {nisarFile && (
-                <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+                <div className="control-group" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
                   {nisarFile.name} ({(nisarFile.size / 1e9).toFixed(2)} GB)
                 </div>
               )}
@@ -6766,10 +6767,10 @@ function App() {
                     )}
                   </div>
                   {gcovMosaicFiles.length > 0 && (
-                    <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    <div className="control-group" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
                       Mosaic: {gcovMosaicLayers.length} of {gcovMosaicFiles.length} secondary
                       {gcovMosaicFiles.length === 1 ? ' file' : ' files'} loaded
-                      <div style={{ fontSize: '0.65rem', wordBreak: 'break-all', marginTop: '4px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', wordBreak: 'break-all', marginTop: '4px' }}>
                         {gcovMosaicFiles.map(f => f.name).join(', ')}
                       </div>
                     </div>
@@ -6791,7 +6792,7 @@ function App() {
                   onChange={(e) => setDirectUrl(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleDirectUrlSubmit(); }}
                   placeholder="https://…/*.h5 or *.tif (auto-detected)"
-                  style={{ fontFamily: 'monospace', fontSize: '0.7rem' }}
+                  style={{ fontFamily: 'monospace', fontSize: 'var(--text-sm)' }}
                 />
               </div>
               <button
@@ -6900,7 +6901,7 @@ function App() {
           {nisarDatasets.length > 0 && (
             <CollapsibleSection title="Dataset" defaultOpen={true}>
               {/* Source indicator */}
-              <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+              <div className="control-group" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
                 {nisarFile ? nisarFile.name : remoteName || 'Remote'}
                 {nisarFile && ` (${(nisarFile.size / 1e9).toFixed(2)} GB)`}
                 {nisarProductType !== 'GCOV' && (
@@ -7062,7 +7063,7 @@ function App() {
                       <option key={i.id} value={i.id}>{i.name}</option>
                     ))}
                   </select>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: '2px' }}>
                     {availableIndices.find(i => i.id === indexId)?.description || ''}
                     {' · '}
                     {indexForm === 'quad' ? 'quad-pol form' : 'dual-pol form'}
@@ -7083,7 +7084,7 @@ function App() {
                       </option>
                     ))}
                   </select>
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', marginTop: '2px' }}>
                     {availableComposites.find(c => c.id === compositeId)?.description || ''}
                   </div>
                 </div>
@@ -7092,12 +7093,12 @@ function App() {
               {/* Multi-temporal RGB: file pickers for Green and Blue acquisitions */}
               {displayMode === 'multi-temporal' && (
                 <div className="control-group">
-                  <label style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>
+                  <label style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)' }}>
                     File 1 (R) — already selected above
                   </label>
                   {/* File 2 → Green */}
                   <div style={{ marginTop: '6px' }}>
-                    <label style={{ fontSize: '0.7rem' }}>File 2 (G)</label>
+                    <label style={{ fontSize: 'var(--text-sm)' }}>File 2 (G)</label>
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
@@ -7118,7 +7119,7 @@ function App() {
                   </div>
                   {/* File 3 → Blue */}
                   <div style={{ marginTop: '6px' }}>
-                    <label style={{ fontSize: '0.7rem' }}>File 3 (B)</label>
+                    <label style={{ fontSize: 'var(--text-sm)' }}>File 3 (B)</label>
                     <input
                       type="file"
                       accept=".h5,.hdf5,.he5"
@@ -7137,7 +7138,7 @@ function App() {
                       {nisarFile3 ? nisarFile3.name.slice(0, 30) + (nisarFile3.name.length > 30 ? '…' : '') : 'Choose File 3...'}
                     </button>
                   </div>
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '4px' }}>
                     {nisarProductType === 'GUNW'
                       ? `Same ${selectedLayer}/${selectedGunwDataset} (${selectedPolarization}) loaded from each file.`
                       : `Same ${selectedFrequency}/${selectedPolarization} dataset loaded from each file.`}
@@ -7160,7 +7161,7 @@ function App() {
                   {useCoherenceMask && (
                     <>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Threshold</span>
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Threshold</span>
                         <span className="value-display">{coherenceThreshold.toFixed(2)}</span>
                       </div>
                       <input
@@ -7190,7 +7191,7 @@ function App() {
                   <button
                     className="btn-secondary"
                     disabled={loading}
-                    style={{ fontSize: '0.65rem', padding: '4px 8px', whiteSpace: 'nowrap' }}
+                    style={{ fontSize: 'var(--text-xs)', padding: '4px 8px', whiteSpace: 'nowrap' }}
                     title="Load unwrapped phase + coherence side-by-side"
                     onClick={async () => {
                       setLoading(true);
@@ -7254,7 +7255,7 @@ function App() {
               Auto-hides when there's only one image segment (typical case). */}
           {fileType === 'nitf' && nitfDatasets.length > 1 && (
             <CollapsibleSection title="NITF Image Segments" defaultOpen={true}>
-              <div className="control-group" style={{ fontSize: '0.6rem', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
+              <div className="control-group" style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', wordBreak: 'break-all', lineHeight: '1.3' }}>
                 {nitfFile?.name}
                 {nitfFile && ` (${(nitfFile.size / 1e9).toFixed(2)} GB)`}
               </div>
@@ -7294,7 +7295,7 @@ function App() {
               }} />
               <div style={{
                 fontFamily: 'var(--font-mono)',
-                fontSize: '0.75rem',
+                fontSize: 'var(--text-sm)',
                 fontWeight: 600,
                 letterSpacing: '1px',
                 textTransform: 'uppercase',
@@ -7308,7 +7309,7 @@ function App() {
                 disabled={loading}
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.7rem',
+                  fontSize: 'var(--text-sm)',
                   color: 'var(--sardine-cyan)',
                   background: 'var(--sardine-cyan-bg)',
                   border: '1px solid var(--sardine-cyan-dim)',
@@ -7341,10 +7342,10 @@ function App() {
                 title="Reset view to image bounds"
                 style={{
                   fontFamily: 'var(--font-mono)',
-                  fontSize: '0.7rem',
+                  fontSize: 'var(--text-sm)',
                   color: 'var(--text-muted)',
                   background: 'var(--surface-alt)',
-                  border: '1px solid var(--border)',
+                  border: '1px solid var(--sardine-border)',
                   padding: '4px 12px',
                   borderRadius: 'var(--radius-sm)',
                   cursor: imageData?.bounds ? 'pointer' : 'not-allowed',
@@ -7445,7 +7446,7 @@ function App() {
                 </div>
 
                 {overtureData && (
-                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
                     {Object.entries(overtureData).map(([key, fc]) => (
                       <div key={key}>{OVERTURE_THEMES[key]?.label}: {fc.features?.length || 0} features</div>
                     ))}
@@ -7595,7 +7596,7 @@ function App() {
                   <select
                     value={pixelWindowSize}
                     onChange={(e) => setPixelWindowSize(Number(e.target.value))}
-                    style={{ marginLeft: '8px', fontSize: '0.7rem', width: '55px' }}
+                    style={{ marginLeft: '8px', fontSize: 'var(--text-sm)', width: '55px' }}
                     title="Averaging window size around cursor"
                   >
                     <option value={1}>1×1</option>
@@ -7616,7 +7617,7 @@ function App() {
           <CollapsibleSection title="Export Settings">
             {imageData && imageData.getExportStripe && (
               <div className="control-group">
-                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+                <label style={{ fontSize: 'var(--text-sm)', marginBottom: '4px', display: 'block' }}>
                   Multilook Window (Export)
                 </label>
                 <div style={{ display: 'flex', gap: '4px', marginBottom: '4px' }}>
@@ -7624,7 +7625,7 @@ function App() {
                     <button
                       key={size}
                       className={exportMultilookWindow === size ? '' : 'btn-secondary'}
-                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '3px 6px' }}
                       onClick={() => setExportMultilookWindow(size)}
                       title={size === 1 ? 'No multilook (full resolution)' : `${size}×${size} averaging window`}
                     >
@@ -7633,7 +7634,7 @@ function App() {
                   ))}
                 </div>
                 {imageData.pixelSpacing && (
-                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '2px' }}>
                     Source: {imageData.pixelSpacing.x?.toFixed(1)}m × {imageData.pixelSpacing.y?.toFixed(1)}m posting
                     {exportMultilookWindow > 1 && ` → ${(imageData.pixelSpacing.x * exportMultilookWindow).toFixed(1)}m export`}
                   </div>
@@ -7644,7 +7645,7 @@ function App() {
             {/* Export mode toggle */}
             {imageData && imageData.getExportStripe && (
               <div className="control-group" style={{ marginTop: '8px' }}>
-                <label style={{ fontSize: '0.75rem', marginBottom: '4px', display: 'block' }}>
+                <label style={{ fontSize: 'var(--text-sm)', marginBottom: '4px', display: 'block' }}>
                   Export Data
                 </label>
                 <div style={{ display: 'flex', gap: '4px' }}>
@@ -7655,7 +7656,7 @@ function App() {
                     <button
                       key={mode.id}
                       className={exportMode === mode.id ? '' : 'btn-secondary'}
-                      style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px' }}
+                      style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '3px 6px' }}
                       onClick={() => setExportMode(mode.id)}
                       title={mode.desc}
                     >
@@ -7663,7 +7664,7 @@ function App() {
                     </button>
                   ))}
                 </div>
-                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '2px' }}>
                   {exportMode === 'raw'
                     ? 'Float32 linear power values — suitable for analysis'
                     : `RGBA with ${effectiveUseDecibels ? 'dB' : 'linear'} stretch, ${colormap} colormap`}
@@ -7678,7 +7679,7 @@ function App() {
           {activePanel === 'analysis' && imageData && (
           <CollapsibleSection title="Region of Interest">
             {imageData && (
-              <div style={{ fontSize: '0.75rem' }}>
+              <div style={{ fontSize: 'var(--text-sm)' }}>
                 {roi ? (
                   <div style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -7698,7 +7699,7 @@ function App() {
                           background: classifierOpen ? 'rgba(78,201,212,0.15)' : 'none',
                           border: classifierOpen ? '1px solid rgba(78,201,212,0.4)' : '1px solid transparent',
                           color: classifierOpen ? '#4ec9d4' : 'var(--text-muted)',
-                          cursor: 'pointer', padding: '0 4px', fontSize: '0.65rem', borderRadius: 3,
+                          cursor: 'pointer', padding: '0 4px', fontSize: 'var(--text-xs)', borderRadius: 3,
                         }}
                       >
                         Classify
@@ -7707,7 +7708,7 @@ function App() {
                         onClick={() => setROI(null)}
                         style={{
                           background: 'none', border: 'none', color: 'var(--text-muted)',
-                          cursor: 'pointer', padding: '0 2px', fontSize: '0.7rem',
+                          cursor: 'pointer', padding: '0 2px', fontSize: 'var(--text-sm)',
                         }}
                       >
                         Clear
@@ -7715,7 +7716,7 @@ function App() {
                     </div>
                   </div>
                 ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
                     Shift+drag on image to select ROI for export
                   </div>
                 )}
@@ -7733,9 +7734,9 @@ function App() {
                         value={roiCompositeId || ''}
                         onChange={(e) => setRoiCompositeId(e.target.value || null)}
                         style={{
-                          flex: 1, fontSize: '0.65rem',
-                          background: 'var(--surface-2)', color: 'var(--text)',
-                          border: '1px solid var(--border)',
+                          flex: 1, fontSize: 'var(--text-xs)',
+                          background: 'var(--surface-2)', color: 'var(--ink)',
+                          border: '1px solid var(--sardine-border)',
                           borderRadius: 'var(--radius-sm)', padding: '2px 4px',
                         }}
                       >
@@ -7748,7 +7749,7 @@ function App() {
                         onClick={handleLoadRoiRGB}
                         disabled={!roiCompositeId || roiRGBLoading}
                         style={{
-                          fontSize: '0.65rem', padding: '3px 8px',
+                          fontSize: 'var(--text-xs)', padding: '3px 8px',
                           background: roiCompositeId ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
                           border: '1px solid rgba(78, 201, 212, 0.3)',
                           color: '#4ec9d4', borderRadius: 'var(--radius-sm)',
@@ -7761,7 +7762,7 @@ function App() {
                       </button>
                     </div>
                     {roiRGBData && (
-                      <div style={{ fontSize: '0.6rem', color: '#4ec9d4', marginTop: '2px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', color: '#4ec9d4', marginTop: '2px' }}>
                         RGB overlay active ({roiCompositeId})
                       </div>
                     )}
@@ -7778,7 +7779,7 @@ function App() {
                   }}>
                     <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                       <label style={{
-                        flex: 1, fontSize: '0.65rem', cursor: 'pointer',
+                        flex: 1, fontSize: 'var(--text-xs)', cursor: 'pointer',
                         color: 'var(--text-muted)',
                       }}>
                         <input
@@ -7796,7 +7797,7 @@ function App() {
                         onClick={handleLoadRoiTimeSeries}
                         disabled={!roiTSFiles.length || roiTSLoading}
                         style={{
-                          fontSize: '0.65rem', padding: '3px 8px',
+                          fontSize: 'var(--text-xs)', padding: '3px 8px',
                           background: roiTSFiles.length ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
                           border: '1px solid rgba(46, 204, 113, 0.3)',
                           color: '#2ecc71', borderRadius: 'var(--radius-sm)',
@@ -7809,7 +7810,7 @@ function App() {
                       </button>
                     </div>
                     {roiTSFrames && (
-                      <div style={{ fontSize: '0.6rem', color: '#2ecc71', marginTop: '2px' }}>
+                      <div style={{ fontSize: 'var(--text-xs)', color: '#2ecc71', marginTop: '2px' }}>
                         {roiTSFrames.length} frames loaded
                       </div>
                     )}
@@ -7826,9 +7827,9 @@ function App() {
                       onKeyDown={(e) => e.key === 'Enter' && handleWktApply()}
                       placeholder="BBOX(west, south, east, north) or POLYGON(...)"
                       style={{
-                        flex: 1, fontSize: '0.65rem',
-                        background: 'var(--surface-2)', color: 'var(--text)',
-                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--border)',
+                        flex: 1, fontSize: 'var(--text-xs)',
+                        background: 'var(--surface-2)', color: 'var(--ink)',
+                        border: wktError ? '1px solid #e74c3c' : '1px solid var(--sardine-border)',
                         borderRadius: 'var(--radius-sm)', padding: '3px 6px',
                         fontFamily: "'JetBrains Mono', monospace",
                       }}
@@ -7837,7 +7838,7 @@ function App() {
                       onClick={handleWktApply}
                       disabled={!wktInput.trim()}
                       style={{
-                        fontSize: '0.65rem', padding: '3px 8px',
+                        fontSize: 'var(--text-xs)', padding: '3px 8px',
                         background: wktInput.trim() ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
                         border: '1px solid rgba(255, 200, 50, 0.3)',
                         color: '#ffc832', borderRadius: 'var(--radius-sm)',
@@ -7849,7 +7850,7 @@ function App() {
                     </button>
                   </div>
                   {wktError && (
-                    <div style={{ color: '#e74c3c', fontSize: '0.6rem', marginTop: '2px' }}>
+                    <div style={{ color: '#e74c3c', fontSize: 'var(--text-xs)', marginTop: '2px' }}>
                       {wktError}
                     </div>
                   )}
@@ -7913,7 +7914,7 @@ function App() {
                 {/* Figure style — publication (light) vs presentation (dark). */}
                 <div className="control-group" style={{ marginTop: '8px' }}>
                   <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
+                    <label style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }} title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
                       Figure style
                     </label>
                     <div style={{ display: 'flex' }}>
@@ -7923,7 +7924,7 @@ function App() {
                           onClick={() => { setFigureTheme(val); try { localStorage.setItem('sardine.figureTheme', val); } catch {} }}
                           className={figureTheme === val ? '' : 'btn-secondary'}
                           style={{
-                            fontSize: '0.68rem', padding: '3px 10px',
+                            fontSize: 'var(--text-xs)', padding: '3px 10px',
                             borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
                             borderTopRightRadius: i === 0 ? 0 : undefined, borderBottomRightRadius: i === 0 ? 0 : undefined,
                             borderLeft: i === 0 ? undefined : 'none',
@@ -7939,7 +7940,7 @@ function App() {
                 {/* Figure coordinate grid — full gridlines, edge ticks only, or none. */}
                 <div className="control-group" style={{ marginTop: '6px' }}>
                   <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
+                    <label style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }} title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
                       Figure grid
                     </label>
                     <div style={{ display: 'flex' }}>
@@ -7949,7 +7950,7 @@ function App() {
                           onClick={() => { setFigureGridMode(val); try { localStorage.setItem('sardine.figureGrid', val); } catch {} }}
                           className={figureGridMode === val ? '' : 'btn-secondary'}
                           style={{
-                            fontSize: '0.68rem', padding: '3px 10px',
+                            fontSize: 'var(--text-xs)', padding: '3px 10px',
                             borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
                             borderTopRightRadius: i === arr.length - 1 ? undefined : 0, borderBottomRightRadius: i === arr.length - 1 ? undefined : 0,
                             borderLeft: i === 0 ? undefined : 'none',
@@ -7965,7 +7966,7 @@ function App() {
                 {/* Colorbar caption — always editable; empty falls back to dB/linear. */}
                 <div className="control-group" style={{ marginTop: '6px' }}>
                   <div className="control-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-                    <label htmlFor="colorbarLabel" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
+                    <label htmlFor="colorbarLabel" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-secondary)' }} title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
                       Colorbar label
                     </label>
                     <input
@@ -7975,7 +7976,7 @@ function App() {
                       placeholder="auto (dB / linear)"
                       onChange={(e) => { setColorbarLabel(e.target.value); try { localStorage.setItem('sardine.colorbarLabel', e.target.value); } catch {} }}
                       onKeyDown={(e) => e.stopPropagation()}
-                      style={{ width: '55%', fontSize: '0.72rem', padding: '3px 6px' }}
+                      style={{ width: '55%', fontSize: 'var(--text-sm)', padding: '3px 6px' }}
                     />
                   </div>
                 </div>
@@ -8010,7 +8011,7 @@ function App() {
                           width: '100%',
                           marginTop: '4px',
                           padding: '4px 6px',
-                          fontSize: '0.7rem',
+                          fontSize: 'var(--text-sm)',
                           background: 'var(--sardine-bg-panel)',
                           border: `1px solid ${effective ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
                           color: 'var(--sardine-text-primary, #e8edf5)',
@@ -8040,7 +8041,7 @@ function App() {
                         width: '100%',
                         marginTop: '4px',
                         padding: '4px 6px',
-                        fontSize: '0.7rem',
+                        fontSize: 'var(--text-sm)',
                         background: 'var(--sardine-bg-panel)',
                         border: '1px solid var(--sardine-border)',
                         color: 'var(--sardine-text-primary, #e8edf5)',
@@ -8059,7 +8060,7 @@ function App() {
           {activePanel === 'analysis' && imageData && (
           <CollapsibleSection title="Annotate">
                 <div className="control-group">
-                  <label style={{ fontSize: '0.7rem', color: 'var(--sardine-text-secondary, #8fa4c4)' }}>
+                  <label style={{ fontSize: 'var(--text-sm)', color: 'var(--sardine-text-secondary, #8fa4c4)' }}>
                     Annotate
                     {annotations.length > 0 && (
                       <span style={{ marginLeft: '6px', color: 'var(--sardine-cyan)' }}>· {annotations.length}</span>
@@ -8082,7 +8083,7 @@ function App() {
                         style={{
                           flex: 1,
                           padding: '4px 6px',
-                          fontSize: '0.7rem',
+                          fontSize: 'var(--text-sm)',
                           background: annotationMode === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
                           color: annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
                           border: `1px solid ${annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
@@ -8120,7 +8121,7 @@ function App() {
                         style={{
                           flex: 1,
                           padding: '4px 6px',
-                          fontSize: '0.7rem',
+                          fontSize: 'var(--text-sm)',
                           fontWeight: 600,
                           background: annotationSize === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
                           color: annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
@@ -8159,7 +8160,7 @@ function App() {
                       style={{
                         marginLeft: 'auto',
                         padding: '2px 8px',
-                        fontSize: '0.65rem',
+                        fontSize: 'var(--text-xs)',
                         background: 'transparent',
                         color: annotations.length === 0 ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
                         border: '1px solid var(--sardine-border, #1e3a5f)',
@@ -8179,7 +8180,7 @@ function App() {
                       style={{
                         flex: 1,
                         padding: '4px 6px',
-                        fontSize: '0.7rem',
+                        fontSize: 'var(--text-sm)',
                         background: 'transparent',
                         color: (annotations.length === 0 && !roi && classRegions.length === 0)
                           ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
@@ -8196,7 +8197,7 @@ function App() {
                       style={{
                         flex: 1,
                         padding: '4px 6px',
-                        fontSize: '0.7rem',
+                        fontSize: 'var(--text-sm)',
                         background: 'transparent',
                         color: 'var(--sardine-text-secondary, #8fa4c4)',
                         border: '1px solid var(--sardine-border, #1e3a5f)',
@@ -8272,7 +8273,7 @@ function App() {
                   onClick={() => handleExportColorbar('png')}
                   className="btn-secondary"
                   title="Export the ternary RGB colorbar as PNG"
-                  style={{ flex: 1, fontSize: '0.7rem', padding: '4px 8px', borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                  style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '4px 8px', borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
                 >
                   Export Colorbar (PNG)
                 </button>
@@ -8280,7 +8281,7 @@ function App() {
                   onClick={() => handleExportColorbar('svg')}
                   className="btn-secondary"
                   title="Export the colorbar as SVG — triangle embedded, labels and range table editable vector"
-                  style={{ fontSize: '0.7rem', padding: '4px 10px', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }}
+                  style={{ fontSize: 'var(--text-sm)', padding: '4px 10px', borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none' }}
                 >
                   SVG
                 </button>
@@ -8304,7 +8305,7 @@ function App() {
                       <button
                         key={scope}
                         className={histogramScope === scope ? '' : 'btn-secondary'}
-                        style={{ flex: 1, fontSize: '0.7rem', padding: '3px 6px', opacity: disabled ? 0.4 : 1 }}
+                        style={{ flex: 1, fontSize: 'var(--text-sm)', padding: '3px 6px', opacity: disabled ? 0.4 : 1 }}
                         disabled={disabled}
                         onClick={() => {
                           if (histogramScope === scope) {
@@ -8327,14 +8328,14 @@ function App() {
             {(roiRGBData || roiTSFrames) && (
               <div className="control-group" style={{ padding: '2px 0' }}>
                 <div style={{
-                  display: 'flex', gap: '4px', fontSize: '0.65rem',
+                  display: 'flex', gap: '4px', fontSize: 'var(--text-xs)',
                 }}>
                   <button
                     onClick={() => setActiveViewer('main')}
                     style={{
                       flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                       background: activeViewer === 'main' ? 'rgba(255, 200, 50, 0.15)' : 'transparent',
-                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--border)',
+                      border: activeViewer === 'main' ? '1px solid rgba(255, 200, 50, 0.4)' : '1px solid var(--sardine-border)',
                       color: activeViewer === 'main' ? '#ffc832' : 'var(--text-muted)',
                       cursor: 'pointer',
                     }}
@@ -8347,7 +8348,7 @@ function App() {
                       style={{
                         flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                         background: activeViewer === 'roi-rgb' ? 'rgba(78, 201, 212, 0.15)' : 'transparent',
-                        border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--border)',
+                        border: activeViewer === 'roi-rgb' ? '1px solid rgba(78, 201, 212, 0.4)' : '1px solid var(--sardine-border)',
                         color: activeViewer === 'roi-rgb' ? '#4ec9d4' : 'var(--text-muted)',
                         cursor: 'pointer',
                       }}
@@ -8361,7 +8362,7 @@ function App() {
                       style={{
                         flex: 1, padding: '3px 6px', borderRadius: 'var(--radius-sm)',
                         background: activeViewer === 'roi-ts' ? 'rgba(46, 204, 113, 0.15)' : 'transparent',
-                        border: activeViewer === 'roi-ts' ? '1px solid rgba(46, 204, 113, 0.4)' : '1px solid var(--border)',
+                        border: activeViewer === 'roi-ts' ? '1px solid rgba(46, 204, 113, 0.4)' : '1px solid var(--sardine-border)',
                         color: activeViewer === 'roi-ts' ? '#2ecc71' : 'var(--text-muted)',
                         cursor: 'pointer',
                       }}
@@ -8440,7 +8441,7 @@ function App() {
                     />
                     <label htmlFor="losToggle">
                       LOS Displacement
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
                         {losDisplacement ? '(m)' : '(rad)'}
                       </span>
                     </label>
@@ -8458,7 +8459,7 @@ function App() {
                     />
                     <label htmlFor="vertDispToggle">
                       Vertical Displacement
-                      <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
                         d<sub>vert</sub> = d<sub>LOS</sub> / cos({'\u03B8'})
                       </span>
                     </label>
@@ -8467,7 +8468,7 @@ function App() {
 
                 {/* Symmetric range presets */}
                 <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', width: '100%', marginBottom: '2px' }}>Range Presets</span>
+                  <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)', width: '100%', marginBottom: '2px' }}>Range Presets</span>
                   {(() => {
                     const scale = losDisplacement ? (gunwDatasets?.metadata?.wavelength || 0.2384) / (4 * Math.PI) : 1;
                     const unit = losDisplacement ? 'm' : 'rad';
@@ -8481,7 +8482,7 @@ function App() {
                       <button
                         key={p.label}
                         className="btn-secondary"
-                        style={{ flex: 1, fontSize: '0.65rem', padding: '2px 4px', minWidth: '40px' }}
+                        style={{ flex: 1, fontSize: 'var(--text-xs)', padding: '2px 4px', minWidth: '40px' }}
                         onClick={() => {
                           if (p.val === null) {
                             // Auto: use histogram p2/p98 if available
@@ -8510,12 +8511,12 @@ function App() {
                 {/* Phase corrections panel */}
                 {selectedGunwDataset === 'unwrappedPhase' && correctionLayers && Object.keys(correctionLayers).length > 0 && (() => {
                   const btnStyle = (active) => ({
-                    fontSize: '0.6rem',
+                    fontSize: 'var(--text-xs)',
                     padding: '3px 6px',
-                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--border)'}`,
+                    border: `1px solid ${active ? 'var(--sardine-cyan)' : 'var(--sardine-border)'}`,
                     borderRadius: '3px',
                     background: active ? 'var(--sardine-cyan)' : 'transparent',
-                    color: active ? '#000' : 'var(--text)',
+                    color: active ? '#000' : 'var(--ink)',
                     cursor: 'pointer',
                     transition: 'all 0.15s',
                   });
@@ -8544,11 +8545,11 @@ function App() {
                   const availableKeys = Object.keys(CORRECTION_TYPES).filter(k => !!correctionLayers[k] && !alreadyApplied.has(k));
                   const allEnabled = availableKeys.length > 0 && availableKeys.every(k => enabledCorrections.has(k));
                   return (
-                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--border)', paddingTop: '6px' }}>
+                    <div style={{ marginTop: '8px', borderTop: '1px solid var(--sardine-border)', paddingTop: '6px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Phase Corrections</span>
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Phase Corrections</span>
                         <button
-                          style={{ ...btnStyle(allEnabled), fontSize: '0.55rem', padding: '2px 5px' }}
+                          style={{ ...btnStyle(allEnabled), fontSize: 'var(--text-xs)', padding: '2px 5px' }}
                           onClick={() => { setEnabledCorrections(allEnabled ? new Set() : new Set(availableKeys)); resetContrast(); }}
                         >{allEnabled ? 'Clear All' : 'Apply All'}</button>
                       </div>
@@ -8733,7 +8734,7 @@ function App() {
                   />
                   <label htmlFor="maskInvalid" style={{ margin: 0 }}>
                     Mask invalid
-                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
                       {maskInvalid ? '(0, 255)' : '(off)'}
                     </span>
                   </label>
@@ -8752,7 +8753,7 @@ function App() {
                   />
                   <label htmlFor="maskLayoverShadow" style={{ margin: 0 }}>
                     Mask layover/shadow
-                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
                       {maskLayoverShadow ? '(active)' : '(off)'}
                     </span>
                   </label>
@@ -8772,7 +8773,7 @@ function App() {
                   />
                   <label htmlFor="incAngleMask">
                     Incidence Angle Mask
-                    <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginLeft: '4px' }}>
                       {useIncidenceAngleMask ? `${incAngleMin}°–${incAngleMax}°` : '(off)'}
                     </span>
                   </label>
@@ -8780,7 +8781,7 @@ function App() {
                 {useIncidenceAngleMask && (
                   <>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Near range (min)</span>
+                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Near range (min)</span>
                       <span className="value-display">{incAngleMin}°</span>
                     </div>
                     <input
@@ -8789,7 +8790,7 @@ function App() {
                       onChange={(e) => setIncAngleMin(Number(e.target.value))}
                     />
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Far range (max)</span>
+                      <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>Far range (max)</span>
                       <span className="value-display">{incAngleMax}°</span>
                     </div>
                     <input
@@ -8862,8 +8863,8 @@ function App() {
                 style={{
                   position: 'absolute', top: '8px', right: '8px', zIndex: 2000,
                   background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                  border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
                 }}
               >
                 Close Compare
@@ -8889,8 +8890,8 @@ function App() {
                 style={{
                   position: 'absolute', top: '8px', right: '8px', zIndex: 10,
                   background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                  border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                  padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                  border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
+                  padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
                 }}
               >
                 Close Paired View
@@ -8917,7 +8918,7 @@ function App() {
                   pointerEvents: 'none',
                 }}>
                   <div style={{
-                    fontFamily: 'var(--font-mono)', fontSize: '0.9rem',
+                    fontFamily: 'var(--font-mono)', fontSize: 'var(--text-md)',
                     color: 'var(--sardine-cyan, #4ec9d4)', letterSpacing: '1px',
                   }}>
                     Loading dataset...
@@ -9014,7 +9015,7 @@ function App() {
               {roiRGBData && roiRGBBounds && roiRGBContrastLimits && (
                 <>
                   <div style={{
-                    width: '3px', background: 'var(--border)',
+                    width: '3px', background: 'var(--sardine-border)',
                     flexShrink: 0,
                   }} />
                   <div
@@ -9028,7 +9029,7 @@ function App() {
                       position: 'absolute', top: '8px', left: '8px', zIndex: 10,
                       background: 'rgba(0,0,0,0.7)', color: '#4ec9d4',
                       padding: '4px 10px', borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.7rem', pointerEvents: 'none',
+                      fontSize: 'var(--text-sm)', pointerEvents: 'none',
                     }}>
                       ROI RGB: {roiCompositeId}
                     </div>
@@ -9037,8 +9038,8 @@ function App() {
                       style={{
                         position: 'absolute', top: '8px', right: '8px', zIndex: 10,
                         background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                        border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                        padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                        border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
+                        padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
                       }}
                     >
                       Close
@@ -9067,7 +9068,7 @@ function App() {
               {roiTSFrames && roiTSBounds && roiTSContrastLimits && (
                 <>
                   <div style={{
-                    width: '3px', background: 'var(--border)',
+                    width: '3px', background: 'var(--sardine-border)',
                     flexShrink: 0,
                   }} />
                   <div
@@ -9081,7 +9082,7 @@ function App() {
                       position: 'absolute', top: '8px', left: '8px', zIndex: 10,
                       background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
                       padding: '4px 10px', borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.7rem', pointerEvents: 'none',
+                      fontSize: 'var(--text-sm)', pointerEvents: 'none',
                     }}>
                       {roiTSFrames[roiTSIndex]?.label || 'Frame ' + roiTSIndex}
                       {' '}({roiTSIndex + 1}/{roiTSFrames.length})
@@ -9094,7 +9095,7 @@ function App() {
                           style={{
                             background: 'rgba(0,0,0,0.7)', color: '#2ecc71',
                             border: '1px solid #2ecc71', borderRadius: 'var(--radius-sm)',
-                            padding: '2px 8px', fontSize: '0.65rem', cursor: exporting ? 'not-allowed' : 'pointer',
+                            padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: exporting ? 'not-allowed' : 'pointer',
                           }}
                         >
                           {exporting ? `${exportProgress}%` : `Export GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
@@ -9104,8 +9105,8 @@ function App() {
                         onClick={(e) => { e.stopPropagation(); setRoiTSFrames(null); setRoiTSBounds(null); setRoiTSContrastLimits(null); setRoiTSHistogramData(null); setRoiTSPlaying(false); setActiveViewer('main'); }}
                         style={{
                           background: 'rgba(0,0,0,0.7)', color: 'var(--text-muted)',
-                          border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
-                          padding: '2px 8px', fontSize: '0.65rem', cursor: 'pointer',
+                          border: '1px solid var(--sardine-border)', borderRadius: 'var(--radius-sm)',
+                          padding: '2px 8px', fontSize: 'var(--text-xs)', cursor: 'pointer',
                         }}
                       >
                         Close
@@ -9116,19 +9117,19 @@ function App() {
                       position: 'absolute', bottom: '12px', left: '50%', transform: 'translateX(-50%)',
                       zIndex: 10, display: 'flex', alignItems: 'center', gap: '8px',
                       background: 'rgba(0,0,0,0.8)', padding: '6px 12px',
-                      borderRadius: 'var(--radius-sm)', fontSize: '0.7rem',
+                      borderRadius: 'var(--radius-sm)', fontSize: 'var(--text-sm)',
                     }}>
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev - 1 + roiTSFrames.length) % roiTSFrames.length); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: 'var(--text-lg)', padding: '0 4px' }}
                       >◀</button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSPlaying(prev => !prev); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: 'var(--text-lg)', padding: '0 4px' }}
                       >{roiTSPlaying ? '⏸' : '▶'}</button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setRoiTSIndex(prev => (prev + 1) % roiTSFrames.length); }}
-                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: '1rem', padding: '0 4px' }}
+                        style={{ background: 'none', border: 'none', color: '#2ecc71', cursor: 'pointer', fontSize: 'var(--text-lg)', padding: '0 4px' }}
                       >▶</button>
                       <input
                         type="range"
@@ -9274,7 +9275,7 @@ function App() {
         justifyContent: 'space-between',
         padding: '0 12px',
         fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
-        fontSize: '0.6rem',
+        fontSize: 'var(--text-xs)',
         color: 'var(--text-muted, #5a7099)',
         zIndex: 1000,
         letterSpacing: '0.03em',

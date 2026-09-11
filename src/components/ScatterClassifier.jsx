@@ -531,23 +531,23 @@ export default function ScatterClassifier({
     }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.5px' }}>
+        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
           <span style={{ color: '#4ec9d4' }}>{isSingleChannel ? 'Histogram' : 'Feature Space'}</span>
         </span>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           <button onClick={handleExportSVG} title="Export scatter SVG" style={{
             background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-            fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
+            fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
           }}>SVG</button>
           {classificationMap && (
             <button onClick={handleExportClassMap} title="Export class map SVG" style={{
               background: 'none', border: '1px solid #1e3a5f', color: '#5a7099', cursor: 'pointer',
-              fontSize: 9, padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
+              fontSize: 'var(--text-xs)', padding: '1px 5px', borderRadius: 3, fontFamily: 'inherit',
             }}>Map</button>
           )}
           <button onClick={onClose} style={{
             background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
-            fontSize: 16, padding: '0 4px', lineHeight: 1,
+            fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
           }}>&times;</button>
         </div>
       </div>
@@ -561,7 +561,7 @@ export default function ScatterClassifier({
 
       {/* Drawing mode indicator */}
       {drawingClass >= 0 && (
-        <div style={{ fontSize: 10, color: '#e8833a', marginTop: 4, textAlign: 'center' }}>
+        <div style={{ fontSize: 'var(--text-xs)', color: '#e8833a', marginTop: 4, textAlign: 'center' }}>
           Draw rectangle for: {classRegions[drawingClass]?.name || `Class ${drawingClass + 1}`}
         </div>
       )}
@@ -584,13 +584,13 @@ export default function ScatterClassifier({
               onChange={(e) => renameClass(i, e.target.value)}
               style={{
                 background: 'transparent', border: 'none', color: '#e8edf5',
-                fontSize: 11, fontFamily: 'inherit', width: 100, padding: '1px 2px',
+                fontSize: 'var(--text-xs)', fontFamily: 'inherit', width: 100, padding: '1px 2px',
                 borderBottom: '1px solid transparent',
               }}
               onFocus={(e) => { e.target.style.borderBottomColor = '#4ec9d4'; }}
               onBlur={(e) => { e.target.style.borderBottomColor = 'transparent'; }}
             />
-            <span style={{ fontSize: 10, color: '#5a7099', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
               {classCounts[i] != null ? formatCount(classCounts[i]) : '—'}
             </span>
             <button
@@ -598,7 +598,7 @@ export default function ScatterClassifier({
               title="Redraw region"
               style={{
                 background: 'none', border: 'none', color: '#4ec9d4', cursor: 'pointer',
-                fontSize: 11, padding: '0 2px',
+                fontSize: 'var(--text-xs)', padding: '0 2px',
               }}
             >&#9998;</button>
             <button
@@ -606,7 +606,7 @@ export default function ScatterClassifier({
               title="Remove class"
               style={{
                 background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer',
-                fontSize: 13, padding: '0 2px', lineHeight: 1,
+                fontSize: 'var(--text-sm)', padding: '0 2px', lineHeight: 1,
               }}
             >&times;</button>
           </div>
@@ -617,7 +617,7 @@ export default function ScatterClassifier({
             border: '1px solid rgba(78,201,212,0.3)',
             borderRadius: 4,
             color: '#4ec9d4',
-            fontSize: 11,
+            fontSize: 'var(--text-xs)',
             fontFamily: 'inherit',
             cursor: 'pointer',
             padding: '4px 10px',
@@ -629,7 +629,7 @@ export default function ScatterClassifier({
 
       {/* Incidence angle filter */}
       {!scatterData?.incidence && (
-        <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8, fontSize: 9, color: '#5a7099' }}>
+        <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8, fontSize: 'var(--text-xs)', color: '#5a7099' }}>
           No incidence angle data (NISAR HDF5 only)
         </div>
       )}
@@ -648,11 +648,11 @@ export default function ScatterClassifier({
         const [curMin, curMax] = incidenceRange;
         return (
           <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8 }}>
-            <div style={{ fontSize: 10, color: '#5a7099', marginBottom: 4 }}>
+            <div style={{ fontSize: 'var(--text-xs)', color: '#5a7099', marginBottom: 4 }}>
               Incidence Angle Filter ({curMin}°–{curMax}°)
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 9, color: '#5a7099', width: 22, textAlign: 'right' }}>{curMin}°</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', width: 22, textAlign: 'right' }}>{curMin}°</span>
               <input type="range" min={dataMin} max={dataMax} step={1} value={curMin}
                 onChange={(e) => {
                   const v = Number(e.target.value);
@@ -662,7 +662,7 @@ export default function ScatterClassifier({
               />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 9, color: '#5a7099', width: 22, textAlign: 'right' }}>{curMax}°</span>
+              <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', width: 22, textAlign: 'right' }}>{curMax}°</span>
               <input type="range" min={dataMin} max={dataMax} step={1} value={curMax}
                 onChange={(e) => {
                   const v = Number(e.target.value);

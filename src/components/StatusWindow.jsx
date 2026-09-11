@@ -49,7 +49,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
           cursor: 'pointer',
           userSelect: 'none',
           fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
-          fontSize: '0.6rem',
+          fontSize: 'var(--text-xs)',
           color: 'var(--text-muted, #5a7099)',
           letterSpacing: '0.5px',
           transition: 'color 0.15s, border-color 0.15s',
@@ -63,7 +63,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
           e.currentTarget.style.borderColor = 'var(--sardine-border, #1e3a5f)';
         }}
       >
-        <span style={{ fontSize: '8px' }}>▲</span>
+        <span style={{ fontSize: 'var(--text-xs)' }}>▲</span>
         <span>STATUS</span>
         {logs.length > 0 && (
           <span style={{
@@ -75,7 +75,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
             borderRadius: '8px',
             backgroundColor: 'var(--sardine-cyan-bg, rgba(78, 201, 212, 0.08))',
             color: 'var(--sardine-cyan, #4ec9d4)',
-            fontSize: '0.55rem',
+            fontSize: 'var(--text-xs)',
             fontWeight: '600',
             padding: '0 4px',
           }}>
@@ -99,7 +99,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
     maxHeight: '300px',
     overflow: 'hidden',
     fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
-    fontSize: '12px',
+    fontSize: 'var(--text-sm)',
   };
 
   const headerStyle = {
@@ -116,14 +116,14 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   const titleStyle = {
     color: 'var(--text-primary, #e8edf5)',
     fontWeight: '600',
-    fontSize: '0.75rem',
+    fontSize: 'var(--text-sm)',
     letterSpacing: '1px',
     textTransform: 'uppercase',
   };
 
   const toggleButtonStyle = {
     color: 'var(--text-muted, #5a7099)',
-    fontSize: '14px',
+    fontSize: 'var(--text-md)',
     fontWeight: 'bold',
   };
 
@@ -169,7 +169,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
   const tabStyle = (active) => ({
     padding: '3px 10px',
     borderRadius: '4px',
-    fontSize: '0.7rem',
+    fontSize: 'var(--text-sm)',
     letterSpacing: '0.5px',
     textTransform: 'uppercase',
     cursor: 'pointer',
@@ -211,7 +211,7 @@ export function StatusWindow({ logs = [], isCollapsed: externalCollapsed, onTogg
                 <span style={timestampStyle}>{log.timestamp}</span>
                 <span style={messageStyle(log.type)}>{log.message}</span>
                 {log.details && (
-                  <div style={{ marginTop: '4px', color: 'var(--text-muted, #5a7099)', fontSize: '11px', paddingLeft: '80px' }}>
+                  <div style={{ marginTop: '4px', color: 'var(--text-muted, #5a7099)', fontSize: 'var(--text-xs)', paddingLeft: '80px' }}>
                     {log.details}
                   </div>
                 )}

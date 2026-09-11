@@ -192,7 +192,7 @@ function PixelTooltip({ info, useDecibels, windowSize, geoLabel }) {
       borderRadius: '2px',
       padding: '5px 10px',
       color: 'var(--text-primary, #e8edf5)',
-      fontSize: '0.7rem',
+      fontSize: 'var(--text-sm)',
       fontFamily: 'var(--font-mono, monospace)',
       pointerEvents: 'none',
       whiteSpace: 'pre',

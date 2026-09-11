@@ -258,7 +258,7 @@ export function IncidenceScatter({
   if (!scatterData?.count) {
     return (
       <div style={{
-        fontSize: '0.7rem', color: 'var(--text-muted)',
+        fontSize: 'var(--text-sm)', color: 'var(--text-muted)',
         padding: '8px', textAlign: 'center', ...style,
       }}>
         No incidence angle data available

@@ -443,7 +443,7 @@ export function AnnotationOverlay({
             top: Math.max(4, editorPos.sy - 28),
             minWidth: 140,
             padding: '4px 8px',
-            fontSize: '0.75rem',
+            fontSize: 'var(--text-sm)',
             fontFamily: 'var(--sardine-font-mono, monospace)',
             background: 'var(--sardine-bg-panel, #122240)',
             color: resolveColor(annotations.find(a => a.id === editingId)?.color || 'cyan'),

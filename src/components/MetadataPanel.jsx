@@ -319,7 +319,7 @@ function CollapsibleSection({ title, defaultOpen = false, children, count }) {
       >
         <span>{open ? '▾' : '▸'} {title}</span>
         {count != null && (
-          <span style={{ fontSize: '0.55rem', color: 'var(--text-disabled)', fontFamily: 'var(--font-mono)' }}>{count}</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-disabled)', fontFamily: 'var(--font-mono)' }}>{count}</span>
         )}
       </div>
       {open && children}
@@ -465,7 +465,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
               {id.boundingPolygon && (
                 <div style={{
                   marginTop: '4px',
-                  fontSize: '0.55rem',
+                  fontSize: 'var(--text-xs)',
                   color: 'var(--text-disabled)',
                   wordBreak: 'break-all',
                   fontFamily: 'var(--font-mono)',
@@ -605,7 +605,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
               )}
               <div style={{
                 marginTop: '4px',
-                fontSize: '0.55rem',
+                fontSize: 'var(--text-xs)',
                 color: 'var(--text-disabled)',
                 lineHeight: 1.4,
               }}>
@@ -618,7 +618,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
           {fileName && (
             <CollapsibleSection title="File" defaultOpen={false}>
               <div style={{
-                fontSize: '0.6rem',
+                fontSize: 'var(--text-xs)',
                 color: 'var(--text-muted)',
                 wordBreak: 'break-all',
                 fontFamily: 'var(--font-mono)',
@@ -633,7 +633,7 @@ export function MetadataPanel({ imageData, fileType, fileName }) {
           {fileType === 'nisar' && (
             <div style={{
               padding: '6px 8px',
-              fontSize: '0.5rem',
+              fontSize: 'var(--text-xs)',
               color: 'var(--text-disabled)',
               borderTop: '1px dashed var(--sardine-border, #1e3a5f)',
               fontFamily: 'var(--font-mono)',

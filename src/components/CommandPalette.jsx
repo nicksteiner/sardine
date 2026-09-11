@@ -109,7 +109,7 @@ export function CommandPalette({ open, onClose, actions }) {
             border: 'none',
             borderBottom: '1px solid #1a2a3a',
             color: '#e8edf5',
-            fontSize: '0.85rem',
+            fontSize: 'var(--text-md)',
             fontFamily: 'inherit',
             outline: 'none',
             boxSizing: 'border-box',
@@ -117,7 +117,7 @@ export function CommandPalette({ open, onClose, actions }) {
         />
         <div ref={listRef} style={{ maxHeight: '50vh', overflowY: 'auto' }}>
           {filtered.length === 0 ? (
-            <div style={{ padding: '14px', color: '#5a7099', fontStyle: 'italic', fontSize: '0.75rem' }}>
+            <div style={{ padding: '14px', color: '#5a7099', fontStyle: 'italic', fontSize: 'var(--text-sm)' }}>
               no matches
             </div>
           ) : (
@@ -139,7 +139,7 @@ export function CommandPalette({ open, onClose, actions }) {
         <div style={{
           borderTop: '1px solid #1a2a3a',
           padding: '5px 12px',
-          fontSize: '0.6rem',
+          fontSize: 'var(--text-xs)',
           color: '#5a7099',
           display: 'flex', justifyContent: 'space-between',
         }}>
@@ -163,11 +163,11 @@ function ActionRow({ action, idx, selected, onHover, onPick }) {
         background: selected ? 'rgba(78, 201, 212, 0.12)' : 'transparent',
         borderLeft: selected ? '2px solid #4ec9d4' : '2px solid transparent',
         display: 'flex', alignItems: 'center', gap: 10,
-        fontSize: '0.75rem',
+        fontSize: 'var(--text-sm)',
       }}
     >
       {action.group && (
-        <span style={{ color: '#5a7099', fontSize: '0.6rem', minWidth: 60, letterSpacing: 1 }}>
+        <span style={{ color: '#5a7099', fontSize: 'var(--text-xs)', minWidth: 60, letterSpacing: 1 }}>
           {action.group}
         </span>
       )}
@@ -175,11 +175,11 @@ function ActionRow({ action, idx, selected, onHover, onPick }) {
         {action.label}
       </span>
       {action.hint && (
-        <span style={{ color: '#5a7099', fontSize: '0.65rem' }}>{action.hint}</span>
+        <span style={{ color: '#5a7099', fontSize: 'var(--text-xs)' }}>{action.hint}</span>
       )}
       {action.shortcut && (
         <span style={{
-          color: '#5a7099', fontSize: '0.6rem',
+          color: '#5a7099', fontSize: 'var(--text-xs)',
           padding: '1px 5px', border: '1px solid #2a3a4a', borderRadius: 2,
         }}>{action.shortcut}</span>
       )}

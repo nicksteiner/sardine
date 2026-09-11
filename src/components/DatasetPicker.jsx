@@ -71,7 +71,7 @@ export function DatasetPicker({
   if (datasets.length === 1) {
     const only = datasets[0];
     return (
-      <div className="control-group" style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+      <div className="control-group" style={{ fontSize: 'var(--text-sm)', color: 'var(--text-muted)' }}>
         {only.label}
         {only.shape?.[0] > 0 && (
           <span style={{ marginLeft: '6px' }}>

@@ -83,7 +83,7 @@ export function ScaleBar({ viewState, bounds, epsg = null }) {
       {/* Label */}
       <div
         style={{
-          fontSize: '0.7rem',
+          fontSize: 'var(--text-sm)',
           fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
           color: 'var(--text-secondary, #8fa4c4)',
           fontWeight: '500',

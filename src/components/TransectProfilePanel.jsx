@@ -25,7 +25,7 @@ const WIDTH_OPTIONS = [0, 1, 2, 3];
 function WidthControl({ width, onWidthChange }) {
   if (!onWidthChange) return null;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, fontSize: '0.68rem', fontFamily: C.mono, color: C.muted }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, fontSize: 'var(--text-xs)', fontFamily: C.mono, color: C.muted }}>
       <span title="Average pixels perpendicular to the line">⊥ avg</span>
       {WIDTH_OPTIONS.map(w => (
         <button
@@ -34,7 +34,7 @@ function WidthControl({ width, onWidthChange }) {
           title={w === 0 ? 'Centerline only' : `Average ${2 * w + 1} px across the line`}
           style={{
             padding: '2px 7px', borderRadius: 4, cursor: 'pointer',
-            fontFamily: C.mono, fontSize: '0.68rem',
+            fontFamily: C.mono, fontSize: 'var(--text-xs)',
             background: width === w ? 'rgba(78,201,212,0.14)' : 'transparent',
             border: `1px solid ${width === w ? '#2a8a93' : C.border}`,
             color: width === w ? C.cyan : C.muted,
@@ -62,7 +62,7 @@ export function TransectProfilePanel({ data, enabled, useDecibels = true, width 
 
   if (!enabled) {
     return (
-      <div ref={wrapRef} style={{ padding: '8px 4px', color: 'var(--text-muted)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
+      <div ref={wrapRef} style={{ padding: '8px 4px', color: 'var(--text-muted)', fontSize: 'var(--text-sm)', fontFamily: 'var(--font-mono)' }}>
         Transect tool off — enable it from the command palette (⌘K), then drag a line on the image.
       </div>
     );
@@ -71,7 +71,7 @@ export function TransectProfilePanel({ data, enabled, useDecibels = true, width 
     return (
       <div ref={wrapRef} style={{ padding: '4px' }}>
         <WidthControl width={width} onWidthChange={onWidthChange} />
-        <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
+        <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-sm)', fontFamily: 'var(--font-mono)' }}>
           Drag a line on the viewer. Drag its ends to reshape, the center ring to rotate, the body to move.
         </div>
       </div>
@@ -94,7 +94,7 @@ export function TransectProfilePanel({ data, enabled, useDecibels = true, width 
     return (
       <div ref={wrapRef} style={{ padding: '4px' }}>
         <WidthControl width={width} onWidthChange={onWidthChange} />
-        <div style={{ color: C.muted, fontSize: '0.72rem', fontFamily: C.mono }}>No valid samples along the line.</div>
+        <div style={{ color: C.muted, fontSize: 'var(--text-sm)', fontFamily: C.mono }}>No valid samples along the line.</div>
       </div>
     );
   }
@@ -211,7 +211,7 @@ export function TransectProfilePanel({ data, enabled, useDecibels = true, width 
         <text x={pad.l} y={H - 8} textAnchor="start" fill={C.muted} fontSize={13} fontFamily={C.mono}>0</text>
         <text x={pad.l + innerW} y={H - 8} textAnchor="end" fill={C.muted} fontSize={13} fontFamily={C.mono}>{Math.round(dMax)} px</text>
       </svg>
-      <div style={{ marginTop: 4, color: C.muted, fontSize: '0.72rem', fontFamily: C.mono, display: 'flex', gap: 16, alignItems: 'center' }}>
+      <div style={{ marginTop: 4, color: C.muted, fontSize: 'var(--text-sm)', fontFamily: C.mono, display: 'flex', gap: 16, alignItems: 'center' }}>
         <span>len {Math.round(lenPx ?? dMax)} px</span>
         <span>{Number.isFinite(angleDeg) ? `${angleDeg.toFixed(0)}°` : ''}</span>
         <span>n {cnt}</span>
@@ -220,7 +220,7 @@ export function TransectProfilePanel({ data, enabled, useDecibels = true, width 
           title="Download the plot + data as SVG"
           style={{
             marginLeft: 'auto', padding: '2px 10px', cursor: 'pointer',
-            fontFamily: C.mono, fontSize: '0.72rem',
+            fontFamily: C.mono, fontSize: 'var(--text-sm)',
             background: 'transparent', color: C.cyan,
             border: `1px solid ${C.border}`, borderRadius: 4,
           }}
