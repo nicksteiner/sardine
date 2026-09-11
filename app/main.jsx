@@ -1,6 +1,9 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef, Component } from 'react';
 import { createRoot } from 'react-dom/client';
 import 'maplibre-gl/dist/maplibre-gl.css';
+// The single stylesheet. app/theme/sardine-theme.css used to hold a byte-identical
+// copy of this file and was the one the app actually loaded, so edits to the
+// canonical src/theme/ copy silently did nothing. Import the real one (W030).
 import '../src/theme/sardine-theme.css';
 import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
 import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
@@ -320,6 +323,54 @@ function computeLogNormalHist(mean, std, numBins = 128, syntheticCount = 100000)
  * (Earthdata-authenticated NISAR streaming, some STAC endpoints).
  * Dismissible; remembered in localStorage.
  */
+// ─── W030: load-progress + empty-state copy ─────────────────────────────────
+
+/** Human label for the current load phase. */
+function loadPhaseLabel(detail) {
+  switch (detail?.phase) {
+    case 'opening':  return 'Opening file';
+    case 'metadata': return 'Reading metadata';
+    case 'index':    return 'Building chunk index';
+    case 'chunks':   return detail.fromCache ? 'Reading cached chunks' : 'Streaming chunks';
+    case 'done':     return 'Ready';
+    default:         return 'Loading';
+  }
+}
+
+/** "142 / 380 chunks · 412 MB" — the counts, not just a percentage. */
+function loadDetailText(pct, detail) {
+  const rounded = `${Math.round(pct)}%`;
+  if (!detail || detail.chunksTotal <= 0) return rounded;
+  const parts = [`${detail.chunksDone} / ${detail.chunksTotal} chunks`];
+  if (detail.bytes > 0) {
+    const mb = detail.bytes / (1024 * 1024);
+    parts.push(mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`);
+  }
+  // A warm L2 (IndexedDB) cache means no network fetch happened — saying so
+  // keeps a near-instant reload from looking like a broken progress bar.
+  if (detail.cachedChunks > 0) {
+    parts.push(detail.fromCache ? 'from cache' : `${detail.cachedChunks} cached`);
+  }
+  return `${rounded} · ${parts.join(' · ')}`;
+}
+
+/** What to do next, per source — instructions, not a description of the app. */
+const EMPTY_STATE_HINTS = {
+  nisar: 'Drop a NISAR L2 GCOV .h5 file here, or paste a URL to one. Nothing uploads — it streams from your disk (or by HTTP range) straight to the GPU.',
+  'local-tif': 'Drop one or more SAR GeoTIFFs here, or choose them below. Multiple files load as a mosaic.',
+  remote: 'Paste a direct URL to a GCOV granule or a Cloud Optimized GeoTIFF. Only the chunks in view are fetched.',
+  cog: 'Paste a URL to a Cloud Optimized GeoTIFF. Only the tiles in view are fetched.',
+  catalog: 'Load a GeoJSON scene catalog, then pick a scene from it.',
+  cmr: 'Search NASA CMR for a granule, pick one, then load a dataset from it.',
+};
+
+/**
+ * Deep link to the hosted hero scene (Pacaya-Samiria floodplain, dual-pol
+ * L-band RGB). Same parameters as the README hero image, so the demo the docs
+ * advertise is one click from the empty viewer.
+ */
+const HERO_DEMO_QUERY = '?cog=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hh.tif,https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid&c=12233,7038&z=-1.5';
+
 function PagesBanner() {
   const isPages = import.meta.env.VITE_DEPLOY_TARGET === 'github-pages';
   const [dismissed, setDismissed] = useState(() => {
@@ -379,7 +430,39 @@ function App() {
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
   const [loading, setLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
-  const [error, setError] = useState(null);
+  // W030: the counts behind the bar — {phase, chunksDone, chunksTotal, bytes,
+  // cachedChunks, fromCache}. "142 / 380 chunks · 412 MB" tells a SAR user more
+  // than a percentage, and a warm L2 reload must not imply a network fetch.
+  const [loadDetail, setLoadDetail] = useState(null);
+
+  // W030: errors accumulate instead of overwriting each other. A dozen async
+  // paths used to race on one string, so the last failure to land was the only
+  // one anybody saw. setError(msg) is kept as-is for the ~32 existing call
+  // sites; setError(null) still clears, which is the established "starting a
+  // load" idiom.
+  const [errors, setErrors] = useState([]);
+  const errorIdRef = useRef(0);
+  const setError = useCallback((message) => {
+    if (message == null) { setErrors([]); return; }
+    const text = String(message);
+    setErrors(prev => {
+      // Repeated identical failures (a retried tile, a re-entered effect) stack
+      // a count rather than a wall of duplicates.
+      const existing = prev.findIndex(e => e.message === text);
+      if (existing >= 0) {
+        const next = prev.slice();
+        next[existing] = { ...next[existing], count: next[existing].count + 1, at: Date.now() };
+        return next;
+      }
+      const entry = { id: ++errorIdRef.current, message: text, count: 1, at: Date.now() };
+      return [...prev, entry].slice(-5); // oldest fall off; five is already a lot
+    });
+  }, []);
+  const dismissError = useCallback((id) => {
+    setErrors(prev => prev.filter(e => e.id !== id));
+  }, []);
+  // Most-recent error, for the many `!error` / `error &&` guards downstream.
+  const error = errors.length > 0 ? errors[errors.length - 1].message : null;
 
   // Load generation counter — incremented on each new load to discard stale results
   const loadGenRef = useRef(0);
@@ -1274,6 +1357,124 @@ function App() {
       return next.length > 500 ? next.slice(-500) : next;
     });
   }, []);
+
+  // ── W030: load-scoped cancellation ────────────────────────────────────────
+  // One AbortController per load operation, aborted when the user presses
+  // Cancel or when a new load supersedes it. This is NOT the per-tile deck.gl
+  // signal: W003 established that forwarding that one into readChunksBatch
+  // breaks tiles during viewport stabilisation and poisons the adaptive
+  // concurrency estimator. This signal cancels a whole load and reaches the
+  // h5chunk range reads, which is the only way Cancel can be honest — a cancel
+  // that stops the spinner while bytes keep arriving is worse than none.
+  const loadAbortRef = useRef(null);
+  const [loadCancellable, setLoadCancellable] = useState(false);
+
+  /** Register a load's controller as the active one, superseding any previous. */
+  const beginLoadAbort = useCallback((controller) => {
+    loadAbortRef.current?.abort();
+    loadAbortRef.current = controller;
+    setLoadCancellable(true);
+    return controller.signal;
+  }, []);
+
+  /** Retire a load's controller (success or failure) if it is still current. */
+  const endLoadAbort = useCallback((controller) => {
+    if (loadAbortRef.current === controller) {
+      loadAbortRef.current = null;
+      setLoadCancellable(false);
+    }
+  }, []);
+
+  /** Progress sink shared by every load path — pct plus the real counts. */
+  const handleLoadProgress = useCallback((pct, detail) => {
+    setLoadProgress(pct);
+    if (detail) setLoadDetail(detail);
+  }, []);
+
+  /** Reset the progress surface once a load settles. */
+  const resetLoadProgress = useCallback(() => {
+    setLoadProgress(0);
+    setLoadDetail(null);
+  }, []);
+
+  const cancelActiveLoad = useCallback(() => {
+    const controller = loadAbortRef.current;
+    if (!controller) return;
+    controller.abort();
+    loadAbortRef.current = null;
+    setLoadCancellable(false);
+    setLoading(false);
+    resetLoadProgress();
+    addStatusLog('warn', 'Load cancelled', 'In-flight range reads were aborted');
+  }, [addStatusLog, resetLoadProgress]);
+
+  /** True when an error is just this cancellation coming back up the stack. */
+  const isAbortError = (e) => e?.name === 'AbortError';
+
+  // ── W030: mobile bottom-sheet drag ────────────────────────────────────────
+  // sardine-theme.css already declares cursor:grab, touch-action:none and two
+  // detents (45dvh / 82dvh) on .controls-panel — but the handle was a plain
+  // onClick, so the sheet looked draggable and was not. These handlers make the
+  // affordance true; a tap still toggles between the same two detents.
+  const controlsPanelRef = useRef(null);
+  const sheetDragRef = useRef(null);
+  const sheetTapSuppressedRef = useRef(false);
+  const SHEET_DETENTS = [0.45, 0.82]; // must match sardine-theme.css
+  const SHEET_DRAG_SLOP = 8;          // px before a tap counts as a drag
+
+  const handleSheetPointerDown = useCallback((e) => {
+    // The sheet only exists in the mobile layout; desktop keeps the toggle.
+    if (!window.matchMedia('(max-width: 768px)').matches) return;
+    const el = controlsPanelRef.current;
+    if (!el) return;
+    const height = el.getBoundingClientRect().height;
+    sheetDragRef.current = { startY: e.clientY, startH: height, lastH: height, moved: 0 };
+    el.style.transition = 'none';
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not captureable */ }
+  }, []);
+
+  const handleSheetPointerMove = useCallback((e) => {
+    const drag = sheetDragRef.current;
+    const el = controlsPanelRef.current;
+    if (!drag || !el) return;
+    const dy = drag.startY - e.clientY; // up is positive, sheet grows
+    drag.moved = Math.max(drag.moved, Math.abs(dy));
+    const vh = window.innerHeight;
+    // Clamp a little outside the detents so the drag has somewhere to go.
+    const h = Math.min(vh * 0.92, Math.max(vh * 0.2, drag.startH + dy));
+    drag.lastH = h;
+    el.style.height = `${h}px`;
+  }, []);
+
+  const handleSheetPointerUp = useCallback((e) => {
+    const drag = sheetDragRef.current;
+    const el = controlsPanelRef.current;
+    sheetDragRef.current = null;
+    if (!drag || !el) return;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    el.style.transition = '';
+    el.style.height = ''; // hand height back to the CSS detent
+    if (drag.moved < SHEET_DRAG_SLOP) return; // a tap — let onClick toggle
+    sheetTapSuppressedRef.current = true;
+    const frac = drag.lastH / window.innerHeight;
+    const midpoint = (SHEET_DETENTS[0] + SHEET_DETENTS[1]) / 2;
+    setSheetExpanded(frac >= midpoint);
+  }, []);
+
+  const handleSheetClick = useCallback(() => {
+    // A drag already chose a detent; don't toggle back on the trailing click.
+    if (sheetTapSuppressedRef.current) {
+      sheetTapSuppressedRef.current = false;
+      return;
+    }
+    setSheetExpanded(v => !v);
+  }, []);
+
+  /** W030 empty state: open the hosted hero scene via its deep link. */
+  const openHeroDemo = useCallback(() => {
+    addStatusLog('info', 'Opening the demo scene (Pacaya-Samiria dual-pol RGB)');
+    window.location.search = HERO_DEMO_QUERY;
+  }, [addStatusLog]);
 
   // One-time status log of which histogram compute path is active (W007).
   // Emitted the first time histogram stats are actually computed.
@@ -3432,9 +3633,14 @@ function App() {
     setLoading(true);
     setError(null);
 
+    // W030: metadata streaming is cancellable too — a mis-pasted multi-GB URL
+    // should be stoppable before any band is loaded.
+    const metaController = new AbortController();
+    const metaSignal = beginLoadAbort(metaController);
+
     try {
       addStatusLog('info', `Streaming NISAR metadata from: ${name}`);
-      const result = await listNISARDatasetsFromUrl(resolvedUrl, { fetchHeaders });
+      const result = await listNISARDatasetsFromUrl(resolvedUrl, { fetchHeaders, signal: metaSignal });
       const datasets = result.datasets || result;
       // Store the stream reader to reuse when loading (avoids re-downloading metadata)
       if (result._streamReader) {
@@ -3500,12 +3706,15 @@ function App() {
             ? ' — Token may be expired. Run: curl -n https://urs.earthdata.nasa.gov/api/users/tokens and paste the access_token value'
             : ' — Set your Earthdata token in the NISAR Search panel')
         : '';
-      setError(`Failed to read remote NISAR file: ${e.message}${hint}`);
-      addStatusLog('error', `Remote metadata read failed${hint}`, e.message);
+      if (!isAbortError(e)) {
+        setError(`Failed to read remote NISAR file: ${e.message}${hint}`);
+        addStatusLog('error', `Remote metadata read failed${hint}`, e.message);
+      }
     } finally {
+      endLoadAbort(metaController);
       setLoading(false);
     }
-  }, [addStatusLog]);
+  }, [addStatusLog, beginLoadAbort, endLoadAbort]);
 
   // Keep the forward-ref pointed at the latest handleRemoteFileSelect so the
   // share-link effect can invoke it after mount (and after a token is pasted).
@@ -3558,8 +3767,21 @@ function App() {
     if (!remoteUrl) return;
     const gen = ++loadGenRef.current;
 
+    // W030: load-scoped controller — Cancel must stop the range reads on the
+    // wire, not just discard whatever comes back (that is what the pre-existing
+    // `cancelled` flag idiom did, and why the transfer kept running).
+    const loadController = new AbortController();
+    const loadSignal = beginLoadAbort(loadController);
+
     setLoading(true);
+    setLoadProgress(0);
+    setLoadDetail(null);
     setError(null);
+
+    // W030: the overview prefetch runs on past the load promise and is where a
+    // remote granule's bytes actually move. Keep the bar and Cancel alive for
+    // it — `loading` still clears on time so the first tiles can paint.
+    let streamingTail = null;
 
     try {
       let data;
@@ -3662,6 +3884,10 @@ function App() {
           polarization: selectedPolarization,
           _streamReader: handleRemoteFileSelect._cachedReader || null,
           fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+          // W030: progress stays live across prefetchOverviewChunks() below —
+          // that is where a remote granule actually spends its bytes.
+          onProgress: handleLoadProgress,
+          signal: loadSignal,
           // W016: deep-link region (WGS84) — scopes overview prefetch +
           // Phase-2 refinement to the intersecting chunks. Read pre-
           // consumption; applyDeepLinkRoi below consumes the ref.
@@ -3677,9 +3903,10 @@ function App() {
           // Keep the promise: the background histogram waits on it so its
           // tile sampling doesn't compete with the first-paint chunk fetch.
           if (data.prefetchOverviewChunks) {
-            data._prefetchPromise = data.prefetchOverviewChunks().catch(e =>
-              console.warn('[SARdine] Overview prefetch failed:', e.message)
-            );
+            data._prefetchPromise = data.prefetchOverviewChunks().catch(e => {
+              if (!isAbortError(e)) console.warn('[SARdine] Overview prefetch failed:', e.message);
+            });
+            streamingTail = data._prefetchPromise;
           }
         }
 
@@ -3822,12 +4049,20 @@ function App() {
         })();
       }
     } catch (e) {
-      setError(`Failed to load remote NISAR: ${e.message}`);
-      addStatusLog('error', 'Remote load failed', e.message);
+      if (!isAbortError(e)) {
+        setError(`Failed to load remote NISAR: ${e.message}`);
+        addStatusLog('error', 'Remote load failed', e.message);
+      }
     } finally {
       setLoading(false);
+      if (streamingTail) {
+        streamingTail.finally(() => { endLoadAbort(loadController); resetLoadProgress(); });
+      } else {
+        endLoadAbort(loadController);
+        resetLoadProgress();
+      }
     }
-  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, applyDeepLinkRoi, logHistogramPathOnce]);
+  }, [remoteUrl, selectedFrequency, selectedPolarization, displayMode, compositeId, useDecibels, fileType, addStatusLog, autoFitIfNewScene, applyDeepLinkRoi, logHistogramPathOnce, beginLoadAbort, endLoadAbort, handleLoadProgress, resetLoadProgress]);
 
   // Keep the forward-ref current so the deep-link auto-load (bbox links only,
   // W016) can fire it from handleRemoteFileSelect, which is defined earlier.
@@ -3847,7 +4082,13 @@ function App() {
       return;
     }
 
+    // W030: a load-scoped controller so Cancel actually stops the read stream.
+    const loadController = new AbortController();
+    const loadSignal = beginLoadAbort(loadController);
+
     setLoading(true);
+    setLoadProgress(0);
+    setLoadDetail(null);
     setError(null);
 
     try {
@@ -4075,6 +4316,8 @@ function App() {
         data = await loadNISARGCOV(nisarFile, {
           frequency: selectedFrequency,
           polarization: selectedPolarization,
+          onProgress: handleLoadProgress,
+          signal: loadSignal,
         });
 
         addStatusLog('success', 'NISAR dataset loaded',
@@ -4221,14 +4464,19 @@ function App() {
 
       addStatusLog('success', `NISAR ${nisarProductType} loaded and ready to display`);
     } catch (e) {
-      setError(`Failed to load NISAR dataset: ${e.message}`);
-      setImageData(null);
-      addStatusLog('error', 'Failed to load NISAR dataset', e.message);
-      console.error('NISAR loading error:', e);
+      // A user cancel is not a failure — it already logged itself.
+      if (!isAbortError(e)) {
+        setError(`Failed to load NISAR dataset: ${e.message}`);
+        setImageData(null);
+        addStatusLog('error', 'Failed to load NISAR dataset', e.message);
+        console.error('NISAR loading error:', e);
+      }
     } finally {
+      endLoadAbort(loadController);
       setLoading(false);
+      resetLoadProgress();
     }
-  }, [nisarFile, nisarFile2, nisarFile3, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene]);
+  }, [nisarFile, nisarFile2, nisarFile3, nisarProductType, selectedFrequency, selectedPolarization, selectedLayer, selectedGunwDataset, displayMode, compositeId, gunwDatasets, addStatusLog, autoFitIfNewScene, beginLoadAbort, endLoadAbort, handleLoadProgress, resetLoadProgress]);
 
   // Export current view as GeoTIFF
   const [exporting, setExporting] = useState(false);
@@ -6287,11 +6535,18 @@ function App() {
           onPalette={() => setCommandPaletteOpen(true)}
         />
         {/* Controls Panel — one rail group visible at a time */}
-        <div className={`controls-panel${panelOpen ? '' : ' closed'}${sheetExpanded ? ' expanded' : ''}`}>
+        <div
+          ref={controlsPanelRef}
+          className={`controls-panel${panelOpen ? '' : ' closed'}${sheetExpanded ? ' expanded' : ''}`}
+        >
           <button
             className="sheet-handle"
             aria-label={sheetExpanded ? 'Collapse panel' : 'Expand panel'}
-            onClick={() => setSheetExpanded(v => !v)}
+            onClick={handleSheetClick}
+            onPointerDown={handleSheetPointerDown}
+            onPointerMove={handleSheetPointerMove}
+            onPointerUp={handleSheetPointerUp}
+            onPointerCancel={handleSheetPointerUp}
           />
           {!imageData && (activePanel === 'analysis' || (activePanel === 'export' && !compareMode)) && (
             <div className="control-section u-note">
@@ -8732,23 +8987,87 @@ function App() {
           onPointerUp={cancelLongPress}
           onPointerCancel={cancelLongPress}
         >
-          {loading && <div className="loading">{fileType === 'cmr' ? 'Streaming NISAR metadata from DAAC...' : 'Loading...'}</div>}
+          {/* W030: determinate load panel — chunk counts, bytes, and a Cancel
+              that reaches the range reads. Stays up past `loading` while the
+              overview prefetch is still streaming bytes. */}
+          {(loading || loadProgress > 0) && (
+            <div className="load-panel" role="status" aria-live="polite">
+              <div className="load-panel-title">
+                {fileType === 'cmr' && loading && !loadDetail
+                  ? 'Streaming NISAR metadata from DAAC'
+                  : loadPhaseLabel(loadDetail)}
+              </div>
+              <div className="progress-track">
+                <div
+                  className="progress-fill"
+                  style={{ width: `${Math.max(2, loadProgress)}%`, transition: 'width 0.3s ease' }}
+                />
+              </div>
+              <div className="load-panel-detail">{loadDetailText(loadProgress, loadDetail)}</div>
+              {loadCancellable && (
+                <button className="btn-secondary load-cancel" onClick={cancelActiveLoad}>Cancel</button>
+              )}
+            </div>
+          )}
 
-          {error && <div className="error">{error}</div>}
+          {/* W030: errors accumulate and are dismissed individually — the
+              previous single div meant the last failure to land was the only
+              one anybody ever saw. */}
+          {errors.length > 0 && (
+            <div className="error-stack">
+              {errors.map(err => (
+                <div className="error" role="alert" key={err.id}>
+                  <span className="error-text">
+                    {err.message}
+                    {err.count > 1 && <span className="error-count"> ×{err.count}</span>}
+                  </span>
+                  <button
+                    className="error-dismiss"
+                    aria-label="Dismiss this error"
+                    onClick={() => dismissError(err.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              {errors.length > 1 && (
+                <button className="btn-secondary error-dismiss-all" onClick={() => setError(null)}>
+                  Dismiss all
+                </button>
+              )}
+            </div>
+          )}
 
-          {!loading && !error && !imageData && !compareMode && (
-            <div className="loading">
-              {fileType === 'cmr'
-                ? (nisarDatasets.length > 0
-                  ? 'Metadata loaded — select dataset options, then click "Load Dataset"'
-                  : 'Search CMR and select a granule to begin')
-                : fileType === 'local-tif'
-                ? 'Select one or more local GeoTIFF files to begin'
-                : fileType === 'remote'
-                ? 'Enter a URL or browse remote data to begin'
-                : fileType === 'catalog'
-                  ? 'Load a GeoJSON scene catalog and select a scene to begin'
-                  : 'Select a NISAR HDF5 file to begin'}
+          {!loading && loadProgress === 0 && !imageData && !compareMode && (
+            <div className="empty-state">
+              <h2 className="empty-state-title">Open a SAR scene</h2>
+              <p className="empty-state-lede">{EMPTY_STATE_HINTS[fileType] || EMPTY_STATE_HINTS.nisar}</p>
+              <div className="empty-state-actions">
+                <button
+                  className="btn-primary"
+                  onClick={() => document.getElementById('nisar-file-input')?.click()}
+                >
+                  Choose a NISAR .h5 file
+                </button>
+                <span className="empty-state-or">or drop one anywhere on this window</span>
+              </div>
+              <div className="empty-state-url">
+                <label htmlFor="empty-state-url-input">Paste a URL to a GCOV granule or COG</label>
+                <div className="empty-state-url-row">
+                  <input
+                    id="empty-state-url-input"
+                    type="text"
+                    placeholder="https://…/NISAR_L2_GCOV_….h5"
+                    value={directUrl}
+                    onChange={(e) => setDirectUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleDirectUrlSubmit(); }}
+                  />
+                  <button className="btn-secondary" onClick={handleDirectUrlSubmit}>Open</button>
+                </div>
+              </div>
+              <button className="empty-state-demo" onClick={openHeroDemo}>
+                Or open the demo scene: Pacaya-Samiria floodplain, dual-pol L-band
+              </button>
             </div>
           )}
 
