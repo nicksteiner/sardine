@@ -1,5 +1,9 @@
 /**
- * NISARSearch — CMR granule search for NISAR GCOV/GUNW products.
+ * NISARSearch — CMR granule search for NISAR GCOV/GUNW and OPERA RTC-S1.
+ *
+ * OPERA RTC-S1 granules are COG-native burst products: one float32 gamma-0
+ * COG per polarization plus a mask, so they route to the COG loader and let
+ * the user pick which polarization to open.
  *
  * Uses NASA CMR Granule Search API (CORS-enabled, no proxy needed).
  * Token paste for Earthdata auth on data download URLs.
@@ -15,8 +19,11 @@
  */
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { GeoJsonLayer } from '@deck.gl/layers';
-import { NISAR_PRODUCTS, searchGranules } from '../loaders/cmr-client.js';
+import { NISAR_PRODUCTS, OPERA_RTC_PRODUCTS, searchGranules } from '../loaders/cmr-client.js';
 import { getEDLToken, setEDLToken } from '../utils/proxy.js';
+
+/** Layers offered before any OPERA result has come back. */
+const DEFAULT_OPERA_LAYERS = ['VV', 'VH', 'mask'];
 
 export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLayersChange, onGranulesChange, onTokenChange, viewBounds, onZoomToBounds }) {
   // ─── Search state ───────────────────────────────────────────────────
@@ -62,6 +69,29 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
   const [selectedIndices, setSelectedIndices] = useState(new Set());
 
   const currentProduct = NISAR_PRODUCTS.find(p => p.id === product);
+  // OPERA products are burst-based COGs: no frame number, and the granule
+  // carries several layers rather than a single file.
+  const isOpera = OPERA_RTC_PRODUCTS.has(product);
+
+  // Which OPERA layer to open. 'VV'/'VH' for RTC-S1; static granules fall back
+  // to their first layer. Ignored entirely for NISAR.
+  const [operaLayer, setOperaLayer] = useState('VV');
+
+  // Layers actually present in the current results — RTC-S1 returns VV/VH/mask
+  // while the STATIC collection returns incidence angle, number of looks, etc.
+  const availableLayers = useMemo(() => {
+    const seen = new Set();
+    for (const g of granules) {
+      for (const k of Object.keys(g.assets || {})) seen.add(k);
+    }
+    return [...seen];
+  }, [granules]);
+
+  // Keep the picked layer valid when the result set changes underneath it.
+  useEffect(() => {
+    if (!availableLayers.length) return;
+    if (!availableLayers.includes(operaLayer)) setOperaLayer(availableLayers[0]);
+  }, [availableLayers, operaLayer]);
 
   // ─── Search ─────────────────────────────────────────────────────────
 
@@ -121,19 +151,21 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
 
     // Single-select: load immediately
     setSelectedIdx(idx);
-    if (!granule.dataUrl) {
+    // For OPERA, honour the layer picker; dataUrl is only the default (co-pol).
+    const url = granule.assets?.[operaLayer] || granule.dataUrl;
+    if (!url) {
       onStatus?.('warning', `No data URL for ${granule.id}`);
       return;
     }
     onSelectScene?.({
-      url: granule.dataUrl,
-      name: granule.id,
+      url,
+      name: granule.assets?.[operaLayer] ? `${granule.id}_${operaLayer}` : granule.id,
       type: currentProduct?.type || 'nisar',
       size: granule.size || 0,
       token: token || undefined,
     });
     onStatus?.('info', `Loading: ${granule.id}`);
-  }, [multiSelect, currentProduct, token, onSelectScene, onStatus]);
+  }, [multiSelect, currentProduct, operaLayer, token, onSelectScene, onStatus]);
 
   // ─── Load time series ──────────────────────────────────────────────
 
@@ -155,8 +187,8 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
     });
 
     const scenes = selected.map(g => ({
-      url: g.dataUrl,
-      name: g.id,
+      url: g.assets?.[operaLayer] || g.dataUrl,
+      name: g.assets?.[operaLayer] ? `${g.id}_${operaLayer}` : g.id,
       datetime: g.datetime,
       track: g.track,
       frame: g.frame,
@@ -170,7 +202,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
     });
 
     onStatus?.('info', `Loading time series: ${scenes.length} scenes`);
-  }, [selectedIndices, granules, token, currentProduct, product, onSelectTimeSeries, onStatus]);
+  }, [selectedIndices, granules, operaLayer, token, currentProduct, product, onSelectTimeSeries, onStatus]);
 
   // ─── Select all / clear ────────────────────────────────────────────
 
@@ -285,7 +317,7 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
     <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
       {/* Product selector */}
       <div className="control-group">
-        <label>NISAR Product</label>
+        <label>Product</label>
         <select
           value={product}
           onChange={e => setProduct(e.target.value)}
@@ -298,6 +330,23 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
         {currentProduct && (
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)', marginTop: '2px' }}>
             {currentProduct.description}
+          </div>
+        )}
+
+        {/* OPERA layer picker — each granule ships several single-band COGs,
+            so the user chooses which one a click opens. */}
+        {isOpera && (
+          <div style={{ marginTop: '6px' }}>
+            <label style={{ fontSize: 'var(--text-xs)', color: 'var(--text-muted)' }}>Layer</label>
+            <select
+              value={operaLayer}
+              onChange={e => setOperaLayer(e.target.value)}
+              style={{ fontSize: 'var(--text-sm)', width: '100%' }}
+            >
+              {(availableLayers.length ? availableLayers : DEFAULT_OPERA_LAYERS).map(l => (
+                <option key={l} value={l}>{l}</option>
+              ))}
+            </select>
           </div>
         )}
       </div>
@@ -368,15 +417,18 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             onChange={e => setTrack(e.target.value)}
             placeholder="Track"
             style={{ flex: 1, fontSize: 'var(--text-sm)' }}
-            title="NISAR Track number"
+            title={isOpera ? 'Sentinel-1 relative orbit (track) number' : 'NISAR Track number'}
           />
           <input
             type="number"
             value={frame}
             onChange={e => setFrame(e.target.value)}
-            placeholder="Frame"
-            style={{ flex: 1, fontSize: 'var(--text-sm)' }}
-            title="NISAR Frame number"
+            placeholder={isOpera ? 'Frame (n/a)' : 'Frame'}
+            disabled={isOpera}
+            style={{ flex: 1, fontSize: 'var(--text-sm)', opacity: isOpera ? 0.5 : 1 }}
+            title={isOpera
+              ? 'OPERA RTC-S1 is burst-based and has no frame number'
+              : 'NISAR Frame number'}
           />
         </div>
         <label style={{ fontSize: 'var(--text-sm)', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '4px' }}>
@@ -482,8 +534,10 @@ export function NISARSearch({ onSelectScene, onSelectTimeSeries, onStatus, onLay
             const meta = [
               g.track != null ? `T${g.track}` : '',
               g.frame != null ? `F${g.frame}` : '',
+              g.subswath || '',
               g.direction === 'D' ? 'Desc' : g.direction === 'A' ? 'Asc' : '',
-              g.polarization || '',
+              // NISAR carries one pol string; OPERA carries a layer list.
+              g.polarization || (g.polarizations?.length ? g.polarizations.join('+') : ''),
             ].filter(Boolean).join(' | ');
 
             return (

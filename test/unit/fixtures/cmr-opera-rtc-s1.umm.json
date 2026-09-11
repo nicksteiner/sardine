@@ -1,0 +1,405 @@
+{
+ "rtc": {
+  "hits": 74535438,
+  "items": [
+   {
+    "meta": {
+     "concept-id": "G4307026963-ASF",
+     "collection-concept-id": "C2777436413-ASF"
+    },
+    "umm": {
+     "GranuleUR": "OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0",
+     "TemporalExtent": {
+      "RangeDateTime": {
+       "BeginningDateTime": "2026-09-11T05:16:22Z",
+       "EndingDateTime": "2026-09-11T05:16:25Z"
+      }
+     },
+     "SpatialExtent": {
+      "HorizontalSpatialDomain": {
+       "Geometry": {
+        "GPolygons": [
+         {
+          "Boundary": {
+           "Points": [
+            {
+             "Latitude": 23.44793,
+             "Longitude": 9.18008
+            },
+            {
+             "Latitude": 23.58693,
+             "Longitude": 8.34386
+            },
+            {
+             "Latitude": 23.39833,
+             "Longitude": 8.30635
+            },
+            {
+             "Latitude": 23.25918,
+             "Longitude": 9.14127
+            },
+            {
+             "Latitude": 23.44793,
+             "Longitude": 9.18008
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     },
+     "DataGranule": {
+      "DayNightFlag": "Unspecified",
+      "ProductionDateTime": "2026-09-11T13:03:34Z",
+      "ArchiveAndDistributionInformation": [
+       {
+        "Name": "OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0.h5",
+        "SizeInBytes": 102304,
+        "Format": "HDF5",
+        "Checksum": {
+         "Value": "33574441ac46da7255796a94f2ff70b6",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_VH.tif",
+        "SizeInBytes": 6583447,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "80cf89483f994ba282b71ade76dd10cf",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_VV.tif",
+        "SizeInBytes": 6471752,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "cb4811ca7246ea891bd0ed03b3db5858",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_mask.tif",
+        "SizeInBytes": 48390,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "5605c1510c9a89b7a07be5a7dc123faa",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0.iso.xml",
+        "SizeInBytes": 160054,
+        "Format": "XML",
+        "Checksum": {
+         "Value": "f12a8764bd2a291d1e567092bdd360bd",
+         "Algorithm": "MD5"
+        }
+       }
+      ],
+      "Identifiers": [
+       {
+        "IdentifierType": "ProducerGranuleId",
+        "Identifier": "OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0"
+       },
+       {
+        "Identifier": "0.15.0",
+        "IdentifierType": "Other",
+        "IdentifierName": "ISCE3Version"
+       },
+       {
+        "Identifier": "0.2.5",
+        "IdentifierType": "Other",
+        "IdentifierName": "S1ReaderVersion"
+       },
+       {
+        "Identifier": "1.0.4",
+        "IdentifierType": "Other",
+        "IdentifierName": "SASVersionId"
+       }
+      ]
+     },
+     "RelatedUrls": [
+      {
+       "URL": "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0.h5",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0.h5",
+       "Format": "HDF5"
+      },
+      {
+       "URL": "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_VH.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_VH.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_VV.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_VV.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://cumulus.asf.earthdatacloud.nasa.gov/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_mask.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_mask.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://cumulus.asf.earthdatacloud.nasa.gov/BROWSE/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "Download OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "s3://asf-cumulus-prod-opera-browse/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "This link provides direct download access via S3 to OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "https://cumulus.asf.earthdatacloud.nasa.gov/BROWSE/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_low-res.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "Download OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_low-res.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "s3://asf-cumulus-prod-opera-browse/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_low-res.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "This link provides direct download access via S3 to OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_low-res.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "https://cumulus.asf.earthdatacloud.nasa.gov/BROWSE/OPERA/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_thumbnail.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "Download OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_thumbnail.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "s3://asf-cumulus-prod-opera-browse/OPERA_L2_RTC-S1/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0/OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_thumbnail.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "This link provides direct download access via S3 to OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0_BROWSE_thumbnail.png",
+       "Format": "PNG"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ "static": {
+  "hits": 369939,
+  "items": [
+   {
+    "meta": {
+     "concept-id": "G2809500057-ASF",
+     "collection-concept-id": "C2795135174-ASF"
+    },
+    "umm": {
+     "GranuleUR": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0",
+     "TemporalExtent": {
+      "SingleDateTime": "2014-04-03T00:00:00Z"
+     },
+     "SpatialExtent": {
+      "HorizontalSpatialDomain": {
+       "Geometry": {
+        "GPolygons": [
+         {
+          "Boundary": {
+           "Points": [
+            {
+             "Latitude": 33.55757,
+             "Longitude": -75.74584
+            },
+            {
+             "Latitude": 33.14537,
+             "Longitude": -75.74584
+            },
+            {
+             "Latitude": 33.14537,
+             "Longitude": -74.74909
+            },
+            {
+             "Latitude": 33.55757,
+             "Longitude": -74.74909
+            },
+            {
+             "Latitude": 33.55757,
+             "Longitude": -75.74584
+            }
+           ]
+          }
+         }
+        ]
+       }
+      }
+     },
+     "DataGranule": {
+      "ArchiveAndDistributionInformation": [
+       {
+        "Name": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_incidence_angle.tif",
+        "SizeInBytes": 997563,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "d27fc81479e2fd34e47f7adf3e23975f",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_local_incidence_angle.tif",
+        "SizeInBytes": 2866278,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "d9000dd0fb50e6b8d106dffc399a107d",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_mask.tif",
+        "SizeInBytes": 22520,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "36f8c91f0cf687a989eff967242a5458",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_number_of_looks.tif",
+        "SizeInBytes": 5457454,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "e91e5eeb6418c64d2c3e37c4546a9e2c",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_rtc_anf_gamma0_to_beta0.tif",
+        "SizeInBytes": 3791892,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "e0ca57b79e3d0259d55ec83703554420",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_rtc_anf_gamma0_to_sigma0.tif",
+        "SizeInBytes": 2786117,
+        "Format": "GeoTIFF",
+        "Checksum": {
+         "Value": "8744ec0e5aae834f82dc9d93a8067962",
+         "Algorithm": "MD5"
+        }
+       },
+       {
+        "Name": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0.iso.xml",
+        "SizeInBytes": 151807,
+        "Format": "XML",
+        "Checksum": {
+         "Value": "d5ecc607b9f9ab7ced3261906599958b",
+         "Algorithm": "MD5"
+        }
+       }
+      ],
+      "DayNightFlag": "Unspecified",
+      "Identifiers": [
+       {
+        "Identifier": "OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0",
+        "IdentifierType": "ProducerGranuleId"
+       },
+       {
+        "Identifier": "0.15.0",
+        "IdentifierType": "Other",
+        "IdentifierName": "ISCE3Version"
+       },
+       {
+        "Identifier": "0.2.2",
+        "IdentifierType": "Other",
+        "IdentifierName": "S1ReaderVersion"
+       },
+       {
+        "Identifier": "1.0.1",
+        "IdentifierType": "Other",
+        "IdentifierName": "SASVersionId"
+       }
+      ],
+      "ProductionDateTime": "2023-12-01T00:15:17Z"
+     },
+     "RelatedUrls": [
+      {
+       "URL": "https://datapool.asf.alaska.edu/BROWSE/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "s3://asf-cumulus-prod-opera-browse/OPERA_L2_RTC-S1_STATIC/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "This link provides direct download access via S3 to OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_incidence_angle.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_incidence_angle.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_local_incidence_angle.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_local_incidence_angle.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_mask.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_mask.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_number_of_looks.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_number_of_looks.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_rtc_anf_gamma0_to_beta0.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_rtc_anf_gamma0_to_beta0.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/RTC-STATIC/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_rtc_anf_gamma0_to_sigma0.tif",
+       "Type": "GET DATA",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_rtc_anf_gamma0_to_sigma0.tif",
+       "Format": "GeoTIFF"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/BROWSE/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_low-res.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_low-res.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "s3://asf-cumulus-prod-opera-browse/OPERA_L2_RTC-S1_STATIC/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_low-res.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "This link provides direct download access via S3 to OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_low-res.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "https://datapool.asf.alaska.edu/BROWSE/OPERA-S1/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_thumbnail.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "Download OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_thumbnail.png",
+       "Format": "PNG"
+      },
+      {
+       "URL": "s3://asf-cumulus-prod-opera-browse/OPERA_L2_RTC-S1_STATIC/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0/OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_thumbnail.png",
+       "Type": "GET RELATED VISUALIZATION",
+       "Description": "This link provides direct download access via S3 to OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0_BROWSE_thumbnail.png",
+       "Format": "PNG"
+      }
+     ]
+    }
+   }
+  ]
+ }
+}

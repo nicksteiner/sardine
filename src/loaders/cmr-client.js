@@ -23,7 +23,29 @@ export const NISAR_PRODUCTS = [
     description: 'Geocoded Unwrapped Interferogram',
     type: 'nisar-gunw',
   },
+  {
+    // OPERA RTC-S1 is COG-native: each granule is one Sentinel-1 IW burst at
+    // 30 m, gamma-0 power, with one single-band float32 COG per polarization
+    // plus a mask COG. The .h5 sibling holds orbit metadata only - it is NOT
+    // the image, so this product routes to the COG path, not h5chunk.
+    id: 'OPERA_L2_RTC-S1_V1',
+    label: 'OPERA RTC-S1 (Sentinel-1)',
+    description: 'Radiometric Terrain Corrected gamma-0 backscatter - 30 m COG bursts',
+    type: 'cog',
+  },
+  {
+    id: 'OPERA_L2_RTC-S1-STATIC_V1',
+    label: 'OPERA RTC-S1 Static Layers',
+    description: 'Per-burst incidence angle, mask, number of looks, RTC ANF',
+    type: 'cog',
+  },
 ];
+
+/** CMR short_names that are OPERA RTC-S1 (COG-native, burst-based). */
+export const OPERA_RTC_PRODUCTS = new Set([
+  'OPERA_L2_RTC-S1_V1',
+  'OPERA_L2_RTC-S1-STATIC_V1',
+]);
 
 // ─── Core search ─────────────────────────────────────────────────────────────
 
@@ -76,14 +98,19 @@ export async function searchGranules(params = {}) {
     qs.set('temporal', `${start},${end}`);
   }
 
-  // Track/frame via granule_ur wildcard or readable_granule_name
+  // Track/frame via granule_ur wildcard or readable_granule_name. The two
+  // product families encode track differently, so the pattern has to follow
+  // the naming convention or it silently matches zero granules.
+  const isOperaSearch = OPERA_RTC_PRODUCTS.has(shortName);
   if (track) {
-    // NISAR granule naming: ..._TTT_... where TTT is zero-padded track
     const trackPad = String(track).padStart(3, '0');
     qs.append('options[readable_granule_name][pattern]', 'true');
-    qs.append('readable_granule_name', `*_${trackPad}_*`);
+    // OPERA: ..._RTC-S1_T022-046044-IW3_... ; NISAR: ..._TTT_...
+    qs.append('readable_granule_name', isOperaSearch ? `*_T${trackPad}-*` : `*_${trackPad}_*`);
   }
-  if (frame) {
+  if (frame && !isOperaSearch) {
+    // OPERA RTC-S1 is burst-based and has no frame number; applying the NISAR
+    // frame pattern would return zero hits rather than simply being ignored.
     const framePad = String(frame).padStart(3, '0');
     qs.append('options[readable_granule_name][pattern]', 'true');
     qs.append('readable_granule_name', `*_${framePad}_*`);
@@ -127,11 +154,16 @@ function parseUmmGranule(item) {
 
   // Data URLs
   const relatedUrls = umm.RelatedUrls || [];
-  const dataUrl = findDataUrl(relatedUrls);
   const browseUrl = findBrowseUrl(relatedUrls);
 
-  // Parse NISAR-specific fields from granule name
-  const parsed = parseNisarGranuleName(id);
+  // OPERA RTC-S1 is COG-native and multi-asset (one float32 COG per
+  // polarization plus a mask); NISAR products are single-file HDF5.
+  const isOpera = id.startsWith('OPERA_L2_RTC-S1');
+  const assets = isOpera ? findOperaAssets(relatedUrls) : null;
+  const dataUrl = isOpera ? (assets.primaryUrl || null) : findDataUrl(relatedUrls);
+
+  // Parse product-specific fields from the granule name
+  const parsed = isOpera ? parseOperaGranuleName(id) : parseNisarGranuleName(id);
 
   return {
     id,
@@ -141,6 +173,7 @@ function parseUmmGranule(item) {
     geometry,
     dataUrl,
     browseUrl,
+    ...(assets ? { assets: assets.byLayer, polarizations: assets.polarizations } : {}),
     collection: meta['collection-concept-id'],
     size: umm.DataGranule?.ArchiveAndDistributionInformation?.[0]?.SizeInBytes || null,
     ...parsed,
@@ -165,6 +198,69 @@ function parseNisarGranuleName(name) {
   return { productType, track, direction, frame, polarization };
 }
 
+/**
+ * Parse the OPERA RTC-S1 granule naming convention:
+ *   OPERA_L2_RTC-S1_T022-046044-IW3_20260911T051622Z_20260911T124056Z_S1C_30_v1.0
+ *   OPERA_L2_RTC-S1-STATIC_T004-006637-IW3_20140403_S1A_30_v1.0
+ *
+ * RTC-S1 carries both an acquisition and a generation timestamp while the
+ * STATIC variant carries only a date, so the trailing fields sit one slot
+ * earlier. Anchor on the tail rather than a fixed index so both shapes parse.
+ */
+export function parseOperaGranuleName(name) {
+  const parts = String(name).split('_');
+  if (parts.length < 8 || parts[0] !== 'OPERA') return {};
+
+  const burstId = parts[3] || null;              // T022-046044-IW3
+  const burstMatch = /^T(\d+)-(\d+)-(IW[1-3]|EW[1-5]|S[1-6])$/.exec(burstId || '');
+  if (!burstMatch) return {};
+
+  const tail = parts.slice(-3);                  // [sensor, spacing, version]
+
+  return {
+    productType: parts[2] || null,               // RTC-S1 | RTC-S1-STATIC
+    burstId,
+    track: parseInt(burstMatch[1], 10),
+    // OPERA bursts have no NISAR-style frame number; the burst index is the
+    // closest analogue and is what the ASF burst map keys on.
+    burstIndex: burstMatch[2],
+    subswath: burstMatch[3],
+    sensor: tail[0] || null,                     // S1A / S1B / S1C
+    pixelSpacing: tail[1] ? parseInt(tail[1], 10) : null,
+    productVersion: tail[2] || null,
+  };
+}
+
+/** Polarization layer suffixes an RTC-S1 granule may carry. */
+const OPERA_POL_LAYERS = ['VV', 'VH', 'HH', 'HV'];
+
+/**
+ * Map an OPERA granule's RelatedUrls to its COG layers.
+ *
+ * Returns `{ byLayer, polarizations, primaryUrl }`. The `.h5` sibling is
+ * deliberately excluded from primaryUrl - for RTC-S1 it holds orbit metadata
+ * only, so loading it as the image would show nothing.
+ */
+export function findOperaAssets(urls) {
+  const byLayer = {};
+  for (const u of urls || []) {
+    if (u.Type !== 'GET DATA') continue;
+    const href = u.URL || '';
+    if (!href.startsWith('http') || !href.endsWith('.tif')) continue;
+    // ..._v1.0_VV.tif -> VV ; ..._v1.0_number_of_looks.tif -> number_of_looks
+    const m = /_v[\d.]+_(.+)\.tif$/.exec(href);
+    const layer = m ? m[1] : href.split('/').pop().replace(/\.tif$/, '');
+    if (!(layer in byLayer)) byLayer[layer] = href;
+  }
+
+  const polarizations = OPERA_POL_LAYERS.filter(p => p in byLayer);
+  // Co-pol first - the better default single-band view; fall back to whatever
+  // layer exists so STATIC granules (no polarizations) still resolve.
+  const primaryUrl = byLayer[polarizations[0]] || Object.values(byLayer)[0] || null;
+
+  return { byLayer, polarizations, primaryUrl };
+}
+
 function extractBbox(spatial) {
   if (!spatial) return null;
   const boxes = spatial.BoundingRectangles;
@@ -173,6 +269,23 @@ function extractBbox(spatial) {
     return [b.WestBoundingCoordinate, b.SouthBoundingCoordinate,
             b.EastBoundingCoordinate, b.NorthBoundingCoordinate];
   }
+
+  // OPERA (and some NISAR) granules carry only a GPolygon footprint. Derive
+  // the bbox from it so bbox consumers - "zoom to results", coverage ranking -
+  // see every granule rather than silently skipping the polygon-only ones.
+  const boundary = spatial.GPolygons?.[0]?.Boundary?.Points;
+  if (boundary && boundary.length > 0) {
+    let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity;
+    for (const pt of boundary) {
+      if (typeof pt.Longitude !== 'number' || typeof pt.Latitude !== 'number') continue;
+      west = Math.min(west, pt.Longitude);
+      east = Math.max(east, pt.Longitude);
+      south = Math.min(south, pt.Latitude);
+      north = Math.max(north, pt.Latitude);
+    }
+    if (Number.isFinite(west) && Number.isFinite(south)) return [west, south, east, north];
+  }
+
   return null;
 }
 
