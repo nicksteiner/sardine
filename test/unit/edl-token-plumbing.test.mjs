@@ -146,3 +146,32 @@ test('a 401 with a valid token is not blamed on the token', () => {
   assert.match(mainSrc, /reload the page/,
     'a token mismatch after pasting is usually a stale bundle — say so');
 });
+
+test('every remote fetch uses the CURRENT token, not the one captured at select', () => {
+  // Regression: `currentFetchHeaders` was introduced so a token pasted between
+  // selecting a scene and loading it would take effect. Three data-load call
+  // sites used it; the NISAR *metadata* read still used the `fetchHeaders`
+  // const built from `fileInfo.token` at select time. When a scene was selected
+  // without a token — every CMR-search result, whose token comes from the
+  // shared store rather than the granule — that const was `undefined`, so the
+  // metadata request went out unauthenticated and 401'd while the later data
+  // load would have succeeded. The helper existed but was never called.
+  const helper = /const currentFetchHeaders = useCallback\(/;
+  assert.match(mainSrc, helper, 'currentFetchHeaders helper must exist');
+
+  // It must actually be used — a defined-but-uncalled helper is the bug.
+  const uses = mainSrc.match(/currentFetchHeaders\(\)/g) || [];
+  assert.ok(uses.length >= 4,
+    `expected every remote load to call currentFetchHeaders(), found ${uses.length}`);
+
+  // No remote loader may be handed the select-time const instead.
+  assert.doesNotMatch(mainSrc, /listNISARDatasetsFromUrl\([^)]*\{\s*fetchHeaders\s*,/,
+    'metadata read must use currentFetchHeaders(), not the select-time const');
+});
+
+test('the remote-failure message does not stutter its prefix', () => {
+  // nisar-loader already throws "Failed to read remote NISAR file: ...", so
+  // re-prefixing in the UI produced that phrase twice in one sentence.
+  assert.doesNotMatch(mainSrc, /setError\(`Failed to read remote NISAR file: \$\{e\.message\}/,
+    'loader already names this failure — do not prefix it again');
+});

@@ -3663,7 +3663,12 @@ function App() {
 
     try {
       addStatusLog('info', `Streaming NISAR metadata from: ${name}`);
-      const result = await listNISARDatasetsFromUrl(resolvedUrl, { fetchHeaders, signal: metaSignal });
+      // Use the CURRENT token, not the one captured when the scene was
+      // selected. Selecting a scene and loading it are separate user actions,
+      // and a token pasted between them (or one already in the shared store
+      // when the scene carried none) must take effect without re-selecting.
+      const result = await listNISARDatasetsFromUrl(resolvedUrl,
+        { fetchHeaders: currentFetchHeaders(), signal: metaSignal });
       const datasets = result.datasets || result;
       // Store the stream reader to reuse when loading (avoids re-downloading metadata)
       if (result._streamReader) {
@@ -3739,14 +3744,17 @@ function App() {
               + 'keeps only two live tokens — so generate a new one from your Earthdata profile.')
         : '';
       if (!isAbortError(e)) {
-        setError(`Failed to read remote NISAR file: ${e.message}${hint}`);
+        // The loader already prefixes its own failures ("Failed to read remote
+        // NISAR file: ..."), so prefixing again stutters. Pass its message
+        // through and only add the auth hint.
+        setError(`${e.message}${hint}`);
         addStatusLog('error', `Remote metadata read failed${hint}`, e.message);
       }
     } finally {
       endLoadAbort(metaController);
       setLoading(false);
     }
-  }, [addStatusLog, beginLoadAbort, endLoadAbort]);
+  }, [addStatusLog, beginLoadAbort, endLoadAbort, currentFetchHeaders]);
 
   // Keep the forward-ref pointed at the latest handleRemoteFileSelect so the
   // share-link effect can invoke it after mount (and after a token is pasted).
