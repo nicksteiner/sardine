@@ -4525,6 +4525,11 @@ export async function listNISARDatasetsFromUrl(url, { useTransferAcceleration = 
     // Return the streamReader so loadNISARGCOVFromUrl can reuse it (avoid re-downloading metadata)
     return { datasets, _streamReader: streamReader };
   } catch (e) {
+    // A cancellation is not a failure: re-throw it unchanged so callers can
+    // still recognise it by `name`. Wrapping it in a plain Error dropped that
+    // name, so the UI reported a user-initiated (or superseded) load as
+    // "Failed to read remote NISAR file: Load cancelled".
+    if (e?.name === 'AbortError') throw e;
     console.error('[NISAR Loader] URL streaming failed:', e);
     throw new Error(`Failed to read remote NISAR file: ${e.message}`);
   }
