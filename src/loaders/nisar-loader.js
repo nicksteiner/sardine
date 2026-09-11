@@ -503,6 +503,24 @@ async function readProductIdentification(reader, paths, freq = 'A', mode = 'stre
   return id;
 }
 
+/**
+ * Size above which local files take the h5chunk streaming path instead of the
+ * h5wasm full load. Overridable so the streaming path can be exercised against
+ * the whole local corpus (W031): set `SARDINE_FULL_LOAD_MAX = 0` to force every
+ * local file through streaming, which is the end state once h5wasm is dropped.
+ *
+ * NISAR granules are paged-aggregation HDF5 by spec (D-102274 Rev E), which is
+ * exactly what h5chunk targets — and every URL path already streams, so the
+ * streaming reader is the proven one. The full-load branch is a local-file-only
+ * fallback on its way out.
+ */
+export const DEFAULT_FULL_LOAD_MAX = 500 * 1024 * 1024; // 500MB
+
+export function fullLoadMaxBytes() {
+  const override = globalThis.SARDINE_FULL_LOAD_MAX;
+  return typeof override === 'number' && override >= 0 ? override : DEFAULT_FULL_LOAD_MAX;
+}
+
 // h5wasm module singleton
 let h5wasmModule = null;
 
@@ -531,7 +549,7 @@ async function openHDF5File(file) {
   debugLog(`[NISAR Loader] File size: ${(file.size / 1e9).toFixed(2)} GB`);
 
   // Check file size - warn for very large files
-  const MAX_RECOMMENDED_SIZE = 500 * 1024 * 1024; // 500MB
+  const MAX_RECOMMENDED_SIZE = fullLoadMaxBytes() || DEFAULT_FULL_LOAD_MAX;
   if (file.size > MAX_RECOMMENDED_SIZE) {
     console.warn(`[NISAR Loader] Large file (${(file.size / 1e9).toFixed(2)} GB) - this may use significant memory`);
   }
@@ -802,7 +820,7 @@ export async function listNISARDatasets(file) {
   debugLog(`[NISAR Loader] File size: ${(file.size / 1e6).toFixed(1)} MB`);
 
   // For large files, we MUST use streaming - h5wasm will crash
-  const MAX_FULL_LOAD_SIZE = 500 * 1024 * 1024; // 500MB
+  const MAX_FULL_LOAD_SIZE = fullLoadMaxBytes();
   if (file.size > MAX_FULL_LOAD_SIZE) {
     debugLog('[NISAR Loader] Large file - using streaming mode');
 
@@ -2696,7 +2714,7 @@ export async function loadNISARGCOV(file, options = {}) {
   debugLog(`[NISAR Loader] Dataset: frequency${frequency}/${polarization}`);
 
   // For large files, use streaming mode with h5chunk
-  const MAX_FULL_LOAD_SIZE = 500 * 1024 * 1024; // 500MB
+  const MAX_FULL_LOAD_SIZE = fullLoadMaxBytes();
   if (file.size > MAX_FULL_LOAD_SIZE) {
     debugLog('[NISAR Loader] Large file - using streaming mode with h5chunk');
     return loadNISARGCOVStreaming(file, options);
