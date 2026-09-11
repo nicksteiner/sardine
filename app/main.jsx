@@ -6650,29 +6650,31 @@ function App() {
                 onClick={async () => {
                   setEdlValidating(true);
                   setEdlValidation(null);
-                  const result = await validateEDLToken(edlToken, edlProxyUrl);
+                  const result = validateEDLToken(edlToken);
                   setEdlValidation(result);
                   setEdlValidating(false);
-                  if (result.ok) addStatusLog('success', `Earthdata token valid — ${result.username}`);
-                  else addStatusLog('error', `Earthdata token check failed: ${result.error}`);
+                  if (result.ok) {
+                    addStatusLog('success',
+                      `Earthdata token valid — ${result.username}, ${result.daysLeft} day${result.daysLeft === 1 ? '' : 's'} left`);
+                  } else {
+                    addStatusLog('error', `Earthdata token check failed: ${result.error}`);
+                  }
                 }}
                 disabled={!edlToken || edlValidating} className="u-flex1 u-sm">
                 {edlValidating ? 'Checking…' : 'Test token'}
               </button>
               {edlValidation?.ok && (
-                <span className="u-sm u-accent">
-                  ✓ {edlValidation.username}
+                <span className="u-sm u-accent" role="status">
+                  ✓ {edlValidation.username} · expires {edlValidation.expiresAt.toISOString().slice(0, 10)}
+                  {' '}({edlValidation.daysLeft}d)
                 </span>
               )}
               {edlValidation && !edlValidation.ok && (
                 // Show the reason inline. It used to live in a `title` tooltip,
                 // which is invisible to touch and keyboard users and hid the one
-                // detail that makes the failure actionable (401 = expired or
-                // mistyped token, vs. a network/proxy error).
+                // detail that makes the failure actionable.
                 <span className="u-xs" style={{ color: 'var(--sardine-orange)' }} role="alert">
-                  ✗ {/^401\b/.test(edlValidation.error || '')
-                    ? 'Token rejected — it may have expired (EDL tokens last 60 days) or be incomplete. Generate a new one and paste the whole token.'
-                    : edlValidation.error}
+                  ✗ {edlValidation.error}
                 </span>
               )}
             </div>

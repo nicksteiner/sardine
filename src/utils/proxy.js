@@ -103,40 +103,58 @@ export function proxyUrl(rawUrl, { tokenInQuery = true } = {}) {
 }
 
 /**
- * Validate a pasted EDL token by calling the Worker's /whoami endpoint.
- * Resolves to { ok: true, username, email } or { ok: false, error }.
+ * Validate a pasted EDL token.
  *
- * In dev mode, hits urs.earthdata.nasa.gov directly through the dev proxy.
+ * EDL user tokens are RS256 JWTs that describe themselves: `uid`, `iat` and
+ * `exp` live in the payload, so the checks that actually help a user — is this
+ * a token at all, whose is it, has it expired — need no network call.
+ *
+ * We deliberately do NOT call `urs.earthdata.nasa.gov/api/users/user`. That
+ * endpoint is for registered EDL *applications* and rejects a bare user token
+ * with `{"error":"invalid_token","error_description":"The required client id
+ * is missing from the request"}` — a 401 that looks exactly like a bad token
+ * and sent at least one user chasing a credential problem they did not have.
+ * A token that fails there streams DAAC data (HTTP 206) perfectly well.
+ *
+ * Resolves to { ok: true, username, expiresAt, daysLeft } or { ok: false, error }.
  */
-export async function validateEDLToken(token, proxyBase) {
-  if (!token) return { ok: false, error: 'No token provided' };
+export function validateEDLToken(token) {
+  const raw = (token || '').replace(/^Bearer\s+/i, '').trim();
+  if (!raw) return { ok: false, error: 'No token provided' };
 
-  let url;
-  if (isHostedBuild()) {
-    if (!proxyBase) return { ok: false, error: 'No proxy URL configured' };
-    const sep = proxyBase.endsWith('/') ? '' : '/';
-    url = `${proxyBase}${sep}whoami?t=${encodeURIComponent(token)}`;
-  } else {
-    // Dev: route through the local plugin
-    url = `${window.location.origin}/stac-proxy/${encodeURIComponent('https://urs.earthdata.nasa.gov/api/users/user')}`;
-  }
-
-  try {
-    const resp = await fetch(url, {
-      headers: { 'Accept': 'application/json', ...(isHostedBuild() ? {} : { 'Authorization': `Bearer ${token}` }) },
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => '');
-      return { ok: false, error: `${resp.status} ${resp.statusText}: ${text.slice(0, 120)}` };
-    }
-    const data = await resp.json();
+  const parts = raw.split('.');
+  if (parts.length !== 3) {
     return {
-      ok: true,
-      username: data.uid || data.username || data.user_id || '(unknown)',
-      email: data.email_address || data.email || '',
-      raw: data,
+      ok: false,
+      error: `Not a token — expected 3 dot-separated parts, got ${parts.length}. `
+           + 'Copy the long token itself, not its name from the token table.',
     };
-  } catch (e) {
-    return { ok: false, error: e.message || String(e) };
   }
+
+  let payload;
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    payload = JSON.parse(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)));
+  } catch {
+    return { ok: false, error: 'Token payload is not readable — it may have been truncated on copy.' };
+  }
+
+  if (!payload.exp) return { ok: false, error: 'Token has no expiry claim — not an Earthdata user token.' };
+
+  const expiresAt = new Date(payload.exp * 1000);
+  const msLeft = expiresAt.getTime() - Date.now();
+  if (msLeft <= 0) {
+    return {
+      ok: false,
+      error: `Token expired ${expiresAt.toISOString().slice(0, 10)}. `
+           + 'Generate a new one from your Earthdata profile.',
+    };
+  }
+
+  return {
+    ok: true,
+    username: payload.uid || payload.username || '(unknown)',
+    expiresAt,
+    daysLeft: Math.floor(msLeft / 86400000),
+  };
 }
