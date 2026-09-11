@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.1] - 2026-09-11 — UI/UX wave A: enforced design tokens, UI primitives, honest load feedback
+
+The chrome gets a design system that can't drift, a reusable component layer, and
+a load path that tells you what it is doing. From a full UI/UX audit of the app at
+`1bc6ae4` (see `docs-internal/plan/W027`–`W030`).
+
+### Added
+- **Design tokens v2** (W027) — a warm-neutral instrument ramp replaces the ad-hoc
+  values, with the muted step pinned to the measured AA floor (4.53:1 on the worst
+  surface; the previous `--text-muted` failed at 3.45–4.19 and was used ~65 times at
+  9–12px). Adds the wholly missing type scale (6 sizes, 11px floor, all rem — there
+  was no `--font-size-*` token at all, and 31 ad-hoc sizes), a spacing scale with the
+  low end the dense UI actually uses (2/6/12px), and a z-scale
+- **`test/unit/theme-mirror.test.mjs`** — asserts every `DARK`/`LIGHT` key in
+  `theme-tokens.js` resolves to the same hex as the CSS, and that every `var()` the
+  stylesheet references is defined. Drift now fails the build; its absence is why the
+  JS/CSS "single source of truth" had silently diverged on all 10 surface/text values
+- **`npm run lint:tokens`** — fails on bare hex in JSX style objects, px font sizes,
+  and sub-AA ink used as text. Wired into `npm test`
+- **UI primitives** (W028) — `src/components/ui/`: `Button`, `Field`, `Section`,
+  `Panel`, `Toolbar`, `Dialog`, token-pure and test-enforced. `Field` generates an id
+  and wires `htmlFor`↔control, so a caller cannot produce an unlabeled input
+- **Real per-chunk load progress** (W030) — `loadNISARGCOV` takes `onProgress` and
+  reports actual chunk counts and byte totals from the decode pool, replacing a binary
+  spinner on the longest operation in the app
+- **Honest cancellation** (W030) — a load-scoped `AbortController` that stops the
+  transfer, not just the UI. Deliberately separate from the per-tile deck.gl signal,
+  which must never be forwarded into `readChunksBatch` (see W003)
+- **A real empty state** and a working mobile sheet drag — the handle advertised
+  `cursor: grab` with no drag implemented
+
+### Changed
+- The global `button` rule is no longer a primary CTA. It was a solid accent fill that
+  every non-CTA button had to fight inline — the direct cause of 232 inline style
+  blocks in `main.jsx` and of one class needing `!important` twice to escape it.
+  `Button` now defaults to the quiet `secondary` variant, so the UI has hierarchy
+- Errors accumulate and stay dismissible instead of one `setError` string being
+  overwritten by the next across a dozen concurrent async paths
+- Fonts load via `preconnect` + `link` with real system fallbacks instead of a
+  render-blocking CSS `@import` of 4 families × 5 weights
+- MapLibre CSS now comes from the local package. It was pinned to 4.0.0 on a CDN while
+  `package.json` resolved 4.7.1 — a version skew and a network dependency in a tool
+  whose pitch is "no server required"
+
+### Fixed
+- **One theme file.** `app/theme/` and `src/theme/sardine-theme.css` were byte-identical
+  and *both* live — the app imported one, the benchmarks and a structural test asserted
+  the other, so a theme edit silently diverged them
+- `var(--text)` and `var(--border)` were referenced 17 times and defined nowhere
+- `var(--radius-sm, 6px)` / `var(--radius-md, 8px)` fallbacks contradicted the real
+  2px/3px tokens, so any fallback path rendered 2–3× the intended roundness
+- Removed dead `drawMetadata()` — ~90 lines rendering from the stale token palette.
+  It had no callers; the metadata box was intentionally dropped from exports in favour
+  of the `.tif.json` sidecar
+- `test/unit/fixtures/synthetic-gcov.h5` is committed. `.gitignore`'s `*h5` had
+  swallowed it, so the W030 tests failed with `ENOENT` anywhere but their branch
+
+### Notes
+- Accessibility (W029) is **not** in this release. Its branch was cut from `main`
+  rather than from the primitives, so its fixes target components W028 had already
+  rewritten. It is being redone against this release so the aria/focus work lands
+  inside `Button`/`Field`/`Dialog` once, rather than per-component
+- The W027 z-scale is aspirational: the shell really stacks at 900/1000/1001/1010,
+  above the scale's 700 ceiling. The footer, status pull-tab and status window keep
+  literal z-indexes until the scale is corrected
+
 ## [1.0.0-beta.10] - 2026-07-29 — Vector figure export, compare deep links, EDL whoami fix
 
 ### Added
