@@ -134,7 +134,15 @@ test('a 401 with a valid token is not blamed on the token', () => {
   assert.doesNotMatch(mainSrc, /Token may be expired\. Run: curl/,
     'stale advice: that endpoint needs Basic auth, not the user token');
   assert.match(mainSrc, /const tokenState = validateEDLToken\(/,
-    'the auth-error hint must distinguish a bad token from a permissions issue');
-  assert.match(mainSrc, /EULA|Authorized Apps/,
-    'a valid-but-401 token should point at product authorisation');
+    'the auth-error hint must identify which token was actually sent');
+  // An earlier version asserted the 401 meant an unaccepted product EULA. That
+  // was never observed — the same granule returns 206 for a current token — so
+  // the hint must report what was sent and name the plausible causes (stale
+  // page, revoked or superseded token) without asserting one.
+  assert.doesNotMatch(mainSrc, /likely a permissions issue/,
+    'do not assert a cause that was never reproduced');
+  assert.match(mainSrc, /rejected the token sent/,
+    'the hint must say which token the server rejected');
+  assert.match(mainSrc, /reload the page/,
+    'a token mismatch after pasting is usually a stale bundle — say so');
 });

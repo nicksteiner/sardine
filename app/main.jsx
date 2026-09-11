@@ -3591,6 +3591,17 @@ function App() {
   }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
 
   // Handle remote file selection from DataDiscovery browser
+  // Auth headers for the CURRENT token, not the one captured when the scene was
+  // selected. Metadata and data loads are separate user actions — a token pasted
+  // between them must take effect without re-selecting the scene. Falls back to
+  // the headers built at select time for sources whose token came from a catalog
+  // feature rather than the shared store.
+  const currentFetchHeaders = useCallback(() => {
+    const live = getEDLToken();
+    if (live) return { 'Authorization': `Bearer ${live}`, 'X-EDL-Token': live };
+    return handleRemoteFileSelect._fetchHeaders;
+  }, []);
+
   const handleRemoteFileSelect = useCallback(async (fileInfo) => {
     const { url, name, size, type, token } = fileInfo;
     addStatusLog('info', `Remote file selected: ${name}`);
@@ -3713,17 +3724,19 @@ function App() {
       }
     } catch (e) {
       const isAuthErr = e.message?.includes('401') || e.message?.includes('403') || e.message?.includes('Unauthorized');
-      // Say which of the two cases this is. A token that is present and
-      // unexpired but still 401s is an authorisation problem (the granule needs
-      // an approved EULA), not a bad credential — sending the user to
-      // regenerate a working token is the wrong advice.
+      // "Unexpired" is not "accepted": EDL revokes tokens, and only two are live
+      // at a time, so generating a third silently kills the oldest — which still
+      // decodes as valid locally. Report which token was actually sent (uid and
+      // expiry) so a stale one is recognisable, and do not assert a cause we
+      // have not observed.
       const tokenState = validateEDLToken(token || getEDLToken());
       const hint = isAuthErr
         ? (!tokenState.ok
             ? ` — ${tokenState.error} Open the Earthdata Login panel to set it.`
-            : ` — Token looks valid (${tokenState.username}, expires `
-              + `${tokenState.expiresAt.toISOString().slice(0, 10)}), so this is likely a permissions `
-              + 'issue: accept the product EULA at urs.earthdata.nasa.gov → Applications → Authorized Apps.')
+            : ` — The server rejected the token sent (${tokenState.username}, expires `
+              + `${tokenState.expiresAt.toISOString().slice(0, 10)}). If that is not the token you `
+              + 'just pasted, reload the page. Otherwise it has been revoked or superseded — EDL '
+              + 'keeps only two live tokens — so generate a new one from your Earthdata profile.')
         : '';
       if (!isAbortError(e)) {
         setError(`Failed to read remote NISAR file: ${e.message}${hint}`);
@@ -3818,7 +3831,7 @@ function App() {
           requiredComplexPols,
           _streamReader: handleRemoteFileSelect._cachedReader || imageData?._h5chunk || null,
           _chunkCaches: imageData?._chunkCaches || null,
-          fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+          fetchHeaders: currentFetchHeaders(),
         });
 
         // In RGB mode, pass getRGBTile as getTile
@@ -3877,7 +3890,7 @@ function App() {
           form: indexForm,
           _streamReader: handleRemoteFileSelect._cachedReader || imageData?._h5chunk || null,
           _chunkCaches: imageData?._chunkCaches || null,
-          fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+          fetchHeaders: currentFetchHeaders(),
         });
 
         data.onRefine = () => setTileVersion(v => v + 1);
@@ -3902,7 +3915,7 @@ function App() {
           frequency: selectedFrequency,
           polarization: selectedPolarization,
           _streamReader: handleRemoteFileSelect._cachedReader || null,
-          fetchHeaders: handleRemoteFileSelect._fetchHeaders,
+          fetchHeaders: currentFetchHeaders(),
           // W030: progress stays live across prefetchOverviewChunks() below —
           // that is where a remote granule actually spends its bytes.
           onProgress: handleLoadProgress,
