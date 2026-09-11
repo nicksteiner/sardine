@@ -428,6 +428,11 @@ function App() {
   const [cogRgbRequest, setCogRgbRequest] = useState(null);
   const [imageData, setImageData] = useState(null);
   const [tileVersion, setTileVersion] = useState(0); // bumped on progressive tile refinement
+  // Tiles currently streaming. The viewport histogram calls getTile itself, so
+  // recomputing while tiles are still arriving competes with the load for chunk
+  // fetches and decode workers — and the result is stale the moment the next
+  // tile lands. Wait for streaming to settle instead.
+  const [tilesLoading, setTilesLoading] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadProgress, setLoadProgress] = useState(0);
   // W030: the counts behind the bar — {phase, chunksDone, chunksTotal, bytes,
@@ -2332,6 +2337,13 @@ function App() {
   const vcy = viewCenter[1];
   useEffect(() => {
     if (!imageData || histogramScope !== 'viewport') return;
+    // Hold off while the scene is still streaming. handleRecomputeHistogram
+    // calls imageData.getTile, so running it mid-load contends with the load
+    // itself for chunk reads and decode workers — on a gigapixel GCOV that was
+    // six recomputes in three seconds, each one superseded before it mattered.
+    // `tilesLoading` returning to 0 is the signal that streaming has settled;
+    // it is in the dependency list, so the recompute fires once at that point.
+    if (loading || tilesLoading > 0) return;
     const timer = setTimeout(() => {
       if (skipViewportRefreshRef.current) {
         skipViewportRefreshRef.current = false;
@@ -2340,18 +2352,20 @@ function App() {
       recomputeRef.current();
     }, gpuInfo.webgpu ? 100 : 800);
     return () => clearTimeout(timer);
-  }, [vcx, vcy, viewZoom, imageData, histogramScope, gpuInfo.webgpu]);
+  }, [vcx, vcy, viewZoom, imageData, histogramScope, gpuInfo.webgpu, loading, tilesLoading]);
 
   // Auto-recompute histogram when ROI changes (ROI scope only)
   // Disabled without WebGPU — CPU histogram is too slow for live ROI updates.
   useEffect(() => {
     if (!gpuInfo.webgpu) return; // Skip auto-refresh without WebGPU compute
     if (!imageData || !roi || histogramScope !== 'roi') return;
+    // Same contention as the viewport scope: this also goes through getTile.
+    if (loading || tilesLoading > 0) return;
     const timer = setTimeout(() => {
       recomputeRef.current();
     }, 300);
     return () => clearTimeout(timer);
-  }, [roi, imageData, histogramScope, gpuInfo.webgpu]);
+  }, [roi, imageData, histogramScope, gpuInfo.webgpu, loading, tilesLoading]);
 
   // Recompute histogram when switching between dB and linear mode, then auto-stretch
   const useDecibelsRef = useRef(useDecibels);
@@ -9227,6 +9241,7 @@ function App() {
                   width="100%"
                   height="100%"
                   onViewStateChange={handleViewStateChange}
+                  onTilesLoadingChange={setTilesLoading}
                   initialViewState={initialViewState}
                   extraLayers={[...opticalPeekLayers, ...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
                   roi={roi}
