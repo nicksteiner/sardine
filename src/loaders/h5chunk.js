@@ -1750,7 +1750,12 @@ export class H5Chunk {
           return this._parseObjectAtAddress(reader, link.address, childPath).catch(() => {});
         }));
       } catch (e) {
-        console.warn(`[h5chunk] Failed to enumerate v2 group ${path}:`, e.message);
+        // A Link Info message is also present on objects that are not groups
+        // (NISAR's identification/boundingPolygon is a scalar string dataset),
+        // and its fractal-heap address is then meaningless. The object still
+        // parses correctly as a dataset below, so a failure here is expected
+        // rather than exceptional — keep it to the debug channel.
+        debugLog(`[h5chunk] No v2 group links at ${path}: ${e.message}`);
       }
     }
 
@@ -1924,52 +1929,64 @@ export class H5Chunk {
       if (dbSig !== 'FHDB') continue;
 
       const data = new Uint8Array(dbBuf);
-      // Link messages start after the header + 4 bytes (observed padding)
-      let off = dbHeaderSize + 4;
+      // Managed objects are packed into the direct block after its header, but
+      // the exact first-object offset depends on the heap's ID length and
+      // whether checksums are enabled — it is NOT a fixed padding. A guessed
+      // "+4" put the parser half a field out on some NISAR granules, and the
+      // 8-byte address read then straddled the end of a name string, yielding
+      // addresses like 0x7365640000040168 ("...des" in ASCII) and a
+      // "Invalid fetch range" far past EOF.
+      //
+      // Probe the small window of plausible starts and keep the one that parses
+      // the most complete link records. Link messages are strongly
+      // self-validating (version must be 1, name length bounded, address within
+      // the file), so a wrong start yields few or no records.
+      // Upper bound for a plausible object-header address. The superblock's
+      // end-of-file address is authoritative; fall back to the known remote
+      // size, and finally to a large sentinel if neither is available.
+      const fileEnd = this.superblock?.endOfFileAddress
+        ?? this.file?.size ?? this.remoteSize ?? Number.MAX_SAFE_INTEGER;
 
-      while (off < data.length - 12 && results.length < managedNobjs) {
-        // Parse HDF5 Link message (same format as MSG_LINK = 0x06)
-        const ver = data[off]; off += 1;
-        if (ver !== 1) break;
-        const flags = data[off]; off += 1;
-
-        if (flags & 0x08) off += 1; // link type (skip, assume hard=0)
-        if (flags & 0x04) off += 8; // creation order
-        if (flags & 0x10) off += 1; // charset
-
-        const nameLenSize = 1 << (flags & 0x03);
-        let nameLen;
-        if (nameLenSize === 1) {
-          nameLen = data[off]; off += 1;
-        } else if (nameLenSize === 2) {
-          nameLen = data[off] | (data[off+1] << 8); off += 2;
-        } else if (nameLenSize === 4) {
-          nameLen = data[off] | (data[off+1] << 8) | (data[off+2] << 16) | (data[off+3] << 24);
-          off += 4;
-        } else {
-          break; // 8-byte name length — unlikely for group members
+      const parseLinksAt = (startOff, limit) => {
+        const out = [];
+        let off = startOff;
+        while (off < data.length - 12 && out.length < limit) {
+          const ver = data[off];
+          if (ver !== 1) break;
+          let o = off + 1;
+          const flags = data[o]; o += 1;
+          if (flags & 0x08) o += 1;  // link type
+          if (flags & 0x04) o += 8;  // creation order
+          if (flags & 0x10) o += 1;  // charset
+          const nameLenSize = 1 << (flags & 0x03);
+          if (nameLenSize > 4) break;
+          let nameLen = 0;
+          for (let i = 0; i < nameLenSize; i++) nameLen |= data[o + i] << (8 * i);
+          o += nameLenSize;
+          if (nameLen <= 0 || nameLen > 1024 || o + nameLen + oSize > data.length) break;
+          let name = '';
+          for (let i = 0; i < nameLen; i++) name += String.fromCharCode(data[o + i]);
+          o += nameLen;
+          const dv = new DataView(data.buffer, data.byteOffset + o, oSize);
+          const address = oSize === 8 ? Number(dv.getBigUint64(0, true)) : dv.getUint32(0, true);
+          o += oSize;
+          // A link's target must be a real address inside the file. This is the
+          // check that would have caught the misalignment immediately.
+          if (!(address > 0 && address < fileEnd) ||
+              !/^[\x20-\x7e]+$/.test(name)) break;
+          out.push({ name, address });
+          off = o;
         }
+        return out;
+      };
 
-        if (nameLen <= 0 || nameLen > 1024 || off + nameLen + oSize > data.length) break;
-
-        let name = '';
-        for (let i = 0; i < nameLen; i++) name += String.fromCharCode(data[off + i]);
-        off += nameLen;
-
-        // Hard link: object header address
-        let address;
-        if (oSize === 8) {
-          const dv = new DataView(data.buffer, data.byteOffset + off, 8);
-          address = Number(dv.getBigUint64(0, true));
-        } else {
-          const dv = new DataView(data.buffer, data.byteOffset + off, 4);
-          address = dv.getUint32(0, true);
-        }
-        off += oSize;
-
-        if (name && address > 0) {
-          results.push({ name, address });
-        }
+      let best = [];
+      for (let probe = 0; probe <= 16 && best.length < managedNobjs; probe++) {
+        const got = parseLinksAt(dbHeaderSize + probe, managedNobjs - results.length);
+        if (got.length > best.length) best = got;
+      }
+      for (const link of best) {
+        if (results.length < managedNobjs) results.push(link);
       }
     }
 
