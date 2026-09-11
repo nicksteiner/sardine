@@ -215,7 +215,9 @@ function parseSuperblock(reader) {
  * @param {BufferReader} reader
  * @param {number} address - Offset where the HEAP starts
  * @param {Object} superblock
- * @returns {{dataSegment: Uint8Array}|null}
+ * @returns {{dataSegment: Uint8Array}|{dataSegment: null, outOfBuffer: true, dataAddr: number, dataSize: number}|null}
+ *   `outOfBuffer` means the header parsed but its data segment is past the
+ *   metadata buffer — recoverable by fetching remotely, unlike a null return.
  */
 function parseLocalHeap(reader, address, superblock) {
   try {
@@ -230,9 +232,10 @@ function parseLocalHeap(reader, address, superblock) {
     const dataAddr = reader.readOffset(superblock.offsetSize);
 
     if (dataAddr + dataSize > reader.view.byteLength) {
-      console.warn(`[h5chunk] Local heap at 0x${address.toString(16)} overflows buffer ` +
-        `(data at 0x${dataAddr.toString(16)}, size ${dataSize}, buffer ${reader.view.byteLength})`);
-      return null;
+      // Not a parse failure: the header is intact, only its name data segment
+      // lies past the prefetched metadata window. Report it distinctly so the
+      // caller can re-fetch the segment remotely instead of dropping the group.
+      return { dataSegment: null, outOfBuffer: true, dataAddr, dataSize };
     }
 
     const dataSegment = new Uint8Array(reader.view.buffer, dataAddr, dataSize);
@@ -367,6 +370,13 @@ function walkGroupBTree(reader, address, superblock, heapData, visited) {
 }
 
 /**
+ * Returned by `enumerateGroupChildren` when the group's B-tree or local-heap
+ * data segment lies beyond the prefetched metadata buffer. Distinct from `[]`,
+ * which means the group genuinely has no children.
+ */
+const NEEDS_REMOTE_HEAP = Symbol('needs-remote-heap');
+
+/**
  * Enumerate children of a group given its Symbol Table message data
  * (B-tree address + local heap address).
  *
@@ -374,12 +384,20 @@ function walkGroupBTree(reader, address, superblock, heapData, visited) {
  * @param {number} btreeAddr - Group B-tree v1 address
  * @param {number} heapAddr - Local heap address
  * @param {Object} superblock
- * @returns {Array<{name, objAddr, cacheType, btreeAddr, heapAddr}>}
+ * @returns {Array<{name, objAddr, cacheType, btreeAddr, heapAddr}>|NEEDS_REMOTE_HEAP}
+ *   `NEEDS_REMOTE_HEAP` when the B-tree or heap data lies outside the
+ *   prefetched metadata buffer — the caller must use `_enumerateRemoteGroup`.
  */
 function enumerateGroupChildren(reader, btreeAddr, heapAddr, superblock) {
-  if (btreeAddr >= reader.view.byteLength || heapAddr >= reader.view.byteLength) return [];
+  if (btreeAddr >= reader.view.byteLength || heapAddr >= reader.view.byteLength) {
+    return NEEDS_REMOTE_HEAP;
+  }
   const heap = parseLocalHeap(reader, heapAddr, superblock);
   if (!heap) return [];
+  // Header is in-buffer but its name data segment is not. Walking the B-tree
+  // now would read names from a null segment and yield garbage offsets, so
+  // hand the group back to the remote enumerator.
+  if (heap.outOfBuffer) return NEEDS_REMOTE_HEAP;
   return walkGroupBTree(reader, btreeAddr, superblock, heap.dataSegment);
 }
 
@@ -1663,14 +1681,17 @@ export class H5Chunk {
 
     // ── Handle v1 groups via Symbol Table traversal ─────────────────────
     if (symbolTableBTree != null && symbolTableHeap != null) {
-      let children;
+      let children = NEEDS_REMOTE_HEAP;
       if (symbolTableBTree < this.metadataBuffer.byteLength &&
           symbolTableHeap < this.metadataBuffer.byteLength) {
         children = enumerateGroupChildren(
           reader, symbolTableBTree, symbolTableHeap, this.superblock
         );
-      } else {
-        // Symbol table B-tree/heap are beyond metadata buffer — fetch remotely
+      }
+      // Either the addresses are past the metadata buffer, or the heap header
+      // was in-buffer while its data segment was not. Both are recoverable by
+      // fetching the regions we already know the addresses of.
+      if (children === NEEDS_REMOTE_HEAP) {
         try {
           children = await this._enumerateRemoteGroup(symbolTableBTree, symbolTableHeap);
         } catch (e) {
@@ -1684,30 +1705,29 @@ export class H5Chunk {
 
         if (child.cacheType === 1 && child.btreeAddr != null && child.heapAddr != null) {
           // Cached group — use scratch-pad B-tree/heap directly
+          let grandChildren = NEEDS_REMOTE_HEAP;
           if (child.btreeAddr < this.metadataBuffer.byteLength &&
               child.heapAddr < this.metadataBuffer.byteLength) {
-            const grandChildren = enumerateGroupChildren(
+            grandChildren = enumerateGroupChildren(
               reader, child.btreeAddr, child.heapAddr, this.superblock
             );
-            await Promise.all(grandChildren.map(gc => {
-              const gcPath = `${childPath}/${gc.name}`;
-              return this._parseObjectAtAddress(reader, gc.objAddr, gcPath).catch(() => {});
-            }));
-          } else {
-            // Cached group but B-tree/heap beyond metadata buffer —
-            // fetch the needed regions and enumerate children remotely.
+          }
+          if (grandChildren === NEEDS_REMOTE_HEAP) {
+            // Cached group whose B-tree/heap data is outside the metadata
+            // buffer — fetch the needed regions and enumerate remotely.
             try {
-              const grandChildren = await this._enumerateRemoteGroup(
+              grandChildren = await this._enumerateRemoteGroup(
                 child.btreeAddr, child.heapAddr
               );
-              await Promise.all(grandChildren.map(gc => {
-                const gcPath = `${childPath}/${gc.name}`;
-                return this._parseObjectAtAddress(reader, gc.objAddr, gcPath).catch(() => {});
-              }));
             } catch (e) {
               console.warn(`[h5chunk] Failed to enumerate remote group ${childPath}:`, e.message);
+              grandChildren = [];
             }
           }
+          await Promise.all(grandChildren.map(gc => {
+            const gcPath = `${childPath}/${gc.name}`;
+            return this._parseObjectAtAddress(reader, gc.objAddr, gcPath).catch(() => {});
+          }));
         } else {
           // Non-cached entry — parse the object header to determine type
           try {
