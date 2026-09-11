@@ -63,6 +63,8 @@ export const SARViewer = forwardRef(function SARViewer({
   width = '100%',
   height = '100%',
   onViewStateChange,
+  onTilesLoadingChange,   // (n) => void — tiles currently in flight; lets the
+                         // app defer expensive work (histogram) until streaming settles.
   initialViewState,
   style = {},
   extraLayers = [],   // Additional deck.gl layers, ABOVE the raster (Overture, ROI, GeoJSON)
@@ -229,8 +231,11 @@ export const SARViewer = forwardRef(function SARViewer({
   }, [initialViewState, defaultViewState]);
 
   // Handle loading status updates from layer
+  const onTilesLoadingRef = useRef(onTilesLoadingChange);
+  onTilesLoadingRef.current = onTilesLoadingChange;
   const handleLoadingChange = useCallback((status) => {
     setLoadingStatus(status);
+    onTilesLoadingRef.current?.(status?.tilesLoading ?? 0);
   }, []);
 
   // Debounce the parent callback so expensive work (histogram, stats) doesn't
