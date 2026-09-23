@@ -1,7 +1,7 @@
 import GeoTIFF, { fromUrl, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
 import { debugLog } from '../utils/debug-log.js';
-import { toDb } from '../utils/stats.js';
+import { powerBandStats } from '../utils/stats.js';
 
 /**
  * Extract a classification color table from a GeoTIFF's file directory.
@@ -1409,30 +1409,8 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
   await Promise.all(polNames.map(async (pol, i) => {
     try {
       const data = await readWindow(i, 0, 0, width, height);
-      if (!data) return;
-      let sum = 0, sumSq = 0, count = 0, dbSum = 0, dbSumSq = 0;
-      for (let j = 0; j < data.length; j++) {
-        const v = data[j];
-        if (!isNaN(v) && v > 0) {
-          sum += v; sumSq += v * v; count++;
-          const d = toDb(v, 0);
-          dbSum += d; dbSumSq += d * d;
-        }
-      }
-      if (count > 0) {
-        const mean = sum / count;
-        const meanDb = dbSum / count;
-        bandStats[pol] = {
-          mean_value: mean,
-          sample_stddev: Math.sqrt(Math.max(0, sumSq / count - mean * mean)),
-          // dB-domain stats: SAR backscatter is roughly log-normal, so
-          // mean±2σ computed in dB gives far better contrast windows than
-          // converting the linear-domain window (which collapses to a few dB).
-          mean_db: meanDb,
-          sample_stddev_db: Math.sqrt(Math.max(0, dbSumSq / count - meanDb * meanDb)),
-          count,
-        };
-      }
+      const stats = data && powerBandStats(data);
+      if (stats) bandStats[pol] = stats;
     } catch (e) {
       console.warn(`[loadCOGRGBComposite] stats sample failed for ${pol}:`, e.message);
     }

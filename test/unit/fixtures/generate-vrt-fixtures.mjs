@@ -40,6 +40,10 @@ await writeTif('a2.tif', 40, 30, [X0, Y0, X0 + 40, Y0 + 30], (r, c) => 2 * (100 
 await writeTif('b.tif', 40, 30, [X0 + 30, Y0 - 10, X0 + 70, Y0 + 20],
   (r, c) => (r >= 10 && r < 20 && c < 10 ? 0 : 5000 + r * 40 + c));
 await writeTif('c.tif', 20, 15, [X0, Y0 - 30, X0 + 40, Y0], (r, c) => 9000 + r * 20 + c);
+// A dual-pol stack named the way products name polarizations — power-like
+// values (< 1), HV ≈ HH/5 — for the RGB composite path.
+await writeTif('stack_HH.tif', 40, 30, [X0, Y0, X0 + 40, Y0 + 30], (r, c) => 0.05 + 0.0005 * (r * 40 + c));
+await writeTif('stack_HV.tif', 40, 30, [X0, Y0, X0 + 40, Y0 + 30], (r, c) => (0.05 + 0.0005 * (r * 40 + c)) / 5 + 0.001 * (c % 3));
 // 128×96 source converted to a COG with AVERAGE overviews: the overview
 // values (block means) differ from any single full-res pixel, so a test can
 // tell which level a read came from.
@@ -56,11 +60,15 @@ gdal('gdalbuildvrt', '-q', '-separate', 'separate.vrt', 'a.tif', 'a2.tif');
 gdal('gdal_translate', '-q', '-of', 'VRT', '-ot', 'Float32', '-srcwin', '5', '4', '20', '15',
   '-scale', '100', '1300', '0', '1', 'a.tif', 'subset_scaled.vrt');
 gdal('gdalbuildvrt', '-q', 'cog.vrt', 'd_cog.tif');
+gdal('gdalbuildvrt', '-q', '-separate', 'stack.vrt', 'stack_HH.tif', 'stack_HV.tif');
 
 // GDAL's rendering of each VRT = ground truth
 for (const name of ['plain', 'mosaic', 'subset_scaled']) {
   gdal('gdal_translate', '-q', '-of', 'GTiff', `${name}.vrt`, `${name}_expected.tif`);
 }
 gdal('gdal_translate', '-q', '-of', 'GTiff', '-b', '2', 'separate.vrt', 'separate_b2_expected.tif');
+for (const b of [1, 2]) {
+  gdal('gdal_translate', '-q', '-of', 'GTiff', '-b', String(b), 'stack.vrt', `stack_b${b}_expected.tif`);
+}
 
 console.log(`VRT fixtures written to ${dir}`);

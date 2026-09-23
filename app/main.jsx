@@ -19,7 +19,7 @@ import { Button, CloseButton, Field, Section, Panel, Toolbar, Dialog } from '../
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds, reprojectBbox, bboxToPixelRange, roiIntersectsFile } from '../src/utils/roi-subset.js';
-import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES, rgbContrastFromBandStats } from '../src/utils/sar-composites.js';
 import { getAvailableIndices, SAR_INDICES } from '../src/utils/sar-indices.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
@@ -2376,6 +2376,19 @@ function App() {
   const useDecibelsRef = useRef(useDecibels);
   const pendingAutoStretchRef = useRef(false);
   const pendingPNGStateRef = useRef(null);
+
+  // Initial per-channel RGB contrast for streamed composites (COG list, VRT
+  // band stack) from the loader's per-band stats, in the current dB domain.
+  const applyRgbContrastFromStats = useCallback((comp, bandStats, polNames) => {
+    const useDb = useDecibelsRef.current;
+    const lims = rgbContrastFromBandStats(comp, bandStats, polNames, useDb);
+    if (!lims) return;
+    setRgbContrastLimits(lims);
+    setHistogramScope('viewport');
+    addStatusLog('info', 'Initial RGB contrast from band statistics',
+      ['R', 'G', 'B'].map((ch) => `${ch}: ${lims[ch][0].toFixed(1)}–${lims[ch][1].toFixed(1)}${useDb ? ' dB' : ''}`).join(', '));
+  }, [addStatusLog]);
+
   useEffect(() => {
     if (useDecibels !== useDecibelsRef.current) {
       useDecibelsRef.current = useDecibels;
@@ -2755,58 +2768,8 @@ function App() {
         setCompositeId(comp);
 
         // Per-channel contrast from band stats — same mean±2σ derivation as
-        // the remote NISAR RGB path. Channels without a direct dataset (e.g.
-        // ratio formulas) get the same defaults that path uses.
-        const preset = SAR_COMPOSITES[comp];
-        if (preset?.channels && Object.keys(data.bandStats || {}).length > 0) {
-          // Limits live in the display domain. With dB scaling on, use the
-          // loader's dB-domain mean±2σ (SAR power is ~log-normal, so a
-          // linear-domain window converted to dB collapses to a few dB and
-          // renders speckle-saturated); linear display keeps linear mean±2σ.
-          const useDb = useDecibelsRef.current;
-          const lims = {};
-          for (const ch of ['R', 'G', 'B']) {
-            const chDef = preset.channels[ch];
-            if (chDef?.dataset && data.bandStats[chDef.dataset]) {
-              const s = data.bandStats[chDef.dataset];
-              // ±2σ in dB, floored at ±3 dB — overview-derived σ underestimates
-              // scene variance on large frames (the coarsest overview averages
-              // away speckle AND texture), which oversaturates the render.
-              const half = Math.max(2 * s.sample_stddev_db, 3);
-              lims[ch] = useDb && Number.isFinite(s.mean_db)
-                ? [s.mean_db - half, s.mean_db + half]
-                : [Math.max(0, s.mean_value - 2 * s.sample_stddev), s.mean_value + 2 * s.sample_stddev];
-            } else if (chDef?.datasets && chDef.datasets.length === 2) {
-              const s0 = data.bandStats[chDef.datasets[0]];
-              const s1 = data.bandStats[chDef.datasets[1]];
-              if (s0 && s1) {
-                const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
-                lims[ch] = useDb
-                  ? [toDb(ratio, 0) - 5, toDb(ratio, 0) + 5]
-                  : [ratio * 0.3, ratio * 3];
-              } else {
-                lims[ch] = [0, 1];
-              }
-            } else {
-              // Formula channels (e.g. dual-pol ratio B): window around the
-              // co/cross ratio when both stats exist, else a broad default.
-              const s0 = data.bandStats[polNames[0]];
-              const s1 = data.bandStats[polNames[1]];
-              if (s0 && s1) {
-                const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
-                lims[ch] = useDb
-                  ? [toDb(ratio, 0) - 5, toDb(ratio, 0) + 5]
-                  : [ratio * 0.3, ratio * 3];
-              } else {
-                lims[ch] = [0, 1];
-              }
-            }
-          }
-          setRgbContrastLimits(lims);
-          setHistogramScope('viewport');
-          addStatusLog('info', 'Initial RGB contrast from band statistics',
-            ['R', 'G', 'B'].map((ch) => `${ch}: ${lims[ch][0].toFixed(1)}–${lims[ch][1].toFixed(1)}${useDecibelsRef.current ? ' dB' : ''}`).join(', '));
-        }
+        // the remote NISAR RGB path.
+        applyRgbContrastFromStats(comp, data.bandStats, polNames);
 
         // Fit view to the scene (skipped when the link pinned c/z — W008).
         if (data.bounds && !consumeDeepLinkPin('view')) {
@@ -3159,10 +3122,13 @@ function App() {
     addStatusLog('info', `Loading VRT: ${name}`,
       file ? `${companions.length} source file${companions.length === 1 ? '' : 's'} dropped with it` : url);
     try {
+      // Band stacks (gdalbuildvrt -separate hh.tif hv.tif) open as an RGB
+      // composite when their band polarizations support one.
       const data = await loadVRT(url || file, {
         files: companions,
         resolveUrl: (u) => proxyUrlShared(u),
         onProgress: (pct) => setLoadProgress(pct),
+        composite: 'auto',
       });
       if (gen !== loadGenRef.current) return;
 
@@ -3171,9 +3137,26 @@ function App() {
       const { vrt } = data;
       addStatusLog('success', `VRT: ${data.width}x${data.height} px, ${vrt.sourceCount} source${vrt.sourceCount === 1 ? '' : 's'}`,
         `CRS ${data.crs}`);
+
+      if (data.composite) {
+        setDisplayMode('rgb');
+        setCompositeId(data.composite);
+        addStatusLog('success', `RGB composite from VRT bands: ${SAR_COMPOSITES[data.composite]?.name || data.composite}`,
+          Object.entries(vrt.bandMap).map(([pol, b]) => `${pol} ← band ${b}`).join(', '));
+        if (Object.keys(data.bandStats).length === 0) {
+          addStatusLog('warning', `RGB auto-contrast skipped — ${vrt.sourceCount} sources`, 'Set per-channel contrast manually');
+        } else if (!consumeDeepLinkPin('contrast')) {
+          applyRgbContrastFromStats(data.composite, data.bandStats, data.requiredPols);
+        }
+        autoFitIfNewScene(data.bounds);
+        return;
+      }
+
+      setDisplayMode('single');
       if (vrt.bandCount > 1) {
-        const labels = vrt.bandDescriptions.map((d, i) => d || `band ${i + 1}`).join(', ');
-        addStatusLog('warning', `Showing band 1 of ${vrt.bandCount} — multi-band VRTs are not composited yet`, labels);
+        const labels = vrt.bandDescriptions.map((d, i) => d || vrt.bandPolarizations[i] || `band ${i + 1}`).join(', ');
+        addStatusLog('warning', `Showing band 1 of ${vrt.bandCount} — no RGB composite matches these bands`,
+          `${labels}. Band polarizations come from band descriptions or source filenames (…_HH.tif).`);
       }
 
       // A zoomed-out preview of a big mosaic touches every source; past the
@@ -3202,7 +3185,7 @@ function App() {
         resetLoadProgress();
       }
     }
-  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast, resetLoadProgress]);
+  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast, applyRgbContrastFromStats, resetLoadProgress]);
 
   useEffect(() => {
     handleLoadVRTRef.current = handleLoadVRT;

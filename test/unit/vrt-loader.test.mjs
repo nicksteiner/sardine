@@ -15,7 +15,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fromArrayBuffer } from 'geotiff';
 import { parseXml, parseVRT, epsgFromSrs, resolveVrtSourcePath } from '../../src/loaders/vrt-parser.js';
-import { loadVRT, isVRTPath } from '../../src/loaders/vrt-loader.js';
+import { loadVRT, isVRTPath, polarizationFromName } from '../../src/loaders/vrt-loader.js';
+import { rgbContrastFromBandStats } from '../../src/utils/sar-composites.js';
+import { powerBandStats, toDb } from '../../src/utils/stats.js';
 import { detectFormat, bucketByFormat } from '../../src/loaders/types.js';
 import { inferDataTypeFromUrl } from '../../src/utils/deep-link.js';
 import { unproxyUrl } from '../../src/utils/proxy.js';
@@ -210,6 +212,83 @@ test('missing companion file fails the load and names the file', async () => {
   await assert.rejects(
     loadVRT(fixtureFile('mosaic.vrt'), { files: [fixtureFile('a.tif')] }),
     /"b\.tif" not found/);
+});
+
+// ─── Band stacks → RGB composite ────────────────────────────────────────
+
+test('polarizationFromName: descriptions and product filenames', () => {
+  assert.equal(polarizationFromName('HH'), 'HHHH');
+  assert.equal(polarizationFromName('HVHV'), 'HVHV');
+  assert.equal(polarizationFromName('pacaya_full_hh.tif'), 'HHHH');
+  assert.equal(polarizationFromName('/vsicurl/https://h/x/OPERA_L2_RTC-S1_T001_VH.tif'), 'VHVH');
+  assert.equal(polarizationFromName('scene_VV.tif?sig=HH'), 'VVVV');
+  assert.equal(polarizationFromName('HHVV'), null);        // off-diagonal term
+  assert.equal(polarizationFromName('dhhaka_mosaic.tif'), null); // letters inside a word
+  assert.equal(polarizationFromName(null), null);
+});
+
+test('-separate HH/HV stack opens as a dual-pol-h composite matching GDAL per band', async () => {
+  const src = await loadVRT(fixtureFile('stack.vrt'), { files: allFiles(), composite: 'auto' });
+  assert.equal(src.composite, 'dual-pol-h');
+  assert.deepEqual(src.requiredPols, ['HHHH', 'HVHV']);
+  assert.deepEqual(src.vrt.bandMap, { HHHH: 1, HVHV: 2 });
+  assert.equal(src.getTile, src.getRGBTile);
+  assert.deepEqual(src.pixelSpacing, { x: 1, y: 1 });
+
+  const { bands } = await src.getExportStripe({ startRow: 0, numRows: 30, ml: 1, startCol: 0, numCols: 40 });
+  assertMatchesGdal(bands.HHHH, await readExpected('stack_b1_expected.tif'));
+  assertMatchesGdal(bands.HVHV, await readExpected('stack_b2_expected.tif'));
+
+  const tile = await src.getRGBTile({ x: 0, y: 0, z: 0, bbox: { left: 0, right: 40, top: 30, bottom: 0 } });
+  assert.equal(tile.compositeId, 'dual-pol-h');
+  assert.equal(tile.bands.HHHH.length, 256 * 256);
+  assert.equal(tile.bands.HVHV[0], bands.HVHV[0]);
+
+  // Stats feed the app's per-channel contrast: HH ≈ 5× HV → ~7 dB apart
+  const { HHHH, HVHV } = src.bandStats;
+  assert.ok(HHHH.count > 0 && HVHV.count > 0);
+  assert.ok(Math.abs(HHHH.mean_db - HVHV.mean_db - 6.5) < 1, `HH−HV ${HHHH.mean_db - HVHV.mean_db} dB`);
+});
+
+test('band <Description> wins over neutral filenames', async () => {
+  const xml = readFileSync(join(FIX, 'separate.vrt'), 'utf8')
+    .replace('<VRTRasterBand dataType="Float32" band="1">', '<VRTRasterBand dataType="Float32" band="1"><Description>VV</Description>')
+    .replace('<VRTRasterBand dataType="Float32" band="2">', '<VRTRasterBand dataType="Float32" band="2"><Description>VH</Description>');
+  const src = await loadVRT(new File([xml], 'described.vrt'), { files: allFiles(), composite: 'auto' });
+  assert.equal(src.composite, 'dual-pol-v');
+  assert.deepEqual(src.vrt.bandMap, { VVVV: 1, VHVH: 2 });
+});
+
+test('composite: auto falls back to single band; explicit id fails clearly', async () => {
+  const single = await loadVRT(fixtureFile('separate.vrt'), { files: allFiles(), composite: 'auto' });
+  assert.equal(single.composite, undefined);
+  assert.deepEqual(single.vrt.bandPolarizations, [null, null]);
+  assert.equal(typeof single.readPreview, 'function');
+  await assert.rejects(
+    loadVRT(fixtureFile('stack.vrt'), { files: allFiles(), composite: 'dual-pol-v' }),
+    /cannot form composite 'dual-pol-v': no band for VVVV, VHVH/);
+});
+
+test('rgbContrastFromBandStats: dB windows per channel, ratio window for B', () => {
+  const stats = {
+    HHHH: { mean_value: 0.1, sample_stddev: 0.05, mean_db: -10, sample_stddev_db: 2, count: 9 },
+    HVHV: { mean_value: 0.02, sample_stddev: 0.01, mean_db: -17, sample_stddev_db: 1, count: 9 },
+  };
+  const db = rgbContrastFromBandStats('dual-pol-h', stats, ['HHHH', 'HVHV'], true);
+  assert.deepEqual(db.R, [-14, -6]);
+  assert.deepEqual(db.G, [-20, -14]); // σ floor: ±3 dB
+  assert.ok(Math.abs(db.B[0] - (toDb(5, 0) - 5)) < 1e-9);
+  const lin = rgbContrastFromBandStats('dual-pol-h', stats, ['HHHH', 'HVHV'], false);
+  assert.deepEqual(lin.R, [0, 0.2]);
+  assert.equal(rgbContrastFromBandStats('dual-pol-h', {}, ['HHHH', 'HVHV'], true), null);
+});
+
+test('powerBandStats ignores NaN, zero, and negatives', () => {
+  const s = powerBandStats(new Float32Array([NaN, 0, -1, 1, 100]));
+  assert.equal(s.count, 2);
+  assert.equal(s.mean_value, 50.5);
+  assert.equal(s.mean_db, 10);
+  assert.equal(powerBandStats(new Float32Array([NaN, 0])), null);
 });
 
 // ─── Loader over HTTP Range (URL mode) ──────────────────────────────────
