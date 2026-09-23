@@ -17,6 +17,7 @@ import { fromArrayBuffer } from 'geotiff';
 import { parseXml, parseVRT, epsgFromSrs, resolveVrtSourcePath } from '../../src/loaders/vrt-parser.js';
 import { loadVRT, isVRTPath, polarizationFromName } from '../../src/loaders/vrt-loader.js';
 import { rgbContrastFromBandStats } from '../../src/utils/sar-composites.js';
+import { pathSegments, candidatePaths, dirHandleSource, dirEntrySource, makeFolderResolver } from '../../src/loaders/vrt-local-sources.js';
 import { powerBandStats, toDb } from '../../src/utils/stats.js';
 import { detectFormat, bucketByFormat } from '../../src/loaders/types.js';
 import { inferDataTypeFromUrl } from '../../src/utils/deep-link.js';
@@ -208,10 +209,167 @@ test('decimated reads use the source COG overview', async () => {
   assert.equal(full[1 * 128 + 7], 1007);
 });
 
-test('missing companion file fails the load and names the file', async () => {
+// A source with no overviews, read at 8× decimation → synthetic overview:
+// each output pixel is the mean of the source's 8×8 block (nodata excluded).
+const singleSourceVrt = (file, extra = '') => new File([
+  `<VRTDataset rasterXSize="40" rasterYSize="30"><VRTRasterBand dataType="Float32" band="1">
+     <ComplexSource><SourceFilename relativeToVRT="1">${file}</SourceFilename><SourceBand>1</SourceBand>${extra}</ComplexSource>
+   </VRTRasterBand></VRTDataset>`], `${file}.vrt`);
+
+test('sources without overviews get block-averaged synthetic overviews when zoomed out', async () => {
+  // a.tif: value = 100 + r*40 + c; implicit SrcRect/DstRect (read from the header)
+  const src = await loadVRT(singleSourceVrt('a.tif'), { files: allFiles() });
+  const got = await src.readWindow(0, 0, 40, 24, 5, 3); // 8× in both axes
+  for (let oy = 0; oy < 3; oy++) {
+    for (let ox = 0; ox < 5; ox++) {
+      const want = 100 + (8 * oy + 3.5) * 40 + (8 * ox + 3.5);
+      assert.ok(Math.abs(got[oy * 5 + ox] - want) < 1e-3, `(${oy},${ox}) ${got[oy * 5 + ox]} vs ${want}`);
+    }
+  }
+  // Below 8× the read stays exact nearest-neighbour from full resolution
+  const near = await src.readWindow(0, 0, 40, 30, 10, 10); // 4× × 3×
+  assert.equal(near[0], 100 + 1 * 40 + 2);
+});
+
+test('synthetic overviews exclude the source NODATA value from block means', async () => {
+  // b.tif has a zero block at rows 10–19, cols 0–9; with NODATA 0 the block
+  // (rows 8–15, cols 0–7) averages only rows 8–9.
+  const src = await loadVRT(singleSourceVrt('b.tif', '<NODATA>0</NODATA>'), { files: allFiles() });
+  const got = await src.readWindow(0, 0, 40, 24, 5, 3);
+  const want = 5000 + 8.5 * 40 + 3.5;
+  assert.ok(Math.abs(got[1 * 5 + 0] - want) < 1e-3, `${got[5]} vs ${want}`);
+  // Synthetic blocks follow the source file's own grid (as GDAL overviews
+  // do), not the VRT's SrcRect. c.tif's first 8×8 block minus its one
+  // NODATA pixel (9000 at 0,0) averages the other 63.
+  const edge = await loadVRT(new File([
+    `<VRTDataset rasterXSize="16" rasterYSize="16"><VRTRasterBand dataType="Float32" band="1">
+       <ComplexSource><SourceFilename relativeToVRT="1">c.tif</SourceFilename><SourceBand>1</SourceBand>
+         <SrcRect xOff="0" yOff="0" xSize="20" ySize="15"/><DstRect xOff="0" yOff="0" xSize="20" ySize="15"/><NODATA>9000</NODATA>
+       </ComplexSource></VRTRasterBand></VRTDataset>`], 'c.vrt'), { files: allFiles() });
+  let sum = 0;
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) if (r || c) sum += 9000 + r * 20 + c;
+  assert.ok(Math.abs((await edge.readWindow(0, 0, 16, 16, 2, 2))[0] - sum / 63) < 1e-3);
+});
+
+test('missing companion files fail the load, all listed at once', async () => {
   await assert.rejects(
     loadVRT(fixtureFile('mosaic.vrt'), { files: [fixtureFile('a.tif')] }),
-    /"b\.tif" not found/);
+    (err) => {
+      assert.equal(err.code, 'VRT_MISSING_SOURCES');
+      assert.deepEqual(err.missing, ['b.tif', 'c.tif']);
+      assert.match(err.message, /2 of 3 VRT source files not found/);
+      return true;
+    });
+});
+
+// ─── Absolute local source paths + picked folders ───────────────────────
+
+// A gdalbuildvrt run on the data machine writes absolute paths
+// (relativeToVRT="0"), like /mnt/archive/nisar_breakup_2026/gcov/<scene>.tif.
+const absMosaic = () => new File([readFileSync(join(FIX, 'mosaic.vrt'), 'utf8')
+  .replace(/relativeToVRT="1">([^<]+)</g, 'relativeToVRT="0">/mnt/archive/campaign/gcov/$1<')], 'abs_mosaic.vrt');
+
+/** Minimal FileSystemDirectoryHandle over a real folder, named `name`, with optional subfolders. */
+function fakeDirHandle(name, dirPath, subdirs = {}) {
+  const lookups = [];
+  const handle = {
+    name,
+    kind: 'directory',
+    lookups,
+    async getDirectoryHandle(sub) {
+      lookups.push(`dir:${sub}`);
+      if (!subdirs[sub]) throw new DOMException(`${sub} not found`, 'NotFoundError');
+      return subdirs[sub];
+    },
+    async getFileHandle(file) {
+      lookups.push(`file:${file}`);
+      let buf;
+      try { buf = readFileSync(join(dirPath, file)); } catch {
+        throw new DOMException(`${file} not found`, 'NotFoundError');
+      }
+      return { kind: 'file', name: file, getFile: async () => new File([buf], file) };
+    },
+  };
+  return handle;
+}
+
+test('candidatePaths prefers the suffix after the picked folder\'s own name', () => {
+  const segs = pathSegments('/mnt/archive/campaign/gcov/s1_HH.tif');
+  assert.deepEqual(candidatePaths(segs, 'gcov')[0], ['s1_HH.tif']);
+  assert.deepEqual(candidatePaths(segs, 'campaign')[0], ['gcov', 's1_HH.tif']);
+  assert.deepEqual(candidatePaths(segs, 'elsewhere').map(c => c.join('/')).slice(0, 2), ['s1_HH.tif', 'gcov/s1_HH.tif']);
+  assert.deepEqual(pathSegments('..\\..\\gcov\\x.tif'), ['gcov', 'x.tif']);
+});
+
+test('absolute-path VRT loads from the picked source folder and matches GDAL', async () => {
+  const gcov = fakeDirHandle('gcov', FIX);
+  const src = await loadVRT(absMosaic(), { findFile: makeFolderResolver([dirHandleSource(gcov)]) });
+  assertMatchesGdal(await src.readWindow(0, 0, 70, 60, 70, 60), await readExpected('mosaic_expected.tif'));
+  // Direct name lookups — the folder is never listed
+  assert.ok(gcov.lookups.every(l => l.startsWith('file:')));
+});
+
+test('picking an ancestor folder also resolves (gcov/ subfolder)', async () => {
+  const campaign = fakeDirHandle('campaign', '/nonexistent', { gcov: fakeDirHandle('gcov', FIX) });
+  const src = await loadVRT(absMosaic(), { findFile: makeFolderResolver([dirHandleSource(campaign)]) });
+  assertMatchesGdal(await src.readWindow(0, 0, 70, 60, 70, 60), await readExpected('mosaic_expected.tif'));
+});
+
+test('a folder without the sources still reports every missing path', async () => {
+  const wrong = fakeDirHandle('elsewhere', '/nonexistent');
+  await assert.rejects(
+    loadVRT(absMosaic(), { findFile: makeFolderResolver([dirHandleSource(wrong)]) }),
+    (err) => err.code === 'VRT_MISSING_SOURCES' && err.missing.length === 3
+      && err.missing[0] === '/mnt/archive/campaign/gcov/a.tif');
+});
+
+test('big local mosaics resolve a sample at load and the rest on demand', async () => {
+  // 10 copies of a.tif side by side, absolute paths; s7 is missing from disk
+  const srcs = Array.from({ length: 10 }, (_, i) =>
+    `<ComplexSource><SourceFilename relativeToVRT="0">/mnt/archive/gcov/s${i}.tif</SourceFilename><SourceBand>1</SourceBand>
+       <SrcRect xOff="0" yOff="0" xSize="40" ySize="30"/><DstRect xOff="${i * 40}" yOff="0" xSize="40" ySize="30"/></ComplexSource>`).join('');
+  const vrt = new File([`<VRTDataset rasterXSize="400" rasterYSize="30"><VRTRasterBand dataType="Float32" band="1">${srcs}</VRTRasterBand></VRTDataset>`], 'row.vrt');
+  const a = readFileSync(join(FIX, 'a.tif'));
+  const looked = [];
+  const findFile = async (p) => {
+    looked.push(p);
+    return p.endsWith('s7.tif') ? null : new File([a], p.split('/').pop());
+  };
+  const warn = console.warn;
+  const warnings = [];
+  console.warn = (...m) => warnings.push(m.join(' '));
+  try {
+    const src = await loadVRT(vrt, { findFile });
+    assert.deepEqual(looked.map(p => p.split('/').pop()).sort(), ['s0.tif', 's4.tif', 's9.tif']);
+    // Reading s1–s2 looks up just those two
+    const got = await src.readWindow(40, 0, 120, 30, 80, 30);
+    assert.equal(got[0], 100);
+    assert.equal(looked.length, 5);
+    // The missing s7 renders as a hole, with one warning, instead of failing the tile
+    const hole = await src.readWindow(240, 0, 360, 30, 120, 30);
+    assert.equal(hole[0], 100);              // s6
+    assert.ok(Number.isNaN(hole[40]));       // s7
+    assert.equal(hole[80], 100);             // s8
+    assert.equal(warnings.filter(w => /s7\.tif/.test(w)).length, 1);
+    // Auto-contrast sample is bounded and skips the hole too
+    assert.ok((await src.readSample(4)).some(v => v === 100));
+  } finally {
+    console.warn = warn;
+  }
+});
+
+test('dropped-folder entries resolve through dirEntrySource', async () => {
+  // FileSystemDirectoryEntry.getFile(path, opts, ok, err) — callback API
+  const entry = {
+    name: 'gcov',
+    getFile(path, _opts, ok, fail) {
+      let buf;
+      try { buf = readFileSync(join(FIX, path)); } catch (e) { fail(e); return; }
+      ok({ file: (res) => res(new File([buf], path.split('/').pop())) });
+    },
+  };
+  const src = await loadVRT(absMosaic(), { findFile: makeFolderResolver([dirEntrySource(entry)]) });
+  assert.equal(src.vrt.sourceCount, 3);
 });
 
 // ─── Band stacks → RGB composite ────────────────────────────────────────

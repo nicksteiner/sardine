@@ -19,7 +19,7 @@
  * GDAL's default VRT resampling; at 1:1 (exports) it is exact.
  */
 
-import { fromUrl, fromBlob } from 'geotiff';
+import { fromUrl, fromBlob, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
 import { debugLog } from '../utils/debug-log.js';
 import { powerBandStats } from '../utils/stats.js';
@@ -27,6 +27,14 @@ import { autoSelectComposite, getRequiredDatasets } from '../utils/sar-composite
 import { parseVRT, resolveVrtSourcePath } from './vrt-parser.js';
 
 const TILE_SIZE = 256;
+// Local sources up to this size are read whole and parsed from memory while
+// the open-source LRU holds under BUFFER_LOCAL_BUDGET: geotiff.js's Blob
+// source issues one FileReader read per block, ~6× slower than a single
+// arrayBuffer() — and a zoomed-out read decodes the whole file anyway.
+const BUFFER_LOCAL_BELOW = 32 * 1024 * 1024;
+const BUFFER_LOCAL_BUDGET = 512 * 1024 * 1024;
+// Synthetic overviews start at this decimation (relative to full res).
+const SYNTH_MIN_FACTOR = 8;
 
 const POL_PAIRS = { HH: 'HHHH', HV: 'HVHV', VH: 'VHVH', VV: 'VVVV' };
 
@@ -65,6 +73,9 @@ function bandPolarization(band) {
  * @param {Object} [options]
  * @param {File[]} [options.files]  Companion source files for a local VRT,
  *   matched to SourceFilename by basename.
+ * @param {(path: string) => Promise<File|null>} [options.findFile]  Fallback
+ *   lookup for local sources not in `files` — e.g. makeFolderResolver over a
+ *   folder the user picked (vrt-local-sources.js).
  * @param {(url: string) => string} [options.resolveUrl]  Rewrites every
  *   fetched URL (the VRT and each source) — pass the CORS/auth proxy here.
  *   Relative sources resolve against the raw VRT URL BEFORE this runs.
@@ -77,6 +88,8 @@ function bandPolarization(band) {
  *   requests (a zoomed-out view of a big mosaic). Exports are not capped.
  * @param {number} [options.maxOpenSources=64]  LRU size for open source files.
  * @param {number} [options.concurrency=6]  Parallel source reads per window.
+ * @param {number} [options.pyramidBudgetBytes=256 MB]  Cache for synthetic
+ *   overviews of sources that have none (see syntheticPyramid).
  * @param {Function} [options.onProgress]  (0–100)
  * @returns {Promise<Object>} loadLocalTIF-shaped source, or
  *   loadCOGRGBComposite-shaped when a composite was opened (`.composite` set)
@@ -84,12 +97,14 @@ function bandPolarization(band) {
 export async function loadVRT(input, options = {}) {
   const {
     files = [],
+    findFile = null,
     resolveUrl = (u) => u,
     band: bandNumber = 1,
     composite = null,
     maxSourcesPerTile = 256,
     maxOpenSources = 64,
     concurrency = 6,
+    pyramidBudgetBytes = 256 * 1024 * 1024,
     onProgress,
   } = options;
   const progress = onProgress || (() => {});
@@ -122,17 +137,19 @@ export async function loadVRT(input, options = {}) {
     if (!byName.has(f.name.toLowerCase())) byName.set(f.name.toLowerCase(), f);
   }
 
-  function locate(src) {
+  // → {key, url} | {key, file} | {missing: path}
+  async function locate(src) {
     const loc = resolveVrtSourcePath(src.filename, src.relativeToVRT, baseUrl);
     if (loc.kind === 'url') return { key: loc.url, url: loc.url };
-    const file = byName.get(loc.name) || byName.get(loc.name.toLowerCase());
-    if (!file) {
-      throw new Error(`VRT source "${loc.path}" not found — drop it together with ${displayName}`);
-    }
-    return { key: `file:${loc.name}`, file };
+    const file = byName.get(loc.name) || byName.get(loc.name.toLowerCase())
+      || (findFile && await findFile(loc.path));
+    if (!file) return { missing: loc.path };
+    return { key: `file:${loc.path}`, file };
   }
 
   const open = new Map(); // key → Promise<{images: [{img, w, h}]}>
+  const buffered = new Map(); // key → bytes held in memory for that open source
+  let bufferedBytes = 0;
   async function openSource(loc) {
     let p = open.get(loc.key);
     if (p) {
@@ -141,9 +158,16 @@ export async function loadVRT(input, options = {}) {
       return p;
     }
     p = (async () => {
-      const tiff = loc.file
-        ? await fromBlob(loc.file)
-        : await fromUrl(resolveUrl(normalizeS3Url(loc.url)));
+      let tiff;
+      if (!loc.file) {
+        tiff = await fromUrl(resolveUrl(normalizeS3Url(loc.url)));
+      } else if (loc.file.size <= BUFFER_LOCAL_BELOW && bufferedBytes + loc.file.size <= BUFFER_LOCAL_BUDGET) {
+        bufferedBytes += loc.file.size;
+        buffered.set(loc.key, loc.file.size);
+        tiff = await fromArrayBuffer(await loc.file.arrayBuffer());
+      } else {
+        tiff = await fromBlob(loc.file);
+      }
       const n = await tiff.getImageCount();
       const images = [];
       for (let i = 0; i < n; i++) {
@@ -154,9 +178,77 @@ export async function loadVRT(input, options = {}) {
       }
       return { images };
     })();
+    const forget = (key) => {
+      open.delete(key);
+      bufferedBytes -= buffered.get(key) || 0;
+      buffered.delete(key);
+    };
     open.set(loc.key, p);
-    p.catch(() => open.delete(loc.key)); // let a transient failure retry
-    while (open.size > maxOpenSources) open.delete(open.keys().next().value);
+    p.catch(() => forget(loc.key)); // let a transient failure retry
+    while (open.size > maxOpenSources) forget(open.keys().next().value);
+    return p;
+  }
+
+  // ── Synthetic overviews ─────────────────────────────────────────────
+  // A source without overviews (common for small per-scene GeoTIFFs) would
+  // be decoded at full resolution for every zoomed-out tile that touches it.
+  // Instead, decode it once and keep block-averaged levels at 8×, 16×, …
+  // (NaN/nodata excluded, like GDAL AVERAGE overviews; ~1/48 of full size).
+  const pyramids = new Map(); // key → Promise<[{factor, w, h, data}]>
+  const pyramidSizes = new Map();
+  let pyramidBytes = 0;
+
+  function syntheticPyramid(s, images) {
+    const key = `${s.loc.key}|${s.sourceBand}|${s.nodata}`;
+    let p = pyramids.get(key);
+    if (p) {
+      pyramids.delete(key); // refresh LRU position
+      pyramids.set(key, p);
+      return p;
+    }
+    p = (async () => {
+      const fullW = images[0].w, fullH = images[0].h;
+      // Build from the coarsest real level that is still at least as fine as 8×
+      let base = images[0];
+      for (const im of images) if (fullW / im.w <= SYNTH_MIN_FACTOR) base = im;
+      const [data] = await base.img.readRasters({ samples: [s.sourceBand - 1] });
+      const bx = fullW / base.w, by = fullH / base.h;
+      const nd = s.nodata;
+      const levels = [];
+      for (let F = SYNTH_MIN_FACTOR; F <= 4096; F *= 2) {
+        const w = Math.ceil(fullW / F), h = Math.ceil(fullH / F);
+        const out = new Float32Array(w * h);
+        for (let j = 0; j < h; j++) {
+          const r0 = Math.floor(j * F / by), r1 = Math.min(base.h, Math.floor((j + 1) * F / by));
+          for (let i = 0; i < w; i++) {
+            const c0 = Math.floor(i * F / bx), c1 = Math.min(base.w, Math.floor((i + 1) * F / bx));
+            let sum = 0, n = 0;
+            for (let r = r0; r < r1; r++) {
+              const row = r * base.w;
+              for (let c = c0; c < c1; c++) {
+                const v = data[row + c];
+                if (!Number.isNaN(v) && v !== nd) { sum += v; n++; }
+              }
+            }
+            out[j * w + i] = n > 0 ? sum / n : NaN;
+          }
+        }
+        levels.push({ factor: F, w, h, data: out });
+        if (Math.max(w, h) <= 16) break;
+      }
+      const bytes = levels.reduce((b, l) => b + l.data.byteLength, 0);
+      pyramidSizes.set(key, bytes);
+      pyramidBytes += bytes;
+      for (const [k] of pyramids) {
+        if (pyramidBytes <= pyramidBudgetBytes || k === key) break;
+        pyramidBytes -= pyramidSizes.get(k) || 0;
+        pyramidSizes.delete(k);
+        pyramids.delete(k);
+      }
+      return levels;
+    })();
+    pyramids.set(key, p);
+    p.catch(() => pyramids.delete(key));
     return p;
   }
 
@@ -179,15 +271,53 @@ export async function loadVRT(input, options = {}) {
     if (!band) throw new Error(`VRT has no such band (has ${vrt.bands.length})`);
     if (band.sources.length === 0) throw new Error(`VRT band ${band.band} has no sources`);
 
-    // Resolve every source's location up front so a missing companion file
-    // or unsupported path fails the load, not the first tile.
-    const sources = band.sources.map(s => ({ ...s, loc: locate(s) }));
+    // Resolve source locations up front so a missing file or unsupported
+    // path fails the load, not the first tile — and report every missing
+    // file at once, so the caller can ask for their folder. When lookups go
+    // through findFile (a folder the user granted), each one is filesystem
+    // I/O — slow on big archive directories — so check a first/middle/last
+    // sample and resolve the rest as tiles need them.
+    const n = band.sources.length;
+    const lazy = !!findFile && n > 8;
+    const eager = lazy ? [...new Set([0, Math.floor((n - 1) / 2), n - 1])] : band.sources.map((_, i) => i);
+    const locs = new Array(n);
+    await mapLimit(eager, async (i) => { locs[i] = await locate(band.sources[i]); });
+    if (lazy && eager.some(i => locs[i].missing)) {
+      // Something's missing: resolve them all for a complete report
+      await mapLimit(band.sources.map((_, i) => i).filter(i => !locs[i]),
+        async (i) => { locs[i] = await locate(band.sources[i]); });
+    }
+    const missing = locs.filter(l => l?.missing).map(l => l.missing);
+    if (missing.length > 0) {
+      const err = new Error(`${missing.length} of ${n} VRT source files not found `
+        + `(e.g. "${missing[0]}") — choose the folder that holds them, or drop them together with ${displayName}`);
+      err.code = 'VRT_MISSING_SOURCES';
+      err.missing = missing;
+      throw err;
+    }
+    const sources = band.sources.map((s, i) => ({ ...s, loc: locs[i] || null }));
+
+    let warnedMissing = false;
+    async function locOf(s) {
+      if (s.loc) return s.loc;
+      s.locPromise ??= locate(s).then((l) => {
+        if (l.missing) {
+          const err = new Error(`VRT source not found: ${l.missing}`);
+          err.code = 'VRT_MISSING_SOURCES';
+          err.missing = [l.missing];
+          throw err;
+        }
+        s.loc = l;
+        return l;
+      });
+      return s.locPromise;
+    }
 
     // SrcRect/DstRect are optional in the format; when absent they default
     // to the source's full extent placed at the origin. Needs the header.
     for (const s of sources) {
       if (s.srcRect && s.dstRect) continue;
-      const { images } = await openSource(s.loc);
+      const { images } = await openSource(await locOf(s));
       const full = { x: 0, y: 0, w: images[0].w, h: images[0].h };
       s.srcRect = s.srcRect || full;
       s.dstRect = s.dstRect || { x: 0, y: 0, w: s.srcRect.w, h: s.srcRect.h };
@@ -225,14 +355,36 @@ export async function loadVRT(input, options = {}) {
         const srcY = (oy) => r.y + (y0 + (oy + 0.5) * sy - d.y) * ky;
 
         // Coarsest overview that still has ≥1 pixel per output pixel
-        const { images } = await openSource(s.loc);
+        let loc;
+        try {
+          loc = await locOf(s);
+        } catch (e) {
+          if (e.code !== 'VRT_MISSING_SOURCES') throw e;
+          if (!warnedMissing) { console.warn(`[VRT] ${e.message} — rendering without it`); warnedMissing = true; }
+          return null;
+        }
+        const { images } = await openSource(loc);
         const fullW = images[0].w, fullH = images[0].h;
         const stepX = sx * kx, stepY = sy * ky;
         let level = images[0];
         for (const im of images) {
           if (fullW / im.w <= stepX * 1.0001 && fullH / im.h <= stepY * 1.0001) level = im;
         }
-        const fx = fullW / level.w, fy = fullH / level.h;
+        let fx = fullW / level.w, fy = fullH / level.h;
+
+        // Far coarser than the best real level can serve cheaply → synthetic overview
+        const step = Math.min(stepX, stepY);
+        if (step >= SYNTH_MIN_FACTOR && Math.max(fx, fy) * 4 <= step) {
+          let lv = null;
+          for (const L of await syntheticPyramid(s, images)) if (L.factor <= step * 1.0001) lv = L;
+          if (lv) {
+            fx = fy = lv.factor;
+            const clampX = (v) => Math.min(lv.w - 1, Math.max(0, v));
+            const clampY = (v) => Math.min(lv.h - 1, Math.max(0, v));
+            return { s, data: lv.data, ww: lv.w, wx0: 0, wy0: 0, fx, fy, ox0, ox1, oy0, oy1, srcX, srcY, clampX, clampY };
+          }
+        }
+
         const clampX = (v) => Math.min(level.w - 1, Math.max(0, v));
         const clampY = (v) => Math.min(level.h - 1, Math.max(0, v));
         const wx0 = clampX(Math.floor(srcX(ox0) / fx));
@@ -273,7 +425,7 @@ export async function loadVRT(input, options = {}) {
       return out;
     }
 
-    /** Whole-scene read at ≤maxSize on the long side — for auto-contrast. */
+    /** Whole-scene read at ≤maxSize on the long side. Touches every source. */
     async function readPreview(maxSize = 512) {
       const scale = Math.min(1, maxSize / Math.max(width, height));
       const w = Math.max(1, Math.round(width * scale));
@@ -281,7 +433,27 @@ export async function loadVRT(input, options = {}) {
       return { data: await readWindow(0, 0, width, height, w, h), width: w, height: h };
     }
 
-    return { band, sources, intersecting, readWindow, readPreview };
+    /**
+     * Pixel sample for auto-contrast / band stats: each source's own extent
+     * at ≤256 px, from at most `maxSources` evenly spaced sources — bounded
+     * cost however big the mosaic is.
+     */
+    async function readSample(maxSources = 16) {
+      const pick = sources.length <= maxSources ? sources
+        : Array.from({ length: maxSources }, (_, k) => sources[Math.round(k * (sources.length - 1) / (maxSources - 1))]);
+      const parts = await mapLimit(pick, async (s) => {
+        const d = s.dstRect;
+        const f = Math.max(1, Math.max(d.w, d.h) / 256);
+        return readWindow(d.x, d.y, d.x + d.w, d.y + d.h,
+          Math.max(1, Math.round(d.w / f)), Math.max(1, Math.round(d.h / f)), { srcList: [s] });
+      });
+      const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+      let o = 0;
+      for (const p of parts) { out.set(p, o); o += p.length; }
+      return out;
+    }
+
+    return { band, sources, intersecting, readWindow, readPreview, readSample };
   }
 
   // ── Shared accessor helpers ─────────────────────────────────────────
@@ -450,14 +622,12 @@ export async function loadVRT(input, options = {}) {
       return (await readers[0].readWindow(col, row, col + 1, row + 1, 1, 1))[0];
     }
 
-    // Per-band stats from one decimated whole-scene read each — enough for
-    // the app's mean±2σ initial per-channel contrast. Skipped for mosaics
-    // past the tile cap (that read would touch every source).
+    // Per-band stats from a bounded source sample each — enough for the
+    // app's mean±2σ initial per-channel contrast.
     const bandStats = {};
     await Promise.all(readers.map(async (r, i) => {
-      if (r.sources.length > maxSourcesPerTile) return;
       try {
-        const stats = powerBandStats((await r.readPreview(512)).data);
+        const stats = powerBandStats(await r.readSample());
         if (stats) bandStats[polNames[i]] = stats;
       } catch (e) {
         console.warn(`[VRT] stats sample failed for ${polNames[i]}:`, e.message);
@@ -525,6 +695,7 @@ export async function loadVRT(input, options = {}) {
     getPixelValue,
     readWindow: reader.readWindow,
     readPreview: reader.readPreview,
+    readSample: reader.readSample,
     nodata: band.nodata !== null && !Number.isNaN(band.nodata) ? band.nodata : null,
     vrt: vrtMeta({ band: band.band, sourceCount: reader.sources.length }),
   };

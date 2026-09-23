@@ -14,6 +14,7 @@ import { URLFile } from '../src/loaders/url-file.js';
 import { listLocalCOGDatasets, loadLocalCOGDataset } from '../src/loaders/cog-loader.js';
 import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
 import { loadVRT, isVRTPath } from '../src/loaders/vrt-loader.js';
+import { dirHandleSource, dirEntrySource, makeFolderResolver } from '../src/loaders/vrt-local-sources.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
 import { Button, CloseButton, Field, Section, Panel, Toolbar, Dialog } from '../src/components/ui/index.js';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
@@ -483,6 +484,12 @@ function App() {
   // And for VRTs, which ride the COG URL path: handleLoadCOG (defined before
   // the VRT handler) hands .vrt URLs over through this ref.
   const handleLoadVRTRef = useRef(null);
+  // Folders the user granted for local VRT sources (picked or dropped), most
+  // recent first. Kept for the session so every VRT from the same archive
+  // resolves without asking again.
+  const vrtSourceFoldersRef = useRef([]);
+  // {file, companions, missing, total} while a local VRT waits for its source folder
+  const [vrtSourcePrompt, setVrtSourcePrompt] = useState(null);
 
   // Remote source state
   const [remoteUrl, setRemoteUrl] = useState(null);
@@ -3124,14 +3131,17 @@ function App() {
     try {
       // Band stacks (gdalbuildvrt -separate hh.tif hv.tif) open as an RGB
       // composite when their band polarizations support one.
+      const folders = vrtSourceFoldersRef.current;
       const data = await loadVRT(url || file, {
         files: companions,
+        findFile: file && folders.length ? makeFolderResolver(folders) : null,
         resolveUrl: (u) => proxyUrlShared(u),
         onProgress: (pct) => setLoadProgress(pct),
         composite: 'auto',
       });
       if (gen !== loadGenRef.current) return;
 
+      setVrtSourcePrompt(null);
       setMosaicFiles([]);
       setImageData(data);
       const { vrt } = data;
@@ -3144,7 +3154,7 @@ function App() {
         addStatusLog('success', `RGB composite from VRT bands: ${SAR_COMPOSITES[data.composite]?.name || data.composite}`,
           Object.entries(vrt.bandMap).map(([pol, b]) => `${pol} ← band ${b}`).join(', '));
         if (Object.keys(data.bandStats).length === 0) {
-          addStatusLog('warning', `RGB auto-contrast skipped — ${vrt.sourceCount} sources`, 'Set per-channel contrast manually');
+          addStatusLog('warning', 'RGB auto-contrast unavailable — no valid pixels sampled', 'Set per-channel contrast manually');
         } else if (!consumeDeepLinkPin('contrast')) {
           applyRgbContrastFromStats(data.composite, data.bandStats, data.requiredPols);
         }
@@ -3159,16 +3169,14 @@ function App() {
           `${labels}. Band polarizations come from band descriptions or source filenames (…_HH.tif).`);
       }
 
-      // A zoomed-out preview of a big mosaic touches every source; past the
-      // tile cap, skip auto-contrast rather than fan out hundreds of reads.
+      // Auto-contrast from a bounded sample (≤16 sources) — a whole-scene
+      // preview of a big mosaic would read every source before first paint.
       if (consumeDeepLinkPin('contrast')) {
         addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
-      } else if (vrt.sourceCount > 256) {
-        addStatusLog('warning', `Auto-contrast skipped — ${vrt.sourceCount} sources`, 'Set contrast manually or zoom in and use auto-stretch');
       } else try {
-        const preview = await data.readPreview(512);
+        const sample = await data.readSample();
         if (gen !== loadGenRef.current) return;
-        applySampleContrast(preview.data);
+        applySampleContrast(sample);
       } catch (statsErr) {
         console.warn('VRT auto-contrast failed:', statsErr);
       }
@@ -3176,6 +3184,14 @@ function App() {
       autoFitIfNewScene(data.bounds);
     } catch (e) {
       if (gen !== loadGenRef.current) return;
+      if (e.code === 'VRT_MISSING_SOURCES' && file) {
+        // A browser can't open the VRT's source paths — ask for their folder
+        // (see the prompt next to the error stack) instead of failing flat.
+        setVrtSourcePrompt({ file, companions, missing: e.missing, total: e.missing.length });
+        addStatusLog('warning', `${name}: ${e.missing.length} source file${e.missing.length === 1 ? '' : 's'} not found`,
+          `Choose the folder that holds them. First missing: ${e.missing[0]}`);
+        return;
+      }
       setError(`Failed to load VRT: ${e.message}`);
       setImageData(null);
       addStatusLog('error', 'Failed to load VRT', e.message);
@@ -3190,6 +3206,27 @@ function App() {
   useEffect(() => {
     handleLoadVRTRef.current = handleLoadVRT;
   }, [handleLoadVRT]);
+
+  const chooseVrtSourceFolder = useCallback(async () => {
+    const prompt = vrtSourcePrompt;
+    if (!prompt) return;
+    if (typeof window.showDirectoryPicker !== 'function') {
+      addStatusLog('error', 'This browser cannot open folders',
+        `Drop ${prompt.file.name} together with the folder that holds its sources`);
+      return;
+    }
+    let handle;
+    try {
+      handle = await window.showDirectoryPicker({ id: 'sardine-vrt-sources', mode: 'read' });
+    } catch (e) {
+      if (e.name !== 'AbortError') addStatusLog('error', 'Could not open folder', e.message);
+      return;
+    }
+    vrtSourceFoldersRef.current = [dirHandleSource(handle), ...vrtSourceFoldersRef.current];
+    addStatusLog('info', `VRT source folder: ${handle.name}`, 'Remembered for this session');
+    setVrtSourcePrompt(null);
+    handleLoadVRT({ file: prompt.file, companions: prompt.companions });
+  }, [vrtSourcePrompt, addStatusLog, handleLoadVRT]);
 
   // Switch to a different band in the currently-open multi-band TIF.
   // Only meaningful for single-file loads; mosaic loads use band 0.
@@ -3533,6 +3570,19 @@ function App() {
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length === 0) return;
 
+    // Dropped folders (for a VRT's sources) — entries must be taken during
+    // the event; they stay usable afterwards. Folders also appear in `files`
+    // as extensionless zero-byte items, so drop those from the file list.
+    const folderEntries = Array.from(e.dataTransfer?.items || [])
+      .map(it => it.webkitGetAsEntry?.())
+      .filter(en => en?.isDirectory);
+    const folderNames = new Set(folderEntries.map(en => en.name));
+    if (folderNames.size > 0) {
+      for (let i = files.length - 1; i >= 0; i--) {
+        if (folderNames.has(files[i].name) && !files[i].type) files.splice(i, 1);
+      }
+    }
+
     const buckets = bucketByFormat(files);
     const geojsonFiles = buckets.unknown.filter(f => /\.(geojson|json)$/i.test(f.name));
     const pngFiles = buckets.unknown.filter(f => /\.png$/i.test(f.name));
@@ -3584,7 +3634,13 @@ function App() {
           nitfFiles.map(f => f.name).join(', '));
       }
     } else if (buckets.vrt.length > 0) {
-      // TIFs dropped alongside a .vrt are its sources, not a mosaic
+      // TIFs dropped alongside a .vrt are its sources, not a mosaic; so are
+      // any dropped folders (looked up by name, never listed)
+      if (folderEntries.length > 0) {
+        vrtSourceFoldersRef.current = [...folderEntries.map(dirEntrySource), ...vrtSourceFoldersRef.current];
+        addStatusLog('info', `VRT source folder${folderEntries.length > 1 ? 's' : ''}: ${[...folderNames].join(', ')}`,
+          'Remembered for this session');
+      }
       setFileType('local-tif');
       handleLoadVRT({ file: buckets.vrt[0], companions: tifFiles });
       if (buckets.vrt.length > 1) {
@@ -9151,6 +9207,29 @@ function App() {
               {loadCancellable && (
                 <button className="btn-secondary load-cancel" onClick={cancelActiveLoad}>Cancel</button>
               )}
+            </div>
+          )}
+
+          {/* W031: a dropped VRT whose sources are absolute local paths — the
+              browser needs the user to grant the folder that holds them. */}
+          {vrtSourcePrompt && (
+            <div className="error-stack">
+              <div className="error" role="alert">
+                <span className="error-text">
+                  {vrtSourcePrompt.file.name}: {vrtSourcePrompt.total} source file{vrtSourcePrompt.total === 1 ? '' : 's'} not
+                  found — the VRT points at {vrtSourcePrompt.missing[0].replace(/[\\/][^\\/]*$/, '/')}
+                </span>
+                <button className="btn-secondary" onClick={chooseVrtSourceFolder}>
+                  Choose source folder…
+                </button>
+                <button
+                  className="error-dismiss"
+                  aria-label="Dismiss"
+                  onClick={() => setVrtSourcePrompt(null)}
+                >
+                  ×
+                </button>
+              </div>
             </div>
           )}
 
