@@ -24,6 +24,8 @@ export {
   loadNITFFromUrl, loadNITFDatasetFromUrl,
 } from './loaders/nitf-loader.js';
 export { URLFile } from './loaders/url-file.js';
+export { loadVRT, isVRTPath } from './loaders/vrt-loader.js';
+export { parseVRT } from './loaders/vrt-parser.js';
 
 // WKT / ROI utilities
 export { parseWKT, wktToBbox, bboxToWKT, validateWKT, wktToGeoJSON } from './utils/wkt.js';

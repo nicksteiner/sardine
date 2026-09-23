@@ -20,7 +20,7 @@
  */
 
 /**
- * @typedef {'h5' | 'cog' | 'nitf'} DatasetFormat
+ * @typedef {'h5' | 'cog' | 'nitf' | 'vrt'} DatasetFormat
  */
 
 /**
@@ -79,6 +79,7 @@
 const H5_RE = /\.(h5|hdf5|he5)$/i;
 const TIF_RE = /\.(tif|tiff)$/i;
 const NITF_RE = /\.(nitf|ntf)$/i;
+const VRT_RE = /\.vrt$/i;
 
 /**
  * Identify the loader format for a File or filename. Returns null if
@@ -92,6 +93,7 @@ export function detectFormat(fileOrName) {
   if (H5_RE.test(name)) return 'h5';
   if (TIF_RE.test(name)) return 'cog';
   if (NITF_RE.test(name)) return 'nitf';
+  if (VRT_RE.test(name)) return 'vrt';
   return null;
 }
 
@@ -100,10 +102,10 @@ export function detectFormat(fileOrName) {
  * known format land in `unknown`.
  *
  * @param {File[]} files
- * @returns {{h5: File[], cog: File[], nitf: File[], unknown: File[]}}
+ * @returns {{h5: File[], cog: File[], nitf: File[], vrt: File[], unknown: File[]}}
  */
 export function bucketByFormat(files) {
-  const out = { h5: [], cog: [], nitf: [], unknown: [] };
+  const out = { h5: [], cog: [], nitf: [], vrt: [], unknown: [] };
   for (const f of files || []) {
     const fmt = detectFormat(f);
     if (fmt) out[fmt].push(f);

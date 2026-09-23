@@ -13,6 +13,7 @@ import { loadNITF, isNITFFile, listNITFDatasets, loadNITFDataset } from '../src/
 import { URLFile } from '../src/loaders/url-file.js';
 import { listLocalCOGDatasets, loadLocalCOGDataset } from '../src/loaders/cog-loader.js';
 import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
+import { loadVRT, isVRTPath } from '../src/loaders/vrt-loader.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
 import { Button, CloseButton, Field, Section, Panel, Toolbar, Dialog } from '../src/components/ui/index.js';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
@@ -39,6 +40,7 @@ import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportFigureGrid, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
 import {
   proxyUrl as proxyUrlShared,
+  unproxyUrl,
   isHostedBuild,
   getProxyUrl,
   setProxyUrl,
@@ -478,6 +480,9 @@ function App() {
   // Same idea for the NITF handler, so ?nitf=<url> can dispatch into it after
   // mount via a URLFile adapter.
   const handleNITFFileSelectRef = useRef(null);
+  // And for VRTs, which ride the COG URL path: handleLoadCOG (defined before
+  // the VRT handler) hands .vrt URLs over through this ref.
+  const handleLoadVRTRef = useRef(null);
 
   // Remote source state
   const [remoteUrl, setRemoteUrl] = useState(null);
@@ -2582,6 +2587,14 @@ function App() {
       return;
     }
 
+    // GDAL VRT: its relative sources resolve against the upstream URL, so hand
+    // the loader the un-proxied, absolute form; it proxies each fetch itself.
+    const rawCogUrl = new URL(unproxyUrl(cogUrl), window.location.origin).href;
+    if (isVRTPath(rawCogUrl)) {
+      handleLoadVRTRef.current?.({ url: rawCogUrl });
+      return;
+    }
+
     setLoading(true);
     setError(null);
     addStatusLog('info', `Loading COG from: ${cogUrl}`);
@@ -3026,6 +3039,43 @@ function App() {
     }
   }, [addStatusLog, applyPendingPNGState]);
 
+  // Auto-contrast + dB detection from a sample of raw values (full raster
+  // for plain TIFs, a decimated preview for VRTs).
+  const applySampleContrast = useCallback((sampleData) => {
+    const vals = [];
+    const stride = Math.max(1, Math.floor(sampleData.length / 10000));
+    for (let i = 0; i < sampleData.length; i += stride) {
+      const v = sampleData[i];
+      if (!isNaN(v) && v !== 0) vals.push(v);
+    }
+    vals.sort((a, b) => a - b);
+    const p02 = vals[Math.floor(vals.length * 0.02)] || 0;
+    const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
+
+    // Detect if values are raw power (needs dB) or already scaled:
+    // - Raw SAR power: large positive values (p98 >> 1), dB conversion useful
+    // - Calibrated sigma0/gamma0: mostly < 1, dB would work but linear range is fine
+    // - Already in dB or ratio: can have negatives, small range, skip dB
+    const hasNegatives = p02 < 0;
+    const needsDb = !hasNegatives && p98 > 1;
+    setUseDecibels(needsDb);
+
+    const displayVals = needsDb
+      ? vals.map(v => toDb(v))
+      : vals;
+    const lowIdx = Math.floor(0.02 * displayVals.length);
+    const highIdx = Math.floor(0.98 * displayVals.length);
+    const limits = [
+      displayVals[lowIdx] ?? (needsDb ? -30 : 0),
+      displayVals[Math.min(highIdx, displayVals.length - 1)] ?? (needsDb ? 0 : 1),
+    ];
+    setContrastMin(limits[0]);
+    setContrastMax(limits[1]);
+    addStatusLog('info', needsDb
+      ? `dB scaling enabled (p98=${p98.toFixed(2)}), contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`
+      : `Linear scaling (p98=${p98.toFixed(4)}), contrast: [${limits[0].toFixed(4)}, ${limits[1].toFixed(4)}]`);
+  }, [addStatusLog]);
+
   // Handle local TIF file selection (single or multi-select mosaic).
   // Always replaces the active mosaic — drop the same files together
   // to mosaic them, or use appendMosaicTIFs to add to an existing mosaic.
@@ -3079,41 +3129,7 @@ function App() {
       if (consumeDeepLinkPin('contrast')) {
         addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
       } else try {
-        const sampleData = data.data;
-        if (sampleData) {
-          const vals = [];
-          const stride = Math.max(1, Math.floor(sampleData.length / 10000));
-          for (let i = 0; i < sampleData.length; i += stride) {
-            const v = sampleData[i];
-            if (!isNaN(v) && v !== 0) vals.push(v);
-          }
-          vals.sort((a, b) => a - b);
-          const p02 = vals[Math.floor(vals.length * 0.02)] || 0;
-          const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
-
-          // Detect if values are raw power (needs dB) or already scaled:
-          // - Raw SAR power: large positive values (p98 >> 1), dB conversion useful
-          // - Calibrated sigma0/gamma0: mostly < 1, dB would work but linear range is fine
-          // - Already in dB or ratio: can have negatives, small range, skip dB
-          const hasNegatives = p02 < 0;
-          const needsDb = !hasNegatives && p98 > 1;
-          setUseDecibels(needsDb);
-
-          const displayVals = needsDb
-            ? vals.map(v => toDb(v))
-            : vals;
-          const lowIdx = Math.floor(0.02 * displayVals.length);
-          const highIdx = Math.floor(0.98 * displayVals.length);
-          const limits = [
-            displayVals[lowIdx] ?? (needsDb ? -30 : 0),
-            displayVals[Math.min(highIdx, displayVals.length - 1)] ?? (needsDb ? 0 : 1),
-          ];
-          setContrastMin(limits[0]);
-          setContrastMax(limits[1]);
-          addStatusLog('info', needsDb
-            ? `dB scaling enabled (p98=${p98.toFixed(2)}), contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`
-            : `Linear scaling (p98=${p98.toFixed(4)}), contrast: [${limits[0].toFixed(4)}, ${limits[1].toFixed(4)}]`);
-        }
+        if (data.data) applySampleContrast(data.data);
       } catch (statsErr) {
         console.warn('Auto-contrast failed:', statsErr);
       }
@@ -3128,7 +3144,69 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin]);
+  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast]);
+
+  // GDAL VRT — a remote URL (sources fetched through the proxy) or a dropped
+  // .vrt plus its source files. Streams lazily; see src/loaders/vrt-loader.js.
+  const handleLoadVRT = useCallback(async ({ url, file, companions = [] }) => {
+    const gen = ++loadGenRef.current;
+    const name = url ? url.split(/[?#]/)[0].split('/').pop() : file.name;
+    setLoading(true);
+    setLoadProgress(0);
+    setError(null);
+    setCogDatasets([]);
+    setSelectedCogId(null);
+    addStatusLog('info', `Loading VRT: ${name}`,
+      file ? `${companions.length} source file${companions.length === 1 ? '' : 's'} dropped with it` : url);
+    try {
+      const data = await loadVRT(url || file, {
+        files: companions,
+        resolveUrl: (u) => proxyUrlShared(u),
+        onProgress: (pct) => setLoadProgress(pct),
+      });
+      if (gen !== loadGenRef.current) return;
+
+      setMosaicFiles([]);
+      setImageData(data);
+      const { vrt } = data;
+      addStatusLog('success', `VRT: ${data.width}x${data.height} px, ${vrt.sourceCount} source${vrt.sourceCount === 1 ? '' : 's'}`,
+        `CRS ${data.crs}`);
+      if (vrt.bandCount > 1) {
+        const labels = vrt.bandDescriptions.map((d, i) => d || `band ${i + 1}`).join(', ');
+        addStatusLog('warning', `Showing band 1 of ${vrt.bandCount} — multi-band VRTs are not composited yet`, labels);
+      }
+
+      // A zoomed-out preview of a big mosaic touches every source; past the
+      // tile cap, skip auto-contrast rather than fan out hundreds of reads.
+      if (consumeDeepLinkPin('contrast')) {
+        addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
+      } else if (vrt.sourceCount > 256) {
+        addStatusLog('warning', `Auto-contrast skipped — ${vrt.sourceCount} sources`, 'Set contrast manually or zoom in and use auto-stretch');
+      } else try {
+        const preview = await data.readPreview(512);
+        if (gen !== loadGenRef.current) return;
+        applySampleContrast(preview.data);
+      } catch (statsErr) {
+        console.warn('VRT auto-contrast failed:', statsErr);
+      }
+
+      autoFitIfNewScene(data.bounds);
+    } catch (e) {
+      if (gen !== loadGenRef.current) return;
+      setError(`Failed to load VRT: ${e.message}`);
+      setImageData(null);
+      addStatusLog('error', 'Failed to load VRT', e.message);
+    } finally {
+      if (gen === loadGenRef.current) {
+        setLoading(false);
+        resetLoadProgress();
+      }
+    }
+  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast, resetLoadProgress]);
+
+  useEffect(() => {
+    handleLoadVRTRef.current = handleLoadVRT;
+  }, [handleLoadVRT]);
 
   // Switch to a different band in the currently-open multi-band TIF.
   // Only meaningful for single-file loads; mosaic loads use band 0.
@@ -3522,6 +3600,14 @@ function App() {
           `Cannot mix HDF5 and NITF in one drop — ignored ${nitfFiles.length} NITF file(s)`,
           nitfFiles.map(f => f.name).join(', '));
       }
+    } else if (buckets.vrt.length > 0) {
+      // TIFs dropped alongside a .vrt are its sources, not a mosaic
+      setFileType('local-tif');
+      handleLoadVRT({ file: buckets.vrt[0], companions: tifFiles });
+      if (buckets.vrt.length > 1) {
+        addStatusLog('warning', `Loaded ${buckets.vrt[0].name} — drop one VRT at a time`,
+          `${buckets.vrt.length - 1} other VRT file(s) ignored`);
+      }
     } else if (tifFiles.length > 0) {
       if (fileType === 'local-tif' && mosaicFiles.length > 0) {
         appendMosaicTIFs(tifFiles);
@@ -3600,9 +3686,9 @@ function App() {
       });
     } else if (knownCount === 0) {
       addStatusLog('warning', `Unsupported file type: ${files[0].name}`,
-        'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
+        'Drop .h5, .tif, .vrt (with its sources), .nitf, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, handleLoadVRT, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
 
   // Handle remote file selection from DataDiscovery browser
   // Auth headers for the CURRENT token, not the one captured when the scene was
@@ -6836,16 +6922,19 @@ function App() {
           {fileType === 'local-tif' && (
             <CollapsibleSection title="Load Local GeoTIFF">
               <div className="control-group">
-                <label>Select one or more .tif files</label>
+                <label>Select one or more .tif files, or a .vrt with its sources</label>
                 <input
                   type="file"
-                  accept=".tif,.tiff"
+                  accept=".tif,.tiff,.vrt"
                   multiple
                   id="local-tif-input" className="u-hidden"
                   onChange={(e) => {
                     const files = Array.from(e.target.files || []);
                     if (files.length === 0) return;
-                    if (files.length > 1) {
+                    const vrtFile = files.find(f => isVRTPath(f.name));
+                    if (vrtFile) {
+                      handleLoadVRT({ file: vrtFile, companions: files.filter(f => f !== vrtFile) });
+                    } else if (files.length > 1) {
                       handleLocalTIFMultiSelect(files);
                     } else {
                       handleLocalTIFMultiSelect(files);

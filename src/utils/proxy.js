@@ -106,6 +106,25 @@ export function proxyUrl(rawUrl, { tokenInQuery = true } = {}) {
 }
 
 /**
+ * Inverse of proxyUrl: recover the upstream URL from a dev
+ * (`/stac-proxy/<encoded>`) or Worker (`/proxy?url=<encoded>`) URL.
+ * Anything else is returned unchanged. Needed where the upstream path
+ * matters — e.g. resolving a VRT's relative SourceFilenames.
+ */
+export function unproxyUrl(url) {
+  if (!url) return url;
+  const dev = /\/stac-proxy\/([^?#]+)/.exec(url);
+  if (dev) {
+    try { return decodeURIComponent(dev[1]); } catch { return url; }
+  }
+  try {
+    const u = new URL(url);
+    if (/\/proxy\/?$/.test(u.pathname) && u.searchParams.has('url')) return u.searchParams.get('url');
+  } catch { /* not absolute — leave as is */ }
+  return url;
+}
+
+/**
  * Validate a pasted EDL token.
  *
  * EDL user tokens are RS256 JWTs that describe themselves: `uid`, `iat` and

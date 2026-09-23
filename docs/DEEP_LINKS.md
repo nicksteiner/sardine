@@ -13,7 +13,7 @@ https://<sardine-host>/?url=https://host/scene.tif&colormap=viridis&contrastMin=
 
 | Param | Meaning |
 |:------|:--------|
-| `url` | Generic remote source; type inferred from extension: `.h5/.he5/.hdf5/.hdf` → NISAR, `.tif/.tiff/.geotiff` → COG, `.ntf/.nitf` → NITF/SICD. Unknown extension falls back to NISAR HDF5 (same as the direct-URL input). |
+| `url` | Generic remote source; type inferred from extension: `.h5/.he5/.hdf5/.hdf` → NISAR, `.tif/.tiff/.geotiff` → COG, `.vrt` → GDAL VRT (streamed lazily from its sources; relative source paths resolve against the VRT URL), `.ntf/.nitf` → NITF/SICD. Unknown extension falls back to NISAR HDF5 (same as the direct-URL input). |
 | `cog` / `nisar` / `nitf` (or `sicd`) | Explicit source type; wins over `url`. |
 
 ### Multi-band RGB COGs

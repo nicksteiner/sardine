@@ -109,6 +109,7 @@ var MIME = {
   '.he5':  'application/x-hdf5',
   '.tif':  'image/tiff',
   '.tiff': 'image/tiff',
+  '.vrt':  'application/xml',
 };
 
 // ─── Security: path traversal guard ─────────────────────────────────────
