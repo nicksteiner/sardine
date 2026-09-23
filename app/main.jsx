@@ -3588,6 +3588,21 @@ function App() {
       }
     }
 
+    // Only folders dropped: they're VRT source folders. With a VRT waiting
+    // on its sources, retry it; otherwise remember them for the next VRT.
+    if (files.length === 0 && folderEntries.length > 0) {
+      const folders = folderEntries.map(dirEntrySource);
+      vrtSourceFoldersRef.current = [...folders, ...vrtSourceFoldersRef.current];
+      addStatusLog('info', `VRT source folder${folders.length > 1 ? 's' : ''}: ${[...folderNames].join(', ')}`,
+        'Remembered for this session');
+      if (vrtSourcePrompt) {
+        const { file, companions } = vrtSourcePrompt;
+        setVrtSourcePrompt(null);
+        handleLoadVRT({ file, companions, newFolder: folders[0] });
+      }
+      return;
+    }
+
     const buckets = bucketByFormat(files);
     const geojsonFiles = buckets.unknown.filter(f => /\.(geojson|json)$/i.test(f.name));
     const pngFiles = buckets.unknown.filter(f => /\.png$/i.test(f.name));
@@ -3732,7 +3747,7 @@ function App() {
       addStatusLog('warning', `Unsupported file type: ${files[0].name}`,
         'Drop .h5, .tif, .vrt (with its sources), .nitf, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, handleLoadVRT, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, handleLoadVRT, vrtSourcePrompt, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
 
   // Handle remote file selection from DataDiscovery browser
   // Auth headers for the CURRENT token, not the one captured when the scene was
@@ -9230,12 +9245,12 @@ function App() {
                         {vrtSourcePrompt.file.name}: {vrtSourcePrompt.total} source file{vrtSourcePrompt.total === 1 ? '' : 's'} not
                         found — the VRT points at {dir}/
                         {vrtSourcePrompt.triedFolder && (
-                          <> — none are in “{vrtSourcePrompt.triedFolder}”. Choose “{dirName}” itself or a folder above it.</>
+                          <> — none are in “{vrtSourcePrompt.triedFolder}”. Use “{dirName}” itself or a folder above it.</>
                         )}
                         {vrtSourcePrompt.pickError && <> — could not open that folder: {vrtSourcePrompt.pickError}</>}
-                        {!canPick && (
-                          <> — this browser can't open folders: drop {vrtSourcePrompt.file.name} together with the “{dirName}” folder, or use Chrome or Edge.</>
-                        )}
+                        {canPick
+                          ? <> Drag the “{dirName}” folder here from your file manager, or choose it:</>
+                          : <> Drag the “{dirName}” folder here from your file manager.</>}
                       </span>
                       {canPick && (
                         <button className="btn-secondary" onClick={chooseVrtSourceFolder}>
