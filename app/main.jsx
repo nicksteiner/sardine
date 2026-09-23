@@ -3118,7 +3118,7 @@ function App() {
 
   // GDAL VRT — a remote URL (sources fetched through the proxy) or a dropped
   // .vrt plus its source files. Streams lazily; see src/loaders/vrt-loader.js.
-  const handleLoadVRT = useCallback(async ({ url, file, companions = [] }) => {
+  const handleLoadVRT = useCallback(async ({ url, file, companions = [], newFolder = null }) => {
     const gen = ++loadGenRef.current;
     const name = url ? url.split(/[?#]/)[0].split('/').pop() : file.name;
     setLoading(true);
@@ -3187,7 +3187,13 @@ function App() {
       if (e.code === 'VRT_MISSING_SOURCES' && file) {
         // A browser can't open the VRT's source paths — ask for their folder
         // (see the prompt next to the error stack) instead of failing flat.
-        setVrtSourcePrompt({ file, companions, missing: e.missing, total: e.missing.length });
+        // A folder just granted that holds none of them is forgotten, so it
+        // doesn't slow every later lookup; the prompt says what went wrong.
+        if (newFolder) {
+          vrtSourceFoldersRef.current = vrtSourceFoldersRef.current.filter(f => f !== newFolder);
+        }
+        setVrtSourcePrompt({ file, companions, missing: e.missing, total: e.missing.length,
+          triedFolder: newFolder?.name || null });
         addStatusLog('warning', `${name}: ${e.missing.length} source file${e.missing.length === 1 ? '' : 's'} not found`,
           `Choose the folder that holds them. First missing: ${e.missing[0]}`);
         return;
@@ -3210,22 +3216,21 @@ function App() {
   const chooseVrtSourceFolder = useCallback(async () => {
     const prompt = vrtSourcePrompt;
     if (!prompt) return;
-    if (typeof window.showDirectoryPicker !== 'function') {
-      addStatusLog('error', 'This browser cannot open folders',
-        `Drop ${prompt.file.name} together with the folder that holds its sources`);
-      return;
-    }
     let handle;
     try {
       handle = await window.showDirectoryPicker({ id: 'sardine-vrt-sources', mode: 'read' });
     } catch (e) {
-      if (e.name !== 'AbortError') addStatusLog('error', 'Could not open folder', e.message);
+      if (e.name !== 'AbortError') {
+        addStatusLog('error', 'Could not open folder', e.message);
+        setVrtSourcePrompt({ ...prompt, triedFolder: null, pickError: e.message });
+      }
       return;
     }
-    vrtSourceFoldersRef.current = [dirHandleSource(handle), ...vrtSourceFoldersRef.current];
+    const folder = dirHandleSource(handle);
+    vrtSourceFoldersRef.current = [folder, ...vrtSourceFoldersRef.current];
     addStatusLog('info', `VRT source folder: ${handle.name}`, 'Remembered for this session');
     setVrtSourcePrompt(null);
-    handleLoadVRT({ file: prompt.file, companions: prompt.companions });
+    handleLoadVRT({ file: prompt.file, companions: prompt.companions, newFolder: folder });
   }, [vrtSourcePrompt, addStatusLog, handleLoadVRT]);
 
   // Switch to a different band in the currently-open multi-band TIF.
@@ -9215,13 +9220,31 @@ function App() {
           {vrtSourcePrompt && (
             <div className="error-stack">
               <div className="error" role="alert">
-                <span className="error-text">
-                  {vrtSourcePrompt.file.name}: {vrtSourcePrompt.total} source file{vrtSourcePrompt.total === 1 ? '' : 's'} not
-                  found — the VRT points at {vrtSourcePrompt.missing[0].replace(/[\\/][^\\/]*$/, '/')}
-                </span>
-                <button className="btn-secondary" onClick={chooseVrtSourceFolder}>
-                  Choose source folder…
-                </button>
+                {(() => {
+                  const dir = vrtSourcePrompt.missing[0].replace(/[\\/][^\\/]*$/, '');
+                  const dirName = dir.split(/[\\/]/).pop() || dir;
+                  const canPick = typeof window.showDirectoryPicker === 'function';
+                  return (
+                    <>
+                      <span className="error-text">
+                        {vrtSourcePrompt.file.name}: {vrtSourcePrompt.total} source file{vrtSourcePrompt.total === 1 ? '' : 's'} not
+                        found — the VRT points at {dir}/
+                        {vrtSourcePrompt.triedFolder && (
+                          <> — none are in “{vrtSourcePrompt.triedFolder}”. Choose “{dirName}” itself or a folder above it.</>
+                        )}
+                        {vrtSourcePrompt.pickError && <> — could not open that folder: {vrtSourcePrompt.pickError}</>}
+                        {!canPick && (
+                          <> — this browser can't open folders: drop {vrtSourcePrompt.file.name} together with the “{dirName}” folder, or use Chrome or Edge.</>
+                        )}
+                      </span>
+                      {canPick && (
+                        <button className="btn-secondary" onClick={chooseVrtSourceFolder}>
+                          {vrtSourcePrompt.triedFolder ? 'Choose another folder…' : 'Choose source folder…'}
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
                 <button
                   className="error-dismiss"
                   aria-label="Dismiss"
