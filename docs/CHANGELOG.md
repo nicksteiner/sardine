@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.2] - 2026-09-23 — GDAL VRT support, Earthdata auth that works, OPERA RTC-S1, h5chunk fixes
+
+### Added
+- **GDAL Virtual Rasters (`.vrt`)** (W031) — open a VRT anywhere a COG opens: `?url=` /
+  `?cog=` deep links, the pasted-URL box, the bucket browser, or a local drop. Streams
+  lazily: each tile, export stripe or pixel probe reads only the overlapping source
+  windows, from each source's own overview, and composites them with GDAL's semantics
+  (later sources win, nodata is see-through). Supports `SimpleSource` / `ComplexSource` /
+  `AveragedSource`, `SrcRect`/`DstRect` scaling, `NODATA`, `ScaleRatio`/`ScaleOffset`,
+  and relative, `/vsicurl/`, `/vsis3/` and `/vsigs/` paths. Warped VRTs, pixel functions
+  and driver subdatasets are rejected with a message naming what isn't supported.
+  Tested pixel-for-pixel against GDAL's own rendering of GDAL-built fixtures
+- **VRT band stacks as RGB composites** — a `gdalbuildvrt -separate hh.tif hv.tif` stack
+  opens as dual-pol RGB. Band polarization comes from `<Description>` or the source
+  filenames (`…_HH.tif`, `OPERA_…_VH.tif`), since `-separate` writes no descriptions
+- **Local VRTs with absolute source paths** — a VRT built on the data machine references
+  `/mnt/…/scene.tif`, which a browser can't open. The app now says how many sources are
+  missing and where the VRT expects them, and takes the folder either by dragging it onto
+  the page or via **Choose source folder…**. Files are looked up by name, never by
+  listing the folder; the folder can be the sources' own or any ancestor, and it is
+  remembered for the session so every other VRT from the archive loads directly
+- **OPERA RTC-S1 in CMR search** — `OPERA_L2_RTC-S1_V1` and `-STATIC_V1`, COG-native and
+  per-polarization, opened as COGs rather than via the metadata-only `.h5` sibling
+
+### Changed
+- VRT sources without overviews get **synthetic overviews**: decoded once and kept as
+  block-averaged 8×/16×/… levels (nodata excluded, 256 MB cache), so zoomed-out views stop
+  re-decoding whole files. Big local mosaics resolve sources on demand, read small files
+  whole, and auto-contrast from a bounded sample — a 140-source, 941 MB mosaic on an
+  NTFS/FUSE archive loads about as fast as GDAL renders it
+- `powerBandStats` (`stats.js`) and `rgbContrastFromBandStats` (`sar-composites.js`) are
+  shared by the COG-list and VRT composite paths instead of living inline in each
+- The histogram no longer recomputes while a scene is still streaming — each recompute
+  issued its own tile reads that competed with the load, and every result was superseded
+- h5chunk keeps 8 read-ahead windows instead of one: 3.4× fewer requests, 45% less data
+  and 36% faster metadata on a 156-dataset GCOV
+- One full-load threshold (`SARDINE_FULL_LOAD_MAX`) replaces two duplicated 500 MB
+  constants, ahead of dropping h5wasm
+
+### Fixed
+- **Earthdata tokens** — one token store for the whole app (panels no longer disagree);
+  the token is read at load time, not when the scene was selected; catalog loads send it
+  and say when it's missing; validation is local (the old endpoint rejected valid user
+  tokens as "invalid_token"); a 401 reports which token the server rejected
+- **EDL-protected COGs** (e.g. OPERA) vanished mid-load: geotiff.js can't send headers, so
+  the token has to stay in the URL, and the COG branch was stripping it
+- A cancelled NISAR load is reported as cancelled, not as a failure
+- h5chunk: v2 group links are parsed by a validated probe instead of a guessed padding
+  (string data had been read as a file offset); a local heap whose data lies beyond the
+  metadata prefetch is fetched instead of reporting the group as empty
+- The loading overlay no longer stays at 100% after a VRT load (other local-file loaders
+  still end the same way — tracked in W031's findings)
+
+### Notes
+- Known, not fixed here: the scale bar reads pixel units as metres for pixel-space
+  loaders (local TIFs, VRTs), and the fit-to-scene zoom assumes a 1000 px viewport, so a
+  tall mosaic opens with its top cut off
+
 ## [1.0.0-rc.1] - 2026-09-11 — UI/UX wave A: enforced design tokens, UI primitives, honest load feedback
 
 The chrome gets a design system that can't drift, a reusable component layer, and
