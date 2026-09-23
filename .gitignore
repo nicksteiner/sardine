@@ -73,3 +73,5 @@ docs/local\ /
 docs/local\ /**
 /docs-internal/
 test/_*
+# VRT test fixtures (tiny, GDAL-generated; see generate-vrt-fixtures.mjs)
+!test/unit/fixtures/vrt/*.tif

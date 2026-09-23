@@ -11,6 +11,7 @@
  */
 
 import { createStretchFn } from './stretch.js';
+import { toDb } from './stats.js';
 
 /**
  * Colorblind-safe color matrices for RGB composites.
@@ -324,6 +325,49 @@ export function getRequiredDatasets(compositeId) {
   const preset = SAR_COMPOSITES[compositeId];
   if (!preset) return [];
   return preset.required;
+}
+
+/**
+ * Initial per-channel contrast for an RGB composite from per-band stats
+ * (powerBandStats shape, keyed by polarization) — mean±2σ per direct
+ * channel, a window around the co/cross ratio for ratio channels.
+ *
+ * Limits live in the display domain. With dB on, use the dB-domain σ (SAR
+ * power is ~log-normal, so a linear window converted to dB collapses to a
+ * few dB and renders speckle-saturated), floored at ±3 dB because
+ * overview-derived σ underestimates scene variance on large frames.
+ *
+ * @param {string} compositeId
+ * @param {Object} bandStats  {POL: {mean_value, sample_stddev, mean_db, sample_stddev_db}}
+ * @param {string[]} polNames  The composite's bands, co-pol first.
+ * @param {boolean} useDb
+ * @returns {{R: [number, number], G: [number, number], B: [number, number]} | null}
+ */
+export function rgbContrastFromBandStats(compositeId, bandStats, polNames, useDb) {
+  const preset = SAR_COMPOSITES[compositeId];
+  if (!preset?.channels || Object.keys(bandStats || {}).length === 0) return null;
+  const ratioWindow = (s0, s1) => {
+    if (!s0 || !s1) return [0, 1];
+    const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
+    return useDb ? [toDb(ratio, 0) - 5, toDb(ratio, 0) + 5] : [ratio * 0.3, ratio * 3];
+  };
+  const lims = {};
+  for (const ch of ['R', 'G', 'B']) {
+    const chDef = preset.channels[ch];
+    if (chDef?.dataset && bandStats[chDef.dataset]) {
+      const s = bandStats[chDef.dataset];
+      const half = Math.max(2 * s.sample_stddev_db, 3);
+      lims[ch] = useDb && Number.isFinite(s.mean_db)
+        ? [s.mean_db - half, s.mean_db + half]
+        : [Math.max(0, s.mean_value - 2 * s.sample_stddev), s.mean_value + 2 * s.sample_stddev];
+    } else if (chDef?.datasets && chDef.datasets.length === 2) {
+      lims[ch] = ratioWindow(bandStats[chDef.datasets[0]], bandStats[chDef.datasets[1]]);
+    } else {
+      // Formula channels (e.g. dual-pol ratio B) without declared datasets
+      lims[ch] = ratioWindow(bandStats[polNames[0]], bandStats[polNames[1]]);
+    }
+  }
+  return lims;
 }
 
 /**

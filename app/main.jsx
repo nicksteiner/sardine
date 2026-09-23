@@ -13,12 +13,14 @@ import { loadNITF, isNITFFile, listNITFDatasets, loadNITFDataset } from '../src/
 import { URLFile } from '../src/loaders/url-file.js';
 import { listLocalCOGDatasets, loadLocalCOGDataset } from '../src/loaders/cog-loader.js';
 import { bucketByFormat, detectFormat } from '../src/loaders/types.js';
+import { loadVRT, isVRTPath } from '../src/loaders/vrt-loader.js';
+import { dirHandleSource, dirEntrySource, makeFolderResolver } from '../src/loaders/vrt-local-sources.js';
 import { DatasetPicker } from '../src/components/DatasetPicker.jsx';
 import { Button, CloseButton, Field, Section, Panel, Toolbar, Dialog } from '../src/components/ui/index.js';
 import { setWorkerCount as setPoolWorkerCount, getWorkerPoolInfo } from '../src/loaders/h5chunk.js';
 import { validateWKT } from '../src/utils/wkt.js';
 import { computeSubsetBounds, reprojectBbox, bboxToPixelRange, roiIntersectsFile } from '../src/utils/roi-subset.js';
-import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES } from '../src/utils/sar-composites.js';
+import { autoSelectComposite, getAvailableComposites, getRequiredDatasets, getRequiredComplexDatasets, SAR_COMPOSITES, rgbContrastFromBandStats } from '../src/utils/sar-composites.js';
 import { getAvailableIndices, SAR_INDICES } from '../src/utils/sar-indices.js';
 import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
@@ -39,6 +41,7 @@ import { HistogramOverlay } from '../src/components/HistogramOverlay.jsx';
 import { exportFigure, exportFigureWithOverlays, exportFigureSideBySide, exportFigureGrid, exportRGBColorbar, downloadBlob, detectVendor, buildAttribution, VENDOR_OPTIONS, DEFAULT_PROCESSOR } from '../src/utils/figure-export.js';
 import {
   proxyUrl as proxyUrlShared,
+  unproxyUrl,
   isHostedBuild,
   getProxyUrl,
   setProxyUrl,
@@ -478,6 +481,15 @@ function App() {
   // Same idea for the NITF handler, so ?nitf=<url> can dispatch into it after
   // mount via a URLFile adapter.
   const handleNITFFileSelectRef = useRef(null);
+  // And for VRTs, which ride the COG URL path: handleLoadCOG (defined before
+  // the VRT handler) hands .vrt URLs over through this ref.
+  const handleLoadVRTRef = useRef(null);
+  // Folders the user granted for local VRT sources (picked or dropped), most
+  // recent first. Kept for the session so every VRT from the same archive
+  // resolves without asking again.
+  const vrtSourceFoldersRef = useRef([]);
+  // {file, companions, missing, total} while a local VRT waits for its source folder
+  const [vrtSourcePrompt, setVrtSourcePrompt] = useState(null);
 
   // Remote source state
   const [remoteUrl, setRemoteUrl] = useState(null);
@@ -2371,6 +2383,19 @@ function App() {
   const useDecibelsRef = useRef(useDecibels);
   const pendingAutoStretchRef = useRef(false);
   const pendingPNGStateRef = useRef(null);
+
+  // Initial per-channel RGB contrast for streamed composites (COG list, VRT
+  // band stack) from the loader's per-band stats, in the current dB domain.
+  const applyRgbContrastFromStats = useCallback((comp, bandStats, polNames) => {
+    const useDb = useDecibelsRef.current;
+    const lims = rgbContrastFromBandStats(comp, bandStats, polNames, useDb);
+    if (!lims) return;
+    setRgbContrastLimits(lims);
+    setHistogramScope('viewport');
+    addStatusLog('info', 'Initial RGB contrast from band statistics',
+      ['R', 'G', 'B'].map((ch) => `${ch}: ${lims[ch][0].toFixed(1)}–${lims[ch][1].toFixed(1)}${useDb ? ' dB' : ''}`).join(', '));
+  }, [addStatusLog]);
+
   useEffect(() => {
     if (useDecibels !== useDecibelsRef.current) {
       useDecibelsRef.current = useDecibels;
@@ -2582,6 +2607,14 @@ function App() {
       return;
     }
 
+    // GDAL VRT: its relative sources resolve against the upstream URL, so hand
+    // the loader the un-proxied, absolute form; it proxies each fetch itself.
+    const rawCogUrl = new URL(unproxyUrl(cogUrl), window.location.origin).href;
+    if (isVRTPath(rawCogUrl)) {
+      handleLoadVRTRef.current?.({ url: rawCogUrl });
+      return;
+    }
+
     setLoading(true);
     setError(null);
     addStatusLog('info', `Loading COG from: ${cogUrl}`);
@@ -2742,58 +2775,8 @@ function App() {
         setCompositeId(comp);
 
         // Per-channel contrast from band stats — same mean±2σ derivation as
-        // the remote NISAR RGB path. Channels without a direct dataset (e.g.
-        // ratio formulas) get the same defaults that path uses.
-        const preset = SAR_COMPOSITES[comp];
-        if (preset?.channels && Object.keys(data.bandStats || {}).length > 0) {
-          // Limits live in the display domain. With dB scaling on, use the
-          // loader's dB-domain mean±2σ (SAR power is ~log-normal, so a
-          // linear-domain window converted to dB collapses to a few dB and
-          // renders speckle-saturated); linear display keeps linear mean±2σ.
-          const useDb = useDecibelsRef.current;
-          const lims = {};
-          for (const ch of ['R', 'G', 'B']) {
-            const chDef = preset.channels[ch];
-            if (chDef?.dataset && data.bandStats[chDef.dataset]) {
-              const s = data.bandStats[chDef.dataset];
-              // ±2σ in dB, floored at ±3 dB — overview-derived σ underestimates
-              // scene variance on large frames (the coarsest overview averages
-              // away speckle AND texture), which oversaturates the render.
-              const half = Math.max(2 * s.sample_stddev_db, 3);
-              lims[ch] = useDb && Number.isFinite(s.mean_db)
-                ? [s.mean_db - half, s.mean_db + half]
-                : [Math.max(0, s.mean_value - 2 * s.sample_stddev), s.mean_value + 2 * s.sample_stddev];
-            } else if (chDef?.datasets && chDef.datasets.length === 2) {
-              const s0 = data.bandStats[chDef.datasets[0]];
-              const s1 = data.bandStats[chDef.datasets[1]];
-              if (s0 && s1) {
-                const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
-                lims[ch] = useDb
-                  ? [toDb(ratio, 0) - 5, toDb(ratio, 0) + 5]
-                  : [ratio * 0.3, ratio * 3];
-              } else {
-                lims[ch] = [0, 1];
-              }
-            } else {
-              // Formula channels (e.g. dual-pol ratio B): window around the
-              // co/cross ratio when both stats exist, else a broad default.
-              const s0 = data.bandStats[polNames[0]];
-              const s1 = data.bandStats[polNames[1]];
-              if (s0 && s1) {
-                const ratio = s0.mean_value / Math.max(s1.mean_value, 1e-10);
-                lims[ch] = useDb
-                  ? [toDb(ratio, 0) - 5, toDb(ratio, 0) + 5]
-                  : [ratio * 0.3, ratio * 3];
-              } else {
-                lims[ch] = [0, 1];
-              }
-            }
-          }
-          setRgbContrastLimits(lims);
-          setHistogramScope('viewport');
-          addStatusLog('info', 'Initial RGB contrast from band statistics',
-            ['R', 'G', 'B'].map((ch) => `${ch}: ${lims[ch][0].toFixed(1)}–${lims[ch][1].toFixed(1)}${useDecibelsRef.current ? ' dB' : ''}`).join(', '));
-        }
+        // the remote NISAR RGB path.
+        applyRgbContrastFromStats(comp, data.bandStats, polNames);
 
         // Fit view to the scene (skipped when the link pinned c/z — W008).
         if (data.bounds && !consumeDeepLinkPin('view')) {
@@ -3026,6 +3009,43 @@ function App() {
     }
   }, [addStatusLog, applyPendingPNGState]);
 
+  // Auto-contrast + dB detection from a sample of raw values (full raster
+  // for plain TIFs, a decimated preview for VRTs).
+  const applySampleContrast = useCallback((sampleData) => {
+    const vals = [];
+    const stride = Math.max(1, Math.floor(sampleData.length / 10000));
+    for (let i = 0; i < sampleData.length; i += stride) {
+      const v = sampleData[i];
+      if (!isNaN(v) && v !== 0) vals.push(v);
+    }
+    vals.sort((a, b) => a - b);
+    const p02 = vals[Math.floor(vals.length * 0.02)] || 0;
+    const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
+
+    // Detect if values are raw power (needs dB) or already scaled:
+    // - Raw SAR power: large positive values (p98 >> 1), dB conversion useful
+    // - Calibrated sigma0/gamma0: mostly < 1, dB would work but linear range is fine
+    // - Already in dB or ratio: can have negatives, small range, skip dB
+    const hasNegatives = p02 < 0;
+    const needsDb = !hasNegatives && p98 > 1;
+    setUseDecibels(needsDb);
+
+    const displayVals = needsDb
+      ? vals.map(v => toDb(v))
+      : vals;
+    const lowIdx = Math.floor(0.02 * displayVals.length);
+    const highIdx = Math.floor(0.98 * displayVals.length);
+    const limits = [
+      displayVals[lowIdx] ?? (needsDb ? -30 : 0),
+      displayVals[Math.min(highIdx, displayVals.length - 1)] ?? (needsDb ? 0 : 1),
+    ];
+    setContrastMin(limits[0]);
+    setContrastMax(limits[1]);
+    addStatusLog('info', needsDb
+      ? `dB scaling enabled (p98=${p98.toFixed(2)}), contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`
+      : `Linear scaling (p98=${p98.toFixed(4)}), contrast: [${limits[0].toFixed(4)}, ${limits[1].toFixed(4)}]`);
+  }, [addStatusLog]);
+
   // Handle local TIF file selection (single or multi-select mosaic).
   // Always replaces the active mosaic — drop the same files together
   // to mosaic them, or use appendMosaicTIFs to add to an existing mosaic.
@@ -3079,41 +3099,7 @@ function App() {
       if (consumeDeepLinkPin('contrast')) {
         addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
       } else try {
-        const sampleData = data.data;
-        if (sampleData) {
-          const vals = [];
-          const stride = Math.max(1, Math.floor(sampleData.length / 10000));
-          for (let i = 0; i < sampleData.length; i += stride) {
-            const v = sampleData[i];
-            if (!isNaN(v) && v !== 0) vals.push(v);
-          }
-          vals.sort((a, b) => a - b);
-          const p02 = vals[Math.floor(vals.length * 0.02)] || 0;
-          const p98 = vals[Math.floor(vals.length * 0.98)] || 0;
-
-          // Detect if values are raw power (needs dB) or already scaled:
-          // - Raw SAR power: large positive values (p98 >> 1), dB conversion useful
-          // - Calibrated sigma0/gamma0: mostly < 1, dB would work but linear range is fine
-          // - Already in dB or ratio: can have negatives, small range, skip dB
-          const hasNegatives = p02 < 0;
-          const needsDb = !hasNegatives && p98 > 1;
-          setUseDecibels(needsDb);
-
-          const displayVals = needsDb
-            ? vals.map(v => toDb(v))
-            : vals;
-          const lowIdx = Math.floor(0.02 * displayVals.length);
-          const highIdx = Math.floor(0.98 * displayVals.length);
-          const limits = [
-            displayVals[lowIdx] ?? (needsDb ? -30 : 0),
-            displayVals[Math.min(highIdx, displayVals.length - 1)] ?? (needsDb ? 0 : 1),
-          ];
-          setContrastMin(limits[0]);
-          setContrastMax(limits[1]);
-          addStatusLog('info', needsDb
-            ? `dB scaling enabled (p98=${p98.toFixed(2)}), contrast: [${limits[0].toFixed(2)}, ${limits[1].toFixed(2)}]`
-            : `Linear scaling (p98=${p98.toFixed(4)}), contrast: [${limits[0].toFixed(4)}, ${limits[1].toFixed(4)}]`);
-        }
+        if (data.data) applySampleContrast(data.data);
       } catch (statsErr) {
         console.warn('Auto-contrast failed:', statsErr);
       }
@@ -3128,7 +3114,124 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin]);
+  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast]);
+
+  // GDAL VRT — a remote URL (sources fetched through the proxy) or a dropped
+  // .vrt plus its source files. Streams lazily; see src/loaders/vrt-loader.js.
+  const handleLoadVRT = useCallback(async ({ url, file, companions = [], newFolder = null }) => {
+    const gen = ++loadGenRef.current;
+    const name = url ? url.split(/[?#]/)[0].split('/').pop() : file.name;
+    setLoading(true);
+    setLoadProgress(0);
+    setError(null);
+    setCogDatasets([]);
+    setSelectedCogId(null);
+    addStatusLog('info', `Loading VRT: ${name}`,
+      file ? `${companions.length} source file${companions.length === 1 ? '' : 's'} dropped with it` : url);
+    try {
+      // Band stacks (gdalbuildvrt -separate hh.tif hv.tif) open as an RGB
+      // composite when their band polarizations support one.
+      const folders = vrtSourceFoldersRef.current;
+      const data = await loadVRT(url || file, {
+        files: companions,
+        findFile: file && folders.length ? makeFolderResolver(folders) : null,
+        resolveUrl: (u) => proxyUrlShared(u),
+        onProgress: (pct) => setLoadProgress(pct),
+        composite: 'auto',
+      });
+      if (gen !== loadGenRef.current) return;
+
+      setVrtSourcePrompt(null);
+      setMosaicFiles([]);
+      setImageData(data);
+      const { vrt } = data;
+      addStatusLog('success', `VRT: ${data.width}x${data.height} px, ${vrt.sourceCount} source${vrt.sourceCount === 1 ? '' : 's'}`,
+        `CRS ${data.crs}`);
+
+      if (data.composite) {
+        setDisplayMode('rgb');
+        setCompositeId(data.composite);
+        addStatusLog('success', `RGB composite from VRT bands: ${SAR_COMPOSITES[data.composite]?.name || data.composite}`,
+          Object.entries(vrt.bandMap).map(([pol, b]) => `${pol} ← band ${b}`).join(', '));
+        if (Object.keys(data.bandStats).length === 0) {
+          addStatusLog('warning', 'RGB auto-contrast unavailable — no valid pixels sampled', 'Set per-channel contrast manually');
+        } else if (!consumeDeepLinkPin('contrast')) {
+          applyRgbContrastFromStats(data.composite, data.bandStats, data.requiredPols);
+        }
+        autoFitIfNewScene(data.bounds);
+        return;
+      }
+
+      setDisplayMode('single');
+      if (vrt.bandCount > 1) {
+        const labels = vrt.bandDescriptions.map((d, i) => d || vrt.bandPolarizations[i] || `band ${i + 1}`).join(', ');
+        addStatusLog('warning', `Showing band 1 of ${vrt.bandCount} — no RGB composite matches these bands`,
+          `${labels}. Band polarizations come from band descriptions or source filenames (…_HH.tif).`);
+      }
+
+      // Auto-contrast from a bounded sample (≤16 sources) — a whole-scene
+      // preview of a big mosaic would read every source before first paint.
+      if (consumeDeepLinkPin('contrast')) {
+        addStatusLog('info', 'Keeping deep-link contrast (auto-contrast skipped)');
+      } else try {
+        const sample = await data.readSample();
+        if (gen !== loadGenRef.current) return;
+        applySampleContrast(sample);
+      } catch (statsErr) {
+        console.warn('VRT auto-contrast failed:', statsErr);
+      }
+
+      autoFitIfNewScene(data.bounds);
+    } catch (e) {
+      if (gen !== loadGenRef.current) return;
+      if (e.code === 'VRT_MISSING_SOURCES' && file) {
+        // A browser can't open the VRT's source paths — ask for their folder
+        // (see the prompt next to the error stack) instead of failing flat.
+        // A folder just granted that holds none of them is forgotten, so it
+        // doesn't slow every later lookup; the prompt says what went wrong.
+        if (newFolder) {
+          vrtSourceFoldersRef.current = vrtSourceFoldersRef.current.filter(f => f !== newFolder);
+        }
+        setVrtSourcePrompt({ file, companions, missing: e.missing, total: e.missing.length,
+          triedFolder: newFolder?.name || null });
+        addStatusLog('warning', `${name}: ${e.missing.length} source file${e.missing.length === 1 ? '' : 's'} not found`,
+          `Choose the folder that holds them. First missing: ${e.missing[0]}`);
+        return;
+      }
+      setError(`Failed to load VRT: ${e.message}`);
+      setImageData(null);
+      addStatusLog('error', 'Failed to load VRT', e.message);
+    } finally {
+      if (gen === loadGenRef.current) {
+        setLoading(false);
+        resetLoadProgress();
+      }
+    }
+  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast, applyRgbContrastFromStats, resetLoadProgress]);
+
+  useEffect(() => {
+    handleLoadVRTRef.current = handleLoadVRT;
+  }, [handleLoadVRT]);
+
+  const chooseVrtSourceFolder = useCallback(async () => {
+    const prompt = vrtSourcePrompt;
+    if (!prompt) return;
+    let handle;
+    try {
+      handle = await window.showDirectoryPicker({ id: 'sardine-vrt-sources', mode: 'read' });
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        addStatusLog('error', 'Could not open folder', e.message);
+        setVrtSourcePrompt({ ...prompt, triedFolder: null, pickError: e.message });
+      }
+      return;
+    }
+    const folder = dirHandleSource(handle);
+    vrtSourceFoldersRef.current = [folder, ...vrtSourceFoldersRef.current];
+    addStatusLog('info', `VRT source folder: ${handle.name}`, 'Remembered for this session');
+    setVrtSourcePrompt(null);
+    handleLoadVRT({ file: prompt.file, companions: prompt.companions, newFolder: folder });
+  }, [vrtSourcePrompt, addStatusLog, handleLoadVRT]);
 
   // Switch to a different band in the currently-open multi-band TIF.
   // Only meaningful for single-file loads; mosaic loads use band 0.
@@ -3472,6 +3575,34 @@ function App() {
     const files = Array.from(e.dataTransfer?.files || []);
     if (files.length === 0) return;
 
+    // Dropped folders (for a VRT's sources) — entries must be taken during
+    // the event; they stay usable afterwards. Folders also appear in `files`
+    // as extensionless zero-byte items, so drop those from the file list.
+    const folderEntries = Array.from(e.dataTransfer?.items || [])
+      .map(it => it.webkitGetAsEntry?.())
+      .filter(en => en?.isDirectory);
+    const folderNames = new Set(folderEntries.map(en => en.name));
+    if (folderNames.size > 0) {
+      for (let i = files.length - 1; i >= 0; i--) {
+        if (folderNames.has(files[i].name) && !files[i].type) files.splice(i, 1);
+      }
+    }
+
+    // Only folders dropped: they're VRT source folders. With a VRT waiting
+    // on its sources, retry it; otherwise remember them for the next VRT.
+    if (files.length === 0 && folderEntries.length > 0) {
+      const folders = folderEntries.map(dirEntrySource);
+      vrtSourceFoldersRef.current = [...folders, ...vrtSourceFoldersRef.current];
+      addStatusLog('info', `VRT source folder${folders.length > 1 ? 's' : ''}: ${[...folderNames].join(', ')}`,
+        'Remembered for this session');
+      if (vrtSourcePrompt) {
+        const { file, companions } = vrtSourcePrompt;
+        setVrtSourcePrompt(null);
+        handleLoadVRT({ file, companions, newFolder: folders[0] });
+      }
+      return;
+    }
+
     const buckets = bucketByFormat(files);
     const geojsonFiles = buckets.unknown.filter(f => /\.(geojson|json)$/i.test(f.name));
     const pngFiles = buckets.unknown.filter(f => /\.png$/i.test(f.name));
@@ -3521,6 +3652,20 @@ function App() {
         addStatusLog('warning',
           `Cannot mix HDF5 and NITF in one drop — ignored ${nitfFiles.length} NITF file(s)`,
           nitfFiles.map(f => f.name).join(', '));
+      }
+    } else if (buckets.vrt.length > 0) {
+      // TIFs dropped alongside a .vrt are its sources, not a mosaic; so are
+      // any dropped folders (looked up by name, never listed)
+      if (folderEntries.length > 0) {
+        vrtSourceFoldersRef.current = [...folderEntries.map(dirEntrySource), ...vrtSourceFoldersRef.current];
+        addStatusLog('info', `VRT source folder${folderEntries.length > 1 ? 's' : ''}: ${[...folderNames].join(', ')}`,
+          'Remembered for this session');
+      }
+      setFileType('local-tif');
+      handleLoadVRT({ file: buckets.vrt[0], companions: tifFiles });
+      if (buckets.vrt.length > 1) {
+        addStatusLog('warning', `Loaded ${buckets.vrt[0].name} — drop one VRT at a time`,
+          `${buckets.vrt.length - 1} other VRT file(s) ignored`);
       }
     } else if (tifFiles.length > 0) {
       if (fileType === 'local-tif' && mosaicFiles.length > 0) {
@@ -3600,9 +3745,9 @@ function App() {
       });
     } else if (knownCount === 0) {
       addStatusLog('warning', `Unsupported file type: ${files[0].name}`,
-        'Drop .h5, .tif, .nitf, .geojson, or a SARdine-exported .png');
+        'Drop .h5, .tif, .vrt (with its sources), .nitf, .geojson, or a SARdine-exported .png');
     }
-  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
+  }, [handleNISARFileSelect, handleLocalTIFMultiSelect, handleNITFFileSelect, handleLoadVRT, vrtSourcePrompt, appendMosaicTIFs, appendGcovMosaicFiles, fileType, nisarProductType, mosaicFiles, addStatusLog, nisarFile, cogUrl, applyPendingPNGState, applyMarkupGeoJSON]);
 
   // Handle remote file selection from DataDiscovery browser
   // Auth headers for the CURRENT token, not the one captured when the scene was
@@ -6836,16 +6981,19 @@ function App() {
           {fileType === 'local-tif' && (
             <CollapsibleSection title="Load Local GeoTIFF">
               <div className="control-group">
-                <label>Select one or more .tif files</label>
+                <label>Select one or more .tif files, or a .vrt with its sources</label>
                 <input
                   type="file"
-                  accept=".tif,.tiff"
+                  accept=".tif,.tiff,.vrt"
                   multiple
                   id="local-tif-input" className="u-hidden"
                   onChange={(e) => {
                     const files = Array.from(e.target.files || []);
                     if (files.length === 0) return;
-                    if (files.length > 1) {
+                    const vrtFile = files.find(f => isVRTPath(f.name));
+                    if (vrtFile) {
+                      handleLoadVRT({ file: vrtFile, companions: files.filter(f => f !== vrtFile) });
+                    } else if (files.length > 1) {
                       handleLocalTIFMultiSelect(files);
                     } else {
                       handleLocalTIFMultiSelect(files);
@@ -9079,6 +9227,47 @@ function App() {
               {loadCancellable && (
                 <button className="btn-secondary load-cancel" onClick={cancelActiveLoad}>Cancel</button>
               )}
+            </div>
+          )}
+
+          {/* W031: a dropped VRT whose sources are absolute local paths — the
+              browser needs the user to grant the folder that holds them. */}
+          {vrtSourcePrompt && (
+            <div className="error-stack">
+              <div className="error" role="alert">
+                {(() => {
+                  const dir = vrtSourcePrompt.missing[0].replace(/[\\/][^\\/]*$/, '');
+                  const dirName = dir.split(/[\\/]/).pop() || dir;
+                  const canPick = typeof window.showDirectoryPicker === 'function';
+                  return (
+                    <>
+                      <span className="error-text">
+                        {vrtSourcePrompt.file.name}: {vrtSourcePrompt.total} source file{vrtSourcePrompt.total === 1 ? '' : 's'} not
+                        found — the VRT points at {dir}/
+                        {vrtSourcePrompt.triedFolder && (
+                          <> — none are in “{vrtSourcePrompt.triedFolder}”. Use “{dirName}” itself or a folder above it.</>
+                        )}
+                        {vrtSourcePrompt.pickError && <> — could not open that folder: {vrtSourcePrompt.pickError}</>}
+                        {canPick
+                          ? <> Drag the “{dirName}” folder here from your file manager, or choose it:</>
+                          : <> Drag the “{dirName}” folder here from your file manager.</>}
+                      </span>
+                      {canPick && (
+                        <button className="btn-secondary" onClick={chooseVrtSourceFolder}>
+                          {vrtSourcePrompt.triedFolder ? 'Choose another folder…' : 'Choose source folder…'}
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
+                <button
+                  className="error-dismiss"
+                  aria-label="Dismiss"
+                  onClick={() => setVrtSourcePrompt(null)}
+                >
+                  ×
+                </button>
+              </div>
             </div>
           )}
 

@@ -515,6 +515,36 @@ export async function sampleViewportStats(
   return { bins, min, max, mean, binWidth, count, p2, p98 };
 }
 
+/**
+ * Linear- and dB-domain mean/σ of a power band (positive, non-NaN pixels).
+ * Feeds the RGB composite paths' initial per-channel contrast (mean±2σ):
+ * SAR power is ~log-normal, so the dB-domain window is the useful one.
+ *
+ * @param {ArrayLike<number>} data
+ * @returns {{mean_value, sample_stddev, mean_db, sample_stddev_db, count} | null}
+ */
+export function powerBandStats(data) {
+  let sum = 0, sumSq = 0, count = 0, dbSum = 0, dbSumSq = 0;
+  for (let j = 0; j < data.length; j++) {
+    const v = data[j];
+    if (!isNaN(v) && v > 0) {
+      sum += v; sumSq += v * v; count++;
+      const d = toDb(v, 0);
+      dbSum += d; dbSumSq += d * d;
+    }
+  }
+  if (count === 0) return null;
+  const mean = sum / count;
+  const meanDb = dbSum / count;
+  return {
+    mean_value: mean,
+    sample_stddev: Math.sqrt(Math.max(0, sumSq / count - mean * mean)),
+    mean_db: meanDb,
+    sample_stddev_db: Math.sqrt(Math.max(0, dbSumSq / count - meanDb * meanDb)),
+    count,
+  };
+}
+
 export default {
   computeStats,
   autoContrastLimits,

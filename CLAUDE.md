@@ -57,6 +57,7 @@ sardine/
 │   │   ├── nisar-loader.js     # NISAR GCOV product loader
 │   │   ├── nisar-gunw-loader.js / nisar-product.js  # GUNW layers + product auto-detect
 │   │   ├── nitf-loader.js / url-file.js  # NITF/SICD + Range-request file adapter
+│   │   ├── vrt-parser.js / vrt-loader.js  # GDAL VRT: lazy windowed mosaic over COG sources (W031)
 │   │   ├── stac-client.js / cmr-client.js  # STAC + NASA CMR search
 │   │   └── overture-loader.js  # Overture Maps PMTiles/GeoParquet
 │   ├── gpu/                    # WebGPU compute (+ WebGL2 FBO filters)

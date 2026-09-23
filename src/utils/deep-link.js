@@ -157,12 +157,13 @@ function pick(p, shortKey) {
  * Mirrors the routing in main.jsx's direct-URL handler:
  *   .h5/.he5/.hdf5/.hdf → remote NISAR HDF5 path
  *   .tif/.tiff/.geotiff → COG path
+ *   .vrt                → COG path (handleLoadCOG hands it to loadVRT)
  *   .ntf/.nitf          → NITF/SICD path
  */
 export function inferDataTypeFromUrl(url) {
   const path = String(url || '').split(/[?#]/)[0].toLowerCase();
   if (/\.(h5|he5|hdf5|hdf)$/.test(path)) return 'nisar';
-  if (/\.(tif|tiff|geotiff)$/.test(path)) return 'cog';
+  if (/\.(tif|tiff|geotiff|vrt)$/.test(path)) return 'cog';
   if (/\.(ntf|nitf)$/.test(path)) return 'nitf';
   return null;
 }

@@ -366,7 +366,8 @@ export function isNISARFile(key) {
  */
 export function isCOGFile(key) {
   const name = displayName(key).toLowerCase();
-  return name.endsWith('.tif') || name.endsWith('.tiff') || name.endsWith('.geotiff');
+  return name.endsWith('.tif') || name.endsWith('.tiff') || name.endsWith('.geotiff')
+    || name.endsWith('.vrt'); // VRTs ride the COG path; handleLoadCOG routes them to loadVRT
 }
 
 
