@@ -175,3 +175,31 @@ test('the remote-failure message does not stutter its prefix', () => {
   assert.doesNotMatch(mainSrc, /setError\(`Failed to read remote NISAR file: \$\{e\.message\}/,
     'loader already names this failure — do not prefix it again');
 });
+
+test('COG loads keep the token in the URL — geotiff.js cannot send headers', () => {
+  // Regression: the remote-file handler rewrote its URL once with
+  // `{ tokenInQuery: false }` and used that for BOTH branches. That is correct
+  // for the h5chunk path below it, which adds an Authorization header itself,
+  // but wrong for COGs: geotiff.js owns its fetches and accepts no custom
+  // headers, so stripping the query token meant no credential was sent at all.
+  // OPERA RTC-S1 — a COG-native DAAC product — 401'd at the proxy and the
+  // layer disappeared mid-load.
+  //
+  // proxy.js says so directly: the `&t=` fallback "exists only for fetch paths
+  // that can't set custom headers (geotiff.js COG loads, URLFile)".
+  const proxySrc = readFileSync(join(rootDir, 'src', 'utils', 'proxy.js'), 'utf8');
+  assert.match(proxySrc, /geotiff\.js COG loads/,
+    'proxy.js must keep documenting why COGs need the query token');
+
+  // The COG branch must not be handed a header-only URL.
+  const cogBranch = mainSrc.match(/if \(type === 'cog'\) \{[\s\S]{0,600}?\n    \}/);
+  assert.ok(cogBranch, "COG branch of the remote handler not found");
+  assert.doesNotMatch(cogBranch[0], /tokenInQuery:\s*false/,
+    'COG loads must keep the token in the query — geotiff.js sends no headers');
+  assert.match(cogBranch[0], /setCogUrl\(proxyUrlShared\(url\)\)/,
+    'COG branch must rewrite its own URL with the default (token-in-query)');
+
+  // And no COG-bound URL anywhere may strip the token.
+  assert.doesNotMatch(mainSrc, /setCogUrl\(proxyUrlShared\([^)]*tokenInQuery:\s*false/,
+    'no COG URL may be built with the token stripped');
+});

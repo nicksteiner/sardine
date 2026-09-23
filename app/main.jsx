@@ -3648,20 +3648,25 @@ function App() {
       }
     }
 
+    setSharedRawUrl(url);
+
+    if (type === 'cog') {
+      // COGs load through geotiff.js, which owns its own fetches and cannot be
+      // given custom headers — so unlike the h5chunk path below, the token has
+      // to ride in the query string or it is never sent at all. Stripping it
+      // here left OPERA/DAAC COGs unauthenticated: the proxy 401s and the
+      // layer vanishes mid-load.
+      setCogUrl(proxyUrlShared(url));
+      setFileType('cog');
+      addStatusLog('info', `Loading COG from: ${url}`);
+      return;
+    }
+
     // Route external URLs through the appropriate CORS proxy
     // (Vite dev plugin in development, Cloudflare Worker on the hosted Pages
     // build). h5chunk makes Range requests directly to this.url, so we
     // rewrite once here. Token rides in fetchHeaders, not the query string.
     const resolvedUrl = proxyUrlShared(url, { tokenInQuery: false });
-    setSharedRawUrl(url);
-
-    if (type === 'cog') {
-      // Load as COG directly
-      setCogUrl(resolvedUrl);
-      setFileType('cog');
-      addStatusLog('info', `Loading COG from: ${url}`);
-      return;
-    }
 
     // NISAR HDF5 — stream from URL
     setRemoteUrl(resolvedUrl);
