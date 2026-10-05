@@ -1,5 +1,6 @@
 import GeoTIFF, { fromUrl, fromArrayBuffer } from 'geotiff';
 import { normalizeS3Url } from '../utils/s3-url.js';
+import { getCOGReader } from './cog-tile-reader.js';
 import { debugLog } from '../utils/debug-log.js';
 import { powerBandStats } from '../utils/stats.js';
 
@@ -717,10 +718,23 @@ export async function loadLocalTIF(file, onProgress) {
   const displayName = isUrl ? file.split(/[?#]/)[0].split('/').pop() || file : file.name;
 
   let tiff;
+  // W032: URL COGs stream their pixels through cog-tile-reader (tile-aligned
+  // ranges, worker decode, shared decoded-tile cache). geotiff.js still reads
+  // the metadata below — color table, class names, GDAL_NODATA — until phase 4
+  // moves those onto the reader's cached tags.
+  let reader = null;
   if (isUrl) {
     debugLog('[COG Loader] Loading TIF from URL:', file);
     progress(5);
-    tiff = await fromUrl(normalizeS3Url(file));
+    const url = normalizeS3Url(file);
+    [tiff, reader] = await Promise.all([
+      fromUrl(url),
+      getCOGReader(url).catch((e) => {
+        console.warn('[COG Loader] tile reader unavailable, falling back to geotiff.js:', e?.message || e);
+        return null;
+      }),
+    ]);
+    if (reader && !reader.isTiled) reader = null;
     progress(20);
   } else {
     debugLog('[COG Loader] Loading local TIF:', file.name, `(${(file.size / 1e6).toFixed(1)} MB)`);
@@ -858,6 +872,11 @@ export async function loadLocalTIF(file, onProgress) {
 
       if (pxLeft >= pxRight || pxTop >= pxBottom) return null;
 
+      if (reader) {
+        const data = await reader.readTile([pxLeft, pxTop, pxRight, pxBottom], tileSize, tileResample);
+        return data ? { data, width: tileSize, height: tileSize } : null;
+      }
+
       // Pick best overview for this resolution
       const neededRes = Math.max(pxRight - pxLeft, pxBottom - pxTop) / tileSize;
       let bestIdx = 0;
@@ -896,11 +915,29 @@ export async function loadLocalTIF(file, onProgress) {
 
   async function getExportStripe({ startRow, numRows, ml, exportWidth, startCol = 0, numCols }) {
     const outCols = numCols || exportWidth;
-    // await returns the rasters array directly — earlier code chained .then
-    // on the resolved value, which threw "(intermediate value).then is not a function".
-    const srcData = fullData || new Float32Array((await image.readRasters())[0]);
     const nd = nodata;
     const out = new Float32Array(outCols * numRows);
+    // Source pixels this stripe covers (full-resolution, exclusive right/bottom).
+    const srcLeft = startCol * ml;
+    const srcTop = startRow * ml;
+    const srcRight = Math.min(width, (startCol + outCols) * ml);
+    const srcBottom = Math.min(height, (startRow + numRows) * ml);
+    if (srcRight <= srcLeft || srcBottom <= srcTop) {
+      out.fill(NaN);
+      return { bands: { band0: out } };
+    }
+    // With the tile reader, read just this stripe's window (the geotiff.js
+    // fallback has to pull the full raster, once per stripe, as before).
+    let srcData, stride, offX, offY;
+    if (reader) {
+      const win = await reader.readWindow(0, [srcLeft, srcTop, srcRight, srcBottom]);
+      srcData = win.data; stride = win.width; offX = srcLeft; offY = srcTop;
+    } else {
+      // await returns the rasters array directly — earlier code chained .then
+      // on the resolved value, which threw "(intermediate value).then is not a function".
+      srcData = fullData || new Float32Array((await image.readRasters())[0]);
+      stride = width; offX = 0; offY = 0;
+    }
     for (let r = 0; r < numRows; r++) {
       for (let c = 0; c < outCols; c++) {
         let sum = 0, cnt = 0;
@@ -908,7 +945,7 @@ export async function loadLocalTIF(file, onProgress) {
         const c0 = (startCol + c) * ml;
         for (let dr = 0; dr < ml && r0 + dr < height; dr++) {
           for (let dc = 0; dc < ml && c0 + dc < width; dc++) {
-            const v = srcData[(r0 + dr) * width + (c0 + dc)];
+            const v = srcData[(r0 + dr - offY) * stride + (c0 + dc - offX)];
             if (!isNaN(v) && v !== 0 && (nd === null || v !== nd)) { sum += v; cnt++; }
           }
         }
@@ -922,6 +959,10 @@ export async function loadLocalTIF(file, onProgress) {
     if (row < 0 || row >= height || col < 0 || col >= width) return NaN;
     if (fullData) return fullData[row * width + col];
     // COG: read single pixel window
+    if (reader) {
+      const win = await reader.readWindow(0, [col, row, col + 1, row + 1]);
+      return win ? win.data[0] : NaN;
+    }
     const rasters = await image.readRasters({ window: [col, row, col + 1, row + 1] });
     return new Float32Array(rasters[0])[0];
   }
@@ -1272,26 +1313,20 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
     throw new Error(`loadCOGRGBComposite: polNames (${polNames?.length}) must match urls (${urls.length})`);
   }
 
-  const tiffs = await Promise.all(urls.map((u) => fromUrl(normalizeS3Url(u))));
-  const bandMeta = await Promise.all(tiffs.map(async (tiff) => {
-    const image = await tiff.getImage();
-    const imageCount = await tiff.getImageCount();
-    return { tiff, image, imageCount, width: image.getWidth(), height: image.getHeight() };
-  }));
+  // W032: tile-aligned, worker-decoded reads via cog-tile-reader (one shared
+  // reader per URL) instead of geotiff.js readRasters windows.
+  const readers = await Promise.all(urls.map((u) => getCOGReader(normalizeS3Url(u))));
 
-  const ref = bandMeta[0];
+  const ref = readers[0];
   const { width, height } = ref;
-  bandMeta.forEach((b, i) => {
-    if (b.width !== width || b.height !== height) {
-      throw new Error(`loadCOGRGBComposite: band ${polNames[i]} grid ${b.width}x${b.height} != ${width}x${height}`);
+  readers.forEach((r, i) => {
+    if (r.width !== width || r.height !== height) {
+      throw new Error(`loadCOGRGBComposite: band ${polNames[i]} grid ${r.width}x${r.height} != ${width}x${height}`);
     }
   });
 
-  const worldBounds = ref.image.getBoundingBox();
-  const geoKeys = ref.image.getGeoKeys();
-  let crs = 'EPSG:4326';
-  if (geoKeys.ProjectedCSTypeGeoKey) crs = `EPSG:${geoKeys.ProjectedCSTypeGeoKey}`;
-  else if (geoKeys.GeographicTypeGeoKey) crs = `EPSG:${geoKeys.GeographicTypeGeoKey}`;
+  const worldBounds = [...ref.bbox];
+  const crs = ref.crs || 'EPSG:4326';
 
   // NISAR loader convention: bounds (and the viewer's world space) are PIXEL
   // coordinates [0, 0, width, height]; the projected extent rides along as
@@ -1299,33 +1334,12 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
   // pixel-space bboxes, same as the HDF5 RGB path.
   const bounds = [0, 0, width, height];
 
-  // Read one 256×256 tile from a base-resolution pixel window, picking the
-  // overview closest to the requested resolution (same selection rule as the
-  // single-band local-COG getTile).
+  // Read one 256×256 tile from a base-resolution pixel window; the reader
+  // picks the overview closest to the requested resolution (same selection
+  // rule as the single-band local-COG getTile) and resamples bilinearly.
   const tileSize = 256;
-  async function readWindow(bi, pxLeft, pxTop, pxRight, pxBottom) {
-    const b = bandMeta[bi];
-    const neededRes = Math.max(pxRight - pxLeft, pxBottom - pxTop) / tileSize;
-    let bestIdx = 0;
-    for (let i = 0; i < b.imageCount; i++) {
-      const ovImg = await b.tiff.getImage(i);
-      const ovRes = width / ovImg.getWidth();
-      if (ovRes <= neededRes * 1.5) bestIdx = i;
-    }
-    const ovImg = await b.tiff.getImage(bestIdx);
-    const scaleX = ovImg.getWidth() / width;
-    const scaleY = ovImg.getHeight() / height;
-    const win = [
-      Math.max(0, Math.floor(pxLeft * scaleX)),
-      Math.max(0, Math.floor(pxTop * scaleY)),
-      Math.min(ovImg.getWidth(), Math.ceil(pxRight * scaleX)),
-      Math.min(ovImg.getHeight(), Math.ceil(pxBottom * scaleY)),
-    ];
-    if (win[0] >= win[2] || win[1] >= win[3]) return null;
-    const rasters = await ovImg.readRasters({
-      window: win, width: tileSize, height: tileSize, resampleMethod: 'bilinear',
-    });
-    return rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]);
+  function readWindow(bi, pxLeft, pxTop, pxRight, pxBottom) {
+    return readers[bi].readTile([pxLeft, pxTop, pxRight, pxBottom], tileSize, 'bilinear');
   }
 
   async function getRGBTile({ x, y, z, bbox } = {}) {
@@ -1376,8 +1390,7 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
       return { bands, width: outCols, height: numRows };
     }
     await Promise.all(polNames.map(async (pol, bi) => {
-      const rasters = await bandMeta[bi].image.readRasters({ window: [srcLeft, srcTop, srcRight, srcBottom] });
-      const src = rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]);
+      const { data: src } = await readers[bi].readWindow(0, [srcLeft, srcTop, srcRight, srcBottom]);
       const out = new Float32Array(outCols * numRows);
       for (let r = 0; r < numRows; r++) {
         for (let c = 0; c < outCols; c++) {
@@ -1399,8 +1412,8 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
 
   async function getPixelValue(row, col) {
     if (row < 0 || row >= height || col < 0 || col >= width) return NaN;
-    const rasters = await bandMeta[0].image.readRasters({ window: [col, row, col + 1, row + 1] });
-    return new Float32Array(rasters[0])[0];
+    const win = await readers[0].readWindow(0, [col, row, col + 1, row + 1]);
+    return win ? win.data[0] : NaN;
   }
 
   // Per-band stats from one full-extent overview read each: cheap, and enough
@@ -1433,7 +1446,7 @@ export async function loadCOGRGBComposite({ urls, polNames, compositeId }) {
       y: Math.abs(worldBounds[3] - worldBounds[1]) / height,
     },
     isCOG: true,
-    imageCount: ref.imageCount,
+    imageCount: ref.levelCount,
     composite: compositeId,
     requiredPols: polNames,
     bandStats,
