@@ -283,6 +283,8 @@ export default defineConfig({
   // .vite/deps hash after a restart.
   optimizeDeps: {
     exclude: ['onnxruntime-web'],
+    // Dev-server pre-bundling must accept top-level await too (see build.target).
+    esbuildOptions: { target: 'es2022' },
   },
   resolve: {
     alias: {
@@ -318,5 +320,20 @@ export default defineConfig({
   build: {
     outDir: '../dist',
     emptyOutDir: true,
+    // es2022 for top-level await: the COG reader's LZW codec
+    // (@developmentseed/lzw-tiff-decoder, WASM) awaits its module init.
+    // Every WebGL2 browser the app targets supports it (Chrome 89+, Safari 15+).
+    target: 'es2022',
+  },
+  // The COG decode worker (W032, @developmentseed/geotiff) lazy-loads its
+  // codecs with dynamic import(). Vite 4 cannot code-split a worker bundle
+  // (IIFE output refuses; ES output trips build-import-analysis on the shared
+  // codec chunks), so inline the codecs into one worker chunk instead. All
+  // workers here are created with { type: 'module' } already.
+  worker: {
+    format: 'es',
+    rollupOptions: {
+      output: { inlineDynamicImports: true },
+    },
   },
 });

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.3] - 2026-10-05 — COG streaming 3–4× faster: tile-aligned reads, worker decode
+
+### Changed
+- **COG streaming moved onto `@developmentseed/geotiff`** (W032) — the standalone reader
+  under deck.gl-raster, used without its deck.gl 9 layers. URL COGs (the README hero link,
+  `?cog=` composites, `?compare=` panels) now read whole internal tiles as coalesced range
+  requests, decode them in a worker pool, and keep decoded tiles in a 256 MB LRU shared
+  across viewport tiles, so neighbouring tiles no longer re-inflate the same data and the
+  main thread stays free while panning. Overview selection and nearest/bilinear resampling
+  reproduce the geotiff.js formulas, so rendered output is byte-identical (parity test on
+  the demo COG). Measured on the Hugging Face hero pair, cold: first screen 4.1 s → 1.1 s,
+  pan 5.7 s → 1.3 s, same bytes. geotiff.js remains for metadata, local drops, VRT sources
+  and the single-COG `loadCOG` path (next phases)
+- Raw GeoTIFF export of a URL COG reads only each stripe's window instead of the whole
+  raster per stripe
+
+### Build
+- Vite targets `es2022` (top-level await in the reader's LZW codec) and emits workers as
+  ES modules with inlined dynamic imports
+
 ## [1.0.0-rc.2] - 2026-09-23 — GDAL VRT support, Earthdata auth that works, OPERA RTC-S1, h5chunk fixes
 
 ### Added
