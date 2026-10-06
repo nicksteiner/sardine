@@ -706,6 +706,70 @@ export async function loadCOGFullImage(url, maxSize = 2048) {
  * @param {Function} [onProgress] - Progress callback (0-100)
  * @returns {Promise<Object>} Same interface as loadCOG
  */
+/**
+ * Resample a pixel window of an in-memory raster to outW×outH.
+ *
+ * Non-COG local files (tiled or stripped, no overviews) are read whole; this
+ * is what lets them answer tile requests (Basemap mode's warped tiles, which
+ * only ever speak `getTile`) the way a COG answers from its overviews.
+ * Shrinking averages every valid source pixel under the output pixel (a box
+ * filter, like export multilook); growing uses bilinear, or nearest for
+ * class maps. NaN / nodata never leak into neighbours.
+ *
+ * @param {Float32Array} src - full raster, row-major, `stride` pixels wide
+ * @param {number} stride
+ * @param {number[]} win - [left, top, right, bottom] pixel window, exclusive right/bottom
+ * @param {number} outW
+ * @param {number} outH
+ * @param {{method?: 'bilinear'|'nearest', nodata?: number|null}} [opts]
+ * @returns {Float32Array} outW*outH
+ */
+export function resampleWindow(src, stride, win, outW, outH, { method = 'bilinear', nodata = null } = {}) {
+  const [l, t, r, b] = win;
+  const ww = r - l, wh = b - t;
+  const out = new Float32Array(outW * outH);
+  const valid = (v) => !isNaN(v) && (nodata === null || v !== nodata);
+  const sx = ww / outW, sy = wh / outH;
+  if (sx > 1 || sy > 1) {
+    // Shrinking: box-average the footprint.
+    for (let oy = 0; oy < outH; oy++) {
+      const y0 = t + Math.floor(oy * sy), y1 = Math.min(b, Math.max(y0 + 1, t + Math.ceil((oy + 1) * sy)));
+      for (let ox = 0; ox < outW; ox++) {
+        const x0 = l + Math.floor(ox * sx), x1 = Math.min(r, Math.max(x0 + 1, l + Math.ceil((ox + 1) * sx)));
+        let sum = 0, cnt = 0;
+        for (let y = y0; y < y1; y++) {
+          const row = y * stride;
+          for (let x = x0; x < x1; x++) { const v = src[row + x]; if (valid(v)) { sum += v; cnt++; } }
+        }
+        out[oy * outW + ox] = cnt ? sum / cnt : NaN;
+      }
+    }
+    return out;
+  }
+  // Growing: sample at output pixel centres.
+  for (let oy = 0; oy < outH; oy++) {
+    const fy = t + (oy + 0.5) * sy - 0.5;
+    const y0 = Math.max(t, Math.min(b - 1, Math.floor(fy))), y1 = Math.min(b - 1, y0 + 1), wy = Math.min(1, Math.max(0, fy - y0));
+    for (let ox = 0; ox < outW; ox++) {
+      const fx = l + (ox + 0.5) * sx - 0.5;
+      const x0 = Math.max(l, Math.min(r - 1, Math.floor(fx))), x1 = Math.min(r - 1, x0 + 1), wx = Math.min(1, Math.max(0, fx - x0));
+      const v00 = src[y0 * stride + x0];
+      if (method === 'nearest') {
+        out[oy * outW + ox] = src[(wy >= 0.5 ? y1 : y0) * stride + (wx >= 0.5 ? x1 : x0)];
+        continue;
+      }
+      const v10 = src[y0 * stride + x1], v01 = src[y1 * stride + x0], v11 = src[y1 * stride + x1];
+      if (valid(v00) && valid(v10) && valid(v01) && valid(v11)) {
+        out[oy * outW + ox] = (v00 * (1 - wx) + v10 * wx) * (1 - wy) + (v01 * (1 - wx) + v11 * wx) * wy;
+      } else {
+        const nv = src[(wy >= 0.5 ? y1 : y0) * stride + (wx >= 0.5 ? x1 : x0)];
+        out[oy * outW + ox] = valid(nv) ? nv : NaN;
+      }
+    }
+  }
+  return out;
+}
+
 export async function loadLocalTIF(file, onProgress) {
   const progress = onProgress || (() => {});
 
@@ -844,7 +908,6 @@ export async function loadLocalTIF(file, onProgress) {
   // Image raster:     row 0 is top, row height-1 is bottom.
   // So world Y maps to pixel row = height - Y.
   async function getTile({ x, y, z, bbox }) {
-    if (!isCOG) return null;
     try {
       const tileSize = 256;
 
@@ -871,6 +934,16 @@ export async function loadLocalTIF(file, onProgress) {
       const pxBottom = Math.min(height, Math.ceil(height - wyMin)); // world bottom → pixel bottom (high row)
 
       if (pxLeft >= pxRight || pxTop >= pxBottom) return null;
+
+      if (!isCOG) {
+        // No overviews to read from: the native view draws this file as one
+        // bitmap, but Basemap mode's warped tiles only ever ask `getTile`, so
+        // cut the window out of the raster that is already in memory.
+        const src = fullData || await readFullData();
+        const data = resampleWindow(src, width, [pxLeft, pxTop, pxRight, pxBottom], tileSize, tileSize,
+          { method: tileResample, nodata });
+        return { data, width: tileSize, height: tileSize };
+      }
 
       if (reader) {
         const data = await reader.readTile([pxLeft, pxTop, pxRight, pxBottom], tileSize, tileResample);
