@@ -17,6 +17,7 @@ import { getRequiredDatasets } from '../src/utils/sar-composites.js';
 import { openCOGReader } from '../src/loaders/cog-tile-reader.js';
 import { GHS_POP_COG_URL, sumPopulationInPolygon, countBuildingsInPolygon } from '../src/utils/exposure.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
+import { openCOGOverlay, GHS_POP_OVERLAY } from '../src/utils/raster-overlay.js';
 
 // Exposure query: click → people + buildings in a box around the point.
 // `?box=` degrees; default ≈ 5 km at the equator. Read lazily: `params` is
@@ -95,6 +96,13 @@ async function main() {
     bboxSpace: pixelSpace ? 'pixel' : 'world',
   };
 
+  // ?pop=1 draws GHS-POP density under the scene (same COG the clicks sum).
+  let rasterOverlays = [];
+  if (params.get('pop') === '1') {
+    const popScene = await openCOGOverlay(GHS_POP_OVERLAY.url);
+    rasterOverlays = [{ ...GHS_POP_OVERLAY, scene: popScene }];
+  }
+
   const root = createRoot(document.getElementById('root'));
   const render = () => root.render(
     <MapViewer
@@ -107,6 +115,7 @@ async function main() {
       showControls={false}
       layerProps={layerProps}
       extraLayers={queryLayer ? [queryLayer] : []}
+      rasterOverlays={rasterOverlays}
       onClick={exposureAt}
     />
   );

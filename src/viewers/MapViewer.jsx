@@ -40,6 +40,10 @@ export function MapViewer({
   extraLayers = [],
   // onClick([lon, lat]) for map-frame interactions (exposure queries…).
   onClick = null,
+  // Context rasters drawn between the basemap and the scene, each
+  // { id, scene (from openCOGOverlay), contrastLimits, colormap, opacity,
+  //   stretchMode, useDecibels=false }.
+  rasterOverlays = [],
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -50,6 +54,19 @@ export function MapViewer({
     return createReprojectedTileFetcher({ getTile, ...reproject });
   }, [getTile, reproject]);
   if (fetcher) bounds = fetcher.extent;
+
+  // One fetcher per overlay scene, kept while the scene object is the same.
+  const overlayFetchers = useMemo(() => rasterOverlays.map((o) => ({
+    ...o,
+    fetcher: createReprojectedTileFetcher({
+      getTile: o.scene.getTile,
+      width: o.scene.width,
+      height: o.scene.height,
+      worldBounds: o.scene.worldBounds,
+      crs: o.scene.crs,
+      bboxSpace: o.scene.bboxSpace || 'pixel',
+    }),
+  })), [rasterOverlays]);
 
   // Calculate initial view state from bounds
   const defaultViewState = useMemo(() => {
@@ -135,6 +152,18 @@ export function MapViewer({
     if (!getTile) return [];
 
     return [
+      ...overlayFetchers.map((o) => new SARTileLayer({
+        id: `raster-overlay-${o.id}`,
+        getTile: o.scene.getTile,
+        getTileData: o.fetcher.getTileData,
+        bounds: o.fetcher.extent,
+        minZoom: 0,
+        contrastLimits: o.contrastLimits || [0, 1],
+        useDecibels: o.useDecibels ?? false,
+        colormap: o.colormap || 'viridis',
+        stretchMode: o.stretchMode || 'linear',
+        opacity: o.opacity ?? 0.6,
+      })),
       new SARTileLayer({
         id: `sar-layer-v${tileVersion}`,
         getTile,
@@ -149,7 +178,7 @@ export function MapViewer({
       }),
       ...extraLayers,
     ];
-  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion, extraLayers]);
+  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion, extraLayers, overlayFetchers]);
 
   const containerStyle = useMemo(
     () => ({

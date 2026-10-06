@@ -59,6 +59,7 @@ import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { createOvertureTileLayers } from '../src/layers/OvertureTileLayer.js';
+import { openCOGOverlay, GHS_POP_OVERLAY } from '../src/utils/raster-overlay.js';
 import { OpticalPeekLayer } from '../src/layers/OpticalPeekLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { COORDINATE_SYSTEM } from '@deck.gl/core';
@@ -625,6 +626,21 @@ function App() {
     dark: { label: 'Dark', url: 'https://tiles.openfreemap.org/styles/dark' },
   };
   const [basemapStyle, setBasemapStyle] = useState('positron');
+  // Context raster under the scene in map mode (GHS-POP density), opened on demand.
+  const [showPopulation, setShowPopulation] = useState(false);
+  const [populationScene, setPopulationScene] = useState(null);
+  useEffect(() => {
+    if (!showPopulation || populationScene) return;
+    let cancelled = false;
+    openCOGOverlay(GHS_POP_OVERLAY.url)
+      .then((scene) => { if (!cancelled) setPopulationScene(scene); })
+      .catch((e) => addStatusLog?.('warning', 'Population layer failed', e.message));
+    return () => { cancelled = true; };
+  }, [showPopulation, populationScene]); // eslint-disable-line react-hooks/exhaustive-deps
+  const mapRasterOverlays = useMemo(
+    () => (showPopulation && populationScene ? [{ ...GHS_POP_OVERLAY, scene: populationScene }] : []),
+    [showPopulation, populationScene]
+  );
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
   // Analytical / medical-imaging mode — black void, NEAREST filter, drag-to-W/L,
   // persistent readout, σ-stretch presets, integer zoom snaps. Toggled with 'M'.
@@ -8044,6 +8060,17 @@ function App() {
                   </select>
                 )}
               </div>
+              {mapMode && (
+                <div className="control-row">
+                  <input
+                    type="checkbox"
+                    id="showPopulation"
+                    checked={showPopulation}
+                    onChange={(e) => setShowPopulation(e.target.checked)}
+                  />
+                  <label htmlFor="showPopulation">{GHS_POP_OVERLAY.label}{showPopulation && !populationScene ? ' (opening…)' : ''}</label>
+                </div>
+              )}
               <div className="control-row">
                 <input
                   type="checkbox"
@@ -9491,6 +9518,7 @@ function App() {
                     height="100%"
                     layerProps={mapLayerProps}
                     extraLayers={mapOvertureLayers}
+                    rasterOverlays={mapRasterOverlays}
                   />
                 ) : (
                 <SARViewer
