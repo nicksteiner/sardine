@@ -615,6 +615,16 @@ function App() {
   // W033: draw the scene on a Web Mercator basemap (warped tile meshes)
   // instead of its native grid. Needs worldBounds + crs on the scene.
   const [mapMode, setMapMode] = useState(false);
+  // OpenFreeMap styles (keyless, OpenMapTiles schema). Positron is the quiet
+  // light base that keeps SAR colours readable; liberty/bright carry more
+  // basemap detail (buildings from z13); dark for presentations.
+  const BASEMAP_STYLES = {
+    positron: { label: 'Positron (light)', url: 'https://tiles.openfreemap.org/styles/positron' },
+    bright: { label: 'Bright', url: 'https://tiles.openfreemap.org/styles/bright' },
+    liberty: { label: 'Liberty', url: 'https://tiles.openfreemap.org/styles/liberty' },
+    dark: { label: 'Dark', url: 'https://tiles.openfreemap.org/styles/dark' },
+  };
+  const [basemapStyle, setBasemapStyle] = useState('positron');
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
   // Analytical / medical-imaging mode — black void, NEAREST filter, drag-to-W/L,
   // persistent readout, σ-stretch presets, integer zoom snaps. Toggled with 'M'.
@@ -8022,6 +8032,17 @@ function App() {
                   onChange={(e) => setMapMode(e.target.checked)}
                 />
                 <label htmlFor="mapMode">Basemap{mapReproject ? '' : ' (needs a georeferenced scene)'}</label>
+                {mapMode && (
+                  <select
+                    value={basemapStyle}
+                    onChange={(e) => setBasemapStyle(e.target.value)}
+                    aria-label="Basemap style"
+                  >
+                    {Object.entries(BASEMAP_STYLES).map(([k, s]) => (
+                      <option key={k} value={k}>{s.label}</option>
+                    ))}
+                  </select>
+                )}
               </div>
               <div className="control-row">
                 <input
@@ -9464,7 +9485,7 @@ function App() {
                     colormap={colormap}
                     reverseColormap={reverseColormap}
                     opacity={1}
-                    mapStyle="https://tiles.openfreemap.org/styles/liberty"
+                    mapStyle={BASEMAP_STYLES[basemapStyle]?.url || BASEMAP_STYLES.positron.url}
                     showControls={false}
                     width="100%"
                     height="100%"

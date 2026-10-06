@@ -23,8 +23,8 @@ export function MapViewer({
   opacity = 0.8,
   width = '100%',
   height = '100%',
-  // OpenFreeMap "liberty": a bright, keyless OSM style (basemap default).
-  mapStyle = 'https://tiles.openfreemap.org/styles/liberty',
+  // OpenFreeMap "positron": quiet light OSM style, keyless (basemap default).
+  mapStyle = 'https://tiles.openfreemap.org/styles/positron',
   showControls = true,
   onViewStateChange,
   style = {},
