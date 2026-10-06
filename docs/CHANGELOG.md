@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native view but answered every `getTile` with null, so the warped map tiles came back
   empty. Tiles are now cut out of the in-memory raster (`resampleWindow`: box-average when
   shrinking, bilinear / nearest-for-class-maps when growing, NaN and nodata never blended)
+- **Production builds could not decode COGs** — the README demo on GitHub Pages opened
+  the scene and then showed nothing, with no error. `@developmentseed/geotiff` declares
+  `sideEffects: false`, so rollup dropped the bare import in the decode-worker shim and
+  emitted a 1-byte worker: eight workers with no code, every tile decode waiting forever.
+  The dev server does no tree-shaking, which is why it never showed locally. A resolve
+  plugin keeps that module's side effects, and `npm run build` now fails if any worker
+  chunk is empty (`test/check-dist.mjs`) so a Pages deploy can't ship it again
 
 ## [1.0.0-rc.5] - 2026-10-06 — deck.gl 9.4 / luma.gl 9.4 migration
 

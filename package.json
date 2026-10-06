@@ -7,7 +7,7 @@
   "module": "src/index.js",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node test/check-dist.mjs",
     "preview": "vite preview",
     "example": "vite --config vite.example.config.js",
     "test": "node test/lint-tokens.mjs && node test/run-tests.js && node test/w003-abort-cascade.test.mjs && node test/w006-decode-pool.test.mjs && node test/w009-chunk-cache-l2.test.mjs && node test/unit/run-unit-tests.mjs",

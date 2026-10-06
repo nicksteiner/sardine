@@ -55,6 +55,10 @@ export function connectAgentBridge(opts = {}) {
 
   function connect() {
     if (closed || typeof EventSource === 'undefined') return;
+    // The broker only exists behind the dev server / sardine-launch. On the
+    // static GitHub Pages build the events URL is a 404 page, and the
+    // browser logs a MIME-type error for it on every load.
+    if ((import.meta.env || {}).VITE_DEPLOY_TARGET === 'github-pages') return;
     source = new EventSource(EVENTS_URL);
     source.onmessage = (ev) => {
       let msg;

@@ -273,8 +273,31 @@ function agentBridgePlugin() {
   };
 }
 
+/**
+ * @developmentseed/geotiff declares `sideEffects: false`. Its worker entry
+ * (`pool/worker`) is nothing BUT a side effect (`self.addEventListener`), so
+ * rollup dropped the bare import in src/loaders/cog-decode-worker.js and
+ * emitted a 1-byte worker: the COG opened, eight empty workers started, and
+ * every tile decode waited forever — in production builds only, since the
+ * dev server does not tree-shake. Resolve that one module with side effects
+ * kept. Needed in both the main and the worker plugin lists (worker bundles
+ * run their own plugin pipeline).
+ */
+function keepWorkerSideEffectsPlugin() {
+  const KEEP = /@developmentseed\/geotiff\/(dist\/)?pool\/worker/;
+  return {
+    name: 'sardine:keep-worker-side-effects',
+    enforce: 'pre',
+    async resolveId(id, importer, options) {
+      if (!KEEP.test(id)) return null;
+      const resolved = await this.resolve(id, importer, { ...options, skipSelf: true });
+      return resolved ? { ...resolved, moduleSideEffects: true } : null;
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), corsProxyPlugin(), deepLinkDevFixPlugin(), agentBridgePlugin()],
+  plugins: [keepWorkerSideEffectsPlugin(), react(), corsProxyPlugin(), deepLinkDevFixPlugin(), agentBridgePlugin()],
   base: './',   // Relative paths for JupyterHub proxy
   root: 'app',
   // onnxruntime-web loads via lazy dynamic import (W025). Excluding it from
@@ -332,6 +355,7 @@ export default defineConfig({
   // workers here are created with { type: 'module' } already.
   worker: {
     format: 'es',
+    plugins: [keepWorkerSideEffectsPlugin()],
     rollupOptions: {
       output: { inlineDynamicImports: true },
     },
