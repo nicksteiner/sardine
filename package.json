@@ -50,6 +50,8 @@
     "@deck.gl/mapbox": "^9.4.0",
     "@deck.gl/react": "^9.4.0",
     "@developmentseed/geotiff": "^0.8.1",
+    "@developmentseed/proj": "^0.8.1",
+    "@developmentseed/raster-reproject": "^0.8.1",
     "@luma.gl/constants": "^9.4.2",
     "@luma.gl/core": "^9.4.2",
     "@luma.gl/engine": "^9.4.2",

@@ -206,6 +206,10 @@ vec3 colormapById(int colormapId, float value, bool reverse) {
 // ─── Main ────────────────────────────────────────────────────────────
 
 void main() {
+  // Warped-mesh tiles (W033) can map vertices beyond the texture: drop those
+  // texels instead of smearing the clamped edge. Plain quads stay in [0,1].
+  if (vTexCoord.x < 0.0 || vTexCoord.x > 1.0 || vTexCoord.y < 0.0 || vTexCoord.y > 1.0) discard;
+
   // ── Class-map mode: integer label → palette lookup (before any ramp) ──
   if (uClassMode > 0.5) {
     float amp = texture(uTexture, vTexCoord).r;
@@ -480,31 +484,48 @@ export class SARGPULayer extends Layer {
     // Create or update model geometry when bounds change.
     // Shader program is compiled only once; subsequent bounds changes just
     // update the vertex attributes via setGeometry() to avoid recompilation.
-    if (this.state.needsGeometryUpdate || bounds !== oldProps.bounds) {
-      if (!bounds || bounds.length !== 4) {
+    const { mesh } = props;
+    if (this.state.needsGeometryUpdate || bounds !== oldProps.bounds || mesh !== oldProps.mesh) {
+      if (!mesh && (!bounds || bounds.length !== 4)) {
         console.error('[SARGPULayer] Cannot create geometry without valid bounds');
         return;
       }
 
-      const [minX, minY, maxX, maxY] = bounds;
+      let geometry;
+      if (mesh) {
+        // Reprojection (W033): the tile is drawn through a warped mesh whose
+        // vertices sit in the view's CRS and whose texCoords were found by
+        // projecting each vertex back into the image. Texels outside [0,1]
+        // are discarded in the fragment shader.
+        geometry = new Geometry({
+          topology: 'triangle-list',
+          attributes: {
+            positions: { size: 3, value: mesh.positions },
+            texCoords: { size: 2, value: mesh.texCoords }
+          },
+          indices: { value: mesh.indices }
+        });
+      } else {
+        const [minX, minY, maxX, maxY] = bounds;
 
-      const positions = new Float32Array([
-        minX, minY, 0,  maxX, minY, 0,  maxX, maxY, 0,
-        minX, minY, 0,  maxX, maxY, 0,  minX, maxY, 0
-      ]);
+        const positions = new Float32Array([
+          minX, minY, 0,  maxX, minY, 0,  maxX, maxY, 0,
+          minX, minY, 0,  maxX, maxY, 0,  minX, maxY, 0
+        ]);
 
-      const texCoords = new Float32Array([
-        0, 1,  1, 1,  1, 0,
-        0, 1,  1, 0,  0, 0
-      ]);
+        const texCoords = new Float32Array([
+          0, 1,  1, 1,  1, 0,
+          0, 1,  1, 0,  0, 0
+        ]);
 
-      const geometry = new Geometry({
-        topology: 'triangle-list',
-        attributes: {
-          positions: { size: 3, value: positions },
-          texCoords: { size: 2, value: texCoords }
-        }
-      });
+        geometry = new Geometry({
+          topology: 'triangle-list',
+          attributes: {
+            positions: { size: 3, value: positions },
+            texCoords: { size: 2, value: texCoords }
+          }
+        });
+      }
 
       if (this.state.model && !this.state.needsGeometryUpdate) {
         // Model exists and shader hasn't changed — just update geometry
@@ -1074,6 +1095,9 @@ SARGPULayer.defaultProps = {
   height: { type: 'number', value: 256, min: 1 },
   bounds: { type: 'array', value: [-180, -90, 180, 90], compare: true },
   imageBounds: { type: 'array', value: null, compare: true },
+  // Optional warped geometry {positions, texCoords, indices} replacing the
+  // bounds quad (reprojected display, W033).
+  mesh: { type: 'object', value: null, compare: false },
   // type: 'object' to accept both [min,max] and {R:[],G:[],B:[]} formats
   contrastLimits: { type: 'object', value: [-25, 0], compare: true },
   useDecibels: { type: 'boolean', value: true, compare: true },

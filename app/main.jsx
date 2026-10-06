@@ -5,7 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // copy of this file and was the one the app actually loaded, so edits to the
 // canonical src/theme/ copy silently did nothing. Import the real one (W030).
 import '../src/theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
+import { SARViewer, MapViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
 import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
@@ -59,6 +59,8 @@ import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap, createColormapBandFn } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+import { createOvertureTileLayers } from '../src/layers/OvertureTileLayer.js';
+import { openCOGOverlay, GHS_POP_OVERLAY } from '../src/utils/raster-overlay.js';
 import { OpticalPeekLayer } from '../src/layers/OpticalPeekLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { COORDINATE_SYSTEM } from '@deck.gl/core';
@@ -652,6 +654,34 @@ function App() {
   const effectiveUseDecibels = (nisarProductType === 'GUNW' || displayMode === 'index') ? false : useDecibels;
   const [showGrid, setShowGrid] = useState(false);
   const [pixelExplorer, setPixelExplorer] = useState(false);
+  // W033: draw the scene on a Web Mercator basemap (warped tile meshes)
+  // instead of its native grid. Needs worldBounds + crs on the scene.
+  const [mapMode, setMapMode] = useState(false);
+  // OpenFreeMap styles (keyless, OpenMapTiles schema). Positron is the quiet
+  // light base that keeps SAR colours readable; liberty/bright carry more
+  // basemap detail (buildings from z13); dark for presentations.
+  const BASEMAP_STYLES = {
+    positron: { label: 'Positron (light)', url: 'https://tiles.openfreemap.org/styles/positron' },
+    bright: { label: 'Bright', url: 'https://tiles.openfreemap.org/styles/bright' },
+    liberty: { label: 'Liberty', url: 'https://tiles.openfreemap.org/styles/liberty' },
+    dark: { label: 'Dark', url: 'https://tiles.openfreemap.org/styles/dark' },
+  };
+  const [basemapStyle, setBasemapStyle] = useState('positron');
+  // Context raster under the scene in map mode (GHS-POP density), opened on demand.
+  const [showPopulation, setShowPopulation] = useState(false);
+  const [populationScene, setPopulationScene] = useState(null);
+  useEffect(() => {
+    if (!showPopulation || populationScene) return;
+    let cancelled = false;
+    openCOGOverlay(GHS_POP_OVERLAY.url)
+      .then((scene) => { if (!cancelled) setPopulationScene(scene); })
+      .catch((e) => addStatusLog?.('warning', 'Population layer failed', e.message));
+    return () => { cancelled = true; };
+  }, [showPopulation, populationScene]); // eslint-disable-line react-hooks/exhaustive-deps
+  const mapRasterOverlays = useMemo(
+    () => (showPopulation && populationScene ? [{ ...GHS_POP_OVERLAY, scene: populationScene }] : []),
+    [showPopulation, populationScene]
+  );
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
   // Analytical / medical-imaging mode — black void, NEAREST filter, drag-to-W/L,
   // persistent readout, σ-stretch presets, integer zoom snaps. Toggled with 'M'.
@@ -2058,6 +2088,42 @@ function App() {
   const contrastLimits = useMemo(() => [contrastMin, contrastMax], [contrastMin, contrastMax]);
 
   // For RGB mode, use per-channel limits; for single-band, use uniform limits
+  // W033 map mode: what the reprojected fetcher needs from the scene. Memoised
+  // on the scene so MapViewer's fetcher (and its tile cache) stay put across
+  // render-prop changes. bboxSpace: loaders whose bounds are [0,0,w,h] take
+  // pixel-space bboxes; the NISAR loaders use world coords as bounds.
+  const mapReproject = useMemo(() => {
+    const d = imageData;
+    if (!d?.worldBounds || !d?.crs || !d?.width || !d?.height) return null;
+    if (!(d.getTile || d.getRGBTile)) return null;
+    const b = d.bounds || [];
+    const pixelSpace = b[0] === 0 && b[1] === 0 && b[2] === d.width && b[3] === d.height;
+    return {
+      width: d.width,
+      height: d.height,
+      worldBounds: d.worldBounds,
+      crs: d.crs,
+      bboxSpace: pixelSpace ? 'pixel' : 'world',
+      multiLook,
+    };
+  }, [imageData, multiLook]);
+
+  // Render props SARTileLayer takes beyond MapViewer's own (map mode).
+  const mapLayerProps = useMemo(() => ({
+    gamma,
+    stretchMode,
+    rgbSaturation,
+    colorblindMode,
+    maskInvalid,
+    maskLayoverShadow,
+    speckleFilterType: nisarProductType === 'GUNW' ? 'none' : speckleFilterType,
+    speckleKernelSize,
+    multiLook,
+    classMode: !!mainClassInfo,
+    classPalette: mainClassInfo?.palette || null,
+    classPaletteEntries: mainClassInfo?.entries || 0,
+  }), [gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, nisarProductType, speckleFilterType, speckleKernelSize, multiLook, mainClassInfo]);
+
   const effectiveContrastLimits = useMemo(() => {
     if (isRGBDisplayMode && rgbContrastLimits) {
       return rgbContrastLimits;
@@ -6313,6 +6379,14 @@ function App() {
     return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs, projection, bounds, worldBounds });
   }, [overtureEnabled, overtureData, overtureOpacity, imageData]);
 
+  // Map mode (W033): viewport-driven PMTiles layers instead of the one-shot
+  // scene-bbox fetch, so building footprints (z12+) and places (z14) show up
+  // when zoomed in and the population hexes refine with zoom.
+  const mapOvertureLayers = useMemo(() => {
+    if (!overtureEnabled || !mapMode) return [];
+    return createOvertureTileLayers(overtureThemes, { opacity: overtureOpacity });
+  }, [overtureEnabled, overtureThemes, overtureOpacity, mapMode]);
+
   // Optical peek raster overlay. Only supports CRSes that OpticalPeekLayer's
   // inline proj4DefFor recognises (EPSG:4326, UTM north/south, polar stereo).
   // SICD slant-plane chips have a `projection` object instead of a CRS string
@@ -8120,6 +8194,38 @@ function App() {
               <div className="control-row">
                 <input
                   type="checkbox"
+                  id="mapMode"
+                  checked={mapMode}
+                  disabled={!mapReproject}
+                  onChange={(e) => setMapMode(e.target.checked)}
+                />
+                <label htmlFor="mapMode">Basemap{mapReproject ? '' : ' (needs a georeferenced scene)'}</label>
+                {mapMode && (
+                  <select
+                    value={basemapStyle}
+                    onChange={(e) => setBasemapStyle(e.target.value)}
+                    aria-label="Basemap style"
+                  >
+                    {Object.entries(BASEMAP_STYLES).map(([k, s]) => (
+                      <option key={k} value={k}>{s.label}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {mapMode && (
+                <div className="control-row">
+                  <input
+                    type="checkbox"
+                    id="showPopulation"
+                    checked={showPopulation}
+                    onChange={(e) => setShowPopulation(e.target.checked)}
+                  />
+                  <label htmlFor="showPopulation">{GHS_POP_OVERLAY.label}{showPopulation && !populationScene ? ' (opening…)' : ''}</label>
+                </div>
+              )}
+              <div className="control-row">
+                <input
+                  type="checkbox"
                   id="pixelExplorer"
                   checked={pixelExplorer}
                   onChange={(e) => setPixelExplorer(e.target.checked)}
@@ -9548,6 +9654,25 @@ function App() {
               <div
                 onClick={() => roiRGBData && setActiveViewer('main')}
                 className={`viewer-pane${roiRGBData && activeViewer === 'main' ? ' viewer-pane--active viewer-pane--main' : ''}`}>
+                {mapMode && mapReproject ? (
+                  <MapViewer
+                    getTile={imageData.getTile || imageData.getRGBTile}
+                    reproject={mapReproject}
+                    tileVersion={tileVersion}
+                    contrastLimits={effectiveContrastLimits}
+                    useDecibels={effectiveUseDecibels}
+                    colormap={colormap}
+                    reverseColormap={reverseColormap}
+                    opacity={1}
+                    mapStyle={BASEMAP_STYLES[basemapStyle]?.url || BASEMAP_STYLES.positron.url}
+                    showControls={false}
+                    width="100%"
+                    height="100%"
+                    layerProps={mapLayerProps}
+                    extraLayers={mapOvertureLayers}
+                    rasterOverlays={mapRasterOverlays}
+                  />
+                ) : (
                 <SARViewer
                   ref={viewerRef}
                   cogUrl={imageData?.cogUrl}
@@ -9626,6 +9751,7 @@ function App() {
                   selectedAnnotationId={selectedAnnotationId}
                   onSelectAnnotation={setSelectedAnnotationId}
                 />
+                )}
               </div>
 
               {/* ROI RGB viewer (side-by-side, only when ROI RGB loaded) */}

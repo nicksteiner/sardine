@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Basemap mode** (W033) — a projected scene (UTM COG, streamed NISAR GCOV) is drawn on a
+  Web Mercator MapLibre basemap through warped tile meshes: each lon/lat map tile projects
+  a small vertex grid into the image CRS, reads the pixel window through the scene's own
+  `getTile`, and hands `SARGPULayer` a `mesh` so the GPU does the warp and source pixels
+  are never resampled on the CPU. Toggle in Display; styles Positron (default), Bright,
+  Liberty, Dark via OpenFreeMap (keyless). Needs a scene with `worldBounds` + `crs` and a
+  bbox-driven `getTile` (RGB composites, VRTs, NISAR); the single-band tiled COG path is
+  not yet wired
+- **Context layers in map mode** — Overture overlay moved to live 2026-09-23 tiles with
+  viewport-driven fetching (`OvertureTileLayer`); a global Buildings theme from the VIDA
+  Google+Microsoft+OSM PMTiles; GHS-POP 2021 population density as a raster overlay under
+  the scene (`raster-overlay.js`)
+- **Exposure core** (`src/utils/exposure.js`) — people (GHS-POP COG) and buildings
+  (PMTiles footprints) under a polygon, computed client-side from the data files; the
+  reproject demo page queries it on click. `MapViewer` gains `onClick`, `extraLayers`,
+  `rasterOverlays`, `layerProps`, `tileVersion` props
+- Compact header strip
+
 ## [1.0.0-rc.5] - 2026-10-06 — deck.gl 9.4 / luma.gl 9.4 migration
 
 ### Changed

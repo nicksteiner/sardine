@@ -4,6 +4,7 @@ import DeckGL from '@deck.gl/react';
 import { MapView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
 import { getColormap } from '../utils/colormap.js';
+import { createReprojectedTileFetcher } from '../utils/reproject-tiles.js';
 
 // Import MapLibre CSS - users need to include this in their build
 // import 'maplibre-gl/dist/maplibre-gl.css';
@@ -22,14 +23,50 @@ export function MapViewer({
   opacity = 0.8,
   width = '100%',
   height = '100%',
-  mapStyle = 'https://demotiles.maplibre.org/style.json',
+  // OpenFreeMap "positron": quiet light OSM style, keyless (basemap default).
+  mapStyle = 'https://tiles.openfreemap.org/styles/positron',
   showControls = true,
   onViewStateChange,
   style = {},
+  // Projected scene drawn through warped tile meshes (W033):
+  // { width, height, worldBounds, crs }. `bounds` is then derived (lon/lat).
+  reproject = null,
+  // Extra SARTileLayer props (gamma, stretchMode, rgbSaturation, …).
+  layerProps = {},
+  // Bumped when progressive tile refinement (NISAR overview ladder) has new
+  // data: changes the layer id so deck.gl refetches tiles.
+  tileVersion = 0,
+  // deck.gl layers in lon/lat drawn above the raster (Overture overlays…).
+  extraLayers = [],
+  // onClick([lon, lat]) for map-frame interactions (exposure queries…).
+  onClick = null,
+  // Context rasters drawn between the basemap and the scene, each
+  // { id, scene (from openCOGOverlay), contrastLimits, colormap, opacity,
+  //   stretchMode, useDecibels=false }.
+  rasterOverlays = [],
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const [mapLoaded, setMapLoaded] = useState(false);
+
+  const fetcher = useMemo(() => {
+    if (!reproject || !getTile) return null;
+    return createReprojectedTileFetcher({ getTile, ...reproject });
+  }, [getTile, reproject]);
+  if (fetcher) bounds = fetcher.extent;
+
+  // One fetcher per overlay scene, kept while the scene object is the same.
+  const overlayFetchers = useMemo(() => rasterOverlays.map((o) => ({
+    ...o,
+    fetcher: createReprojectedTileFetcher({
+      getTile: o.scene.getTile,
+      width: o.scene.width,
+      height: o.scene.height,
+      worldBounds: o.scene.worldBounds,
+      crs: o.scene.crs,
+      bboxSpace: o.scene.bboxSpace || 'pixel',
+    }),
+  })), [rasterOverlays]);
 
   // Calculate initial view state from bounds
   const defaultViewState = useMemo(() => {
@@ -115,18 +152,33 @@ export function MapViewer({
     if (!getTile) return [];
 
     return [
+      ...overlayFetchers.map((o) => new SARTileLayer({
+        id: `raster-overlay-${o.id}`,
+        getTile: o.scene.getTile,
+        getTileData: o.fetcher.getTileData,
+        bounds: o.fetcher.extent,
+        minZoom: 0,
+        contrastLimits: o.contrastLimits || [0, 1],
+        useDecibels: o.useDecibels ?? false,
+        colormap: o.colormap || 'viridis',
+        stretchMode: o.stretchMode || 'linear',
+        opacity: o.opacity ?? 0.6,
+      })),
       new SARTileLayer({
-        id: 'sar-layer',
+        id: `sar-layer-v${tileVersion}`,
         getTile,
+        ...(fetcher ? { getTileData: fetcher.getTileData, minZoom: 0 } : {}),
         bounds,
         contrastLimits,
         useDecibels,
         colormap,
         reverseColormap,
         opacity,
+        ...layerProps,
       }),
+      ...extraLayers,
     ];
-  }, [getTile, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity]);
+  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion, extraLayers, overlayFetchers]);
 
   const containerStyle = useMemo(
     () => ({
@@ -158,6 +210,7 @@ export function MapViewer({
         onViewStateChange={handleViewStateChange}
         layers={layers}
         controller={true}
+        onClick={onClick ? (info) => { if (info?.coordinate) onClick(info.coordinate); } : undefined}
         style={{ position: 'absolute', top: 0, left: 0 }}
       />
 
