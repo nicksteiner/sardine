@@ -13,7 +13,7 @@
  *   7. SARdine branding badge (top-left)
  */
 
-import { getColormap } from './colormap.js';
+import { getColormap, createColorbarRamp } from './colormap.js';
 import { SVGRecorder, svgToBlob } from './svg-recorder.js';
 import { setFigureStyle, getFigureStyle, makeScale } from './figure-style.js';
 import { createStretchFn } from './stretch.js';
@@ -224,6 +224,7 @@ export async function exportFigure(glCanvas, options = {}) {
     gridMode = 'lines',
     colorbarLabel = '',
     reverseColormap = false,
+    colormapBand = null,
   } = options;
 
   const S = setFigureStyle(theme);
@@ -266,7 +267,7 @@ export async function exportFigure(glCanvas, options = {}) {
   } else if (compositeId) {
     drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
-    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap);
+    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap, colormapBand);
   }
 
   // 6. Metadata panel (bottom-right)
@@ -340,6 +341,7 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     gridMode = 'lines',
     colorbarLabel = '',
     reverseColormap = false,
+    colormapBand = null,
   } = options;
 
   const S = setFigureStyle(theme);
@@ -382,7 +384,7 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   } else if (compositeId) {
     drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, colorblindMode);
   } else {
-    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap);
+    drawColormapBar(ctx, W, H, colormap, contrastLimits, useDecibels, s, colorbarLabel, reverseColormap, colormapBand);
   }
 
   // Metadata box (SOURCE/CRS/SCALE/…) intentionally omitted from exports — it
@@ -959,9 +961,11 @@ function drawRGBLegend(ctx, W, H, compositeId, contrastLimits, useDecibels, s, c
 
 // ── 5b. Colormap bar ────────────────────────────────────────────────────────
 
-function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s, labelOverride = '', reversed = false) {
+function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s, labelOverride = '', reversed = false, band = null) {
   const S = getFigureStyle();
-  const [min, max] = Array.isArray(contrastLimits) ? contrastLimits : [0, 1];
+  const ramp = band ? createColorbarRamp(colormapName, reversed, contrastLimits, band) : null;
+  const [min, max] = ramp ? [ramp.min, ramp.max]
+    : (Array.isArray(contrastLimits) ? contrastLimits : [0, 1]);
   const unitLabel = labelOverride || (useDecibels ? 'dB' : 'linear');
   const colormapFunc = getColormap(colormapName);
 
@@ -990,7 +994,7 @@ function drawColormapBar(ctx, W, H, colormapName, contrastLimits, useDecibels, s
   // Gradient ramp (top = max; reversed flips the ramp to match the display)
   for (let y = 0; y < barH; y++) {
     const t0 = 1 - y / barH;
-    const rgb = colormapFunc(reversed ? 1 - t0 : t0);
+    const rgb = ramp ? ramp.sample(min + t0 * (max - min)) : colormapFunc(reversed ? 1 - t0 : t0);
     ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     ctx.fillRect(barX, barY + y, barW, 1);
   }

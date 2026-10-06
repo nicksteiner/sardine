@@ -52,7 +52,8 @@ function inferProductType(identification, file) {
  * @param {Object}      [opts.renderState]  Render state:
  *   {string}       mode            'raw' | 'rendered'
  *   For 'rendered' only: useDecibels, contrastLimits ([min,max] or {R,G,B}),
- *   colormap, stretchMode, gamma, compositeId. Ignored for 'raw' exports —
+ *   colormap, stretchMode, gamma, compositeId, colormapBand (optional
+ *   {min,max,colormap,reverse}). Ignored for 'raw' exports —
  *   a raw sidecar's render block carries only { mode: 'raw' }.
  * @param {Object}      [opts.exportParams] Georeferencing of the written GeoTIFF:
  *   {string|number} crs            'EPSG:32610' or bare EPSG code number
@@ -77,6 +78,8 @@ export function buildExportSidecar({ scene = {}, renderState = {}, exportParams 
         stretchMode: renderState.stretchMode ?? null,
         gamma: renderState.gamma ?? null,
         compositeId: renderState.compositeId ?? null,
+        // Additive + optional: only present when a colormap band was applied.
+        ...(renderState.colormapBand ? { colormapBand: renderState.colormapBand } : {}),
       }
     : { mode };
 

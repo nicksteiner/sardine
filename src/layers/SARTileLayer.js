@@ -25,6 +25,7 @@ export class SARTileLayer extends TileLayer {
       useDecibels = true,
       colormap = 'grayscale',
       reverseColormap = false,
+      colormapBand = null,
       gamma = 1.0,
       stretchMode = 'linear',
       rgbSaturation = 1.0,
@@ -98,7 +99,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode, classMode, classPalette, classPaletteEntries, opacity],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode, classMode, classPalette, classPaletteEntries, opacity],
       },
 
       renderSubLayers: (subProps) => {
@@ -268,6 +269,7 @@ export class SARTileLayer extends TileLayer {
             useDecibels,
             colormap,
             reverseColormap,
+            colormapBand,
             gamma,
             stretchMode,
             opacity,
