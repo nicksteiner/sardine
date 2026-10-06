@@ -62,14 +62,32 @@ export const OVERTURE_THEMES = {
     lineColor: [200, 200, 200, 200],
     lineWidth: 2.5,
   },
+  // Building footprints: VIDA's merge of Google Open Buildings v3 + Microsoft
+  // GlobalML + OSM (2.7 B, updated 2025-08; ODbL/CC BY), one global PMTiles
+  // archive on Source Cooperative with simplified footprints from z0 and
+  // full detail to z15 (Iquitos: z8=2,358, z12=7,422, z14=13,585 per tile).
+  // Chosen over Overture's buildings theme because Google's Global-South
+  // detections fill in far more houses, and the archive carries them at
+  // every zoom rather than from z12.
   buildings: {
-    label: 'Buildings',
-    types: ['building'],
+    label: 'Buildings (Google/Microsoft/OSM)',
+    types: ['goog_msft_osm_building_footprints'],
+    url: 'https://data.source.coop/vida/google-microsoft-osm-open-buildings/pmtiles/goog_msft_osm.pmtiles',
     color: [255, 140, 0, 180],      // orange
     lineColor: [255, 140, 0, 220],
     lineWidth: 2,
-    // 2026 tilesets: a handful of landmark buildings from z5, towns fill in
-    // at z12, full footprints at z14 (checked: Iquitos z12=172, z14=15,470).
+    minZoom: 8,
+    maxZoom: 15,
+  },
+  // Overture's own buildings keep height / num_floors / class where OSM or
+  // Microsoft had them — useful attributes, thinner coverage, z12+ only.
+  buildings_overture: {
+    label: 'Buildings (Overture, with height)',
+    types: ['building'],
+    theme: 'buildings',
+    color: [255, 200, 80, 150],
+    lineColor: [255, 200, 80, 220],
+    lineWidth: 1.5,
     minZoom: 12,
   },
   places: {
