@@ -5,7 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // copy of this file and was the one the app actually loaded, so edits to the
 // canonical src/theme/ copy silently did nothing. Import the real one (W030).
 import '../src/theme/sardine-theme.css';
-import { SARViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
+import { SARViewer, MapViewer, loadCOG, loadLocalTIF, loadLocalTIFs, loadCOGFullImage, autoContrastLimits, loadNISARGCOV, listNISARDatasets, loadMultiBandCOG, loadCOGRGBComposite, loadTemporalCOGs, ComparisonViewer, CompareGrid } from '../src/index.js';
 import { loadNISARRGBComposite, loadNISARIndex, listNISARDatasetsFromUrl, loadNISARGCOVFromUrl, wktToROI } from '../src/loaders/nisar-loader.js';
 import { listNISARGUNWDatasets, loadNISARGUNW, GUNW_LAYER_LABELS, GUNW_DATASET_LABELS } from '../src/loaders/nisar-gunw-loader.js';
 import { detectNISARProduct, openNISARReader } from '../src/loaders/nisar-product.js';
@@ -611,6 +611,9 @@ function App() {
   const effectiveUseDecibels = (nisarProductType === 'GUNW' || displayMode === 'index') ? false : useDecibels;
   const [showGrid, setShowGrid] = useState(false);
   const [pixelExplorer, setPixelExplorer] = useState(false);
+  // W033: draw the scene on a Web Mercator basemap (warped tile meshes)
+  // instead of its native grid. Needs worldBounds + crs on the scene.
+  const [mapMode, setMapMode] = useState(false);
   const [pixelWindowSize, setPixelWindowSize] = useState(1);
   // Analytical / medical-imaging mode — black void, NEAREST filter, drag-to-W/L,
   // persistent readout, σ-stretch presets, integer zoom snaps. Toggled with 'M'.
@@ -2016,6 +2019,42 @@ function App() {
   const contrastLimits = useMemo(() => [contrastMin, contrastMax], [contrastMin, contrastMax]);
 
   // For RGB mode, use per-channel limits; for single-band, use uniform limits
+  // W033 map mode: what the reprojected fetcher needs from the scene. Memoised
+  // on the scene so MapViewer's fetcher (and its tile cache) stay put across
+  // render-prop changes. bboxSpace: loaders whose bounds are [0,0,w,h] take
+  // pixel-space bboxes; the NISAR loaders use world coords as bounds.
+  const mapReproject = useMemo(() => {
+    const d = imageData;
+    if (!d?.worldBounds || !d?.crs || !d?.width || !d?.height) return null;
+    if (!(d.getTile || d.getRGBTile)) return null;
+    const b = d.bounds || [];
+    const pixelSpace = b[0] === 0 && b[1] === 0 && b[2] === d.width && b[3] === d.height;
+    return {
+      width: d.width,
+      height: d.height,
+      worldBounds: d.worldBounds,
+      crs: d.crs,
+      bboxSpace: pixelSpace ? 'pixel' : 'world',
+      multiLook,
+    };
+  }, [imageData, multiLook]);
+
+  // Render props SARTileLayer takes beyond MapViewer's own (map mode).
+  const mapLayerProps = useMemo(() => ({
+    gamma,
+    stretchMode,
+    rgbSaturation,
+    colorblindMode,
+    maskInvalid,
+    maskLayoverShadow,
+    speckleFilterType: nisarProductType === 'GUNW' ? 'none' : speckleFilterType,
+    speckleKernelSize,
+    multiLook,
+    classMode: !!mainClassInfo,
+    classPalette: mainClassInfo?.palette || null,
+    classPaletteEntries: mainClassInfo?.entries || 0,
+  }), [gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, nisarProductType, speckleFilterType, speckleKernelSize, multiLook, mainClassInfo]);
+
   const effectiveContrastLimits = useMemo(() => {
     if (isRGBDisplayMode && rgbContrastLimits) {
       return rgbContrastLimits;
@@ -7968,6 +8007,16 @@ function App() {
               <div className="control-row">
                 <input
                   type="checkbox"
+                  id="mapMode"
+                  checked={mapMode}
+                  disabled={!mapReproject}
+                  onChange={(e) => setMapMode(e.target.checked)}
+                />
+                <label htmlFor="mapMode">Basemap{mapReproject ? '' : ' (needs a georeferenced scene)'}</label>
+              </div>
+              <div className="control-row">
+                <input
+                  type="checkbox"
                   id="pixelExplorer"
                   checked={pixelExplorer}
                   onChange={(e) => setPixelExplorer(e.target.checked)}
@@ -9396,6 +9445,23 @@ function App() {
               <div
                 onClick={() => roiRGBData && setActiveViewer('main')}
                 className={`viewer-pane${roiRGBData && activeViewer === 'main' ? ' viewer-pane--active viewer-pane--main' : ''}`}>
+                {mapMode && mapReproject ? (
+                  <MapViewer
+                    getTile={imageData.getTile || imageData.getRGBTile}
+                    reproject={mapReproject}
+                    tileVersion={tileVersion}
+                    contrastLimits={effectiveContrastLimits}
+                    useDecibels={effectiveUseDecibels}
+                    colormap={colormap}
+                    reverseColormap={reverseColormap}
+                    opacity={1}
+                    mapStyle="https://tiles.openfreemap.org/styles/dark"
+                    showControls={false}
+                    width="100%"
+                    height="100%"
+                    layerProps={mapLayerProps}
+                  />
+                ) : (
                 <SARViewer
                   ref={viewerRef}
                   cogUrl={imageData?.cogUrl}
@@ -9473,6 +9539,7 @@ function App() {
                   selectedAnnotationId={selectedAnnotationId}
                   onSelectAnnotation={setSelectedAnnotationId}
                 />
+                )}
               </div>
 
               {/* ROI RGB viewer (side-by-side, only when ROI RGB loaded) */}

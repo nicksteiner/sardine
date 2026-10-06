@@ -32,6 +32,9 @@ export function MapViewer({
   reproject = null,
   // Extra SARTileLayer props (gamma, stretchMode, rgbSaturation, …).
   layerProps = {},
+  // Bumped when progressive tile refinement (NISAR overview ladder) has new
+  // data: changes the layer id so deck.gl refetches tiles.
+  tileVersion = 0,
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -128,7 +131,7 @@ export function MapViewer({
 
     return [
       new SARTileLayer({
-        id: 'sar-layer',
+        id: `sar-layer-v${tileVersion}`,
         getTile,
         ...(fetcher ? { getTileData: fetcher.getTileData, minZoom: 0 } : {}),
         bounds,
@@ -140,7 +143,7 @@ export function MapViewer({
         ...layerProps,
       }),
     ];
-  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps]);
+  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion]);
 
   const containerStyle = useMemo(
     () => ({

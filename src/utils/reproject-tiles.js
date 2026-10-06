@@ -31,7 +31,7 @@ import { debugLog } from './debug-log.js';
  * @returns {{ extent: number[], getTileData: Function }} lon/lat extent for the
  *   TileLayer and a getTileData(tile) for deck.gl's TileLayer in a MapView.
  */
-export function createReprojectedTileFetcher({ getTile, width, height, worldBounds, crs, segments = 8, bboxSpace = 'pixel' }) {
+export function createReprojectedTileFetcher({ getTile, width, height, worldBounds, crs, segments = 8, bboxSpace = 'pixel', multiLook = false }) {
   const projDef = getProj4Def(crs);
   const forward = projDef
     ? proj4('WGS84', projDef).forward
@@ -98,7 +98,7 @@ export function createReprojectedTileFetcher({ getTile, width, height, worldBoun
     const { x, y, z } = tile.index || {};
     let tileData;
     try {
-      tileData = await getTile({ x, y, z, bbox });
+      tileData = await getTile({ x, y, z, bbox, multiLook });
     } catch (e) {
       console.warn(`[reproject-tiles] tile ${z}/${x}/${y} failed:`, e?.message || e);
       throw e;
