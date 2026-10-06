@@ -63,6 +63,7 @@ const KEYS = {
   // Rendering
   cmap: 'cmap',
   rev: 'rev',         // reverse colormap (0/1)
+  band: 'band',       // colormap band: min,max,cmap[,r] (r = reversed)
   db: 'db',           // use decibels (0/1)
   min: 'min',         // contrast min
   max: 'max',         // contrast max
@@ -97,6 +98,22 @@ const LONG = {
   freq: 'frequency',
   ml: 'multilook',
 };
+
+/**
+ * Parse `band=min,max[,cmap[,r]]` → {min, max, colormap, reverse} or null.
+ * Malformed values are ignored with a warning, never a throw.
+ */
+export function parseColormapBand(v) {
+  if (!v) return null;
+  const [minS, maxS, cmap, flag] = v.split(',').map((s) => s.trim());
+  const min = num(minS);
+  const max = num(maxS);
+  if (min == null || max == null || !(max > min)) {
+    console.warn(`[deep-link] ignoring malformed band=${v}`);
+    return null;
+  }
+  return { min, max, colormap: cmap || 'inferno', reverse: flag === 'r' };
+}
 
 function num(v) {
   if (v == null) return null;
@@ -215,6 +232,7 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
   const view = {};
   const cmap = pick(p, KEYS.cmap);   if (cmap) view.colormap = cmap;
   const rev = bool(p.get(KEYS.rev)); if (rev != null) view.reverseColormap = rev;
+  const band = parseColormapBand(p.get(KEYS.band)); if (band) view.colormapBand = band;
   const db = bool(pick(p, KEYS.db));   if (db != null) view.useDecibels = db;
   const minV = num(pick(p, KEYS.min)); if (minV != null) view.contrastMin = minV;
   const maxV = num(pick(p, KEYS.max)); if (maxV != null) view.contrastMax = maxV;
@@ -329,6 +347,12 @@ export function buildShareLink({ baseUrl, dataUrl, dataUrls, dataType, localFile
   // Only emit params that differ from defaults — keep URLs short and readable.
   if (view.colormap && view.colormap !== 'grayscale') p.set(KEYS.cmap, view.colormap);
   if (view.reverseColormap) p.set(KEYS.rev, '1');
+  if (view.colormapBand) {
+    const { min, max, colormap, reverse } = view.colormapBand;
+    if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
+      p.set(KEYS.band, [min, max, colormap || 'inferno', ...(reverse ? ['r'] : [])].join(','));
+    }
+  }
   if (view.useDecibels === false) p.set(KEYS.db, '0');
   if (Number.isFinite(view.contrastMin)) p.set(KEYS.min, String(view.contrastMin));
   if (Number.isFinite(view.contrastMax)) p.set(KEYS.max, String(view.contrastMax));

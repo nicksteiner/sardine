@@ -1,6 +1,6 @@
 import { BitmapLayer } from '@deck.gl/layers';
 import GL from '@luma.gl/constants';
-import { getColormap } from '../utils/colormap.js';
+import { getColormap, createColormapBandFn } from '../utils/colormap.js';
 import { createStretchFn } from '../utils/stretch.js';
 import { toDb } from '../utils/stats.js';
 
@@ -34,6 +34,7 @@ export class SARBitmapLayer extends BitmapLayer {
       useDecibels = true,
       colormap = 'grayscale',
       reverseColormap = false,
+      colormapBand = null,      // {min, max, colormap, reverse} — see normalizeColormapBand
       gamma = 1.0,
       stretchMode = 'linear',
       opacity = 1,
@@ -50,7 +51,7 @@ export class SARBitmapLayer extends BitmapLayer {
     // uses the continuous SAR pipeline.
     const imageData = (classMode && classPalette)
       ? createClassTexture(data, width, height, classPalette, dataMask, maskInvalid, maskLayoverShadow)
-      : createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma, stretchMode, dataMask, maskInvalid, maskLayoverShadow, reverseColormap);
+      : createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma, stretchMode, dataMask, maskInvalid, maskLayoverShadow, reverseColormap, colormapBand);
 
     super({
       id: props.id || 'sar-bitmap-layer',
@@ -110,7 +111,7 @@ export class SARBitmapLayer extends BitmapLayer {
  * @param {boolean} maskLayoverShadow - Hide layover/shadow pixels (mask < 100)
  * @returns {ImageData} RGBA image data for texture
  */
-function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear', dataMask = null, maskInvalid = false, maskLayoverShadow = false, reverseColormap = false) {
+function createSARTexture(data, width, height, contrastLimits, useDecibels, colormap, gamma = 1.0, stretchMode = 'linear', dataMask = null, maskInvalid = false, maskLayoverShadow = false, reverseColormap = false, colormapBand = null) {
   const [min, max] = contrastLimits;
   const colormapFunc = getColormap(colormap);
   const invertRamp = reverseColormap && colormap !== 'label';
@@ -118,25 +119,22 @@ function createSARTexture(data, width, height, contrastLimits, useDecibels, colo
   const rgba = new Uint8ClampedArray(expectedSize * 4);
   const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
   const stretchFn = needsStretch ? createStretchFn(stretchMode, gamma) : null;
+  const bandFn = createColormapBandFn(colormapBand, stretchFn);
 
   // Only iterate over actual data; remaining pixels stay [0,0,0,0] (transparent)
   const pixelCount = Math.min(data.length, expectedSize);
 
   for (let i = 0; i < pixelCount; i++) {
     const amplitude = data[i];
-    let value;
-
-    if (useDecibels) {
-      const db = toDb(amplitude);
-      value = (db - min) / (max - min);
-    } else {
-      value = (amplitude - min) / (max - min);
+    const x = useDecibels ? toDb(amplitude) : amplitude;
+    let rgb = bandFn !== null ? bandFn(x) : null;
+    if (rgb === null) {
+      let value = (x - min) / (max - min);
+      value = Math.max(0, Math.min(1, value));
+      if (stretchFn !== null) value = stretchFn(value);
+      rgb = colormapFunc(invertRamp ? 1 - value : value);
     }
-
-    value = Math.max(0, Math.min(1, value));
-    if (stretchFn !== null) value = stretchFn(value);
-
-    const [r, g, b] = colormapFunc(invertRamp ? 1 - value : value);
+    const [r, g, b] = rgb;
     const idx = i * 4;
     rgba[idx] = r;
     rgba[idx + 1] = g;

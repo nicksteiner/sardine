@@ -351,7 +351,7 @@ export class SARTiledCOGLayer extends CompositeLayer {
 
   renderLayers() {
     const { bounds, tiff } = this.state;
-    const { contrastLimits, useDecibels, colormap, reverseColormap = false, gamma, stretchMode, opacity, onLoadingChange, toneMapping, maskInvalid = false, maskLayoverShadow = false } = this.props;
+    const { contrastLimits, useDecibels, colormap, reverseColormap = false, colormapBand = null, gamma, stretchMode, opacity, onLoadingChange, toneMapping, maskInvalid = false, maskLayoverShadow = false } = this.props;
 
     // Wait for COG to be loaded before rendering
     if (!bounds || !tiff) {
@@ -461,6 +461,7 @@ export class SARTiledCOGLayer extends CompositeLayer {
             useDecibels: effectiveUseDecibels,
             colormap,
             reverseColormap,
+            colormapBand,
             gamma,
             stretchMode,
             opacity,

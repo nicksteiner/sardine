@@ -557,6 +557,72 @@ export function getColormap(name) {
 }
 
 /**
+ * Validate a colormap band — a value range drawn with its own colormap and
+ * its own contrast, while the rest of the scene keeps the base colormap.
+ * Lets a narrow backscatter regime (e.g. river ice) be stretched without
+ * washing out everything else.
+ * @param {{min:number, max:number, colormap:string, reverse?:boolean}|null} band
+ *   min/max are in display units (dB when dB scaling is on, else linear)
+ * @returns {{min:number, max:number, colormap:string, reverse:boolean}|null}
+ *   null when the band is missing or degenerate
+ */
+export function normalizeColormapBand(band) {
+  if (!band || !Number.isFinite(band.min) || !Number.isFinite(band.max)) return null;
+  if (!(band.max > band.min)) return null;
+  return {
+    min: band.min,
+    max: band.max,
+    colormap: band.colormap || 'inferno',
+    reverse: !!band.reverse && band.colormap !== 'label',
+  };
+}
+
+/**
+ * CPU mirror of the shader's colormap-band branch.
+ * @param {Object|null} band - see normalizeColormapBand
+ * @param {Function|null} stretchFn - same stretch as the base ramp (or null)
+ * @returns {Function|null} (x) => [r,g,b] for x inside the band, null outside;
+ *   x is the display value (dB or linear). Returns null when no band is set.
+ */
+export function createColormapBandFn(band, stretchFn = null) {
+  const b = normalizeColormapBand(band);
+  if (!b) return null;
+  const fn = getColormap(b.colormap);
+  const span = b.max - b.min;
+  return (x) => {
+    if (!(x >= b.min && x <= b.max)) return null;
+    let t = (x - b.min) / span;
+    if (stretchFn !== null) t = stretchFn(t);
+    return fn(b.reverse ? 1 - t : t);
+  };
+}
+
+/**
+ * Colorbar ramp covering the base contrast window plus an optional colormap
+ * band. With a band the ramp spans the union of both ranges, so the band shows
+ * as its own segment; values outside the base window saturate, as on screen.
+ * (Like the existing colorbars, the stretch curve is not drawn.)
+ * @returns {{min:number, max:number, sample:(x:number)=>number[]}}
+ */
+export function createColorbarRamp(colormap, reverse, contrastLimits, band = null) {
+  const [cMin, cMax] = Array.isArray(contrastLimits) ? contrastLimits : [0, 1];
+  const base = getColormap(colormap);
+  const invert = reverse && colormap !== 'label';
+  const b = normalizeColormapBand(band);
+  const bandFn = createColormapBandFn(b);
+  return {
+    min: b ? Math.min(cMin, b.min) : cMin,
+    max: b ? Math.max(cMax, b.max) : cMax,
+    sample(x) {
+      const hit = bandFn !== null ? bandFn(x) : null;
+      if (hit !== null) return hit;
+      const t = Math.max(0, Math.min(1, (x - cMin) / (cMax - cMin)));
+      return base(invert ? 1 - t : t);
+    },
+  };
+}
+
+/**
  * Generate a colorbar as an array of RGB values
  * @param {string} colormapName - Name of the colormap
  * @param {number} steps - Number of color steps (default 256)

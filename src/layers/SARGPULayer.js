@@ -2,6 +2,7 @@ import { Layer, project32, picking } from '@deck.gl/core';
 import { Model, Geometry } from '@luma.gl/core';
 import GL from '@luma.gl/constants';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
+import { normalizeColormapBand } from '../utils/colormap.js';
 import { applyWebGLFilter, FILTER_TYPE_IDS } from '../gpu/webgl-spatial-filter.js';
 import { debugLog } from '../utils/debug-log.js';
 
@@ -107,22 +108,28 @@ uniform float uClassMode;          // > 0.5 = class-map lookup instead of ramp
 uniform sampler2D uClassPalette;   // 256×1 RGBA palette, one texel per class index
 uniform float uClassPaletteEntries; // authored class count (unused in shader; for parity)
 uniform float uOpacity;            // layer opacity multiplier (1.0 = fully opaque)
+// Colormap band: pixels whose display value (dB or linear) falls inside
+// [uBandMin, uBandMax] use their own colormap stretched over just that range;
+// everything else keeps the base colormap + contrast. Single-band mode only.
+uniform float uBandEnabled;
+uniform float uBandMin;
+uniform float uBandMax;
+uniform float uBandColormap;
+uniform float uBandReverse;
 
 in vec2 vTexCoord;
 out vec4 fragColor;
 
 // ─── Shared: dB scaling + contrast + stretch ─────────────────────────
 
-float processChannel(float amplitude, float cMin, float cMax) {
-  float value;
-  if (uUseDecibels > 0.5) {
-    float db = 10.0 * log2(max(amplitude, 1e-10)) * 0.30103;
-    value = (db - cMin) / (cMax - cMin);
-  } else {
-    value = (amplitude - cMin) / (cMax - cMin);
-  }
+// Amplitude → display units (dB when enabled, else unchanged)
+float toDisplay(float amplitude) {
+  return uUseDecibels > 0.5 ? 10.0 * log2(max(amplitude, 1e-10)) * 0.30103 : amplitude;
+}
 
-  value = clamp(value, 0.0, 1.0);
+// Display value → [0,1] via contrast window + stretch
+float stretchValue(float x, float cMin, float cMax) {
+  float value = clamp((x - cMin) / (cMax - cMin), 0.0, 1.0);
 
   int stretchMode = int(uStretchMode + 0.5);
   if (stretchMode == 1) {
@@ -146,8 +153,35 @@ float processChannel(float amplitude, float cMin, float cMax) {
   return value;
 }
 
+float processChannel(float amplitude, float cMin, float cMax) {
+  return stretchValue(toDisplay(amplitude), cMin, cMax);
+}
+
 // ─── Colormaps (imported from shaders.js - single source of truth) ──
 ${glslColormaps}
+
+// Colormap dispatch by COLORMAP_IDS (reverse ignored for label, id 10)
+vec3 colormapById(int colormapId, float value, bool reverse) {
+  float cmapInput = (reverse && colormapId != 10) ? (1.0 - value) : value;
+  if (colormapId == 1) return viridis(cmapInput);
+  if (colormapId == 2) return inferno(cmapInput);
+  if (colormapId == 3) return plasma(cmapInput);
+  if (colormapId == 4) return phaseColormap(cmapInput);
+  if (colormapId == 5) return twilightMap(cmapInput);
+  if (colormapId == 6) return sardineMap(cmapInput);
+  if (colormapId == 7) return floodMap(cmapInput);
+  if (colormapId == 8) return divergingMap(cmapInput);
+  if (colormapId == 9) return polarimetricMap(cmapInput);
+  if (colormapId == 10) return labelMap(value);
+  if (colormapId == 11) return rdbuMap(cmapInput);
+  if (colormapId == 12) return romaOMap(cmapInput);
+  if (colormapId == 13) return magma(cmapInput);
+  if (colormapId == 14) return cividisMap(cmapInput);
+  if (colormapId == 15) return turboMap(cmapInput);
+  if (colormapId == 16) return batlowMap(cmapInput);
+  if (colormapId == 17) return coherenceMap(cmapInput);
+  return grayscale(cmapInput);
+}
 
 // ─── Main ────────────────────────────────────────────────────────────
 
@@ -297,50 +331,12 @@ void main() {
       }
     }
 
-    float value = processChannel(amplitude, uMin, uMax);
-
+    float x = toDisplay(amplitude);
     vec3 rgb;
-    int colormapId = int(uColormap + 0.5);
-    // Reverse-ramp toggle (label cmap is hash-keyed — leave value untouched)
-    float cmapInput = (uReverseColormap > 0.5 && colormapId != 10) ? (1.0 - value) : value;
-    if (colormapId == 0) {
-      rgb = grayscale(cmapInput);
-    } else if (colormapId == 1) {
-      rgb = viridis(cmapInput);
-    } else if (colormapId == 2) {
-      rgb = inferno(cmapInput);
-    } else if (colormapId == 3) {
-      rgb = plasma(cmapInput);
-    } else if (colormapId == 4) {
-      rgb = phaseColormap(cmapInput);
-    } else if (colormapId == 5) {
-      rgb = twilightMap(cmapInput);
-    } else if (colormapId == 6) {
-      rgb = sardineMap(cmapInput);
-    } else if (colormapId == 7) {
-      rgb = floodMap(cmapInput);
-    } else if (colormapId == 8) {
-      rgb = divergingMap(cmapInput);
-    } else if (colormapId == 9) {
-      rgb = polarimetricMap(cmapInput);
-    } else if (colormapId == 10) {
-      rgb = labelMap(value);
-    } else if (colormapId == 11) {
-      rgb = rdbuMap(cmapInput);
-    } else if (colormapId == 12) {
-      rgb = romaOMap(cmapInput);
-    } else if (colormapId == 13) {
-      rgb = magma(cmapInput);
-    } else if (colormapId == 14) {
-      rgb = cividisMap(cmapInput);
-    } else if (colormapId == 15) {
-      rgb = turboMap(cmapInput);
-    } else if (colormapId == 16) {
-      rgb = batlowMap(cmapInput);
-    } else if (colormapId == 17) {
-      rgb = coherenceMap(cmapInput);
+    if (uBandEnabled > 0.5 && x >= uBandMin && x <= uBandMax) {
+      rgb = colormapById(int(uBandColormap + 0.5), stretchValue(x, uBandMin, uBandMax), uBandReverse > 0.5);
     } else {
-      rgb = grayscale(cmapInput);
+      rgb = colormapById(int(uColormap + 0.5), stretchValue(x, uMin, uMax), uReverseColormap > 0.5);
     }
 
     float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
@@ -793,6 +789,7 @@ export class SARGPULayer extends Layer {
       useDecibels = true,
       colormap = 'grayscale',
       reverseColormap = false,
+      colormapBand = null,
       gamma = 1.0,
       stretchMode = 'linear',
       rgbSaturation = 1.0,
@@ -817,6 +814,7 @@ export class SARGPULayer extends Layer {
     } = this.props;
 
     const isRGB = mode === 'rgb';
+    const band = normalizeColormapBand(colormapBand);
 
     try {
       const { gl } = this.context;
@@ -860,6 +858,11 @@ export class SARGPULayer extends Layer {
         uUseDecibels: useDecibels ? 1.0 : 0.0,
         uColormap: getColormapId(colormap),
         uReverseColormap: reverseColormap ? 1.0 : 0.0,
+        uBandEnabled: (!isRGB && band) ? 1.0 : 0.0,
+        uBandMin: band ? band.min : 0.0,
+        uBandMax: band ? band.max : 1.0,
+        uBandColormap: getColormapId(band ? band.colormap : 'grayscale'),
+        uBandReverse: band?.reverse ? 1.0 : 0.0,
         uGamma: gamma,
         uStretchMode: getStretchModeId(stretchMode),
         uMode: isRGB ? 1.0 : 0.0,
@@ -1061,6 +1064,8 @@ SARGPULayer.defaultProps = {
   useDecibels: { type: 'boolean', value: true, compare: true },
   colormap: { type: 'string', value: 'grayscale', compare: true },
   reverseColormap: { type: 'boolean', value: false, compare: true },
+  // {min, max, colormap, reverse} | null — second colormap over a value range
+  colormapBand: { type: 'object', value: null, compare: true },
   gamma: { type: 'number', value: 1.0, min: 0.1, max: 10.0, compare: true },
   stretchMode: { type: 'string', value: 'linear', compare: true },
   rgbSaturation: { type: 'number', value: 1.0, min: 0.0, max: 5.0, compare: true },

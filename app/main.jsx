@@ -51,11 +51,12 @@ import {
 } from '../src/utils/proxy.js';
 import { parseShareLink, buildShareLink, buildCompareLink, clearShareLinkParams } from '../src/utils/deep-link.js';
 import { connectAgentBridge, captureCanvas } from '../src/utils/agent-bridge-client.js';
-import { buildGrounding } from '../src/utils/sar-grounding.js';
+import { buildGrounding, viewPolarization } from '../src/utils/sar-grounding.js';
+import { formatSceneBrief, composeSceneCard, writeSceneToClipboard } from '../src/utils/scene-brief.js';
 import { buildClassPalette, seedLegendFromNames } from '../src/viewers/CompareGrid.jsx';
 import { resolveGranulesForBbox } from '../src/utils/granule-resolve.js';
 import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
-import { getColormap } from '../src/utils/colormap.js';
+import { getColormap, createColormapBandFn } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
 import { OpticalPeekLayer } from '../src/layers/OpticalPeekLayer.js';
@@ -84,6 +85,40 @@ import { trainLogistic, evaluateModel, predictLogistic } from '../src/ml/trainer
 import { datasetFromClassRegions, stratifiedSplit } from '../src/ml/dataset.js';
 import { debugLog } from '../src/utils/debug-log.js';
 import { toDb } from '../src/utils/stats.js';
+
+// Colormap <select> contents — shared by the base colormap and the colormap band.
+const COLORMAP_OPTION_GROUPS = (
+  <>
+    <optgroup label="Sequential (perceptually uniform)">
+      <option value="grayscale">Grayscale</option>
+      <option value="sardine">SARdine (cubehelix, SAR-tuned)</option>
+      <option value="viridis">Viridis</option>
+      <option value="inferno">Inferno</option>
+      <option value="plasma">Plasma</option>
+      <option value="magma">Magma</option>
+      <option value="cividis">Cividis (CVD-safe)</option>
+      <option value="batlow">Batlow (Crameri)</option>
+    </optgroup>
+    <optgroup label="Sequential (high-contrast / domain)">
+      <option value="turbo">Turbo (jet replacement)</option>
+      <option value="coherence">Coherence</option>
+      <option value="flood">Flood Alert</option>
+    </optgroup>
+    <optgroup label="Diverging">
+      <option value="rdbu">RdBu (InSAR displacement)</option>
+      <option value="diverging">Diverging</option>
+      <option value="polarimetric">Polarimetric</option>
+    </optgroup>
+    <optgroup label="Cyclic (wrapped phase)">
+      <option value="romaO">romaO (Crameri)</option>
+      <option value="twilight">Twilight</option>
+      <option value="phase">Phase (HSV)</option>
+    </optgroup>
+    <optgroup label="Categorical">
+      <option value="label">Label</option>
+    </optgroup>
+  </>
+);
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -605,6 +640,12 @@ function App() {
   // Viewer settings
   const [colormap, setColormap] = useState('grayscale');
   const [reverseColormap, setReverseColormap] = useState(false);
+  // Colormap band: a second colormap stretched over its own value range (e.g.
+  // river ice) so that regime can be picked apart without washing out the
+  // rest of the scene. Settings persist while the band is toggled off.
+  const [colormapBandEnabled, setColormapBandEnabled] = useState(false);
+  const [colormapBandSettings, setColormapBandSettings] = useState(null); // {min, max, colormap, reverse}
+  const colormapBand = colormapBandEnabled ? colormapBandSettings : null;
   const [useDecibels, setUseDecibels] = useState(true);
   // GUNW data is in radians/meters — dB conversion is never valid.
   // Scalar indices (RVI, etc.) are linear ratios — dB is never valid either.
@@ -906,6 +947,7 @@ function App() {
     // sharer's settings the first time the layer mounts.
     if (view.colormap) setColormap(view.colormap);
     if (view.reverseColormap != null) setReverseColormap(view.reverseColormap);
+    if (view.colormapBand) { setColormapBandSettings(view.colormapBand); setColormapBandEnabled(true); }
     if (view.useDecibels != null) setUseDecibels(view.useDecibels);
     if (Number.isFinite(view.contrastMin)) setContrastMin(view.contrastMin);
     if (Number.isFinite(view.contrastMax)) setContrastMax(view.contrastMax);
@@ -2869,6 +2911,7 @@ function App() {
     if (!s) return;
     pendingPNGStateRef.current = null;
     if (s.colormap) setColormap(s.colormap);
+    if (s.colormapBand) { setColormapBandSettings(s.colormapBand); setColormapBandEnabled(true); }
     if (s.useDecibels !== undefined) setUseDecibels(s.useDecibels);
     if (s.contrastMin !== undefined) setContrastMin(s.contrastMin);
     if (s.contrastMax !== undefined) setContrastMax(s.contrastMax);
@@ -5075,6 +5118,7 @@ function App() {
           const cMax = contrastMax;
           const needsStretch = stretchMode !== 'linear' || gamma !== 1.0;
           const stretchFn = needsStretch ? createStretchFn(stretchMode, gamma) : null;
+          const bandFn = createColormapBandFn(colormapBand, stretchFn);
           const rgbaData = new Uint8ClampedArray(numPixels * 4);
           const bandData = bands[bandNames[0]];
           // GDAL_NODATA sentinel from COG loader (e.g. -FLT_MAX, -9999).
@@ -5086,16 +5130,15 @@ function App() {
 
           for (let i = 0; i < numPixels; i++) {
             const amplitude = bandData[i];
-            let value;
-            if (effectiveUseDecibels) {
-              const db = toDb(amplitude);
-              value = (db - cMin) / (cMax - cMin);
-            } else {
-              value = (amplitude - cMin) / (cMax - cMin);
+            const x = effectiveUseDecibels ? toDb(amplitude) : amplitude;
+            let rgb = bandFn !== null ? bandFn(x) : null;
+            if (rgb === null) {
+              let value = (x - cMin) / (cMax - cMin);
+              value = Math.max(0, Math.min(1, value));
+              if (stretchFn !== null) value = stretchFn(value);
+              rgb = colormapFunc(invertRamp ? 1 - value : value);
             }
-            value = Math.max(0, Math.min(1, value));
-            if (stretchFn !== null) value = stretchFn(value);
-            const [r, g, b] = colormapFunc(invertRamp ? 1 - value : value);
+            const [r, g, b] = rgb;
             rgbaData[i * 4] = r;
             rgbaData[i * 4 + 1] = g;
             rgbaData[i * 4 + 2] = b;
@@ -5161,6 +5204,7 @@ function App() {
             useDecibels: effectiveUseDecibels,
             contrastLimits: (displayMode === 'rgb' && compositeId) ? effectiveContrastLimits : [contrastMin, contrastMax],
             colormap,
+            colormapBand: (displayMode === 'rgb' && compositeId) ? null : colormapBand,
             stretchMode,
             gamma,
             compositeId: compositeId || null,
@@ -5182,7 +5226,7 @@ function App() {
       setExporting(false);
       setExportProgress(0);
     }
-  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, fileType, nisarFile, cogUrl, nisarProductType, effectiveUseDecibels, addStatusLog]);
+  }, [imageData, exportMultilookWindow, exportMode, contrastMin, contrastMax, useDecibels, colormap, reverseColormap, colormapBand, stretchMode, gamma, displayMode, compositeId, effectiveContrastLimits, roi, fileType, nisarFile, cogUrl, nisarProductType, effectiveUseDecibels, addStatusLog]);
 
   // Export the current time-series frame as a georeferenced GeoTIFF with multilooking
   const handleExportTSFrame = useCallback(async () => {
@@ -5328,15 +5372,19 @@ function App() {
           const bandData = bands[bandNames[0]];
           const tsNeedsStretch = stretchMode !== 'linear' || gamma !== 1.0;
           const tsStretchFn = tsNeedsStretch ? createStretchFn(stretchMode, gamma) : null;
+          const tsBandFn = createColormapBandFn(colormapBand, tsStretchFn);
 
           for (let i = 0; i < numPixels; i++) {
             const amp = bandData[i];
-            let v = tsUseDecibels
-              ? (toDb(amp) - cMin) / (cMax - cMin)
-              : (amp - cMin) / (cMax - cMin);
-            v = Math.max(0, Math.min(1, v));
-            if (tsStretchFn !== null) v = tsStretchFn(v);
-            const [r, g, b] = colormapFunc(invertRamp ? 1 - v : v);
+            const x = tsUseDecibels ? toDb(amp) : amp;
+            let rgb = tsBandFn !== null ? tsBandFn(x) : null;
+            if (rgb === null) {
+              let v = (x - cMin) / (cMax - cMin);
+              v = Math.max(0, Math.min(1, v));
+              if (tsStretchFn !== null) v = tsStretchFn(v);
+              rgb = colormapFunc(invertRamp ? 1 - v : v);
+            }
+            const [r, g, b] = rgb;
             rgbaData[i * 4] = r; rgbaData[i * 4 + 1] = g; rgbaData[i * 4 + 2] = b;
             rgbaData[i * 4 + 3] = (amp === 0 || isNaN(amp)) ? 0 : 255;
           }
@@ -5373,6 +5421,7 @@ function App() {
             useDecibels: nisarProductType === 'GUNW' ? false : useDecibels,
             contrastLimits: roiTSContrastLimits,
             colormap,
+            colormapBand: frame.compositeId ? null : colormapBand,
             stretchMode,
             gamma,
             compositeId: frame.compositeId || null,
@@ -5394,12 +5443,13 @@ function App() {
       setExportProgress(0);
     }
   }, [roiTSFrames, roiTSIndex, roiTSBounds, roiTSContrastLimits, exportMultilookWindow, exportMode,
-      gamma, stretchMode, colormap, useDecibels, nisarProductType, addStatusLog]);
+      gamma, stretchMode, colormap, colormapBand, useDecibels, nisarProductType, addStatusLog]);
 
   // Serialize current visualization state for embedding in exported PNGs
   const serializeViewerState = useCallback(() => ({
     colormap,
     reverseColormap,
+    colormapBand,
     useDecibels,
     contrastMin,
     contrastMax,
@@ -5417,7 +5467,7 @@ function App() {
     viewCenter,
     viewZoom,
     filename: (fileType === 'nisar' || fileType === 'nisar-gunw') ? (nisarFile?.name || null) : (cogUrl || null),
-  }), [colormap, reverseColormap, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
+  }), [colormap, reverseColormap, colormapBand, useDecibels, contrastMin, contrastMax, gamma, stretchMode, displayMode, compositeId, rgbContrastLimits, selectedFrequency, selectedPolarization, multiLook, speckleFilterType, maskInvalid, fileType, viewCenter, viewZoom, nisarFile, cogUrl]);
 
   // W018 Phase 1 — agent bridge (read-only). Lets Claude Code see what the
   // viewer is showing: current render settings and a screenshot of the actual
@@ -5427,14 +5477,62 @@ function App() {
   // bridge connected — otherwise an agent is told about a render that has
   // since changed (e.g. a deep link applying a colormap after mount).
   const bridgeStateRef = useRef(null);
-  bridgeStateRef.current = { serializeViewerState, imageData, wgs84Bounds };
+  bridgeStateRef.current = { serializeViewerState, imageData, wgs84Bounds, fileType };
+
+  // "Copy scene for agent" — the push half of the bridge: the same view +
+  // grounding, placed on the clipboard for pasting into any chat. The brief
+  // is burned into the PNG (many chat apps keep only the image of an
+  // image+text paste); the plain text rides along for apps that take it.
+  // No await before the clipboard write, so it stays inside the user gesture.
+  const handleCopySceneForAgent = useCallback(() => {
+    const viewer = viewerRef.current;
+    const canvas = viewer?.getCanvas?.();
+    const maxDim = 1024;
+    let image = null;
+    let png = null;
+    if (canvas?.width && canvas?.height) {
+      const scale = Math.min(1, maxDim / Math.max(canvas.width, canvas.height));
+      image = { width: Math.round(canvas.width * scale), height: Math.round(canvas.height * scale) };
+    }
+    const render = serializeViewerState();
+    render.selectedPolarization = viewPolarization({ fileType, selectedPolarization: render.selectedPolarization, imageData });
+    // serializeViewerState only names NISAR files and URLs; add VRTs and local GeoTIFFs.
+    if (!render.filename) {
+      render.filename = imageData?.vrt?.name
+        || (fileType === 'local-tif' ? mosaicFiles[0]?.name : null)
+        || null;
+    }
+    const text = formatSceneBrief({ render, imageData, bounds: wgs84Bounds, image });
+    if (image) {
+      // deck.gl may have cleared the buffer since the last paint; redraw and
+      // read back on the next frame (same as the bridge screenshot).
+      viewer.redraw?.();
+      png = new Promise((resolve, reject) => {
+        requestAnimationFrame(() => {
+          try {
+            composeSceneCard(canvas, text, { maxDim }).toBlob(
+              (b) => (b ? resolve(b) : reject(new Error('Canvas capture failed'))), 'image/png');
+          } catch (err) {
+            reject(err);
+          }
+        });
+      });
+    }
+    writeSceneToClipboard(png, text).then(
+      (kind) => addStatusLog('success', kind === 'image+text'
+        ? 'Scene copied for agent (image with context panel) — paste into a chat'
+        : 'Scene context copied for agent (text only — this browser cannot copy the image)'),
+      (err) => addStatusLog('error', 'Failed to copy scene for agent', err && err.message),
+    );
+  }, [serializeViewerState, imageData, wgs84Bounds, fileType, mosaicFiles, addStatusLog]);
 
   useEffect(() => {
     const bridge = connectAgentBridge();
 
     bridge.register('get_view_state', () => {
-      const { serializeViewerState, imageData, wgs84Bounds } = bridgeStateRef.current;
+      const { serializeViewerState, imageData, wgs84Bounds, fileType } = bridgeStateRef.current;
       const render = serializeViewerState();
+      render.selectedPolarization = viewPolarization({ fileType, selectedPolarization: render.selectedPolarization, imageData });
       return {
         ...render,
         hasData: !!imageData,
@@ -5729,6 +5827,7 @@ function App() {
       const mainOpts = {
         colormap,
         reverseColormap,
+        colormapBand,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
         compositeId: isRGBDisplayMode ? compositeId : null,
@@ -5764,6 +5863,7 @@ function App() {
         const secondaryOpts = isTS ? {
           colormap,
           reverseColormap,
+          colormapBand,
           contrastLimits: roiTSContrastLimits,
           useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
           compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
@@ -5818,7 +5918,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [compareMode, colormap, reverseColormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
+  }, [compareMode, colormap, reverseColormap, colormapBand, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
 
   // Enhanced figure export — captures all overlays (ROI box, profile plots, pixel explorer)
   const handleSaveFigureWithOverlays = useCallback(async (fmt) => {
@@ -5849,6 +5949,7 @@ function App() {
       const mainOpts = {
         colormap,
         reverseColormap,
+        colormapBand,
         contrastLimits: effectiveContrastLimits,
         useDecibels: effectiveUseDecibels,
         compositeId: isRGBDisplayMode ? compositeId : null,
@@ -5898,6 +5999,7 @@ function App() {
         const secondaryOpts = isTS ? {
           colormap,
           reverseColormap,
+          colormapBand,
           contrastLimits: roiTSContrastLimits,
           useDecibels: roiTSFrames[roiTSIndex]?.isRGB ? false : (nisarProductType === 'GUNW' ? false : useDecibels),
           compositeId: roiTSFrames[roiTSIndex]?.compositeId || null,
@@ -5973,7 +6075,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, reverseColormap, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
+  }, [colormap, reverseColormap, colormapBand, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -6369,10 +6471,11 @@ function App() {
       { id: 'act.figure', group: 'action', label: 'Save figure (PNG)', shortcut: 'Ctrl+S', when: () => hasData || compareMode, run: handleSaveFigure },
       { id: 'act.figureOverlays', group: 'action', label: 'Save figure with overlays', shortcut: 'Ctrl+Shift+S', when: () => hasData, run: handleSaveFigureWithOverlays },
       { id: 'act.colorbar', group: 'action', label: 'Export RGB colorbar', when: () => isRGBDisplayMode, run: handleExportColorbar },
+      { id: 'act.copyForAgent', group: 'action', label: 'Copy scene for agent', when: () => hasData, run: handleCopySceneForAgent },
     ];
   }, [
     imageData, histogramData, isRGBDisplayMode, compareMode, roi, transectEnabled, transectLine,
-    handleReload, handleSaveFigure, handleSaveFigureWithOverlays, handleExportColorbar, addStatusLog,
+    handleReload, handleSaveFigure, handleSaveFigureWithOverlays, handleExportColorbar, handleCopySceneForAgent, addStatusLog,
   ]);
 
   // ── Model plugin handlers (W025) ──────────────────────────────────
@@ -6632,6 +6735,8 @@ function App() {
           }
         },
       });
+      const agent = pick('act.copyForAgent');
+      if (agent) items.push({ ...agent, group: 'clipboard' });
     }
     items.push({
       id: 'ctx.palette', group: 'more', label: 'All commands…', shortcut: 'Ctrl+Shift+{',
@@ -6941,7 +7046,7 @@ function App() {
                         } catch { /* omit bbox from the link */ }
                       }
                       const view = {
-                        colormap, reverseColormap, useDecibels,
+                        colormap, reverseColormap, colormapBand, useDecibels,
                         contrastMin, contrastMax, stretchMode, gamma,
                         selectedPolarization, selectedFrequency,
                         multiLook, compositeId, displayMode,
@@ -7900,34 +8005,7 @@ function App() {
               <div className="control-group">
                 <label>Colormap</label>
                 <select value={colormap} onChange={(e) => setColormap(e.target.value)}>
-                  <optgroup label="Sequential (perceptually uniform)">
-                    <option value="grayscale">Grayscale</option>
-                    <option value="sardine">SARdine (cubehelix, SAR-tuned)</option>
-                    <option value="viridis">Viridis</option>
-                    <option value="inferno">Inferno</option>
-                    <option value="plasma">Plasma</option>
-                    <option value="magma">Magma</option>
-                    <option value="cividis">Cividis (CVD-safe)</option>
-                    <option value="batlow">Batlow (Crameri)</option>
-                  </optgroup>
-                  <optgroup label="Sequential (high-contrast / domain)">
-                    <option value="turbo">Turbo (jet replacement)</option>
-                    <option value="coherence">Coherence</option>
-                    <option value="flood">Flood Alert</option>
-                  </optgroup>
-                  <optgroup label="Diverging">
-                    <option value="rdbu">RdBu (InSAR displacement)</option>
-                    <option value="diverging">Diverging</option>
-                    <option value="polarimetric">Polarimetric</option>
-                  </optgroup>
-                  <optgroup label="Cyclic (wrapped phase)">
-                    <option value="romaO">romaO (Crameri)</option>
-                    <option value="twilight">Twilight</option>
-                    <option value="phase">Phase (HSV)</option>
-                  </optgroup>
-                  <optgroup label="Categorical">
-                    <option value="label">Label</option>
-                  </optgroup>
+                  {COLORMAP_OPTION_GROUPS}
                 </select>
                 <div className="control-row u-mt-xs">
                   <input
@@ -7939,6 +8017,80 @@ function App() {
                   />
                   <label htmlFor="reverseColormap">Reverse</label>
                 </div>
+                {/* Colormap band — second colormap over its own value range */}
+                <div className="control-row u-mt-xs">
+                  <input
+                    type="checkbox"
+                    id="colormapBand"
+                    checked={colormapBandEnabled}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      if (on && !colormapBandSettings) {
+                        // Seed with the upper half of the current window
+                        const mid = Math.round((contrastMin + contrastMax) / 2 * 10) / 10;
+                        setColormapBandSettings({ min: mid, max: contrastMax, colormap: 'inferno', reverse: false });
+                      }
+                      setColormapBandEnabled(on);
+                    }}
+                  />
+                  <label htmlFor="colormapBand" title="Values inside the band get their own colormap, stretched over just that range; the rest of the scene keeps the base colormap and contrast">
+                    Band colormap
+                  </label>
+                </div>
+                {colormapBandEnabled && colormapBandSettings && (
+                  <div className="u-mt-xs">
+                    <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                      <ScrubNumber
+                        value={colormapBandSettings.min}
+                        onChange={(v) => setColormapBandSettings((b) => ({ ...b, min: v }))}
+                        step={effectiveUseDecibels ? 0.5 : 0.05}
+                        precision={effectiveUseDecibels ? 1 : 3}
+                        label="min"
+                        width={64}
+                      />
+                      <ScrubNumber
+                        value={colormapBandSettings.max}
+                        onChange={(v) => setColormapBandSettings((b) => ({ ...b, max: v }))}
+                        step={effectiveUseDecibels ? 0.5 : 0.05}
+                        precision={effectiveUseDecibels ? 1 : 3}
+                        label="max"
+                        width={64}
+                      />
+                    </div>
+                    <select
+                      className="u-mt-xs"
+                      value={colormapBandSettings.colormap}
+                      onChange={(e) => setColormapBandSettings((b) => ({ ...b, colormap: e.target.value }))}
+                    >
+                      {COLORMAP_OPTION_GROUPS}
+                    </select>
+                    <div className="control-row u-mt-xs u-between">
+                      <span className="control-row">
+                        <input
+                          type="checkbox"
+                          id="colormapBandReverse"
+                          checked={!!colormapBandSettings.reverse}
+                          disabled={colormapBandSettings.colormap === 'label'}
+                          onChange={(e) => setColormapBandSettings((b) => ({ ...b, reverse: e.target.checked }))}
+                        />
+                        <label htmlFor="colormapBandReverse">Reverse</label>
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        title="Copy the current contrast window into the band — narrow the contrast onto the feature, capture it, then restore the base contrast"
+                        onClick={() => setColormapBandSettings((b) => ({ ...b, min: contrastMin, max: contrastMax }))}
+                      >
+                        From contrast
+                      </button>
+                    </div>
+                    {!(colormapBandSettings.max > colormapBandSettings.min) && (
+                      <div className="u-mt-xs" style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
+                        Band inactive: max must exceed min
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -9407,6 +9559,7 @@ function App() {
                   useDecibels={effectiveUseDecibels}
                   colormap={colormap}
                   reverseColormap={reverseColormap}
+                  colormapBand={colormapBand}
                   gamma={gamma}
                   stretchMode={stretchMode}
                   compositeId={isRGBDisplayMode ? compositeId : null}
@@ -9575,6 +9728,7 @@ function App() {
                       compositeId={roiTSFrames[roiTSIndex]?.compositeId || null}
                       colormap={colormap}
                       reverseColormap={reverseColormap}
+                      colormapBand={colormapBand}
                       gamma={gamma}
                       stretchMode={stretchMode}
                       showGrid={showGrid}

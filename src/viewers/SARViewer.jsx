@@ -4,7 +4,7 @@ import { OrthographicView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
 import { SARBitmapLayer } from '../layers/SARBitmapLayer.js';
 import { SARTiledCOGLayer } from '../layers/SARTiledCOGLayer.js';
-import { getColormap } from '../utils/colormap.js';
+import { getColormap, createColorbarRamp } from '../utils/colormap.js';
 import { SAR_COMPOSITES } from '../utils/sar-composites.js';
 import { LoadingIndicator } from '../components/LoadingIndicator.jsx';
 import { ScaleBar } from '../components/ScaleBar.jsx';
@@ -34,6 +34,7 @@ export const SARViewer = forwardRef(function SARViewer({
   useDecibels = true,
   colormap = 'grayscale',
   reverseColormap = false,
+  colormapBand = null, // {min, max, colormap, reverse}: second colormap over a value range
   gamma = 1.0,
   stretchMode = 'linear',
   compositeId = null, // SAR RGB composite ID (null = single band)
@@ -262,7 +263,7 @@ export const SARViewer = forwardRef(function SARViewer({
   // RAF-throttled tick drives re-renders only when visual props change,
   // preventing redundant layer recreations during rapid slider drags.
   const visualRef = useRef({
-    contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
+    contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode,
     opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
     incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
     classMode, classPalette, classPaletteEntries,
@@ -277,6 +278,7 @@ export const SARViewer = forwardRef(function SARViewer({
       useDecibels !== prev.useDecibels ||
       colormap !== prev.colormap ||
       reverseColormap !== prev.reverseColormap ||
+      colormapBand !== prev.colormapBand ||
       gamma !== prev.gamma ||
       stretchMode !== prev.stretchMode ||
       opacity !== prev.opacity ||
@@ -301,7 +303,7 @@ export const SARViewer = forwardRef(function SARViewer({
       classPaletteEntries !== prev.classPaletteEntries
     );
     visualRef.current = {
-      contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode,
+      contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode,
       opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
       incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
       classMode, classPalette, classPaletteEntries,
@@ -312,7 +314,7 @@ export const SARViewer = forwardRef(function SARViewer({
         setVisualTick(t => t + 1);
       });
     }
-  }, [contrastLimits, useDecibels, colormap, reverseColormap, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping, classMode, classPalette, classPaletteEntries]);
+  }, [contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping, classMode, classPalette, classPaletteEntries]);
 
   // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
@@ -329,6 +331,7 @@ export const SARViewer = forwardRef(function SARViewer({
           useDecibels: v.useDecibels,
           colormap: v.colormap,
           reverseColormap: v.reverseColormap,
+          colormapBand: v.colormapBand,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -354,6 +357,7 @@ export const SARViewer = forwardRef(function SARViewer({
           useDecibels: v.useDecibels,
           colormap: v.colormap,
           reverseColormap: v.reverseColormap,
+          colormapBand: v.colormapBand,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -376,6 +380,7 @@ export const SARViewer = forwardRef(function SARViewer({
           useDecibels: v.useDecibels,
           colormap: v.colormap,
           reverseColormap: v.reverseColormap,
+          colormapBand: v.colormapBand,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -427,6 +432,7 @@ export const SARViewer = forwardRef(function SARViewer({
           useDecibels: v.useDecibels,
           colormap: v.colormap,
           reverseColormap: v.reverseColormap,
+          colormapBand: v.colormapBand,
           gamma: v.gamma,
           stretchMode: v.stretchMode,
           opacity: v.opacity,
@@ -604,6 +610,7 @@ export const SARViewer = forwardRef(function SARViewer({
         <ColorbarOverlay
           colormap={colormap}
           reverseColormap={reverseColormap}
+          colormapBand={colormapBand}
           contrastLimits={contrastLimits}
           useDecibels={useDecibels}
           compositeId={compositeId}
@@ -671,7 +678,7 @@ export const SARViewer = forwardRef(function SARViewer({
  * ColorbarOverlay - Displays a colorbar legend
  * Shows RGB channel legend when compositeId is set, otherwise shows colormap gradient.
  */
-function ColorbarOverlay({ colormap, reverseColormap = false, contrastLimits, useDecibels, compositeId }) {
+function ColorbarOverlay({ colormap, reverseColormap = false, colormapBand = null, contrastLimits, useDecibels, compositeId }) {
   const unit = useDecibels ? 'dB' : '';
 
   const colorbarStyle = {
@@ -737,11 +744,13 @@ function ColorbarOverlay({ colormap, reverseColormap = false, contrastLimits, us
   }
 
   // Single-band mode — show colormap gradient
-  const [min, max] = Array.isArray(contrastLimits) ? contrastLimits : [0, 1];
+  const ramp = colormapBand ? createColorbarRamp(colormap, reverseColormap, contrastLimits, colormapBand) : null;
+  const [min, max] = ramp ? [ramp.min, ramp.max]
+    : (Array.isArray(contrastLimits) ? contrastLimits : [0, 1]);
   const gradientStyle = {
     width: '20px',
     height: '150px',
-    background: getGradientCSS(colormap, reverseColormap),
+    background: ramp ? getRampGradientCSS(ramp) : getGradientCSS(colormap, reverseColormap),
     borderRadius: 'var(--radius-sm)',
     marginBottom: 'var(--space-xs)',
   };
@@ -778,6 +787,18 @@ function getGradientCSS(colormapName, reversed = false) {
     stops.push(`rgb(${color.join(',')}) ${t * 100}%`);
   }
 
+  return `linear-gradient(to bottom, ${stops.join(', ')})`;
+}
+
+/** CSS gradient for a base + band ramp; dense stops keep the band edges crisp. */
+function getRampGradientCSS(ramp) {
+  const stops = [];
+  const numStops = 128;
+  for (let i = 0; i < numStops; i++) {
+    const t = i / (numStops - 1);
+    const color = ramp.sample(ramp.max - t * (ramp.max - ramp.min));
+    stops.push(`rgb(${color.join(',')}) ${t * 100}%`);
+  }
   return `linear-gradient(to bottom, ${stops.join(', ')})`;
 }
 
