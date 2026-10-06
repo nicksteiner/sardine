@@ -4,6 +4,8 @@ import { defineConfig } from 'vite';
 // Uses project root so test/ files are accessible
 export default defineConfig({
   root: '.',
+  esbuild: { jsx: 'automatic' },
+  optimizeDeps: { esbuildOptions: { target: 'es2022' } },
   resolve: {
     alias: {
       'sardine': '/src/index.js',

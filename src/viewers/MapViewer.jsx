@@ -4,6 +4,7 @@ import DeckGL from '@deck.gl/react';
 import { MapView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
 import { getColormap } from '../utils/colormap.js';
+import { createReprojectedTileFetcher } from '../utils/reproject-tiles.js';
 
 // Import MapLibre CSS - users need to include this in their build
 // import 'maplibre-gl/dist/maplibre-gl.css';
@@ -26,10 +27,21 @@ export function MapViewer({
   showControls = true,
   onViewStateChange,
   style = {},
+  // Projected scene drawn through warped tile meshes (W033):
+  // { width, height, worldBounds, crs }. `bounds` is then derived (lon/lat).
+  reproject = null,
+  // Extra SARTileLayer props (gamma, stretchMode, rgbSaturation, …).
+  layerProps = {},
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const [mapLoaded, setMapLoaded] = useState(false);
+
+  const fetcher = useMemo(() => {
+    if (!reproject || !getTile) return null;
+    return createReprojectedTileFetcher({ getTile, ...reproject });
+  }, [getTile, reproject]);
+  if (fetcher) bounds = fetcher.extent;
 
   // Calculate initial view state from bounds
   const defaultViewState = useMemo(() => {
@@ -118,15 +130,17 @@ export function MapViewer({
       new SARTileLayer({
         id: 'sar-layer',
         getTile,
+        ...(fetcher ? { getTileData: fetcher.getTileData, minZoom: 0 } : {}),
         bounds,
         contrastLimits,
         useDecibels,
         colormap,
         reverseColormap,
         opacity,
+        ...layerProps,
       }),
     ];
-  }, [getTile, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity]);
+  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps]);
 
   const containerStyle = useMemo(
     () => ({

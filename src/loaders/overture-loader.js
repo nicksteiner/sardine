@@ -96,7 +96,7 @@ const MAX_CACHE_ENTRIES = 200;
  * Get or build a proj4 projection string for a CRS.
  * proj4 has built-in support for common EPSG codes via +proj strings.
  */
-function getProj4Def(crs) {
+export function getProj4Def(crs) {
   const epsgMatch = crs?.match(/EPSG:(\d+)/);
   if (!epsgMatch) return null;
   const epsg = parseInt(epsgMatch[1]);

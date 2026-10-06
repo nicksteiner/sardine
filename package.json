@@ -48,6 +48,8 @@
     "@deck.gl/layers": "^8.9.35",
     "@deck.gl/react": "^8.9.35",
     "@developmentseed/geotiff": "^0.8.1",
+    "@developmentseed/proj": "^0.8.1",
+    "@developmentseed/raster-reproject": "^0.8.1",
     "geotiff": "^2.1.0",
     "h5wasm": "^0.8.11",
     "maplibre-gl": "^4.0.0",
