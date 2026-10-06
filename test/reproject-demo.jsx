@@ -14,6 +14,40 @@ import { loadCOGRGBComposite, loadLocalTIF } from '../src/loaders/cog-loader.js'
 import { loadNISARGCOVFromUrl, loadNISARRGBComposite } from '../src/loaders/nisar-loader.js';
 import { rgbContrastFromBandStats } from '../src/utils/sar-composites.js';
 import { getRequiredDatasets } from '../src/utils/sar-composites.js';
+import { openCOGReader } from '../src/loaders/cog-tile-reader.js';
+import { GHS_POP_COG_URL, sumPopulationInPolygon, countBuildingsInPolygon } from '../src/utils/exposure.js';
+import { GeoJsonLayer } from '@deck.gl/layers';
+
+// Exposure query: click → people + buildings in a box around the point.
+// `?box=` degrees; default ≈ 5 km at the equator. Read lazily: `params` is
+// declared further down.
+const boxDeg = () => Number(new URLSearchParams(location.search).get('box') || 0.045);
+let popReaderPromise = null;
+let queryLayer = null;
+let rerender = () => {};
+async function exposureAt([lon, lat]) {
+  const BOX_DEG = boxDeg(); const h = BOX_DEG / 2;
+  const rings = [[[lon - h, lat - h], [lon + h, lat - h], [lon + h, lat + h], [lon - h, lat + h], [lon - h, lat - h]]];
+  queryLayer = new GeoJsonLayer({
+    id: 'exposure-box', data: { type: 'Feature', geometry: { type: 'Polygon', coordinates: rings } },
+    filled: true, stroked: true, getFillColor: [78, 201, 212, 40], getLineColor: [78, 201, 212, 255], getLineWidth: 2, lineWidthUnits: 'pixels',
+  });
+  rerender();
+  status(`computing exposure for ${BOX_DEG}° box at ${lon.toFixed(3)}, ${lat.toFixed(3)} …`);
+  const t0 = performance.now();
+  try {
+    popReaderPromise ||= openCOGReader(GHS_POP_COG_URL(2021));
+    const reader = await popReaderPromise;
+    const [pop, bld] = await Promise.all([
+      sumPopulationInPolygon(reader, rings),
+      countBuildingsInPolygon(rings, { zoom: 14, maxTiles: 100 }),
+    ]);
+    const src = Object.entries(bld.bySource).map(([k, v]) => `${k} ${v.toLocaleString()}`).join(', ');
+    status(`@ ${lon.toFixed(4)}, ${lat.toFixed(4)} ±${(BOX_DEG / 2).toFixed(4)}° · ${Math.round(pop.people).toLocaleString()} people (GHS-POP 2021, ${pop.areaKm2.toFixed(0)} km²) · ${bld.buildings.toLocaleString()} buildings (${src}; ${(bld.areaM2 / 1e4).toFixed(0)} ha footprint) · ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  } catch (e) {
+    status(`exposure failed: ${e.message}`);
+  }
+}
 
 const status = (msg) => { document.getElementById('status').textContent = msg; };
 const params = new URLSearchParams(location.search);
@@ -61,7 +95,8 @@ async function main() {
     bboxSpace: pixelSpace ? 'pixel' : 'world',
   };
 
-  createRoot(document.getElementById('root')).render(
+  const root = createRoot(document.getElementById('root'));
+  const render = () => root.render(
     <MapViewer
       getTile={scene.getRGBTile || scene.getTile}
       reproject={reproject}
@@ -71,8 +106,13 @@ async function main() {
       mapStyle={mapStyle}
       showControls={false}
       layerProps={layerProps}
+      extraLayers={queryLayer ? [queryLayer] : []}
+      onClick={exposureAt}
     />
   );
+  rerender = render;
+  render();
+  status(`${scene.width}×${scene.height} ${scene.crs} — click the map for people + buildings in a ${boxDeg()}° box`);
 }
 
 main().catch((e) => { status(`error: ${e.message}`); console.error(e); });

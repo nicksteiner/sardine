@@ -38,6 +38,8 @@ export function MapViewer({
   tileVersion = 0,
   // deck.gl layers in lon/lat drawn above the raster (Overture overlays…).
   extraLayers = [],
+  // onClick([lon, lat]) for map-frame interactions (exposure queries…).
+  onClick = null,
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -179,6 +181,7 @@ export function MapViewer({
         onViewStateChange={handleViewStateChange}
         layers={layers}
         controller={true}
+        onClick={onClick ? (info) => { if (info?.coordinate) onClick(info.coordinate); } : undefined}
         style={{ position: 'absolute', top: 0, left: 0 }}
       />
 
