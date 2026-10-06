@@ -211,21 +211,25 @@ body {
 
 
 /* ─── HEADER ─── */
+/* Compact strip: the wordmark is identification, not a banner — the
+   viewport is the point of the page. */
 .header {
   background: var(--sardine-bg-panel);
-  padding: var(--space-sm) var(--space-lg);
-  border-bottom: 2px var(--panel-border-style) var(--sardine-border);
+  padding: var(--space-xs) var(--space-md);
+  border-bottom: 1px var(--panel-border-style) var(--sardine-border);
   display: flex;
-  align-items: center;
-  gap: var(--space-lg);
+  align-items: baseline;
+  gap: var(--space-md);
+  line-height: 1.2;
 }
 
 .header h1 {
   font-family: var(--font-mono);
-  font-size: var(--text-2xl);
+  font-size: var(--text-lg);
   font-weight: 700;
-  letter-spacing: -1px;
+  letter-spacing: -0.5px;
   color: var(--text-primary);
+  margin: 0;
 }
 
 .header h1 .sar {
@@ -234,9 +238,9 @@ body {
 
 .header .subtitle {
   font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--text-muted);
-  letter-spacing: 2px;
+  letter-spacing: 1.5px;
   text-transform: uppercase;
 }
 

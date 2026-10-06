@@ -9455,7 +9455,7 @@ function App() {
                     colormap={colormap}
                     reverseColormap={reverseColormap}
                     opacity={1}
-                    mapStyle="https://tiles.openfreemap.org/styles/dark"
+                    mapStyle="https://tiles.openfreemap.org/styles/liberty"
                     showControls={false}
                     width="100%"
                     height="100%"

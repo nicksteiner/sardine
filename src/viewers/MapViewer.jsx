@@ -23,7 +23,8 @@ export function MapViewer({
   opacity = 0.8,
   width = '100%',
   height = '100%',
-  mapStyle = 'https://demotiles.maplibre.org/style.json',
+  // OpenFreeMap "liberty": a bright, keyless OSM style (basemap default).
+  mapStyle = 'https://tiles.openfreemap.org/styles/liberty',
   showControls = true,
   onViewStateChange,
   style = {},
