@@ -7,7 +7,7 @@
  * view's unresolvable questions are declared rather than glossed over.
  */
 
-import { buildGrounding, describeAmbiguities, describeTerrain } from '../../src/utils/sar-grounding.js';
+import { buildGrounding, describeAmbiguities, describeTerrain, viewPolarization } from '../../src/utils/sar-grounding.js';
 import assert from 'node:assert';
 
 let passed = 0, failed = 0;
@@ -195,6 +195,29 @@ test('shadow is never silently dropped — only an applied mask removes it', () 
   const g = buildGrounding(GCOV_TERRAIN, { ...RENDER_DB, maskLayoverShadow: false });
   const dark = g.ambiguities.find((a) => a.id === 'dark-target-ambiguity');
   assert.ok(dark.candidateCauses.some((c) => /shadow/i.test(c)));
+});
+
+test('viewPolarization ignores the NISAR picker default for a VRT', () => {
+  const vrt = { vrt: { bandPolarizations: ['VV'] } };
+  assert.strictEqual(viewPolarization({ fileType: 'cog', selectedPolarization: 'HHHH', imageData: vrt }), 'VV');
+});
+
+test('viewPolarization is null for an unlabelled COG, not the picker default', () => {
+  assert.strictEqual(viewPolarization({ fileType: 'local-tif', selectedPolarization: 'HHHH', imageData: {} }), null);
+});
+
+test('viewPolarization uses the picker for NISAR', () => {
+  assert.strictEqual(viewPolarization({ fileType: 'nisar', selectedPolarization: 'HVHV', imageData: { polarization: 'HHHH' } }), 'HVHV');
+});
+
+test('viewPolarization leaves a VRT composite to compositeId', () => {
+  assert.strictEqual(viewPolarization({ fileType: 'cog', imageData: { composite: 'dual-pol-v', vrt: { bandPolarizations: ['VV', 'VH'] } } }), null);
+});
+
+test('display range note rounds slider values and has no typo', () => {
+  const g = buildGrounding(NISAR_L, { ...RENDER_DB, contrastMin: -24.7708146138118, contrastMax: -1.59991466295634 });
+  assert.match(g.measurement.displayRangeNote, /-24\.77 dB and white\/max-colour to -1\.6 dB/);
+  assert.deepStrictEqual(g.measurement.displayRange, [-24.7708146138118, -1.59991466295634]);
 });
 
 console.log(`\nsar-grounding: ${passed} passed, ${failed} failed\n`);

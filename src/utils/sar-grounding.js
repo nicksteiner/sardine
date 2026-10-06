@@ -47,6 +47,9 @@ const BAND_PHYSICS = {
   },
 };
 
+/** Display limits are slider values; four significant figures is plenty. */
+const roundRange = (v) => Number(v.toPrecision(4));
+
 /** What a polarization channel is physically sensitive to. */
 const POL_PHYSICS = {
   HH: 'Co-polarized. Sensitive to surface and double-bounce scattering; over flooded vegetation HH double-bounce is typically enhanced.',
@@ -186,6 +189,23 @@ export function describeAmbiguities({ identification = {}, render = {}, terrain 
 }
 
 /**
+ * The polarization actually on screen. `selectedPolarization` is the NISAR
+ * dataset picker and keeps its default (HHHH) when a COG or VRT is open, so
+ * it only counts for NISAR files; otherwise the product must say. A VRT names
+ * its bands (description or source filename); the viewer shows band 1 unless
+ * a composite was opened. Unknown stays null — never the picker's default.
+ */
+export function viewPolarization({ fileType, selectedPolarization, imageData } = {}) {
+  if (fileType === 'nisar' || fileType === 'nisar-gunw') {
+    return selectedPolarization || imageData?.polarization || null;
+  }
+  if (imageData?.polarization) return imageData.polarization;
+  const vrtPols = imageData?.vrt?.bandPolarizations;
+  if (Array.isArray(vrtPols) && !imageData.composite) return vrtPols[0] || null;
+  return null;
+}
+
+/**
  * Build the full grounding payload that accompanies a view sent to an agent.
  *
  * @param {object} imageData - loader output (identification, pixelSpacing, …)
@@ -226,7 +246,7 @@ export function buildGrounding(imageData = {}, render = {}) {
       // Stated explicitly: brightness is a render choice, not a measurement.
       displayRange: lo !== null && hi !== null ? [lo, hi] : null,
       displayRangeNote: lo !== null && hi !== null
-        ? `Black maps to ${lo}${isDb ? ' dB' : ''} and white//max-colour to ${hi}${isDb ? ' dB' : ''}. Values outside this range are clipped, so apparent brightness is a render choice and NOT an absolute measurement.`
+        ? `Black maps to ${roundRange(lo)}${isDb ? ' dB' : ''} and white/max-colour to ${roundRange(hi)}${isDb ? ' dB' : ''}. Values outside this range are clipped, so apparent brightness is a render choice and NOT an absolute measurement.`
         : 'Contrast range unknown; apparent brightness cannot be converted to a value.',
       // Loaders disagree on the name: NISAR exposes pixelSpacing, COG
       // exposes resolution ([x, y] in CRS units). Report whichever exists
