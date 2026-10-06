@@ -13,6 +13,7 @@
  */
 import proj4 from 'proj4';
 import { getProj4Def, projectedToWGS84 } from '../loaders/overture-loader.js';
+import { debugLog } from './debug-log.js';
 
 /**
  * @param {Object} opts
@@ -24,10 +25,13 @@ import { getProj4Def, projectedToWGS84 } from '../loaders/overture-loader.js';
  * @param {number[]} opts.worldBounds - [minX, minY, maxX, maxY] in the image CRS
  * @param {string} opts.crs - 'EPSG:xxxx'
  * @param {number} [opts.segments=8] - mesh grid segments per tile side
+ * @param {'pixel'|'world'} [opts.bboxSpace='pixel'] - coordinate space the
+ *   scene's getTile expects in `bbox`: pixel-world (COG, streamed GCOV) or the
+ *   image CRS itself (NISAR RGB composites, whose `bounds` are worldBounds).
  * @returns {{ extent: number[], getTileData: Function }} lon/lat extent for the
  *   TileLayer and a getTileData(tile) for deck.gl's TileLayer in a MapView.
  */
-export function createReprojectedTileFetcher({ getTile, width, height, worldBounds, crs, segments = 8 }) {
+export function createReprojectedTileFetcher({ getTile, width, height, worldBounds, crs, segments = 8, bboxSpace = 'pixel' }) {
   const projDef = getProj4Def(crs);
   const forward = projDef
     ? proj4('WGS84', projDef).forward
@@ -82,9 +86,24 @@ export function createReprojectedTileFetcher({ getTile, width, height, worldBoun
     const pb = Math.min(height, Math.ceil(rMax));
     if (pr <= pl || pb <= pt) return null;
 
-    const tileData = await getTile({
-      bbox: { left: pl, right: pr, top: height - pt, bottom: height - pb },
-    });
+    // deck's OrthographicView hands loaders bboxes with top < bottom
+    // numerically (screen-down Y); the NISAR loaders rely on that ordering
+    // (pxTop comes from bbox.bottom) while the COG loaders min/max it. Keep
+    // the same ordering here.
+    const bbox = bboxSpace === 'world'
+      ? { left: minX + pl / sx, right: minX + pr / sx, top: maxY - pb / sy, bottom: maxY - pt / sy }
+      : { left: pl, right: pr, top: height - pb, bottom: height - pt };
+    // x/y/z ride along so loaders that key their tile caches by index
+    // (streamed GCOV) see one key per map tile.
+    const { x, y, z } = tile.index || {};
+    let tileData;
+    try {
+      tileData = await getTile({ x, y, z, bbox });
+    } catch (e) {
+      console.warn(`[reproject-tiles] tile ${z}/${x}/${y} failed:`, e?.message || e);
+      throw e;
+    }
+    debugLog(`[reproject-tiles] ${z}/${x}/${y} px[${pl},${pt},${pr},${pb}] → ${tileData ? `${tileData.width}x${tileData.height}` : 'null'}`);
     if (!tileData) return null;
 
     const texCoords = new Float32Array(n * n * 2);
