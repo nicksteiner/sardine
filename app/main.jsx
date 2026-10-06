@@ -667,6 +667,8 @@ function App() {
     dark: { label: 'Dark', url: 'https://tiles.openfreemap.org/styles/dark' },
   };
   const [basemapStyle, setBasemapStyle] = useState('positron');
+  // Scene opacity over the basemap, so roads/rivers/labels can show through.
+  const [mapDataOpacity, setMapDataOpacity] = useState(1);
   // Context raster under the scene in map mode (GHS-POP density), opened on demand.
   const [showPopulation, setShowPopulation] = useState(false);
   const [populationScene, setPopulationScene] = useState(null);
@@ -1485,6 +1487,16 @@ function App() {
     setLoadProgress(0);
     setLoadDetail(null);
   }, []);
+
+  // The load panel stays up while loadProgress > 0 (W030: the remote overview
+  // prefetch keeps streaming past `loading`). The local-file paths (TIF drop,
+  // COG band / NITF segment switch, mosaic append) mark 100% and clear
+  // `loading` without resetting, which left the panel pinned at 100%. Once a
+  // load is no longer running and the bar reads complete, there is nothing
+  // left to show.
+  useEffect(() => {
+    if (!loading && loadProgress >= 100) resetLoadProgress();
+  }, [loading, loadProgress, resetLoadProgress]);
 
   const cancelActiveLoad = useCallback(() => {
     const controller = loadAbortRef.current;
@@ -8213,6 +8225,23 @@ function App() {
                 )}
               </div>
               {mapMode && (
+                <div className="control-group">
+                  <div className="u-between">
+                    <label htmlFor="mapDataOpacity">Data opacity</label>
+                    <span className="value-display">{(mapDataOpacity * 100).toFixed(0)}%</span>
+                  </div>
+                  <input
+                    id="mapDataOpacity"
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={mapDataOpacity}
+                    onChange={(e) => setMapDataOpacity(Number(e.target.value))}
+                  />
+                </div>
+              )}
+              {mapMode && (
                 <div className="control-row">
                   <input
                     type="checkbox"
@@ -9663,7 +9692,7 @@ function App() {
                     useDecibels={effectiveUseDecibels}
                     colormap={colormap}
                     reverseColormap={reverseColormap}
-                    opacity={1}
+                    opacity={mapDataOpacity}
                     mapStyle={BASEMAP_STYLES[basemapStyle]?.url || BASEMAP_STYLES.positron.url}
                     showControls={false}
                     width="100%"

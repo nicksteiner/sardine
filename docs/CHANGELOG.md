@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reproject demo page queries it on click. `MapViewer` gains `onClick`, `extraLayers`,
   `rasterOverlays`, `layerProps`, `tileVersion` props
 - Compact header strip
+- **Data opacity** slider in Basemap mode — the scene's opacity over the basemap, so
+  roads, rivers and labels can show through the SAR layer
+
+### Fixed
+- Load panel no longer stays pinned at 100% after a local GeoTIFF drop, COG band switch,
+  mosaic append, or NITF load/segment switch. Those paths marked 100% without resetting
+  the progress surface the W030 panel keys on; progress now resets once a load has settled
 
 ## [1.0.0-rc.5] - 2026-10-06 — deck.gl 9.4 / luma.gl 9.4 migration
 
