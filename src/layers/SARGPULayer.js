@@ -1,6 +1,5 @@
 import { Layer, project32, picking } from '@deck.gl/core';
-import { Model, Geometry } from '@luma.gl/core';
-import GL from '@luma.gl/constants';
+import { Model, Geometry } from '@luma.gl/engine';
 import { getColormapId, getStretchModeId, glslColormaps } from './shaders.js';
 import { normalizeColormapBand } from '../utils/colormap.js';
 import { applyWebGLFilter, FILTER_TYPE_IDS } from '../gpu/webgl-spatial-filter.js';
@@ -42,6 +41,70 @@ void main() {
 `;
 
 /**
+ * Scalar uniforms of the SAR shader as one std140 uniform block (deck.gl 9 /
+ * luma.gl 9: per-draw scalars go through a shader module's uniform buffer,
+ * not model.setUniforms). Order here IS the block layout — vec4s first, then
+ * floats — and the GLSL block is generated from this same list so JS and
+ * shader can never disagree. Sampler uniforms stay as bindings.
+ */
+const SAR_UNIFORMS = [
+  // Bounds for UV remapping: full-extent corrections cover imageBounds, tile covers tileBounds
+  ['uImageBounds', 'vec4'],      // [minX, minY, maxX, maxY] of full image
+  ['uTileBounds', 'vec4'],       // [minX, minY, maxX, maxY] of this tile
+  ['uMin', 'float'],
+  ['uMax', 'float'],
+  ['uUseDecibels', 'float'],
+  ['uColormap', 'float'],
+  ['uReverseColormap', 'float'],  // > 0.5 = invert ramp input (label cmap excluded)
+  ['uGamma', 'float'],
+  ['uStretchMode', 'float'],
+  ['uMode', 'float'],             // 0 = single-band + colormap, 1 = RGB composite
+  ['uMaskInvalid', 'float'],      // > 0.5 = hide invalid (0) and fill (255) pixels
+  ['uMaskLayoverShadow', 'float'],// > 0.5 = hide layover/shadow (mask < 100)
+  ['uUseCoherenceMask', 'float'], // > 0.5 = apply coherence/auxiliary mask
+  ['uCoherenceThreshold', 'float'],
+  ['uCoherenceThresholdMax', 'float'],
+  ['uCoherenceMaskMode', 'float'],// 0 = mask below min, 1 = mask outside [min,max]
+  ['uVerticalDisplacement', 'float'], // > 0.5 = divide by cos(incidence angle)
+  ['uValueScale', 'float'],       // unit conversion, e.g. λ/4π for phase(rad) → LOS meters
+  // Per-correction enable flags (> 0.5 = subtract this correction)
+  ['uCorIono', 'float'],
+  ['uCorTropo', 'float'],
+  ['uCorSET', 'float'],
+  ['uCorRamp', 'float'],
+  // Per-channel min/max for RGB mode
+  ['uMinR', 'float'], ['uMaxR', 'float'],
+  ['uMinG', 'float'], ['uMaxG', 'float'],
+  ['uMinB', 'float'], ['uMaxB', 'float'],
+  ['uSaturation', 'float'],       // RGB saturation multiplier (1.0 = no change)
+  ['uColorblindMode', 'float'],   // 0=off, 1=deuteranopia, 2=protanopia, 3=tritanopia
+  ['uClassMode', 'float'],        // > 0.5 = class-map lookup instead of ramp
+  ['uClassPaletteEntries', 'float'], // authored class count (unused in shader; for parity)
+  ['uOpacity', 'float'],          // layer opacity multiplier (1.0 = fully opaque)
+  // Colormap band: pixels whose display value (dB or linear) falls inside
+  // [uBandMin, uBandMax] use their own colormap stretched over just that range;
+  // everything else keeps the base colormap + contrast. Single-band mode only.
+  ['uBandEnabled', 'float'],
+  ['uBandMin', 'float'],
+  ['uBandMax', 'float'],
+  ['uBandColormap', 'float'],
+  ['uBandReverse', 'float'],
+];
+
+const sarUniformBlockGLSL = `layout(std140) uniform sarUniforms {
+${SAR_UNIFORMS.map(([name, type]) => `  ${type} ${name};`).join('\n')}
+};`;
+
+/** luma.gl shader module: block name is `${name}Uniforms` → `sarUniforms`. */
+export const sarUniforms = {
+  name: 'sar',
+  fs: sarUniformBlockGLSL,
+  uniformTypes: Object.fromEntries(
+    SAR_UNIFORMS.map(([name, type]) => [name, type === 'vec4' ? 'vec4<f32>' : 'f32'])
+  ),
+};
+
+/**
  * Fragment shader - SAR processing (dB, colormap, stretch)
  * Supports both single-band (colormap) and RGB (3-band composite) modes.
  */
@@ -66,56 +129,13 @@ uniform sampler2D uTexCorIono;       // unit 6: ionosphere (per-tile, same grid 
 uniform sampler2D uTexCorTropo;      // unit 7: troposphere (full-extent, needs UV remap)
 uniform sampler2D uTexCorSET;        // unit 8: solid earth tides (full-extent, needs UV remap)
 uniform sampler2D uTexCorRamp;       // unit 9: planar ramp (full-extent, needs UV remap)
-// Bounds for UV remapping: full-extent corrections cover imageBounds, tile covers tileBounds
-uniform vec4 uImageBounds;          // [minX, minY, maxX, maxY] of full image
-uniform vec4 uTileBounds;           // [minX, minY, maxX, maxY] of this tile
+// Class-map palette: 256×1 RGBA, one texel per class index (the GeoTIFF's
+// embedded ColorMap). Sampled only when uClassMode > 0.5.
+uniform sampler2D uClassPalette;
 
-uniform float uMin;
-uniform float uMax;
-uniform float uUseDecibels;
-uniform float uColormap;
-uniform float uReverseColormap;  // > 0.5 = invert ramp input (label cmap excluded)
-uniform float uGamma;
-uniform float uStretchMode;
-uniform float uMode;  // 0 = single-band + colormap, 1 = RGB composite
-uniform float uMaskInvalid;        // > 0.5 = hide invalid (0) and fill (255) pixels
-uniform float uMaskLayoverShadow;  // > 0.5 = hide layover/shadow (mask < 100)
-uniform float uUseCoherenceMask;  // > 0.5 = apply coherence/auxiliary mask
-uniform float uCoherenceThreshold;  // Lower threshold (mask below this)
-uniform float uCoherenceThresholdMax;  // Upper threshold (mask above this, for range mode)
-uniform float uCoherenceMaskMode;  // 0 = mask below min, 1 = mask outside [min,max]
-uniform float uVerticalDisplacement;  // > 0.5 = divide by cos(incidence angle)
-uniform float uValueScale;  // unit conversion, e.g. λ/4π for phase(rad) → LOS meters
-// Per-correction enable flags (> 0.5 = subtract this correction)
-uniform float uCorIono;
-uniform float uCorTropo;
-uniform float uCorSET;
-uniform float uCorRamp;
-// Per-channel min/max for RGB mode (falls back to uMin/uMax if equal)
-uniform float uMinR;
-uniform float uMaxR;
-uniform float uMinG;
-uniform float uMaxG;
-uniform float uMinB;
-uniform float uMaxB;
-uniform float uSaturation;  // RGB saturation multiplier (1.0 = no change)
-uniform float uColorblindMode;  // 0=off, 1=deuteranopia, 2=protanopia, 3=tritanopia
-
-// Class-map mode: sample amplitude as an integer class index and look up its
-// color in a 256×1 palette texture (the GeoTIFF's embedded ColorMap). Skips
-// the dB/stretch/colormap ramp entirely. Bound to texture unit 10 (see draw()).
-uniform float uClassMode;          // > 0.5 = class-map lookup instead of ramp
-uniform sampler2D uClassPalette;   // 256×1 RGBA palette, one texel per class index
-uniform float uClassPaletteEntries; // authored class count (unused in shader; for parity)
-uniform float uOpacity;            // layer opacity multiplier (1.0 = fully opaque)
-// Colormap band: pixels whose display value (dB or linear) falls inside
-// [uBandMin, uBandMax] use their own colormap stretched over just that range;
-// everything else keeps the base colormap + contrast. Single-band mode only.
-uniform float uBandEnabled;
-uniform float uBandMin;
-uniform float uBandMax;
-uniform float uBandColormap;
-uniform float uBandReverse;
+// Scalar uniforms live in the sar uniform block, declared by the sarUniforms
+// shader module (injected ahead of this source by luma.gl); the block has no
+// instance name, so members are referenced bare (uMin, uMode, …).
 
 in vec2 vTexCoord;
 out vec4 fragColor;
@@ -378,13 +398,14 @@ export class SARGPULayer extends Layer {
     return {
       vs,
       fs,
-      modules: [project32, picking]  // Use deck.gl's projection and picking modules
+      modules: [project32, picking, sarUniforms]  // deck projection + picking, plus our uniform block
     };
   }
 
   initializeState() {
     // Initialize state - create geometry in updateState when we have bounds
-    this.setState({ needsGeometryUpdate: true });
+    // wrappers: raw WebGLTexture → borrowed luma.gl Texture used for bindings (see _wrap)
+    this.setState({ needsGeometryUpdate: true, wrappers: new Map() });
 
     // Setup WebGL context loss/restore handlers
     const { gl } = this.context;
@@ -419,6 +440,23 @@ export class SARGPULayer extends Layer {
 
       gl.canvas.addEventListener('webglcontextlost', this.handleContextLost, false);
       gl.canvas.addEventListener('webglcontextrestored', this.handleContextRestored, false);
+    }
+  }
+
+  /**
+   * deck.gl pushes props for all of its standard shader modules (layer,
+   * shadow, lighting, …) onto every model; our hand-built Model only has
+   * the modules it declares, so forward just those and skip luma's
+   * "Module X not found" warnings.
+   */
+  setShaderModuleProps(...propsList) {
+    for (const model of this.getModels()) {
+      const known = model.shaderInputs?.modules || {};
+      for (const props of propsList) {
+        const filtered = {};
+        for (const name of Object.keys(props)) if (name in known) filtered[name] = props[name];
+        if (Object.keys(filtered).length) model.shaderInputs.setProps(filtered);
+      }
     }
   }
 
@@ -474,18 +512,25 @@ export class SARGPULayer extends Layer {
       } else {
         // First creation or context restore — compile shader + create model
         if (this.state.model) {
-          this.state.model.delete();
+          this.state.model.destroy();
         }
 
         let model;
         try {
-          model = new Model(gl, {
+          model = new Model(this.context.device, {
+            id: `${this.props.id}-model`,
             ...this.getShaders(),
             geometry,
             parameters: {
               blend: true,
-              blendFunc: [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA],
-              depthTest: false
+              blendColorOperation: 'add',
+              blendColorSrcFactor: 'src-alpha',
+              blendColorDstFactor: 'one-minus-src-alpha',
+              blendAlphaOperation: 'add',
+              blendAlphaSrcFactor: 'src-alpha',
+              blendAlphaDstFactor: 'one-minus-src-alpha',
+              depthWriteEnabled: false,
+              depthCompare: 'always',
             }
           });
         } catch (err) {
@@ -517,9 +562,9 @@ export class SARGPULayer extends Layer {
 
         if (texR && texG && texB) {
           // Clean up old textures
-          if (this.state.texture) gl.deleteTexture(this.state.texture);
-          if (this.state.textureG) gl.deleteTexture(this.state.textureG);
-          if (this.state.textureB) gl.deleteTexture(this.state.textureB);
+          if (this.state.texture) this._deleteTexture(this.state.texture);
+          if (this.state.textureG) this._deleteTexture(this.state.textureG);
+          if (this.state.textureB) this._deleteTexture(this.state.textureB);
 
           this.setState({ texture: texR, textureG: texG, textureB: texB });
         } else {
@@ -530,7 +575,7 @@ export class SARGPULayer extends Layer {
       const texture = this._createR32FTexture(data, width, height);
 
       if (texture) {
-        if (this.state.texture) gl.deleteTexture(this.state.texture);
+        if (this.state.texture) this._deleteTexture(this.state.texture);
         this.setState({ texture });
       }
     }
@@ -552,9 +597,9 @@ export class SARGPULayer extends Layer {
 
     // Clean up old filtered textures when filter is deactivated or params change
     if (filterChanged || anyDataChanged) {
-      if (this.state.filteredTexture) { gl.deleteTexture(this.state.filteredTexture); }
-      if (this.state.filteredTextureG) { gl.deleteTexture(this.state.filteredTextureG); }
-      if (this.state.filteredTextureB) { gl.deleteTexture(this.state.filteredTextureB); }
+      if (this.state.filteredTexture) { this._deleteTexture(this.state.filteredTexture); }
+      if (this.state.filteredTextureG) { this._deleteTexture(this.state.filteredTextureG); }
+      if (this.state.filteredTextureB) { this._deleteTexture(this.state.filteredTextureB); }
       this.setState({ filteredTexture: null, filteredTextureG: null, filteredTextureB: null });
     }
 
@@ -585,7 +630,7 @@ export class SARGPULayer extends Layer {
     if (dataMask && (dataMask !== oldProps.dataMask || width !== oldProps.width || height !== oldProps.height)) {
       const texMask = this._createR32FTexture(dataMask, width, height, true);
       if (texMask) {
-        if (this.state.textureMask) gl.deleteTexture(this.state.textureMask);
+        if (this.state.textureMask) this._deleteTexture(this.state.textureMask);
         this.setState({ textureMask: texMask });
       }
     }
@@ -597,11 +642,11 @@ export class SARGPULayer extends Layer {
     if (classPalette && classPalette !== oldProps.classPalette) {
       const texPal = this._createPaletteTexture(classPalette);
       if (texPal) {
-        if (this.state.texturePalette) gl.deleteTexture(this.state.texturePalette);
+        if (this.state.texturePalette) this._deleteTexture(this.state.texturePalette);
         this.setState({ texturePalette: texPal });
       }
     } else if (!classPalette && oldProps.classPalette && this.state.texturePalette) {
-      gl.deleteTexture(this.state.texturePalette);
+      this._deleteTexture(this.state.texturePalette);
       this.setState({ texturePalette: null });
     }
 
@@ -612,7 +657,7 @@ export class SARGPULayer extends Layer {
     if (dataCoherence && (dataCoherence !== oldProps.dataCoherence || cohW !== (oldProps.coherenceWidth || oldProps.width) || cohH !== (oldProps.coherenceHeight || oldProps.height))) {
       const texCoh = this._createR32FTexture(dataCoherence, cohW, cohH);
       if (texCoh) {
-        if (this.state.textureCoherence) gl.deleteTexture(this.state.textureCoherence);
+        if (this.state.textureCoherence) this._deleteTexture(this.state.textureCoherence);
         this.setState({ textureCoherence: texCoh });
       }
     }
@@ -624,7 +669,7 @@ export class SARGPULayer extends Layer {
     if (dataIncidence && (dataIncidence !== oldProps.dataIncidence || incW !== (oldProps.incidenceWidth || oldProps.width) || incH !== (oldProps.incidenceHeight || oldProps.height))) {
       const texInc = this._createR32FTexture(dataIncidence, incW, incH);
       if (texInc) {
-        if (this.state.textureIncidence) gl.deleteTexture(this.state.textureIncidence);
+        if (this.state.textureIncidence) this._deleteTexture(this.state.textureIncidence);
         this.setState({ textureIncidence: texInc });
       }
     }
@@ -644,13 +689,13 @@ export class SARGPULayer extends Layer {
       if (data && (data !== oldData || w !== (oldProps[slot.wProp] || oldProps.width) || h !== (oldProps[slot.hProp] || oldProps.height))) {
         const tex = this._createR32FTexture(data, w, h);
         if (tex) {
-          if (this.state[slot.state]) gl.deleteTexture(this.state[slot.state]);
+          if (this.state[slot.state]) this._deleteTexture(this.state[slot.state]);
           this.setState({ [slot.state]: tex });
         }
       }
       // Clear when removed
       if (!data && oldData && this.state[slot.state]) {
-        gl.deleteTexture(this.state[slot.state]);
+        this._deleteTexture(this.state[slot.state]);
         this.setState({ [slot.state]: null });
       }
     }
@@ -722,11 +767,11 @@ export class SARGPULayer extends Layer {
       const glErr = gl.getError();
       if (glErr !== gl.NO_ERROR) {
         console.error(`[SARGPULayer] GL error 0x${glErr.toString(16)} after texImage2D (${width}x${height})`);
-        gl.deleteTexture(texture);
+        this._deleteTexture(texture);
         return null;
       }
 
-      // Return raw WebGL texture (compatible with luma.gl's model.setUniforms)
+      // Return the raw WebGL texture; _wrap() lends it to luma.gl for binding
       return texture;
     } catch (err) {
       console.error('[SARGPULayer] Texture creation failed:', err);
@@ -761,7 +806,7 @@ export class SARGPULayer extends Layer {
       const glErr = gl.getError();
       if (glErr !== gl.NO_ERROR) {
         console.error(`[SARGPULayer] GL error 0x${glErr.toString(16)} creating palette texture`);
-        gl.deleteTexture(texture);
+        this._deleteTexture(texture);
         return null;
       }
       return texture;
@@ -771,7 +816,7 @@ export class SARGPULayer extends Layer {
     }
   }
 
-  draw({ uniforms }) {
+  draw({ renderPass }) {
     const { model, texture, textureG, textureB, textureMask, textureCoherence,
             textureIncidence, texCorIono, texCorTropo, texCorSET, texCorRamp,
             texturePalette,
@@ -817,12 +862,6 @@ export class SARGPULayer extends Layer {
     const band = normalizeColormapBand(colormapBand);
 
     try {
-      const { gl } = this.context;
-
-      // Bind R texture to unit 0 (always) — use filtered if available
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, displayTex);
-
       // Resolve per-channel contrast limits
       // contrastLimits can be [min, max] (uniform) or {R: [min,max], G: [min,max], B: [min,max]}
       let uMin, uMax, uMinR, uMaxR, uMinG, uMaxG, uMinB, uMaxB;
@@ -846,130 +885,106 @@ export class SARGPULayer extends Layer {
         uMinB = uMin; uMaxB = uMax;
       }
 
-      const layerUniforms = {
-        ...uniforms,
-        uTexture: 0,
-        uMin, uMax,
-        uMinR, uMaxR,
-        uMinG, uMaxG,
-        uMinB, uMaxB,
-        uSaturation: rgbSaturation,
-        uColorblindMode: COLORBLIND_MODE_IDS[colorblindMode] || 0,
-        uUseDecibels: useDecibels ? 1.0 : 0.0,
-        uColormap: getColormapId(colormap),
-        uReverseColormap: reverseColormap ? 1.0 : 0.0,
-        uBandEnabled: (!isRGB && band) ? 1.0 : 0.0,
-        uBandMin: band ? band.min : 0.0,
-        uBandMax: band ? band.max : 1.0,
-        uBandColormap: getColormapId(band ? band.colormap : 'grayscale'),
-        uBandReverse: band?.reverse ? 1.0 : 0.0,
-        uGamma: gamma,
-        uStretchMode: getStretchModeId(stretchMode),
-        uMode: isRGB ? 1.0 : 0.0,
-        // Class-map mode: integer label → palette texture (unit 10). Only active
-        // in single-band mode with a palette texture bound.
-        uClassMode: (!isRGB && classMode && texturePalette) ? 1.0 : 0.0,
-        uClassPalette: 10,
-        uClassPaletteEntries: classPaletteEntries,
-        uOpacity: (typeof this.props.opacity === 'number') ? this.props.opacity : 1.0,
-        uMaskInvalid: (maskInvalid && textureMask) ? 1.0 : 0.0,
-        uMaskLayoverShadow: (maskLayoverShadow && textureMask) ? 1.0 : 0.0,
-        uTextureMask: 3,
-        uUseCoherenceMask: (useCoherenceMask && textureCoherence) ? 1.0 : 0.0,
-        uCoherenceThreshold: coherenceThreshold,
-        uCoherenceThresholdMax: coherenceThresholdMax,
-        uCoherenceMaskMode: coherenceMaskMode,
-        uTextureCoherence: 4,
-        uVerticalDisplacement: (verticalDisplacement && textureIncidence) ? 1.0 : 0.0,
-        uValueScale: Number.isFinite(valueScale) && valueScale !== 0 ? valueScale : 1.0,
-        uTextureIncidence: 5,
-        // Individual phase correction textures
-        uCorIono: (corIono && texCorIono) ? 1.0 : 0.0,
-        uTexCorIono: 6,
-        uCorTropo: (corTropo && texCorTropo) ? 1.0 : 0.0,
-        uTexCorTropo: 7,
-        uCorSET: (corSET && texCorSET) ? 1.0 : 0.0,
-        uTexCorSET: 8,
-        uCorRamp: (corRamp && texCorRamp) ? 1.0 : 0.0,
-        uTexCorRamp: 9,
-        // Bounds for full-extent correction UV remapping
-        uTileBounds: bounds,
-        uImageBounds: imageBounds || bounds,
-      };
+      // Scalar uniforms → the `sar` uniform block (SAR_UNIFORMS order).
+      model.shaderInputs.setProps({
+        sar: {
+          uImageBounds: imageBounds || bounds,
+          uTileBounds: bounds,
+          uMin, uMax,
+          uMinR, uMaxR,
+          uMinG, uMaxG,
+          uMinB, uMaxB,
+          uSaturation: rgbSaturation,
+          uColorblindMode: COLORBLIND_MODE_IDS[colorblindMode] || 0,
+          uUseDecibels: useDecibels ? 1.0 : 0.0,
+          uColormap: getColormapId(colormap),
+          uReverseColormap: reverseColormap ? 1.0 : 0.0,
+          uBandEnabled: (!isRGB && band) ? 1.0 : 0.0,
+          uBandMin: band ? band.min : 0.0,
+          uBandMax: band ? band.max : 1.0,
+          uBandColormap: getColormapId(band ? band.colormap : 'grayscale'),
+          uBandReverse: band?.reverse ? 1.0 : 0.0,
+          uGamma: gamma,
+          uStretchMode: getStretchModeId(stretchMode),
+          uMode: isRGB ? 1.0 : 0.0,
+          // Class-map mode: integer label → palette texture. Only active in
+          // single-band mode with a palette texture bound.
+          uClassMode: (!isRGB && classMode && texturePalette) ? 1.0 : 0.0,
+          uClassPaletteEntries: classPaletteEntries,
+          uOpacity: (typeof this.props.opacity === 'number') ? this.props.opacity : 1.0,
+          uMaskInvalid: (maskInvalid && textureMask) ? 1.0 : 0.0,
+          uMaskLayoverShadow: (maskLayoverShadow && textureMask) ? 1.0 : 0.0,
+          uUseCoherenceMask: (useCoherenceMask && textureCoherence) ? 1.0 : 0.0,
+          uCoherenceThreshold: coherenceThreshold,
+          uCoherenceThresholdMax: coherenceThresholdMax,
+          uCoherenceMaskMode: coherenceMaskMode,
+          uVerticalDisplacement: (verticalDisplacement && textureIncidence) ? 1.0 : 0.0,
+          uValueScale: Number.isFinite(valueScale) && valueScale !== 0 ? valueScale : 1.0,
+          uCorIono: (corIono && texCorIono) ? 1.0 : 0.0,
+          uCorTropo: (corTropo && texCorTropo) ? 1.0 : 0.0,
+          uCorSET: (corSET && texCorSET) ? 1.0 : 0.0,
+          uCorRamp: (corRamp && texCorRamp) ? 1.0 : 0.0,
+        },
+      });
 
-      if (isRGB && displayTexG && displayTexB) {
-        // Bind G and B textures to units 1 and 2
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, displayTexG);
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, displayTexB);
+      // Sampler bindings. Every sampler2D in the shader gets a texture — the
+      // optional ones fall back to the display texture so no unit is left
+      // unbound (their enable flags above are 0 when the real texture is
+      // absent, so the fallback is never sampled).
+      const bind = (tex) => this._wrap(tex || displayTex);
+      model.setBindings({
+        uTexture: bind(displayTex),
+        uTextureG: bind(isRGB ? displayTexG : null),
+        uTextureB: bind(isRGB ? displayTexB : null),
+        uTextureMask: bind(textureMask),
+        uTextureCoherence: bind(textureCoherence),
+        uTextureIncidence: bind(textureIncidence),
+        uTexCorIono: bind(texCorIono),
+        uTexCorTropo: bind(texCorTropo),
+        uTexCorSET: bind(texCorSET),
+        uTexCorRamp: bind(texCorRamp),
+        uClassPalette: bind(texturePalette),
+      });
 
-        layerUniforms.uTextureG = 1;
-        layerUniforms.uTextureB = 2;
-      }
-
-      // Bind mask texture to unit 3
-      if (textureMask) {
-        gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, textureMask);
-      }
-
-      // Bind coherence texture to unit 4
-      if (textureCoherence) {
-        gl.activeTexture(gl.TEXTURE4);
-        gl.bindTexture(gl.TEXTURE_2D, textureCoherence);
-      }
-
-      // Bind incidence angle texture to unit 5
-      if (textureIncidence) {
-        gl.activeTexture(gl.TEXTURE5);
-        gl.bindTexture(gl.TEXTURE_2D, textureIncidence);
-      }
-
-      // Bind individual phase correction textures to units 6–9
-      if (texCorIono) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, texCorIono); }
-      if (texCorTropo) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, texCorTropo); }
-      if (texCorSET) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, texCorSET); }
-      if (texCorRamp) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, texCorRamp); }
-
-      // Bind class-map palette texture to unit 10
-      if (texturePalette) {
-        gl.activeTexture(gl.TEXTURE10);
-        gl.bindTexture(gl.TEXTURE_2D, texturePalette);
-      }
-
-      model.setUniforms(layerUniforms);
-      model.draw();
-
-      // Unbind textures
-      if (texturePalette) { gl.activeTexture(gl.TEXTURE10); gl.bindTexture(gl.TEXTURE_2D, null); }
-      if (texCorRamp) { gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, null); }
-      if (texCorSET) { gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, null); }
-      if (texCorTropo) { gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, null); }
-      if (texCorIono) { gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, null); }
-      if (textureIncidence) {
-        gl.activeTexture(gl.TEXTURE5);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      if (textureCoherence) {
-        gl.activeTexture(gl.TEXTURE4);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      if (textureMask) {
-        gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      if (isRGB) {
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, null);
-      }
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, null);
+      model.draw(renderPass);
     } catch (err) {
       console.error('[SARGPULayer] Draw error:', err);
     }
+  }
+
+  /**
+   * Borrowed luma.gl Texture over a raw WebGLTexture, for model.setBindings.
+   * The textures themselves stay raw WebGL2 (R32F upload, FBO speckle pass,
+   * pixelMode filter toggles all work on the handle); luma only binds them.
+   * Width/height/format are placeholders — a borrowed handle is binding-only.
+   */
+  _wrap(glTex) {
+    if (!glTex) return null;
+    const { wrappers } = this.state;
+    let w = wrappers.get(glTex);
+    if (!w) {
+      w = this.context.device.createTexture({
+        handle: glTex,
+        _isHandleBorrowed: true,
+        width: 1,
+        height: 1,
+        format: 'r32float',
+        mipLevels: 1,
+      });
+      wrappers.set(glTex, w);
+    }
+    return w;
+  }
+
+  /** Delete a raw WebGLTexture and drop its borrowed wrapper. */
+  _deleteTexture(glTex) {
+    if (!glTex) return;
+    const w = this.state.wrappers?.get(glTex);
+    if (w) {
+      w.destroy();
+      this.state.wrappers.delete(glTex);
+    }
+    this.context.gl?.deleteTexture(glTex);
   }
 
   finalizeState() {
@@ -987,23 +1002,23 @@ export class SARGPULayer extends Layer {
     }
 
     // Clean up resources
-    if (this.state.model) this.state.model.delete();
+    if (this.state.model) this.state.model.destroy();
     if (gl) {
-      if (this.state.texture) gl.deleteTexture(this.state.texture);
-      if (this.state.textureG) gl.deleteTexture(this.state.textureG);
-      if (this.state.textureB) gl.deleteTexture(this.state.textureB);
-      if (this.state.textureMask) gl.deleteTexture(this.state.textureMask);
-      if (this.state.textureCoherence) gl.deleteTexture(this.state.textureCoherence);
-      if (this.state.textureIncidence) gl.deleteTexture(this.state.textureIncidence);
-      if (this.state.texCorIono) gl.deleteTexture(this.state.texCorIono);
-      if (this.state.texCorTropo) gl.deleteTexture(this.state.texCorTropo);
-      if (this.state.texCorSET) gl.deleteTexture(this.state.texCorSET);
-      if (this.state.texCorRamp) gl.deleteTexture(this.state.texCorRamp);
-      if (this.state.texturePalette) gl.deleteTexture(this.state.texturePalette);
+      if (this.state.texture) this._deleteTexture(this.state.texture);
+      if (this.state.textureG) this._deleteTexture(this.state.textureG);
+      if (this.state.textureB) this._deleteTexture(this.state.textureB);
+      if (this.state.textureMask) this._deleteTexture(this.state.textureMask);
+      if (this.state.textureCoherence) this._deleteTexture(this.state.textureCoherence);
+      if (this.state.textureIncidence) this._deleteTexture(this.state.textureIncidence);
+      if (this.state.texCorIono) this._deleteTexture(this.state.texCorIono);
+      if (this.state.texCorTropo) this._deleteTexture(this.state.texCorTropo);
+      if (this.state.texCorSET) this._deleteTexture(this.state.texCorSET);
+      if (this.state.texCorRamp) this._deleteTexture(this.state.texCorRamp);
+      if (this.state.texturePalette) this._deleteTexture(this.state.texturePalette);
       // Clean up FBO-filtered textures
-      if (this.state.filteredTexture) gl.deleteTexture(this.state.filteredTexture);
-      if (this.state.filteredTextureG) gl.deleteTexture(this.state.filteredTextureG);
-      if (this.state.filteredTextureB) gl.deleteTexture(this.state.filteredTextureB);
+      if (this.state.filteredTexture) this._deleteTexture(this.state.filteredTexture);
+      if (this.state.filteredTextureG) this._deleteTexture(this.state.filteredTextureG);
+      if (this.state.filteredTextureB) this._deleteTexture(this.state.filteredTextureB);
     }
   }
 }

@@ -214,9 +214,10 @@ check('fragment shader has uTexture uniform', () => {
   assertContains(gpuContent, 'uniform sampler2D uTexture', 'uTexture uniform');
 });
 
-check('fragment shader has uMin/uMax uniforms', () => {
-  assertContains(gpuContent, 'uniform float uMin', 'uMin uniform');
-  assertContains(gpuContent, 'uniform float uMax', 'uMax uniform');
+check('fragment shader has uMin/uMax uniforms (sar uniform block, deck.gl 9)', () => {
+  assertContains(gpuContent, "['uMin', 'float']", 'uMin in SAR_UNIFORMS');
+  assertContains(gpuContent, "['uMax', 'float']", 'uMax in SAR_UNIFORMS');
+  assertContains(gpuContent, 'layout(std140) uniform sarUniforms', 'sarUniforms std140 block');
 });
 
 check('fragment shader has dB scaling', () => {
@@ -1455,8 +1456,8 @@ check('COLORBLIND_MODE_IDS has off/deuteranopia/protanopia/tritanopia', () => {
   }
 });
 
-check('fragment shader declares uColorblindMode uniform', () => {
-  assertContains(gpuLayerContent, 'uniform float uColorblindMode', 'uColorblindMode uniform');
+check('fragment shader declares uColorblindMode uniform (sar uniform block)', () => {
+  assertContains(gpuLayerContent, "['uColorblindMode', 'float']", 'uColorblindMode in SAR_UNIFORMS');
 });
 
 check('fragment shader applies CVD mat3 in RGB path', () => {

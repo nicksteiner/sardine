@@ -460,13 +460,17 @@ export const SARViewer = forwardRef(function SARViewer({
     return [...underlayLayers, ...secondaryMosaicLayers, ...baseLayers, ...extraLayers];
   }, [layers, secondaryMosaicLayers, extraLayers, underlayLayers]);
 
+  // deck.gl 9: the clear color is a View prop (0–255 ints), not a Deck parameter.
+  // Medical mode: pure black void; otherwise the theme's near-black ground.
   const views = useMemo(
     () =>
       new OrthographicView({
         id: 'ortho-view',
         flipY: false,
+        clear: true,
+        clearColor: medicalMode ? [0, 0, 0, 255] : [3, 2, 1, 255],
       }),
-    []
+    [medicalMode]
   );
 
   const containerStyle = useMemo(
@@ -495,8 +499,7 @@ export const SARViewer = forwardRef(function SARViewer({
           onViewStateChange={handleViewStateChange}
           layers={allLayers}
           controller={true}
-          glOptions={{ preserveDrawingBuffer: true }}
-          parameters={{ clearColor: medicalMode ? [0, 0, 0, 1] : [0.0118, 0.00784, 0.00392, 1] }}
+          deviceProps={{ webgl: { preserveDrawingBuffer: true } }}
         />
       </div>
       <ROIOverlay

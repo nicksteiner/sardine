@@ -1,5 +1,5 @@
 import { Layer, project32 } from '@deck.gl/core';
-import { Model, Geometry } from '@luma.gl/core';
+import { Model, Geometry } from '@luma.gl/engine';
 import proj4 from 'proj4';
 import { debugLog } from '../utils/debug-log.js';
 import {
@@ -93,11 +93,8 @@ uniform sampler2D uAtlas;        // base optical RGB atlas
 uniform sampler2D uWarp;         // base warp: RG32F, N×N, geo → atlas UV
 uniform sampler2D uAtlasDetail;  // viewport detail atlas (base when absent)
 uniform sampler2D uWarpDetail;   // viewport detail warp  (base when absent)
-uniform float uOpacity;
-uniform float uGridSpan;         // base warp cell count (warpSize - 1)
-uniform float uDetailGridSpan;
-uniform vec4 uDetailRect;        // detail extent in layer UV [u0,v0,u1,v1]
-uniform float uHasDetail;
+// Scalars arrive through the opticalPeek uniform block (module below);
+// members are referenced bare: uOpacity, uGridSpan, uDetailGridSpan, uDetailRect, uHasDetail.
 
 in vec2 vTexCoord;
 out vec4 fragColor;
@@ -323,13 +320,49 @@ async function buildPeek({ bounds, crs, tileUrlTemplate, gridSize, zoom, maxZoom
   return { warp, warpSize: N, atlas: canvas, atlasW, atlasH, z, tilesFetched: cols * rows };
 }
 
+/** luma.gl 9 shader module carrying the scalar uniforms (block `opticalPeekUniforms`). */
+const opticalPeekUniforms = {
+  name: 'opticalPeek',
+  fs: `layout(std140) uniform opticalPeekUniforms {
+  vec4 uDetailRect;
+  float uOpacity;
+  float uGridSpan;
+  float uDetailGridSpan;
+  float uHasDetail;
+};`,
+  uniformTypes: {
+    uDetailRect: 'vec4<f32>',
+    uOpacity: 'f32',
+    uGridSpan: 'f32',
+    uDetailGridSpan: 'f32',
+    uHasDetail: 'f32',
+  },
+};
+
 export class OpticalPeekLayer extends Layer {
   getShaders() {
-    return { vs, fs, modules: [project32] };
+    return { vs, fs, modules: [project32, opticalPeekUniforms] };
   }
 
   initializeState() {
-    this.setState({ needsGeometryUpdate: true, buildToken: 0, detailToken: 0 });
+    this.setState({ needsGeometryUpdate: true, buildToken: 0, detailToken: 0, wrappers: new Map() });
+  }
+
+  /**
+   * deck.gl pushes props for all of its standard shader modules (layer,
+   * shadow, lighting, …) onto every model; our hand-built Model only has
+   * the modules it declares, so forward just those and skip luma's
+   * "Module X not found" warnings.
+   */
+  setShaderModuleProps(...propsList) {
+    for (const model of this.getModels()) {
+      const known = model.shaderInputs?.modules || {};
+      for (const props of propsList) {
+        const filtered = {};
+        for (const name of Object.keys(props)) if (name in known) filtered[name] = props[name];
+        if (Object.keys(filtered).length) model.shaderInputs.setProps(filtered);
+      }
+    }
   }
 
   getNumInstances() { return 0; }
@@ -367,14 +400,21 @@ export class OpticalPeekLayer extends Layer {
       if (this.state.model && !this.state.needsGeometryUpdate) {
         this.state.model.setGeometry(geometry);
       } else {
-        if (this.state.model) this.state.model.delete();
-        const model = new Model(gl, {
+        if (this.state.model) this.state.model.destroy();
+        const model = new Model(this.context.device, {
+          id: `${this.props.id}-model`,
           ...this.getShaders(),
           geometry,
           parameters: {
             blend: true,
-            blendFunc: [gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA],
-            depthTest: false,
+            blendColorOperation: 'add',
+            blendColorSrcFactor: 'src-alpha',
+            blendColorDstFactor: 'one-minus-src-alpha',
+            blendAlphaOperation: 'add',
+            blendAlphaSrcFactor: 'src-alpha',
+            blendAlphaDstFactor: 'one-minus-src-alpha',
+            depthWriteEnabled: false,
+            depthCompare: 'always',
           },
         });
         this.setState({ model, needsGeometryUpdate: false });
@@ -479,8 +519,8 @@ export class OpticalPeekLayer extends Layer {
       if (token !== this.state.buildToken) return; // stale
 
       const { atlasTex, warpTex } = this._uploadTextures(result);
-      if (this.state.atlasTex) gl.deleteTexture(this.state.atlasTex);
-      if (this.state.warpTex) gl.deleteTexture(this.state.warpTex);
+      if (this.state.atlasTex) this._deleteTexture(this.state.atlasTex);
+      if (this.state.warpTex) this._deleteTexture(this.state.warpTex);
       this.setState({ atlasTex, warpTex, warpSize: result.warpSize, baseZ: result.z });
       debugLog(`[OpticalPeek] built base atlas: ${result.atlasW}×${result.atlasH} (z=${result.z}, ${result.tilesFetched} tiles), warp ${result.warpSize}²`);
       this._status('info', `Optical base z${result.z} (${result.tilesFetched} tiles)`);
@@ -510,8 +550,8 @@ export class OpticalPeekLayer extends Layer {
     clearTimeout(this.state.detailTimer);
     if (this.state.detailAbort) this.state.detailAbort.abort();
     const had = this.state.detailAtlasTex || this.state.detailWarpTex;
-    if (this.state.detailAtlasTex) gl.deleteTexture(this.state.detailAtlasTex);
-    if (this.state.detailWarpTex) gl.deleteTexture(this.state.detailWarpTex);
+    if (this.state.detailAtlasTex) this._deleteTexture(this.state.detailAtlasTex);
+    if (this.state.detailWarpTex) this._deleteTexture(this.state.detailWarpTex);
     this.setState({ detailAtlasTex: null, detailWarpTex: null, detailRect: null, detailKey: null });
     if (had) this.setNeedsRedraw('optical-peek detail cleared');
   }
@@ -568,8 +608,8 @@ export class OpticalPeekLayer extends Layer {
       if (detailToken !== this.state.detailToken || baseToken !== this.state.buildToken) return;
 
       const { atlasTex, warpTex } = this._uploadTextures(result);
-      if (this.state.detailAtlasTex) gl.deleteTexture(this.state.detailAtlasTex);
-      if (this.state.detailWarpTex) gl.deleteTexture(this.state.detailWarpTex);
+      if (this.state.detailAtlasTex) this._deleteTexture(this.state.detailAtlasTex);
+      if (this.state.detailWarpTex) this._deleteTexture(this.state.detailWarpTex);
       this.setState({
         detailAtlasTex: atlasTex,
         detailWarpTex: warpTex,
@@ -588,42 +628,52 @@ export class OpticalPeekLayer extends Layer {
     }
   }
 
-  draw({ uniforms }) {
+  draw({ renderPass }) {
     const { model, atlasTex, warpTex, warpSize, detailAtlasTex, detailWarpTex, detailWarpSize, detailRect } = this.state;
     if (!model || !atlasTex || !warpTex) return;
 
-    const { gl } = this.context;
     const { opacity = 0.7 } = this.props;
     const hasDetail = !!(detailAtlasTex && detailWarpTex && detailRect);
 
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, atlasTex);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, warpTex);
-    // Samplers must always have a bound texture; fall back to base units.
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, hasDetail ? detailAtlasTex : atlasTex);
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, hasDetail ? detailWarpTex : warpTex);
-
-    model.setUniforms({
-      ...uniforms,
-      uAtlas: 0,
-      uWarp: 1,
-      uAtlasDetail: 2,
-      uWarpDetail: 3,
-      uOpacity: opacity,
-      uGridSpan: warpSize - 1,
-      uDetailGridSpan: hasDetail ? detailWarpSize - 1 : 1,
-      uDetailRect: hasDetail ? detailRect : [0, 0, 0, 0],
-      uHasDetail: hasDetail ? 1 : 0,
+    model.shaderInputs.setProps({
+      opticalPeek: {
+        uOpacity: opacity,
+        uGridSpan: warpSize - 1,
+        uDetailGridSpan: hasDetail ? detailWarpSize - 1 : 1,
+        uDetailRect: hasDetail ? detailRect : [0, 0, 0, 0],
+        uHasDetail: hasDetail ? 1 : 0,
+      },
     });
-    model.draw();
+    // Samplers must always have a bound texture; fall back to base textures.
+    model.setBindings({
+      uAtlas: this._wrap(atlasTex),
+      uWarp: this._wrap(warpTex),
+      uAtlasDetail: this._wrap(hasDetail ? detailAtlasTex : atlasTex),
+      uWarpDetail: this._wrap(hasDetail ? detailWarpTex : warpTex),
+    });
+    model.draw(renderPass);
+  }
 
-    for (let unit = 3; unit >= 0; unit--) {
-      gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(gl.TEXTURE_2D, null);
+  /** Borrowed luma.gl Texture over a raw WebGLTexture (binding-only; see SARGPULayer._wrap). */
+  _wrap(glTex) {
+    if (!glTex) return null;
+    const { wrappers } = this.state;
+    let w = wrappers.get(glTex);
+    if (!w) {
+      w = this.context.device.createTexture({
+        handle: glTex, _isHandleBorrowed: true, width: 1, height: 1, format: 'rgba8unorm', mipLevels: 1,
+      });
+      wrappers.set(glTex, w);
     }
+    return w;
+  }
+
+  /** Delete a raw WebGLTexture and drop its borrowed wrapper. */
+  _deleteTexture(glTex) {
+    if (!glTex) return;
+    const w = this.state.wrappers?.get(glTex);
+    if (w) { w.destroy(); this.state.wrappers.delete(glTex); }
+    this.context.gl?.deleteTexture(glTex);
   }
 
   finalizeState() {
@@ -632,12 +682,12 @@ export class OpticalPeekLayer extends Layer {
     clearTimeout(this.state.detailTimer);
     if (this.state.abortCtrl) this.state.abortCtrl.abort();
     if (this.state.detailAbort) this.state.detailAbort.abort();
-    if (this.state.model) this.state.model.delete();
+    if (this.state.model) this.state.model.destroy();
     if (gl) {
-      if (this.state.atlasTex) gl.deleteTexture(this.state.atlasTex);
-      if (this.state.warpTex) gl.deleteTexture(this.state.warpTex);
-      if (this.state.detailAtlasTex) gl.deleteTexture(this.state.detailAtlasTex);
-      if (this.state.detailWarpTex) gl.deleteTexture(this.state.detailWarpTex);
+      if (this.state.atlasTex) this._deleteTexture(this.state.atlasTex);
+      if (this.state.warpTex) this._deleteTexture(this.state.warpTex);
+      if (this.state.detailAtlasTex) this._deleteTexture(this.state.detailAtlasTex);
+      if (this.state.detailWarpTex) this._deleteTexture(this.state.detailWarpTex);
     }
   }
 }

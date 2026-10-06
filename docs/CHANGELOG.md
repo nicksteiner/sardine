@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **deck.gl 9.4 / luma.gl 9.4** (W034) — the rendering stack moves off deck.gl 8.9 and
+  luma.gl 8.5. Custom layers (`SARGPULayer`, `OpticalPeekLayer`) build their `Model` on
+  the luma `Device`, carry scalar uniforms in std140 uniform blocks declared by shader
+  modules (`sarUniforms`, `opticalPeekUniforms`; the GLSL block is generated from the
+  same list as the JS types so they cannot drift), and bind textures through
+  `model.setBindings`. Raw WebGL2 R32F textures are kept — the FBO speckle pass,
+  pixel-mode filter toggles and the W033 mesh path all work on the handle — and are lent
+  to luma.gl as borrowed-handle textures for binding only. Blend/depth parameters use
+  luma's string form; the viewer's clear color is now a View prop; `glOptions` →
+  `deviceProps.webgl`. `BitmapLayer.textureParameters` takes luma sampler props.
+  `@deck.gl/mapbox` (interleaved MapLibre overlay) is installed for the W033 map frame.
+  Rendering verified in-browser: single-band, RGB composite, colormap band, speckle FBO,
+  Optical Peek, compare grid; console clean
+
+### Fixed
+- `vite.test.config.js` targets es2022 like the main config, so the test/demo pages start
+  with the `@developmentseed/geotiff` LZW codec (top-level await) in the tree
+
 ## [1.0.0-rc.4] - 2026-10-06 — Colormap band; Copy scene for agent
 
 ### Added

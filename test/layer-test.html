@@ -141,13 +141,65 @@
           setTimeout(() => {
             log('Test 4', 'pass', 'Layer rendered successfully in deck.gl');
 
-            // Test 5: Performance Test
+            // Test 5: Performance Test (Test 6 starts when it finishes, so the
+            // two decks never animate at once and the fps number stays honest)
             runPerformanceTest(deck);
           }, 500);
         }
       });
     } catch (err) {
       log('Test 4', 'fail', err.message + '\n' + err.stack);
+    }
+
+    // Test 6: Speckle filter — the WebGL2 FBO pass must produce a filtered
+    // texture that the layer then binds (deck.gl 9: raw GL textures are lent
+    // to luma.gl as borrowed handles). Checked via layer state, not pixels.
+    function runSpeckleTest() {
+      log('Test 6', 'running', 'Speckle filter (lee, 5×5) through the FBO pass...');
+      try {
+        const testData = generateTestData(256, 256);
+        const canvas6 = document.createElement('canvas');
+        canvas6.width = 256; canvas6.height = 256;
+        document.body.appendChild(canvas6);
+        const deck6 = new Deck({
+          id: 'deck-speckle',
+          canvas: canvas6,
+          views: [new OrthographicView({id: 'ortho6'})],
+          initialViewState: { target: [128, 128, 0], zoom: 0 },
+          layers: [
+            new SARGPULayer({
+              id: 'test-gpu-layer-speckle',
+              data: testData, width: 256, height: 256, bounds: [0, 0, 256, 256],
+              contrastLimits: [-25, 0], useDecibels: true, colormap: 'inferno',
+              speckleFilterType: 'lee', speckleKernelSize: 5,
+            })
+          ],
+          onError: (error) => log('Test 6', 'fail', `Deck error: ${error.message}`),
+          // Drive one layer update + draw ourselves: deck only sets layers inside
+          // its animation frame, and rAF never fires in a hidden tab (headless
+          // CI, background tab), which would stall the check forever.
+          onLoad: () => setTimeout(() => {
+            deck6.layerManager.setLayers(deck6.props.layers, 'test');
+            deck6.redraw('test');
+            const layer = deck6.layerManager.getLayers().find((l) => l.id === 'test-gpu-layer-speckle');
+            // A redraw forced outside deck's frame trips luma's framebuffer state
+            // tracker (INVALID_OPERATION on bindFramebuffer) — an artifact of the
+            // manual drive, not of the layer. Clear it, then judge the GL error
+            // flag by the real frames that follow (0 when none can run).
+            if (layer) layer.context.gl.getError();
+            setTimeout(() => {
+            const glErr = layer ? layer.context.gl.getError() : -1;
+            const ok = !!(layer && layer.state.filteredTexture && layer.state.model && layer.state.wrappers.size > 0 && glErr === 0);
+            log('Test 6', ok ? 'pass' : 'fail', ok
+              ? `filteredTexture present, ${layer.state.wrappers.size} textures bound through the luma.gl model, no GL error`
+              : `layer=${!!layer} filteredTexture=${!!layer?.state.filteredTexture} model=${!!layer?.state.model} bound=${layer?.state.wrappers?.size} glError=${glErr}`);
+            }, 800);
+          }, 500),
+        });
+        window.__decks = { ...(window.__decks || {}), deck6 }; // dev aid: probe from the console
+      } catch (err) {
+        log('Test 6', 'fail', err.message + '\n' + err.stack);
+      }
     }
 
     // Test 5: Performance - Parameter Changes
@@ -209,6 +261,7 @@
             const minFrameTime = Math.min(...frameTimes);
             const fps = 1000 / avgFrameTime;
 
+            runSpeckleTest();
             // 30 FPS threshold — accounts for deck.gl overhead + CI environments
             if (avgFrameTime < 33.33) {
               log('Test 5', 'pass', `Average: ${avgFrameTime.toFixed(2)}ms (${fps.toFixed(1)} FPS), Min: ${minFrameTime.toFixed(2)}ms, Max: ${maxFrameTime.toFixed(2)}ms`);

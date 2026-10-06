@@ -23,8 +23,8 @@ Context for Claude Code (or any AI coding assistant) to understand the SARdine p
 | Technology | Purpose |
 |:-----------|:--------|
 | **React 18** | UI framework |
-| **deck.gl 8.9** | WebGL tile/bitmap rendering |
-| **@luma.gl/core** | WebGL2 texture + shader management |
+| **deck.gl 9.4** | WebGL2 tile/bitmap rendering (luma.gl 9 Device/Model API) |
+| **@luma.gl/engine** | Model/Geometry; scalar uniforms via std140 uniform-block shader modules, textures via bindings |
 | **geotiff.js** | COG loading (HTTP range reads) |
 | **h5chunk.js** | Cloud-optimized HDF5 streaming (pure JS, no WASM for streaming) |
 | **h5wasm** | HDF5 attribute/metadata parsing (WASM, used alongside h5chunk) |

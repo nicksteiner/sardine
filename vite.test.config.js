@@ -9,6 +9,12 @@ export default defineConfig({
       'sardine': '/src/index.js',
     },
   },
+  // Same as vite.config.js (W032): the @developmentseed/geotiff LZW codec uses
+  // top-level await, which esbuild's default es2020 prebundle target rejects.
+  optimizeDeps: {
+    esbuildOptions: { target: 'es2022' },
+  },
+  build: { target: 'es2022' },
   server: {
     port: 5175,
     open: '/test/benchmarks/gpu-vs-cpu.html',

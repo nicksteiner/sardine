@@ -1,5 +1,4 @@
 import { BitmapLayer } from '@deck.gl/layers';
-import GL from '@luma.gl/constants';
 import { getColormap, createColormapBandFn } from '../utils/colormap.js';
 import { createStretchFn } from '../utils/stretch.js';
 import { toDb } from '../utils/stats.js';
@@ -61,40 +60,10 @@ export class SARBitmapLayer extends BitmapLayer {
       // Class maps: NEAREST sampling so class colors stay crisp when zoomed in
       // (bilinear would smear color across class boundaries).
       ...((classMode && classPalette) ? {
-        textureParameters: {
-          [GL.TEXTURE_MIN_FILTER]: GL.NEAREST,
-          [GL.TEXTURE_MAG_FILTER]: GL.NEAREST,
-        },
+        textureParameters: { minFilter: 'nearest', magFilter: 'nearest' },
       } : {}),
       ...otherProps,
     });
-  }
-
-  _createR32FTexture(gl, data, width, height) {
-    const expectedSize = width * height;
-    let texData;
-
-    // Pad undersized arrays for edge tiles at dataset boundary
-    if (!data || data.length === 0) {
-      texData = new Float32Array(expectedSize);
-      texData.fill(NaN);
-    } else if (data.length < expectedSize) {
-      texData = new Float32Array(expectedSize);
-      texData.fill(NaN);
-      texData.set(data);
-    } else {
-      texData = data.length > expectedSize ? data.subarray(0, expectedSize) : data;
-    }
-
-    const texture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.R32F,
-      width, height, 0,
-      gl.RED, gl.FLOAT, texData
-    );
-
-    return texture;
   }
 }
 

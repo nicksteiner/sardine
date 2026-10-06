@@ -328,7 +328,7 @@ GCOV and GUNW products are supported. GUNW (interferometric phase and coherence)
 | Dependency | Role |
 |:---|:---|
 | **React 18** | UI framework |
-| **deck.gl 8.9** | WebGL tile/bitmap rendering |
+| **deck.gl 9.4** | WebGL2 tile/bitmap rendering (luma.gl 9) |
 | **geotiff.js** | COG loading via HTTP Range |
 | **h5chunk** (built-in) | Cloud-optimized HDF5 streaming (pure JS) |
 | **h5wasm** | HDF5 attribute/metadata parsing (WASM) |
