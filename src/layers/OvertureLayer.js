@@ -27,7 +27,7 @@ import { debugLog } from '../utils/debug-log.js';
  * Operates on WGS84 coordinates (before reprojection) where tile boundaries
  * are at exact slippy-map coordinates.
  */
-function extractCoastlineEdges(features, tileBounds) {
+export function extractCoastlineEdges(features, tileBounds) {
   const [minLon, minLat, maxLon, maxLat] = tileBounds;
   // Tolerance: ~0.1% of tile span handles MVT quantisation noise
   const tolX = (maxLon - minLon) * 0.001;
@@ -51,12 +51,14 @@ function extractCoastlineEdges(features, tileBounds) {
         const [x0, y0] = ring[i];
         const [x1, y1] = ring[i + 1];
 
-        // Edge lies on a tile boundary if both endpoints share the same
-        // boundary coordinate (left, right, top, or bottom of tile)
-        const onLeft   = Math.abs(x0 - minLon) < tolX && Math.abs(x1 - minLon) < tolX;
-        const onRight  = Math.abs(x0 - maxLon) < tolX && Math.abs(x1 - maxLon) < tolX;
-        const onBottom = Math.abs(y0 - minLat) < tolY && Math.abs(y1 - minLat) < tolY;
-        const onTop    = Math.abs(y0 - maxLat) < tolY && Math.abs(y1 - maxLat) < tolY;
+        // Edge is a clip artifact if both endpoints sit on — or beyond — the
+        // same tile side. The 2026 planetiler tilesets clip polygons at a
+        // buffer outside the tile, not at the tile edge itself, so "at or
+        // past the boundary" is the test, not "on the boundary".
+        const onLeft   = x0 <= minLon + tolX && x1 <= minLon + tolX;
+        const onRight  = x0 >= maxLon - tolX && x1 >= maxLon - tolX;
+        const onBottom = y0 <= minLat + tolY && y1 <= minLat + tolY;
+        const onTop    = y0 >= maxLat - tolY && y1 >= maxLat - tolY;
 
         if (onLeft || onRight || onBottom || onTop) {
           // Artificial boundary edge — flush current line segment
@@ -201,7 +203,8 @@ export function createOvertureLayers(overtureData, options = {}) {
         opacity,
         filled: forceStroke ? false : (themeDef.fillOnly || !themeDef.strokeOnly),
         stroked: forceStroke ? true : !themeDef.fillOnly,
-        getFillColor: themeDef.color || [200, 200, 200, 100],
+        // Per-feature colour (choropleths such as population) or the theme constant.
+        getFillColor: themeDef.getFillColor || themeDef.color || [200, 200, 200, 100],
         getLineColor: themeDef.lineColor || themeDef.color || [150, 150, 150, 200],
         getLineWidth: themeDef.lineWidth || 1,
         lineWidthUnits: 'pixels',

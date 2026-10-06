@@ -27,9 +27,13 @@ import { debugLog } from '../utils/debug-log.js';
 
 // ── Overture S3 endpoints ──
 const OVERTURE_BASE_URL = 'https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com';
-const OVERTURE_TILES_URL = 'https://overturemaps-tiles-us-west-2-beta.s3.amazonaws.com';
-const DEFAULT_RELEASE = '2024-12-18.0';
-const DEFAULT_TILES_RELEASE = '2024-12-18';  // PMTiles use date without minor version
+// PMTiles moved from the (now 403) `overturemaps-tiles-us-west-2-beta` bucket
+// to `overturemaps-extras-us-west-2/tiles/<release>/<theme>.pmtiles` with the
+// 2026-04 planetiler rebuild (CORS *, Range OK). Releases are listed at
+// https://overturemaps-extras-us-west-2.s3.us-west-2.amazonaws.com/?list-type=2&prefix=tiles/&delimiter=/
+const OVERTURE_TILES_URL = 'https://overturemaps-extras-us-west-2.s3.us-west-2.amazonaws.com/tiles';
+const DEFAULT_RELEASE = '2026-09-23.0';
+const DEFAULT_TILES_RELEASE = '2026-09-23.0';
 
 /**
  * Available Overture themes and their types.
@@ -64,16 +68,17 @@ export const OVERTURE_THEMES = {
     color: [255, 140, 0, 180],      // orange
     lineColor: [255, 140, 0, 220],
     lineWidth: 2,
-    // Buildings only populate the PMTiles archive at z≥10. Below that the
-    // tile is empty even over dense cities, so we override the viewport zoom.
-    minZoom: 10,
+    // 2026 tilesets: a handful of landmark buildings from z5, towns fill in
+    // at z12, full footprints at z14 (checked: Iquitos z12=172, z14=15,470).
+    minZoom: 12,
   },
   places: {
     label: 'Places',
     types: ['place'],
     color: [78, 201, 212, 200],      // sardine cyan
     pointRadius: 4,
-    minZoom: 8,
+    // The 2026 planetiler tilesets carry places at z14 only.
+    minZoom: 14,
   },
   base_land_use: {
     label: 'Land Use',
@@ -81,7 +86,37 @@ export const OVERTURE_THEMES = {
     theme: 'base',
     color: [60, 180, 75, 80],
   },
+  // Kontur Population: GHSL + Meta HRSL + Microsoft/OSM buildings fused onto
+  // 400 m H3 hexagons (CC BY), served as PMTiles from Source Cooperative
+  // (optgeo/kpop-pmtiles build). Overture's own `division` points carry a
+  // `population` per admin unit, but nothing gridded — this is the layer for
+  // "how many people are under this flood".
+  population: {
+    label: 'Population (Kontur 400 m)',
+    types: ['kpop'],
+    url: 'https://data.source.coop/smartmaps/foil4gr1/kpop.pmtiles',
+    maxZoom: 9,                       // archive tops out at z9 (hexes still ~400 m)
+    fillOnly: true,
+    color: [255, 180, 60, 120],
+    getFillColor: (f) => populationColor(f.properties?.pop),
+  },
 };
+
+/**
+ * Sequential ramp for people per 400 m hex: transparent below 1, deep red
+ * above ~10k (log scale). Returns RGBA for deck.gl.
+ */
+export function populationColor(pop) {
+  const p = Number(pop);
+  if (!(p >= 1)) return [0, 0, 0, 0];
+  const t = Math.min(1, Math.log10(p) / 4); // 1 → 0, 10k → 1
+  // yellow → orange → red → dark red
+  const r = 255;
+  const g = Math.round(230 * (1 - t));
+  const b = Math.round(60 * (1 - t));
+  const a = Math.round(90 + 130 * t);
+  return [r, g, b, a];
+}
 
 /**
  * Feature cache — keyed by "{theme}/{type}/{bbox_hash}"
@@ -245,7 +280,9 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
     if (!themeDef) return;
 
     const actualTheme = themeDef.theme || themeKey;
-    const themeZoom = Math.max(viewportZoom, themeDef.minZoom || 0);
+    // Floor at the theme's minZoom (sparse archives), cap at its maxZoom
+    // (archives that stop early, e.g. the population hexes at z9).
+    const themeZoom = Math.min(Math.max(viewportZoom, themeDef.minZoom || 0), themeDef.maxZoom ?? 99);
     const themeTiles = bboxToTiles(wgs84Bbox, themeZoom);
     const themeTileCount = (themeTiles.maxX - themeTiles.minX + 1) * (themeTiles.maxY - themeTiles.minY + 1);
     if (themeTileCount > maxTiles) {
@@ -271,7 +308,7 @@ export async function fetchAllOvertureThemes(enabledThemes, wgs84Bbox, options =
 
     const tileResults = await Promise.all(
       tileCoords.map(([x, y]) =>
-        fetchOvertureTile(actualTheme, themeZoom, x, y, release)
+        fetchOvertureTile(actualTheme, themeZoom, x, y, release, themeDef.url)
           .then(tileData => ({ x, y, tileData }))
           .catch(e => {
             console.warn(`[Overture] Failed to load tile ${actualTheme}/${themeZoom}/${x}/${y}:`, e.message);
@@ -332,10 +369,10 @@ const pmtilesInstances = new Map();
  * @param {string} release - e.g. '2024-12-18'
  * @returns {PMTiles}
  */
-function getPMTiles(theme, release = DEFAULT_TILES_RELEASE) {
-  const key = `${release}/${theme}`;
+function getPMTiles(theme, release = DEFAULT_TILES_RELEASE, urlOverride = null) {
+  const key = urlOverride || `${release}/${theme}`;
   if (!pmtilesInstances.has(key)) {
-    const url = `${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`;
+    const url = urlOverride || `${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`;
     debugLog(`[Overture PMTiles] Opening: ${url}`);
     pmtilesInstances.set(key, new PMTiles(url));
   }
@@ -716,17 +753,17 @@ function decodeMVT(buffer, tileX, tileY, tileZ) {
  * @param {string} release - Tiles release date
  * @returns {Promise<Object>} Decoded MVT layers → GeoJSON features
  */
-export async function fetchOvertureTile(theme, z, x, y, release = DEFAULT_TILES_RELEASE) {
-  const cacheKey = `tile:${theme}/${z}/${x}/${y}`;
+export async function fetchOvertureTile(theme, z, x, y, release = DEFAULT_TILES_RELEASE, urlOverride = null) {
+  const cacheKey = `tile:${urlOverride || theme}/${z}/${x}/${y}`;
   if (pmtilesGeoJSONCache.has(cacheKey)) {
     debugLog(`[Overture PMTiles] Cache hit: ${cacheKey}`);
     return pmtilesGeoJSONCache.get(cacheKey);
   }
 
-  debugLog(`[Overture PMTiles] Fetching ${theme}/${z}/${x}/${y} from ${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`);
+  debugLog(`[Overture PMTiles] Fetching ${theme}/${z}/${x}/${y} from ${urlOverride || `${OVERTURE_TILES_URL}/${release}/${theme}.pmtiles`}`);
 
   try {
-    const pm = getPMTiles(theme, release);
+    const pm = getPMTiles(theme, release, urlOverride);
     const tileData = await pm.getZxy(z, x, y);
 
     if (!tileData || !tileData.data) {
@@ -745,7 +782,7 @@ export async function fetchOvertureTile(theme, z, x, y, release = DEFAULT_TILES_
     // Drop the PMTiles instance so its (possibly poisoned) directory cache is
     // rebuilt on retry — without this, one transient network/CORS failure can
     // leave the overlay permanently broken until a full page reload.
-    pmtilesInstances.delete(`${release}/${theme}`);
+    pmtilesInstances.delete(urlOverride || `${release}/${theme}`);
     console.error(`[Overture PMTiles] Failed to read ${theme}/${z}/${x}/${y}:`, e);
     throw e;
   }

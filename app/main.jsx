@@ -58,6 +58,7 @@ import { STRETCH_MODES, createStretchFn } from '../src/utils/stretch.js';
 import { getColormap } from '../src/utils/colormap.js';
 import { OVERTURE_THEMES, fetchAllOvertureThemes, projectedToWGS84 } from '../src/loaders/overture-loader.js';
 import { createOvertureLayers } from '../src/layers/OvertureLayer.js';
+import { createOvertureTileLayers } from '../src/layers/OvertureTileLayer.js';
 import { OpticalPeekLayer } from '../src/layers/OpticalPeekLayer.js';
 import { GeoJsonLayer } from '@deck.gl/layers';
 import { COORDINATE_SYSTEM } from '@deck.gl/core';
@@ -6250,6 +6251,14 @@ function App() {
     return createOvertureLayers(overtureData, { opacity: overtureOpacity, crs, projection, bounds, worldBounds });
   }, [overtureEnabled, overtureData, overtureOpacity, imageData]);
 
+  // Map mode (W033): viewport-driven PMTiles layers instead of the one-shot
+  // scene-bbox fetch, so building footprints (z12+) and places (z14) show up
+  // when zoomed in and the population hexes refine with zoom.
+  const mapOvertureLayers = useMemo(() => {
+    if (!overtureEnabled || !mapMode) return [];
+    return createOvertureTileLayers(overtureThemes, { opacity: overtureOpacity });
+  }, [overtureEnabled, overtureThemes, overtureOpacity, mapMode]);
+
   // Optical peek raster overlay. Only supports CRSes that OpticalPeekLayer's
   // inline proj4DefFor recognises (EPSG:4326, UTM north/south, polar stereo).
   // SICD slant-plane chips have a `projection` object instead of a CRS string
@@ -9460,6 +9469,7 @@ function App() {
                     width="100%"
                     height="100%"
                     layerProps={mapLayerProps}
+                    extraLayers={mapOvertureLayers}
                   />
                 ) : (
                 <SARViewer

@@ -36,6 +36,8 @@ export function MapViewer({
   // Bumped when progressive tile refinement (NISAR overview ladder) has new
   // data: changes the layer id so deck.gl refetches tiles.
   tileVersion = 0,
+  // deck.gl layers in lon/lat drawn above the raster (Overture overlays…).
+  extraLayers = [],
 }) {
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
@@ -143,8 +145,9 @@ export function MapViewer({
         opacity,
         ...layerProps,
       }),
+      ...extraLayers,
     ];
-  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion]);
+  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion, extraLayers]);
 
   const containerStyle = useMemo(
     () => ({
