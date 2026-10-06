@@ -30,6 +30,8 @@ export { parseVRT } from './loaders/vrt-parser.js';
 // WKT / ROI utilities
 export { parseWKT, wktToBbox, bboxToWKT, validateWKT, wktToGeoJSON } from './utils/wkt.js';
 export { bboxToPixelRange, reprojectBbox, computeSubsetBounds, roiIntersectsFile } from './utils/roi-subset.js';
+export { sumPopulationInPolygon, countBuildingsInPolygon, maskToPolygons, exposureForPolygons, cellAreaKm2, pointInPolygon, GHS_POP_COG_URL } from './utils/exposure.js';
+export { openCOGReader, getCOGReader } from './loaders/cog-tile-reader.js';
 
 // S3 URL utilities
 export { normalizeS3Url } from './utils/s3-url.js';
