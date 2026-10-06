@@ -13,7 +13,7 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.0--rc.3-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0--rc.4-orange)](https://github.com/nicksteiner/sardine/releases)
 [![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)

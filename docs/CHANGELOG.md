@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.4] - 2026-10-06 — Colormap band; Copy scene for agent
+
+### Added
+- **Colormap band** — a second colormap stretched over its own value range. Pixels whose
+  display value (dB when dB scaling is on, else linear) falls inside `[min, max]` take the
+  band's colormap and contrast; everything else keeps the base colormap. Lets a narrow
+  backscatter regime (river ice, open water) be pulled apart without washing out the rest
+  of the scene. Runs in the SARGPULayer shader (single-band mode; RGB composites ignore
+  it) with a matching CPU fallback. Deep link `band=min,max[,cmap[,r]]`; the export
+  sidecar records the band when applied; figure export draws it as an inset on the
+  colorbar. Settings persist while the band is toggled off
+- **Copy scene for agent** (command palette) — the push half of the agent bridge: the
+  current canvas and a Markdown grounding brief (product, polarization, CRS, bounds,
+  pixel spacing, render state, open questions) go to the clipboard as one card for
+  pasting into any chat. Source URLs are reduced to origin + path so presigned
+  credentials and Earthdata tokens never leave, the same rule as deep links
+
+### Fixed
+- Scene grounding no longer reports the NISAR polarization picker's default (HHHH) for
+  COGs and VRTs; the polarization comes from the product (VRT band description or source
+  filename) or is left unknown
+
 ## [1.0.0-rc.3] - 2026-10-05 — COG streaming 3–4× faster: tile-aligned reads, worker decode
 
 ### Changed
