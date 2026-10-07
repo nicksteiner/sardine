@@ -27,7 +27,9 @@
     "launch": "node server/launch.cjs",
     "bridge": "node server/agent-bridge.cjs",
     "launch:dev": "npm run build && node server/launch.cjs",
-    "lint:tokens": "node test/lint-tokens.mjs"
+    "lint:tokens": "node test/lint-tokens.mjs",
+    "test:model": "node test/river-ice-unet.test.mjs",
+    "export:model": "onnx-python -I tools/export_unet_onnx.py"
   },
   "keywords": [
     "sar",

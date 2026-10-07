@@ -1,0 +1,39 @@
+<!doctype html><html><body><pre id="o">running…</pre>
+<script type="module">
+const o = document.getElementById('o');
+const say = (s) => { o.textContent += '\n' + s; console.log('[chk] ' + s); };
+try {
+  const { builtinManifests, runModel } = await import('/src/ml/registry.js');
+  const mf = builtinManifests().find(m => m.id === 'river-ice-unet-l');
+  say('manifest: ' + mf['mlm:name']);
+
+  const tiles = await (await fetch('/demo/river-ice-tiles.json')).json();
+  const out = {};
+  for (const [lab, t] of Object.entries(tiles)) {
+    const H = t.hh.length, W = t.hh[0].length, n = W*H;
+    // Fixture stores dB; the registry's declared transform is dB, so hand it
+    // LINEAR POWER and let the real preprocessing path run.
+    const hh = new Float32Array(n), hv = new Float32Array(n), gt = new Uint8Array(n);
+    for (let y=0;y<H;y++) for (let x=0;x<W;x++) {
+      const i=y*W+x;
+      hh[i] = Math.pow(10, t.hh[y][x]/10);
+      hv[i] = Math.pow(10, t.hv[y][x]/10);
+      gt[i] = t.gt[y][x];
+    }
+    const t0 = performance.now();
+    const res = await runModel(mf, { bands:[hh,hv], width:W, height:H });
+    const ms = performance.now() - t0;
+    let agree=0, pIce=0, tIce=0;
+    for (let i=0;i<n;i++){ if(res.data[i]===gt[i]) agree++; if(res.data[i]===1) pIce++; if(gt[i]===1) tIce++; }
+    say(`${lab} (${t.river}) ${W}x${H} ep=${res.ep} ${ms.toFixed(0)}ms ` +
+        `agree=${(agree/n).toFixed(3)} pred_ice=${(pIce/n).toFixed(3)} true_ice=${(tIce/n).toFixed(3)}`);
+    out[lab] = { ep:res.ep, ms, agree:agree/n, predIce:pIce/n, trueIce:tIce/n };
+  }
+  const pass = out.ice.agree > 0.7 && out.water.agree > 0.9
+            && out.ice.predIce > 0.5 && out.water.predIce < 0.1;
+  say(pass ? 'PASS' : 'FAIL (thresholds)');
+  window.__done = { ok: pass, out };
+} catch (e) {
+  say('FAIL ' + e.message); window.__done = { ok:false, err:e.message, stack:String(e.stack).slice(0,600) };
+}
+</script></body></html>
