@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.9] - 2026-10-07 — Marks stay on the map plane under rotation; marks follow the image grid
+
+### Fixed
+- **Marks drifted with the view frame on a rotated or tilted map.** Deck's map
+  controller rotates the map on Ctrl-drag / right-drag (bearing, pitch) and MapLibre
+  follows, but the map frame assumed bearing 0 / pitch 0, so the ROI box, measured line
+  and annotations stayed screen-aligned and slid off the imagery as the view turned. The
+  frame now projects through `@math.gl/web-mercator`'s `WebMercatorViewport` — the same
+  math deck's MapView uses — so marks are affixed to the map plane in every view. The
+  exported figure skips the lon/lat graticule when the view is rotated or tilted (corner
+  coordinate and scale bar remain)
+- **Marks follow the image grid.** The ROI is a rectangle in image pixels; on a
+  reprojected basemap that grid is rotated relative to the screen, and the box was drawn
+  as a screen-axis rectangle between two projected corners. All four corners are now
+  projected (drag preview too), the measured line is sampled along its image-space
+  segment, and the rotation pivot sits at the image midpoint — on screen and in exported
+  figures. Native view unchanged
+
+### Added
+- Streamed COG class maps: embedded color table, class names and GDAL_NODATA are honoured
+  by `loadCOG` (as the local-GeoTIFF path already did), small integer rasters are sniffed
+  as categorical, and class maps are resampled nearest-neighbour so boundaries don't blend
+  into phantom classes
+- Unit test for the map frame under bearing and pitch
+
 ## [1.0.0-rc.8] - 2026-10-07 — Marks track viewer resizes
 
 ### Fixed

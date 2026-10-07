@@ -1,6 +1,6 @@
 {
   "name": "sardine",
-  "version": "1.0.0-rc.8",
+  "version": "1.0.0-rc.9",
   "type": "module",
   "description": "SARdine - SAR Data INspection and Exploration",
   "main": "src/index.js",
@@ -56,6 +56,7 @@
     "@luma.gl/core": "^9.4.2",
     "@luma.gl/engine": "^9.4.2",
     "@luma.gl/shadertools": "^9.4.2",
+    "@math.gl/web-mercator": "^4.1.0",
     "geotiff": "^2.1.0",
     "h5wasm": "^0.8.11",
     "maplibre-gl": "^4.0.0",

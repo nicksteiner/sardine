@@ -18,12 +18,15 @@
  *   worldToPixel(wx, wy, viewState, canvasW, canvasH) → [sx, sy]
  *   pixelToWorld(sx, sy, viewState, canvasW, canvasH) → [wx, wy]
  *
- * Web Mercator is implemented here rather than through deck's
- * WebMercatorViewport so the module is pure math, runs in Node tests, and is
- * exact for the pitch-0 / bearing-0 views the app uses.
+ * Screen projection goes through @math.gl/web-mercator's WebMercatorViewport —
+ * the same math deck.gl's MapView uses — so bearing and pitch (Ctrl-drag /
+ * right-drag rotate the map) are honoured exactly and marks stay on the map
+ * plane. It is pure math and runs in Node tests. The small helpers below keep
+ * the zoom-0 Mercator formulas for scale-bar arithmetic.
  */
 
 import proj4 from 'proj4';
+import { WebMercatorViewport } from '@math.gl/web-mercator';
 import { getProj4Def } from '../loaders/overture-loader.js';
 import { worldToPixel as orthoWorldToPixel, pixelToWorld as orthoPixelToWorld } from './geo-overlays.js';
 
@@ -101,16 +104,27 @@ export function makeMapFrame({ bounds, imageWidth, imageHeight, worldBounds, crs
     (wMaxY - y) / (wMaxY - wMinY) * imageHeight,
   ];
 
+  // One viewport per (viewState, canvas size); overlays call this per vertex.
+  let vpKey = null, vp = null;
+  const viewport = (vs, w, h) => {
+    const key = `${vs.longitude}|${vs.latitude}|${vs.zoom}|${vs.bearing || 0}|${vs.pitch || 0}|${w}|${h}`;
+    if (key !== vpKey) {
+      vp = new WebMercatorViewport({
+        width: Math.max(1, w), height: Math.max(1, h),
+        longitude: vs.longitude || 0, latitude: vs.latitude || 0, zoom: vs.zoom || 0,
+        bearing: vs.bearing || 0, pitch: vs.pitch || 0,
+      });
+      vpKey = key;
+    }
+    return vp;
+  };
   const lonLatToPixel = (lon, lat, vs, w, h) => {
-    const scale = Math.pow(2, vs.zoom || 0);
-    const [cx, cy] = lonLatToMercator(vs.longitude || 0, vs.latitude || 0);
-    const [mx, my] = lonLatToMercator(lon, lat);
-    return [(mx - cx) * scale + w / 2, (my - cy) * scale + h / 2];
+    const [x, y] = viewport(vs, w, h).project([lon, lat]);
+    return [x, y];
   };
   const pixelToLonLat = (sx, sy, vs, w, h) => {
-    const scale = Math.pow(2, vs.zoom || 0);
-    const [cx, cy] = lonLatToMercator(vs.longitude || 0, vs.latitude || 0);
-    return mercatorToLonLat((sx - w / 2) / scale + cx, (sy - h / 2) / scale + cy);
+    const [lon, lat] = viewport(vs, w, h).unproject([sx, sy]);
+    return [lon, lat];
   };
 
   return {

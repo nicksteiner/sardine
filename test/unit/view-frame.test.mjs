@@ -84,4 +84,28 @@ test('map frame returns null without georeferencing', () => {
   assert(makeMapFrame({ bounds: null, imageWidth: 10, imageHeight: 10, worldBounds: [0, 0, 1, 1], crs: 'EPSG:4326' }) === null);
 });
 
+test('map frame honours bearing and pitch (rotated / tilted map view)', () => {
+  const f = makeMapFrame({
+    bounds: [0, 0, 1000, 800], imageWidth: 1000, imageHeight: 800,
+    worldBounds: [-75, -6, -74, -5], crs: 'EPSG:4326',
+  });
+  const flat = { longitude: -74.5, latitude: -5.5, zoom: 9 };
+  const turned = { ...flat, bearing: 30 };
+  const tilted = { ...flat, bearing: 30, pitch: 45 };
+  // the scene-world centre stays at the screen centre under any bearing/pitch
+  for (const vs of [flat, turned, tilted]) {
+    const [sx, sy] = f.worldToPixel(500, 400, vs, 1000, 700);
+    assertClose(sx, 500, 1e-6); assertClose(sy, 350, 1e-6);
+  }
+  // a point east of centre rotates up-screen with a positive bearing …
+  const e0 = f.worldToPixel(700, 400, flat, 1000, 700);
+  const e30 = f.worldToPixel(700, 400, turned, 1000, 700);
+  assert(Math.abs(e0[1] - 350) < 1e-6 && e30[1] < 340, 'bearing rotates the grid on screen');
+  // … and round-trips through the screen in every view
+  for (const vs of [turned, tilted]) {
+    const [wx, wy] = f.pixelToWorld(...f.worldToPixel(120, 710, vs, 1000, 700), vs, 1000, 700);
+    assertClose(wx, 120, 1e-5); assertClose(wy, 710, 1e-5);
+  }
+});
+
 await run();

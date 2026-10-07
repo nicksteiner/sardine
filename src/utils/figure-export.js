@@ -863,6 +863,10 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s, gridMode
  * coordinate; labels use the geographic formatter.
  */
 function drawGraticule(ctx, W, H, viewState, s, gridMode, fr) {
+  // Meridians/parallels are only screen-vertical/horizontal in an unrotated,
+  // unpitched view; a rotated or tilted map keeps corner coordinates + scale
+  // bar and skips the graticule rather than draw it wrong.
+  if (Math.abs(viewState.bearing || 0) > 0.01 || (viewState.pitch || 0) > 0.01) return;
   const linesOn = gridMode !== 'ticks';
   const tickLen = s(8);
   const [lonW, latN] = fr.pixelToLonLat(0, 0, viewState, W, H);
