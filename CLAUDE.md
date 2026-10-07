@@ -73,6 +73,8 @@ sardine/
 │   │   ├── annotation-io.js    # markup ⇄ GeoJSON w/ versioned properties schema (W004)
 │   │   ├── export-sidecar.js   # {output}.tif.json provenance sidecar (W005)
 │   │   ├── deep-link.js        # ?url= + render-param links (W008)
+│   │   ├── view-frame.js       # scene-world ⇄ screen contract for overlays/export in native + basemap views (rc.7)
+│   │   ├── measure.js          # ground distance/area for marks (haversine via proj4) + formatters (rc.7)
 │   │   ├── sar-composites.js / sar-indices.js  # RGB presets + RVI-family indices
 │   │   ├── stats.js / stretch.js / colormap.js
 │   │   ├── geotiff-writer.js / figure-export.js / png-state.js / svg-export.js
@@ -261,7 +263,9 @@ the public repo. Snapshot:
   with CPU fallback; decode worker pool; IndexedDB L2 chunk cache
 - RGB composite mode (Pauli, dual-pol, quad-pol) + RVI-family indices
 - Annotations (arrows/text), rectangular ROI + profiles, transects, scatter
-  classifier — with **GeoJSON markup save/load** (versioned schema, annotation-io.js)
+  classifier — with **GeoJSON markup save/load** (versioned schema, annotation-io.js);
+  **Mark & Measure** toolbar with ground-unit readouts, working in native and basemap
+  views; **Publish** panel (figure first, map-frame export with graticule + credit)
 - GeoTIFF export (raw Float32 + rendered RGBA) with **provenance sidecars**
   ({output}.tif.json); figure PNG export; PNG state embedding
 - **Deep links** (?url= + render params) and Copy Link (docs/DEEP_LINKS.md)

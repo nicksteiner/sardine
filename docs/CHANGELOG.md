@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.7] - 2026-10-07 — Light mode and basemap by default; Mark & Measure; Publish
+
+Shaped around what an emergency hydrologist does with a scene: open it on a map, mark
+the water edge, measure the extent, and get a figure out.
+
+### Changed
+- **Light theme is the default** (`data-theme="light"` stamped in `index.html` so there is
+  no dark flash before React mounts). Dark and SARdine-navy remain in Display → UI Theme;
+  the choice persists. The pre-rc.7 implicit dark default was never a choice and migrates
+  to light; dark is now stored explicitly
+- **Basemap mode is the default** for any georeferenced scene (persisted in
+  `sardine.mapMode`); scenes without `worldBounds` + `crs` fall back to the native grid
+- Activity rail: **Analyze → Mark**, **Export → Publish**. The Mark panel opens with the
+  Mark & Measure toolbar; Region of Interest, Models and ROI Profiles follow. Publish
+  opens with Publish Figure, then Export Data (settings + the GeoTIFF button), RGB
+  colorbar, Share Link
+- Ctrl+S saves the figure with marks whenever a box or line is drawn
+
+### Added
+- **Mark & Measure toolbar** — Pan / Box / Line / Arrow / Text, one tool at a time. Box
+  draws the ROI with a plain drag (single shot, Shift+drag still works everywhere); Line
+  is the transect tool and opens its profile drawer. Readouts under the toolbar and on the
+  overlay labels are in **ground units**: "50.2 km × 34.2 km · 1 713 km²", "59.9 km · 47°"
+  (`src/utils/measure.js`: image px → lon/lat through proj4, haversine distance, so it is
+  independent of the CRS's units). Pixels when the scene is not georeferenced
+- **Marks on the basemap** — ROI box, measured line and arrow/text annotations are drawn
+  and edited in Basemap mode through a shared view-frame contract
+  (`src/utils/view-frame.js`: scene world ⇄ screen for the OrthographicView or Web
+  Mercator through the image CRS). Marks persist in image pixels, so they round-trip
+  between the two views, GeoJSON markup and export unchanged. MapLibre scale control on
+  the map
+- **Figure export from Basemap mode** — `MapViewer` exposes the same ref API as
+  `SARViewer` (`getCanvas` composites basemap + data, `getFrame`); `exportFigure` /
+  `exportFigureWithOverlays` take `frame` and draw a lon/lat graticule (longitude labels
+  along the top edge, clear of the scale bar and credit), lon/lat corner coordinate,
+  Mercator scale bar, and append the basemap credit ("© OpenStreetMap contributors ·
+  OpenMapTiles · OpenFreeMap") to the attribution strip
+- Exported figures draw the **measured line** and the **ground-unit readouts** of the box
+  and line next to the marks (publication halo / dark pill)
+- Transect profile drawer shows the line's ground length and writes `length_m` into the
+  exported SVG metadata
+- Unit tests: `view-frame.test.mjs` (Mercator round-trip, EPSG:4326 and UTM frames,
+  device-pixel scaling), `measure.test.mjs`
+
+### Fixed
+- Histogram overlay and the figure's histogram inset follow the theme (light panel in the
+  light UI and in publication figures) instead of a fixed dark panel; transect drawer
+  palette follows the theme too
+- Figure GeoTIFF is disabled with an explanation in Basemap mode (it reads the native grid)
+
 ## [1.0.0-rc.6] - 2026-10-06 — Basemap mode; production COG decode fix
 
 ### Added

@@ -70,6 +70,7 @@ import { ROIProfilePlot } from '../src/components/ROIProfilePlot.jsx';
 import { ROIProfilePanel } from '../src/components/ROIProfilePanel.jsx';
 import { TransectProfilePanel } from '../src/components/TransectProfilePanel.jsx';
 import { ANNOTATION_COLORS, ANNOTATION_COLOR_KEYS } from '../src/utils/annotation-render.js';
+import { makeGroundMeasure, formatRoiGround, formatDistance } from '../src/utils/measure.js';
 import { CommandPalette } from '../src/components/CommandPalette.jsx';
 import { ActivityRail } from '../src/components/ActivityRail.jsx';
 import { ContextMenu } from '../src/components/ContextMenu.jsx';
@@ -314,9 +315,19 @@ const CollapsibleSection = Section;
 const RAIL_GROUPS = [
   { id: 'data', title: 'Data', icon: 'database' },
   { id: 'display', title: 'Display', icon: 'sliders' },
-  { id: 'analysis', title: 'Analyze', icon: 'target' },
+  { id: 'analysis', title: 'Mark', icon: 'pen' },
   { id: 'layers', title: 'Layers', icon: 'layers' },
-  { id: 'export', title: 'Export', icon: 'share' },
+  { id: 'export', title: 'Publish', icon: 'share' },
+];
+
+// Mark & Measure tools (Mark panel).  One tool at a time: Box and Line read in
+// ground units, Arrow and Label caption the figure.  Select = pan/zoom.
+const MARK_TOOLS = [
+  { key: 'select', label: 'Pan',    title: 'Pan and zoom; click a mark to select it, Delete removes it' },
+  { key: 'box',    label: 'Box',    title: 'Drag a box: region of interest with ground width, height and area (Shift+drag works in any tool)' },
+  { key: 'line',   label: 'Line',   title: 'Drag a line: ground distance and bearing, with a value profile along it' },
+  { key: 'arrow',  label: 'Arrow',  title: 'Click the tail, click the head, type a caption (Esc cancels)' },
+  { key: 'text',   label: 'Text',   title: 'Click to place a text label' },
 ];
 
 /**
@@ -440,16 +451,18 @@ function PagesBanner() {
  * Phase 1: Basic Viewer + Phase 2: State as Markdown
  */
 function App() {
-  // UI theme: '' (dark, default) | 'sardine' (navy) | 'light'
+  // UI theme: 'light' (default since rc.7) | 'dark' | 'sardine' (navy).
+  // Before rc.7 the stored value for the implicit dark default was '' — that
+  // was never a choice, so it migrates to light; 'dark' is now stored explicitly.
   const [uiTheme, setUiTheme] = useState(() => {
     try {
       const t = localStorage.getItem('sardine.theme');
-      return t === 'sardine' || t === 'light' ? t : '';
-    } catch { return ''; }
+      return t === 'sardine' || t === 'dark' || t === 'light' ? t : 'light';
+    } catch { return 'light'; }
   });
   useEffect(() => {
-    if (uiTheme) document.documentElement.dataset.theme = uiTheme;
-    else delete document.documentElement.dataset.theme;
+    if (uiTheme === 'dark') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = uiTheme;
     try { localStorage.setItem('sardine.theme', uiTheme); } catch {}
   }, [uiTheme]);
 
@@ -655,8 +668,13 @@ function App() {
   const [showGrid, setShowGrid] = useState(false);
   const [pixelExplorer, setPixelExplorer] = useState(false);
   // W033: draw the scene on a Web Mercator basemap (warped tile meshes)
-  // instead of its native grid. Needs worldBounds + crs on the scene.
-  const [mapMode, setMapMode] = useState(false);
+  // instead of its native grid. Needs worldBounds + crs on the scene — the
+  // viewer falls back to the native grid when it can't. On by default (rc.7);
+  // the choice persists.
+  const [mapMode, setMapMode] = useState(() => {
+    try { const v = localStorage.getItem('sardine.mapMode'); return v == null ? true : v === '1'; } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('sardine.mapMode', mapMode ? '1' : '0'); } catch {} }, [mapMode]);
   // OpenFreeMap styles (keyless, OpenMapTiles schema). Positron is the quiet
   // light base that keeps SAR colours readable; liberty/bright carry more
   // basemap detail (buildings from z13); dark for presentations.
@@ -753,6 +771,8 @@ function App() {
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
   const [exportMode, setExportMode] = useState('raw'); // 'raw' (Float32) | 'rendered' (RGBA with dB/colormap)
   const [roi, setROI] = useState(null); // ROI rectangle { left, top, width, height } in image pixels, or null
+  const [roiArmed, setRoiArmed] = useState(false); // Box tool: plain drag draws the ROI (single shot)
+  useEffect(() => { if (roi && roiArmed) setRoiArmed(false); }, [roi]); // eslint-disable-line react-hooks/exhaustive-deps
   const [roiProfile, setRoiProfile] = useState(null); // Computed profile data for ROIProfilePlot
   const [roiRGBData, setRoiRGBData] = useState(null);       // RGB composite data loaded for ROI overlay
   const [roiRGBBounds, setRoiRGBBounds] = useState(null);   // [minX,minY,maxX,maxY] world coords for ROI RGB
@@ -2119,6 +2139,28 @@ function App() {
       multiLook,
     };
   }, [imageData, multiLook]);
+
+  // Ground measure for marks (ROI size/area, line length) — null when the
+  // scene has no georeferencing, in which case overlays read in pixels.
+  const groundMeasure = useMemo(() => makeGroundMeasure({
+    worldBounds: imageData?.worldBounds,
+    crs: imageData?.crs,
+    imageWidth: imageData?.sourceWidth || imageData?.width,
+    imageHeight: imageData?.sourceHeight || imageData?.height,
+  }), [imageData]);
+
+  // One mark tool at a time (Mark panel).  Line = the transect tool, which also
+  // opens its profile drawer.
+  const markTool = roiArmed ? 'box' : transectEnabled ? 'line' : annotationMode !== 'off' ? annotationMode : 'select';
+  const setMarkTool = useCallback((key) => {
+    setRoiArmed(key === 'box');
+    setAnnotationMode(key === 'arrow' || key === 'text' ? key : 'off');
+    setTransectEnabled(key === 'line');
+    if (key === 'line') { setBottomTab('transect'); setStatusCollapsed(false); }
+  }, []);
+  const transectLengthM = (groundMeasure && transectLine)
+    ? groundMeasure.distanceM(transectLine.x0, transectLine.y0, transectLine.x1, transectLine.y1)
+    : null;
 
   // Render props SARTileLayer takes beyond MapViewer's own (map mode).
   const mapLayerProps = useMemo(() => ({
@@ -5768,6 +5810,10 @@ function App() {
 
   // Save current view (or TS viewer) as a georeferenced GeoTIFF — screenshots the rendered canvas
   const handleSaveFigureGeoTIFF = useCallback(async () => {
+    if (mapMode && mapReproject) {
+      addStatusLog('warning', 'Figure GeoTIFF uses the native grid — turn Basemap off (Display) first');
+      return;
+    }
     // Choose which viewer to capture: TS viewer when it's active, otherwise main viewer
     const isTS = activeViewer === 'roi-ts' && !!roiTSFrames && roiTSViewerRef.current;
     const targetRef = isTS ? roiTSViewerRef : viewerRef;
@@ -5826,7 +5872,7 @@ function App() {
       addStatusLog('error', 'Figure GeoTIFF export failed', e.message);
       console.error('[Figure GeoTIFF]', e);
     }
-  }, [imageData, viewCenter, viewZoom, activeViewer, roiTSBounds, roiTSFrames, roiTSIndex, addStatusLog]);
+  }, [imageData, viewCenter, viewZoom, activeViewer, roiTSBounds, roiTSFrames, roiTSIndex, addStatusLog, mapMode, mapReproject]);
 
   // Save current view as PNG figure with overlays
   const handleSaveFigure = useCallback(async (fmt) => {
@@ -5919,6 +5965,8 @@ function App() {
         colorblindMode,
         attribution,
         annotations,
+        // Basemap mode: the map frame places marks/graticule/scale bar in Web Mercator.
+        frame: viewerRef.current?.getFrame?.() || null,
         gridMode: figureGridMode,
         colorbarLabel,
         // Class-map figures: discrete legend instead of the continuous colorbar.
@@ -6036,6 +6084,12 @@ function App() {
         filename: sourceName,
         crs: imageData?.crs || '',
         roi,
+        roiLabel: roi && groundMeasure ? formatRoiGround(groundMeasure.roiGround(roi)) : '',
+        transectLine,
+        transectLabel: transectLine
+          ? [transectLengthM != null ? formatDistance(transectLengthM) : null,
+             transectData?.angleDeg != null ? `${Math.round(transectData.angleDeg)}°` : null].filter(Boolean).join(' · ')
+          : '',
         profileData: null,
         profileShow: { v: false, h: false, i: false },
         imageWidth: imageData?.sourceWidth || imageData?.width,
@@ -6049,6 +6103,8 @@ function App() {
         colorblindMode,
         attribution,
         annotations,
+        // Basemap mode: the map frame places marks/graticule/scale bar in Web Mercator.
+        frame: viewerRef.current?.getFrame?.() || null,
         gridMode: figureGridMode,
         colorbarLabel,
         // Class-map figures: discrete legend instead of the continuous colorbar.
@@ -6153,7 +6209,7 @@ function App() {
       addStatusLog('error', 'Figure export failed', e.message);
       console.error('Figure export error:', e);
     }
-  }, [colormap, reverseColormap, colormapBand, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
+  }, [groundMeasure, transectLine, transectLengthM, transectData, colormap, reverseColormap, colormapBand, effectiveContrastLimits, useDecibels, effectiveUseDecibels, displayMode, compositeId, imageData, fileType, nisarFile, cogUrl, roi, roiProfile, profileShow, addStatusLog, showHistogramOverlay, histogramData, selectedPolarization, classifierOpen, classificationMap, classRegions, classifierRoiDims, roiRGBContrastLimits, roiRGBBounds, roiCompositeId, roiRGBHistogramData, roiTSContrastLimits, roiTSBounds, roiTSFrames, roiTSIndex, nisarProductType, serializeViewerState, attributionEnabled, attributionVendor, attributionProcessor, annotations, figureTheme, figureGridMode, colorbarLabel, satelliteMapVisible, overviewMapVisible, wgs84Bounds, mainClassInfo]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -6174,10 +6230,11 @@ function App() {
         handleSaveFigureWithOverlays();
         return;
       }
-      // Ctrl+S — Save basic figure (no overlays)
+      // Ctrl+S — Save the figure (marks included when a box or line is drawn)
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 's') {
         e.preventDefault();
-        handleSaveFigure();
+        if ((roi || transectLine) && !compareMode) handleSaveFigureWithOverlays();
+        else handleSaveFigure();
         return;
       }
 
@@ -6257,7 +6314,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleSaveFigure, handleSaveFigureWithOverlays, roi, serializeRenderState, applyRenderState, addStatusLog, imageData]);
+  }, [handleSaveFigure, handleSaveFigureWithOverlays, roi, transectLine, compareMode, serializeRenderState, applyRenderState, addStatusLog, imageData]);
 
   const handleExportColorbar = useCallback(async (fmt) => {
     const format = fmt === 'svg' ? 'svg' : 'png';
@@ -6946,8 +7003,8 @@ function App() {
           {!imageData && (activePanel === 'analysis' || (activePanel === 'export' && !compareMode)) && (
             <div className="control-section u-note">
               Load a scene to enable {activePanel === 'analysis'
-                ? 'ROI, annotation, and profile tools'
-                : 'export and share options'}.
+                ? 'mark, measure, and profile tools'
+                : 'figure publishing, export, and share links'}.
             </div>
           )}
           {activePanel === 'data' && (<>
@@ -7069,104 +7126,6 @@ function App() {
               ?file= state link (render + view params + filename hint) that
               applies when the same file is loaded again (W008). Compare mode
               emits a ?compare= link from the URL-backed panels. */}
-          {activePanel === 'export' && (sharedRawUrl || imageData || compareMode) && (
-            <CollapsibleSection title="Share Link" defaultOpen={false}>
-              <div className="u-lede u-mb-sm">
-                {compareMode
-                  ? 'Compare grid — the link reopens the grid with its URL-loaded panels. Local-file panels cannot travel in a URL and are skipped.'
-                  : sharedRawUrl
-                    ? 'Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.'
-                    : 'Local file — the link carries the render + view state (no data travels). Open it, then load the same file to reproduce this view.'}
-              </div>
-              <div className="control-group u-row-sm">
-                <button
-                  disabled={!compareMode && !sharedRawUrl && !localShareName}
-                  title={compareMode
-                    ? 'Copy a compare link (URL-loaded panels only)'
-                    : sharedRawUrl
-                      ? 'Copy a deep link that reproduces this view'
-                      : localShareName
-                        ? 'Copy a state link — open it, then load this file again to reproduce the view'
-                        : 'No shareable source loaded'}
-                  onClick={async () => {
-                    // Compare grid → ?compare= link from the URL-backed panels.
-                    if (compareMode) {
-                      const gridPanels = compareGridRef.current?.getPanels?.() || [];
-                      const urlPanels = gridPanels.filter((p) => p.url)
-                        .map((p) => ({ url: p.url, label: p.name }));
-                      if (urlPanels.length === 0) {
-                        addStatusLog('warning', 'Compare link needs URL-loaded panels — local-file panels cannot travel in a URL');
-                        return;
-                      }
-                      try {
-                        const link = buildCompareLink({ panels: urlPanels });
-                        await navigator.clipboard.writeText(link);
-                        const skipped = gridPanels.length - urlPanels.length;
-                        addStatusLog('success',
-                          `Compare link copied (${urlPanels.length} panel${urlPanels.length > 1 ? 's' : ''}${skipped ? `, ${skipped} local skipped` : ''})`,
-                          link);
-                      } catch (e) {
-                        addStatusLog('error', `Failed to copy compare link: ${e.message}`);
-                      }
-                      return;
-                    }
-                    if (!sharedRawUrl && !localShareName) return;
-                    try {
-                      // W016: active ROI → ?bbox= (WGS84). ROI pixel range →
-                      // file-CRS bounds → inverse-reproject when projected.
-                      let roiBbox;
-                      if (roi && imageData?.width && imageData?.height) {
-                        try {
-                          const fileBbox = imageData.worldBounds || imageData.bounds;
-                          const sub = computeSubsetBounds(
-                            { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
-                            {
-                              worldBounds: fileBbox,
-                              width: imageData.width,
-                              height: imageData.height,
-                              xCoords: imageData.xCoords || null,
-                              yCoords: imageData.yCoords || null,
-                            });
-                          const crs = imageData.crs || 'EPSG:4326';
-                          roiBbox = crs === 'EPSG:4326' ? sub : projectedToWGS84(sub, crs);
-                        } catch { /* omit bbox from the link */ }
-                      }
-                      const view = {
-                        colormap, reverseColormap, colormapBand, useDecibels,
-                        contrastMin, contrastMax, stretchMode, gamma,
-                        selectedPolarization, selectedFrequency,
-                        multiLook, compositeId, displayMode,
-                        viewCenter, viewZoom, roiBbox,
-                      };
-                      const link = sharedRawUrl
-                        ? buildShareLink({
-                            dataUrl: sharedRawUrl,
-                            // RGB COG composite: carry the full per-band URL
-                            // list (raw, un-proxied) so the link round-trips.
-                            dataUrls: (fileType === 'cog' && cogRgbRequest?.urls?.length >= 2)
-                              ? cogRgbRequest.urls : undefined,
-                            dataType: fileType === 'cog' ? 'cog'
-                              : fileType === 'nitf' ? 'nitf'
-                              : 'nisar',
-                            view,
-                          })
-                        : buildShareLink({ localFile: localShareName, view });
-                      await navigator.clipboard.writeText(link);
-                      addStatusLog('success',
-                        sharedRawUrl
-                          ? 'Share link copied to clipboard'
-                          : `State link copied — reopen it and load ${localShareName} to reproduce this view`,
-                        link);
-                    } catch (e) {
-                      addStatusLog('error', `Failed to copy share link: ${e.message}`);
-                    }
-                  }} className="u-flex1 u-sm">
-                  Copy share link
-                </button>
-              </div>
-            </CollapsibleSection>
-          )}
-
           {activePanel === 'data' && (<>
           {/* Local GeoTIFF Input */}
           {fileType === 'local-tif' && (
@@ -8080,9 +8039,9 @@ function App() {
 
             <Field label="UI Theme" className="control-group">
               <select value={uiTheme} onChange={(e) => setUiTheme(e.target.value)}>
-                <option value="">Dark</option>
-                <option value="sardine">SARdine (navy)</option>
                 <option value="light">Light</option>
+                <option value="dark">Dark</option>
+                <option value="sardine">SARdine (navy)</option>
               </select>
             </Field>
 
@@ -8211,7 +8170,7 @@ function App() {
                   disabled={!mapReproject}
                   onChange={(e) => setMapMode(e.target.checked)}
                 />
-                <label htmlFor="mapMode">Basemap{mapReproject ? '' : ' (needs a georeferenced scene)'}</label>
+                <label htmlFor="mapMode" title="Draw the scene on a Web Mercator basemap (default). Off = the scene's native pixel grid.">Basemap{mapReproject || !imageData ? '' : ' (needs a georeferenced scene)'}</label>
                 {mapMode && (
                   <select
                     value={basemapStyle}
@@ -8280,9 +8239,200 @@ function App() {
           </CollapsibleSection>
           )}
 
-          {/* Export settings */}
+          {/* Publish — the figure is the deliverable: PNG for a report or
+              briefing, SVG for editing, with marks, scale bar, coordinates,
+              legend and attribution drawn in. Basemap mode exports the map
+              frame (basemap + graticule + credit). */}
+          {activePanel === 'export' && (imageData || compareMode) && (
+          <CollapsibleSection title="Publish Figure" defaultOpen={true}>
+            <div>
+              <div className="u-lede u-mb-sm">
+                {compareMode
+                  ? 'Every compare panel stitched into one figure.'
+                  : (mapMode && mapReproject
+                    ? 'The current map view: basemap, your marks, scale bar, graticule, legend and credits.'
+                    : 'The current view: your marks, scale bar, coordinate grid and legend.')}
+              </div>
+              <div className="u-row-sm">
+                <div style={{ flex: 1, display: 'flex' }}>
+                  <button
+                    className="publish-cta"
+                    onClick={() => ((roi || transectLine) && !compareMode ? handleSaveFigureWithOverlays('png') : handleSaveFigure('png'))}
+                    title={compareMode ? 'Save the compare grid as a stitched PNG figure' : 'Save the figure as a flattened PNG (Ctrl+S)'}
+                    style={{ flex: 1, borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
+                  >
+                    Save Figure (PNG)
+                  </button>
+                  <button
+                    className="publish-cta"
+                    onClick={() => ((roi || transectLine) && !compareMode ? handleSaveFigureWithOverlays('svg') : handleSaveFigure('svg'))}
+                    title="Save as SVG — image embedded, chrome (scale bar, labels, legend, grid, marks) editable vector"
+                    style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none', paddingLeft: '12px', paddingRight: '12px' }}
+                  >
+                    SVG
+                  </button>
+                </div>
+              </div>
+              {imageData && (
+                <button
+                  onClick={handleSaveFigureGeoTIFF}
+                  disabled={!!(mapMode && mapReproject)}
+                  className="btn-secondary u-mt-xs"
+                  style={{ width: '100%' }}
+                  title={mapMode && mapReproject
+                    ? 'Figure GeoTIFF uses the native grid — turn Basemap off (Display) first'
+                    : 'Save the current viewport as a georeferenced GeoTIFF'}
+                >
+                  Save Figure (GeoTIFF)
+                </button>
+              )}
+                {/* Figure style — publication (light) vs presentation (dark). */}
+                <div className="control-group u-mt-md">
+                  <div className="control-row u-between">
+                    <label className="u-note-2" title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
+                      Figure style
+                    </label>
+                    <div className="u-row">
+                      {[['publication', 'Publication'], ['dark', 'Presentation']].map(([val, lbl], i) => (
+                        <button
+                          key={val}
+                          onClick={() => { setFigureTheme(val); try { localStorage.setItem('sardine.figureTheme', val); } catch {} }}
+                          className={figureTheme === val ? '' : 'btn-secondary'}
+                          style={{
+                            fontSize: 'var(--text-xs)', padding: '3px 10px',
+                            borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
+                            borderTopRightRadius: i === 0 ? 0 : undefined, borderBottomRightRadius: i === 0 ? 0 : undefined,
+                            borderLeft: i === 0 ? undefined : 'none',
+                            fontWeight: figureTheme === val ? 600 : 400,
+                          }}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                {/* Figure coordinate grid — full gridlines, edge ticks only, or none. */}
+                <div className="control-group u-mt-sm">
+                  <div className="control-row u-between">
+                    <label className="u-note-2" title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
+                      Figure grid
+                    </label>
+                    <div className="u-row">
+                      {[['lines', 'Lines'], ['ticks', 'Ticks'], ['off', 'Off']].map(([val, lbl], i, arr) => (
+                        <button
+                          key={val}
+                          onClick={() => { setFigureGridMode(val); try { localStorage.setItem('sardine.figureGrid', val); } catch {} }}
+                          className={figureGridMode === val ? '' : 'btn-secondary'}
+                          style={{
+                            fontSize: 'var(--text-xs)', padding: '3px 10px',
+                            borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
+                            borderTopRightRadius: i === arr.length - 1 ? undefined : 0, borderBottomRightRadius: i === arr.length - 1 ? undefined : 0,
+                            borderLeft: i === 0 ? undefined : 'none',
+                            fontWeight: figureGridMode === val ? 600 : 400,
+                          }}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+                {/* Colorbar caption — always editable; empty falls back to dB/linear. */}
+                <div className="control-group u-mt-sm">
+                  <div className="control-row u-between">
+                    <label htmlFor="colorbarLabel" className="u-note-2" title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
+                      Colorbar label
+                    </label>
+                    <input
+                      id="colorbarLabel"
+                      type="text"
+                      value={colorbarLabel}
+                      placeholder="auto (dB / linear)"
+                      onChange={(e) => { setColorbarLabel(e.target.value); try { localStorage.setItem('sardine.colorbarLabel', e.target.value); } catch {} }}
+                      onKeyDown={(e) => e.stopPropagation()}
+                      style={{ width: '55%', fontSize: 'var(--text-sm)', padding: '3px 6px' }}
+                    />
+                  </div>
+                </div>
+                {/* Attribution stamps the single-scene export; compare-grid
+                    panels don't carry it. */}
+                {imageData && (
+                <div className="control-group u-mt-sm">
+                  <div className="control-row">
+                    <input
+                      type="checkbox"
+                      id="attributionEnabled"
+                      checked={attributionEnabled}
+                      onChange={(e) => setAttributionEnabled(e.target.checked)}
+                    />
+                    <label htmlFor="attributionEnabled" title="Stamp vendor copyright + CSDA + 'Processed by Nick Steiner' onto the PNG">
+                      Add attribution to PNG
+                    </label>
+                  </div>
+                  {attributionEnabled && (() => {
+                    const src = (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl;
+                    const detected = detectVendor(src);
+                    const effective = attributionVendor || detected || '';
+                    return (
+                      <select
+                        value={attributionVendor}
+                        onChange={(e) => {
+                          setAttributionVendor(e.target.value);
+                          try { localStorage.setItem('sardine.attribution.vendor', e.target.value); } catch {}
+                        }}
+                        title={detected ? `Auto-detected from filename: ${detected}` : 'Pick the sensor that acquired this scene'}
+                        style={{
+                          width: '100%',
+                          marginTop: '4px',
+                          padding: '4px 6px',
+                          fontSize: 'var(--text-sm)',
+                          background: 'var(--sardine-bg-panel)',
+                          border: `1px solid ${effective ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
+                          color: 'var(--sardine-text-primary, #e8edf5)',
+                          borderRadius: '2px',
+                        }}
+                      >
+                        <option value="">
+                          {detected ? `Auto: ${detected}` : 'Sensor (none / generic)'}
+                        </option>
+                        {VENDOR_OPTIONS.map(({ key, label }) => (
+                          <option key={key} value={key}>{label}</option>
+                        ))}
+                      </select>
+                    );
+                  })()}
+                  {attributionEnabled && (
+                    <input
+                      type="text"
+                      placeholder={`Processed by… (default: ${DEFAULT_PROCESSOR})`}
+                      value={attributionProcessor}
+                      onChange={(e) => {
+                        setAttributionProcessor(e.target.value);
+                        try { localStorage.setItem('sardine.attribution.processor', e.target.value); } catch {}
+                      }}
+                      title="Override the 'Processed by' name. Persists across sessions; leave blank to use default."
+                      style={{
+                        width: '100%',
+                        marginTop: '4px',
+                        padding: '4px 6px',
+                        fontSize: 'var(--text-sm)',
+                        background: 'var(--sardine-bg-panel)',
+                        border: '1px solid var(--sardine-border)',
+                        color: 'var(--sardine-text-primary, #e8edf5)',
+                        borderRadius: '2px',
+                      }}
+                    />
+                  )}
+                </div>
+                )}
+            </div>
+          </CollapsibleSection>
+          )}
+
+          {/* Export data — GeoTIFF of the scene (or ROI) at a chosen multilook */}
           {activePanel === 'export' && imageData?.getExportStripe && (
-          <CollapsibleSection title="Export Settings">
+          <CollapsibleSection title="Export Data">
             {imageData && imageData.getExportStripe && (
               <div className="control-group">
                 <label className="u-sm u-mb-xs">
@@ -8340,6 +8490,203 @@ function App() {
               </div>
             )}
 
+            <div className="control-group u-mt-sm">
+              <button
+                onClick={handleExportGeoTIFF}
+                disabled={exporting}
+                style={{ width: '100%' }}
+                title="Write a GeoTIFF of the scene (or the box) with a provenance sidecar"
+              >
+                {exporting
+                  ? `Exporting... ${exportProgress}%`
+                  : `Export ${roi ? 'Box ' : ''}GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
+              </button>
+              {exporting && (
+                <div className="progress-track u-mt-sm">
+                  <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
+                </div>
+              )}
+            </div>
+          </CollapsibleSection>
+          )}
+
+          {/* Mark & Measure — the field toolbar: draw, measure, caption, save
+              markup.  Marks persist in image pixels and work in both the native
+              view and Basemap mode; Box and Line read in ground units. */}
+          {activePanel === 'analysis' && imageData && (
+          <CollapsibleSection title="Mark & Measure" defaultOpen={true}>
+                <div className="control-group">
+                  <div className="u-row" role="toolbar" aria-label="Mark tools">
+                    {MARK_TOOLS.map(({ key, label, title }) => {
+                      const active = markTool === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => setMarkTool(active && key !== 'select' ? 'select' : key)}
+                          title={title}
+                          aria-pressed={active}
+                          className={active ? '' : 'btn-secondary'}
+                          style={{ flex: 1, padding: '5px 4px', fontSize: 'var(--text-sm)', fontWeight: active ? 600 : 400 }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* Readouts — what an emergency hydrologist reads off the map */}
+                  {roi && (
+                    <div className="u-between u-mt-xs mark-readout mark-readout--box">
+                      <span>
+                        <span className="mark-readout__kind">Box</span>
+                        {groundMeasure ? formatRoiGround(groundMeasure.roiGround(roi)) : `${roi.width} × ${roi.height} px`}
+                      </span>
+                      <button className="btn-secondary mark-readout__clear" onClick={() => setROI(null)} title="Remove the box">Clear</button>
+                    </div>
+                  )}
+                  {transectLine && (
+                    <div className="u-between u-mt-xs mark-readout mark-readout--line">
+                      <span>
+                        <span className="mark-readout__kind">Line</span>
+                        {transectLengthM != null ? formatDistance(transectLengthM) : `${Math.round(Math.hypot(transectLine.x1 - transectLine.x0, transectLine.y1 - transectLine.y0))} px`}
+                        {transectData?.angleDeg != null ? ` · ${Math.round(transectData.angleDeg)}°` : ''}
+                      </span>
+                      <button className="btn-secondary mark-readout__clear" onClick={() => setTransectLine(null)} title="Remove the line">Clear</button>
+                    </div>
+                  )}
+                  {annotations.length > 0 && (
+                    <div className="u-note u-mt-xs">
+                      {annotations.length} caption{annotations.length === 1 ? '' : 's'} on the figure
+                    </div>
+                  )}
+                  {!roi && !transectLine && annotations.length === 0 && (
+                    <div className="u-note u-mt-xs">
+                      Pick a tool and draw on the map. Box and Line read in km and km²; Arrow and Label caption the figure. Everything you mark is drawn into Publish → Save Figure.
+                    </div>
+                  )}
+                  {/* Size presets — standardized S/M/L (line weight + text scale together) */}
+                  <div className="u-row u-mt-xs">
+                    {[
+                      { key: 'small',  label: 'S' },
+                      { key: 'medium', label: 'M' },
+                      { key: 'large',  label: 'L' },
+                    ].map(({ key, label }) => (
+                      <button
+                        key={key}
+                        onClick={() => {
+                          setAnnotationSize(key);
+                          // Retro-apply to the selected annotation so users can resize
+                          // an existing arrow/label without redrawing it.
+                          if (selectedAnnotationId) {
+                            setAnnotations(anns => anns.map(a =>
+                              a.id === selectedAnnotationId ? { ...a, size: key, fontSize: undefined } : a
+                            ));
+                          }
+                        }}
+                        title={
+                          `${key.charAt(0).toUpperCase() + key.slice(1)} — thicker lines & larger text`
+                          + (selectedAnnotationId ? ' (also resizes the selected annotation)' : '')
+                        }
+                        style={{
+                          flex: 1,
+                          padding: '4px 6px',
+                          fontSize: 'var(--text-sm)',
+                          fontWeight: 600,
+                          background: annotationSize === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
+                          color: annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                          border: `1px solid ${annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
+                          borderRadius: '2px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', alignItems: 'center' }}>
+                    {ANNOTATION_COLOR_KEYS.map((key) => (
+                      <button
+                        key={key}
+                        onClick={() => setAnnotationColor(key)}
+                        title={`Color: ${key}`}
+                        style={{
+                          width: 18, height: 18,
+                          padding: 0,
+                          background: ANNOTATION_COLORS[key],
+                          border: annotationColor === key
+                            ? `2px solid var(--sardine-text-primary, #e8edf5)`
+                            : `1px solid var(--sardine-border, #1e3a5f)`,
+                          borderRadius: '50%',
+                          cursor: 'pointer',
+                          boxShadow: annotationColor === key ? `0 0 0 1px ${ANNOTATION_COLORS[key]}` : 'none',
+                        }}
+                      />
+                    ))}
+                    <button
+                      onClick={() => { setAnnotations([]); setSelectedAnnotationId(null); }}
+                      disabled={annotations.length === 0}
+                      title="Remove all annotations"
+                      style={{
+                        marginLeft: 'auto',
+                        padding: '2px 8px',
+                        fontSize: 'var(--text-xs)',
+                        background: 'transparent',
+                        color: annotations.length === 0 ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: annotations.length === 0 ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  {/* Markup GeoJSON I/O (W004) — annotations + ROI + class regions */}
+                  <div className="u-row u-mt-xs">
+                    <button
+                      onClick={handleSaveMarkup}
+                      disabled={annotations.length === 0 && !roi && classRegions.length === 0}
+                      title="Download annotations, ROI, and class regions as GeoJSON"
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: 'var(--text-sm)',
+                        background: 'transparent',
+                        color: (annotations.length === 0 && !roi && classRegions.length === 0)
+                          ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: (annotations.length === 0 && !roi && classRegions.length === 0) ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      Save Markup
+                    </button>
+                    <button
+                      onClick={() => markupFileInputRef.current?.click()}
+                      title="Load markup GeoJSON (annotations, ROI, class regions)"
+                      style={{
+                        flex: 1,
+                        padding: '4px 6px',
+                        fontSize: 'var(--text-sm)',
+                        background: 'transparent',
+                        color: 'var(--sardine-text-secondary, #8fa4c4)',
+                        border: '1px solid var(--sardine-border, #1e3a5f)',
+                        borderRadius: '2px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Load Markup
+                    </button>
+                    <input
+                      ref={markupFileInputRef}
+                      type="file"
+                      accept=".geojson,.json" className="u-hidden"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) handleLoadMarkupFile(f);
+                        e.target.value = '';
+                      }}
+                    />
+                  </div>
+                </div>
           </CollapsibleSection>
           )}
 
@@ -8385,7 +8732,7 @@ function App() {
                   </div>
                 ) : (
                   <div style={{ color: 'var(--text-muted)', fontSize: 'var(--text-xs)' }}>
-                    Shift+drag on image to select ROI for export
+                    Box tool (above) or Shift+drag draws a region; it drives profiles, classification and ROI export
                   </div>
                 )}
 
@@ -8528,363 +8875,6 @@ function App() {
           </CollapsibleSection>
           )}
 
-          {/* Export buttons */}
-          {activePanel === 'export' && (imageData || compareMode) && (
-          <CollapsibleSection title="Export">
-            {(imageData || compareMode) && (
-              <div>
-                <div className="u-row-sm">
-                {imageData?.getExportStripe && (
-                  <button
-                    onClick={handleExportGeoTIFF}
-                    disabled={exporting} className="u-flex1">
-                    {exporting
-                      ? `Exporting... ${exportProgress}%`
-                      : `Export ${roi ? 'ROI ' : ''}GeoTIFF (${exportMode === 'raw' ? 'Float32' : 'Rendered'})`}
-                  </button>
-                )}
-                {/* Save Figure — PNG (flattened) or SVG (embedded raster base
-                    + editable vector chrome for Illustrator/Inkscape). */}
-                <div style={{ flex: 1, display: 'flex' }}>
-                  <button
-                    onClick={() => (roi && !compareMode ? handleSaveFigureWithOverlays('png') : handleSaveFigure('png'))}
-                    title={compareMode ? 'Save the compare grid as a stitched PNG figure' : 'Save figure as a flattened PNG'}
-                    style={{ flex: 1, borderTopRightRadius: 0, borderBottomRightRadius: 0 }}
-                  >
-                    Save Figure (PNG)
-                  </button>
-                  <button
-                    onClick={() => (roi && !compareMode ? handleSaveFigureWithOverlays('svg') : handleSaveFigure('svg'))}
-                    title="Save figure as SVG — SAR image embedded, chrome (scale bar, labels, legend, grid) editable vector"
-                    style={{ borderTopLeftRadius: 0, borderBottomLeftRadius: 0, borderLeft: 'none', paddingLeft: '10px', paddingRight: '10px' }}
-                  >
-                    SVG
-                  </button>
-                </div>
-                {imageData && (
-                <button
-                  onClick={handleSaveFigureGeoTIFF}
-                  title="Save current viewport as georeferenced GeoTIFF" className="u-flex1">
-                  Save Figure (GeoTIFF)
-                </button>
-                )}
-                </div>
-                {exporting && (
-                  <div className="progress-track u-mt-sm">
-                    <div className="progress-fill" style={{ width: `${exportProgress}%`, transition: 'width 0.3s ease' }} />
-                  </div>
-                )}
-                {/* Figure style — publication (light) vs presentation (dark). */}
-                <div className="control-group u-mt-md">
-                  <div className="control-row u-between">
-                    <label className="u-note-2" title="Publication = light, open, editorial (Nature/RSE house style). Presentation = dark, for slides/projector.">
-                      Figure style
-                    </label>
-                    <div className="u-row">
-                      {[['publication', 'Publication'], ['dark', 'Presentation']].map(([val, lbl], i) => (
-                        <button
-                          key={val}
-                          onClick={() => { setFigureTheme(val); try { localStorage.setItem('sardine.figureTheme', val); } catch {} }}
-                          className={figureTheme === val ? '' : 'btn-secondary'}
-                          style={{
-                            fontSize: 'var(--text-xs)', padding: '3px 10px',
-                            borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
-                            borderTopRightRadius: i === 0 ? 0 : undefined, borderBottomRightRadius: i === 0 ? 0 : undefined,
-                            borderLeft: i === 0 ? undefined : 'none',
-                            fontWeight: figureTheme === val ? 600 : 400,
-                          }}
-                        >
-                          {lbl}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                {/* Figure coordinate grid — full gridlines, edge ticks only, or none. */}
-                <div className="control-group u-mt-sm">
-                  <div className="control-row u-between">
-                    <label className="u-note-2" title="Coordinate grid on exported figures: full gridlines, edge ticks + labels only, or off.">
-                      Figure grid
-                    </label>
-                    <div className="u-row">
-                      {[['lines', 'Lines'], ['ticks', 'Ticks'], ['off', 'Off']].map(([val, lbl], i, arr) => (
-                        <button
-                          key={val}
-                          onClick={() => { setFigureGridMode(val); try { localStorage.setItem('sardine.figureGrid', val); } catch {} }}
-                          className={figureGridMode === val ? '' : 'btn-secondary'}
-                          style={{
-                            fontSize: 'var(--text-xs)', padding: '3px 10px',
-                            borderTopLeftRadius: i === 0 ? undefined : 0, borderBottomLeftRadius: i === 0 ? undefined : 0,
-                            borderTopRightRadius: i === arr.length - 1 ? undefined : 0, borderBottomRightRadius: i === arr.length - 1 ? undefined : 0,
-                            borderLeft: i === 0 ? undefined : 'none',
-                            fontWeight: figureGridMode === val ? 600 : 400,
-                          }}
-                        >
-                          {lbl}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                {/* Colorbar caption — always editable; empty falls back to dB/linear. */}
-                <div className="control-group u-mt-sm">
-                  <div className="control-row u-between">
-                    <label htmlFor="colorbarLabel" className="u-note-2" title="Caption drawn along the figure colorbar. Leave empty for automatic 'dB' / 'linear'.">
-                      Colorbar label
-                    </label>
-                    <input
-                      id="colorbarLabel"
-                      type="text"
-                      value={colorbarLabel}
-                      placeholder="auto (dB / linear)"
-                      onChange={(e) => { setColorbarLabel(e.target.value); try { localStorage.setItem('sardine.colorbarLabel', e.target.value); } catch {} }}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      style={{ width: '55%', fontSize: 'var(--text-sm)', padding: '3px 6px' }}
-                    />
-                  </div>
-                </div>
-                {/* Attribution stamps the single-scene export; compare-grid
-                    panels don't carry it. */}
-                {imageData && (
-                <div className="control-group u-mt-sm">
-                  <div className="control-row">
-                    <input
-                      type="checkbox"
-                      id="attributionEnabled"
-                      checked={attributionEnabled}
-                      onChange={(e) => setAttributionEnabled(e.target.checked)}
-                    />
-                    <label htmlFor="attributionEnabled" title="Stamp vendor copyright + CSDA + 'Processed by Nick Steiner' onto the PNG">
-                      Add attribution to PNG
-                    </label>
-                  </div>
-                  {attributionEnabled && (() => {
-                    const src = (fileType === 'nisar' || fileType === 'nisar-gunw') ? nisarFile?.name : cogUrl;
-                    const detected = detectVendor(src);
-                    const effective = attributionVendor || detected || '';
-                    return (
-                      <select
-                        value={attributionVendor}
-                        onChange={(e) => {
-                          setAttributionVendor(e.target.value);
-                          try { localStorage.setItem('sardine.attribution.vendor', e.target.value); } catch {}
-                        }}
-                        title={detected ? `Auto-detected from filename: ${detected}` : 'Pick the sensor that acquired this scene'}
-                        style={{
-                          width: '100%',
-                          marginTop: '4px',
-                          padding: '4px 6px',
-                          fontSize: 'var(--text-sm)',
-                          background: 'var(--sardine-bg-panel)',
-                          border: `1px solid ${effective ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
-                          color: 'var(--sardine-text-primary, #e8edf5)',
-                          borderRadius: '2px',
-                        }}
-                      >
-                        <option value="">
-                          {detected ? `Auto: ${detected}` : 'Sensor (none / generic)'}
-                        </option>
-                        {VENDOR_OPTIONS.map(({ key, label }) => (
-                          <option key={key} value={key}>{label}</option>
-                        ))}
-                      </select>
-                    );
-                  })()}
-                  {attributionEnabled && (
-                    <input
-                      type="text"
-                      placeholder={`Processed by… (default: ${DEFAULT_PROCESSOR})`}
-                      value={attributionProcessor}
-                      onChange={(e) => {
-                        setAttributionProcessor(e.target.value);
-                        try { localStorage.setItem('sardine.attribution.processor', e.target.value); } catch {}
-                      }}
-                      title="Override the 'Processed by' name. Persists across sessions; leave blank to use default."
-                      style={{
-                        width: '100%',
-                        marginTop: '4px',
-                        padding: '4px 6px',
-                        fontSize: 'var(--text-sm)',
-                        background: 'var(--sardine-bg-panel)',
-                        border: '1px solid var(--sardine-border)',
-                        color: 'var(--sardine-text-primary, #e8edf5)',
-                        borderRadius: '2px',
-                      }}
-                    />
-                  )}
-                </div>
-                )}
-              </div>
-            )}
-          </CollapsibleSection>
-          )}
-
-          {/* Annotation toolbar — arrows + text labels baked into PNG export */}
-          {activePanel === 'analysis' && imageData && (
-          <CollapsibleSection title="Annotate">
-                <div className="control-group">
-                  <label className="u-note-2">
-                    Annotate
-                    {annotations.length > 0 && (
-                      <span className="u-accent u-ml-sm">· {annotations.length}</span>
-                    )}
-                  </label>
-                  <div className="u-row u-mt-xs">
-                    {[
-                      { key: 'off',   label: 'Off' },
-                      { key: 'arrow', label: 'Arrow' },
-                      { key: 'text',  label: 'Text' },
-                    ].map(({ key, label }) => (
-                      <button
-                        key={key}
-                        onClick={() => setAnnotationMode(key)}
-                        title={
-                          key === 'arrow' ? 'Click tail, click head, type caption (Esc cancels)'
-                          : key === 'text' ? 'Click to place a text label'
-                          : 'Disable annotation tool (selection still works)'
-                        }
-                        style={{
-                          flex: 1,
-                          padding: '4px 6px',
-                          fontSize: 'var(--text-sm)',
-                          background: annotationMode === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
-                          color: annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
-                          border: `1px solid ${annotationMode === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
-                          borderRadius: '2px',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  {/* Size presets — standardized S/M/L (line weight + text scale together) */}
-                  <div className="u-row u-mt-xs">
-                    {[
-                      { key: 'small',  label: 'S' },
-                      { key: 'medium', label: 'M' },
-                      { key: 'large',  label: 'L' },
-                    ].map(({ key, label }) => (
-                      <button
-                        key={key}
-                        onClick={() => {
-                          setAnnotationSize(key);
-                          // Retro-apply to the selected annotation so users can resize
-                          // an existing arrow/label without redrawing it.
-                          if (selectedAnnotationId) {
-                            setAnnotations(anns => anns.map(a =>
-                              a.id === selectedAnnotationId ? { ...a, size: key, fontSize: undefined } : a
-                            ));
-                          }
-                        }}
-                        title={
-                          `${key.charAt(0).toUpperCase() + key.slice(1)} — thicker lines & larger text`
-                          + (selectedAnnotationId ? ' (also resizes the selected annotation)' : '')
-                        }
-                        style={{
-                          flex: 1,
-                          padding: '4px 6px',
-                          fontSize: 'var(--text-sm)',
-                          fontWeight: 600,
-                          background: annotationSize === key ? 'var(--sardine-cyan-bg, rgba(78,201,212,0.08))' : 'transparent',
-                          color: annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-text-secondary, #8fa4c4)',
-                          border: `1px solid ${annotationSize === key ? 'var(--sardine-cyan, #4ec9d4)' : 'var(--sardine-border, #1e3a5f)'}`,
-                          borderRadius: '2px',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', gap: '4px', marginTop: '4px', alignItems: 'center' }}>
-                    {ANNOTATION_COLOR_KEYS.map((key) => (
-                      <button
-                        key={key}
-                        onClick={() => setAnnotationColor(key)}
-                        title={`Color: ${key}`}
-                        style={{
-                          width: 18, height: 18,
-                          padding: 0,
-                          background: ANNOTATION_COLORS[key],
-                          border: annotationColor === key
-                            ? `2px solid var(--sardine-text-primary, #e8edf5)`
-                            : `1px solid var(--sardine-border, #1e3a5f)`,
-                          borderRadius: '50%',
-                          cursor: 'pointer',
-                          boxShadow: annotationColor === key ? `0 0 0 1px ${ANNOTATION_COLORS[key]}` : 'none',
-                        }}
-                      />
-                    ))}
-                    <button
-                      onClick={() => { setAnnotations([]); setSelectedAnnotationId(null); }}
-                      disabled={annotations.length === 0}
-                      title="Remove all annotations"
-                      style={{
-                        marginLeft: 'auto',
-                        padding: '2px 8px',
-                        fontSize: 'var(--text-xs)',
-                        background: 'transparent',
-                        color: annotations.length === 0 ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
-                        border: '1px solid var(--sardine-border, #1e3a5f)',
-                        borderRadius: '2px',
-                        cursor: annotations.length === 0 ? 'not-allowed' : 'pointer',
-                      }}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                  {/* Markup GeoJSON I/O (W004) — annotations + ROI + class regions */}
-                  <div className="u-row u-mt-xs">
-                    <button
-                      onClick={handleSaveMarkup}
-                      disabled={annotations.length === 0 && !roi && classRegions.length === 0}
-                      title="Download annotations, ROI, and class regions as GeoJSON"
-                      style={{
-                        flex: 1,
-                        padding: '4px 6px',
-                        fontSize: 'var(--text-sm)',
-                        background: 'transparent',
-                        color: (annotations.length === 0 && !roi && classRegions.length === 0)
-                          ? 'var(--sardine-text-disabled, #3a5070)' : 'var(--sardine-text-secondary, #8fa4c4)',
-                        border: '1px solid var(--sardine-border, #1e3a5f)',
-                        borderRadius: '2px',
-                        cursor: (annotations.length === 0 && !roi && classRegions.length === 0) ? 'not-allowed' : 'pointer',
-                      }}
-                    >
-                      Save Markup
-                    </button>
-                    <button
-                      onClick={() => markupFileInputRef.current?.click()}
-                      title="Load markup GeoJSON (annotations, ROI, class regions)"
-                      style={{
-                        flex: 1,
-                        padding: '4px 6px',
-                        fontSize: 'var(--text-sm)',
-                        background: 'transparent',
-                        color: 'var(--sardine-text-secondary, #8fa4c4)',
-                        border: '1px solid var(--sardine-border, #1e3a5f)',
-                        borderRadius: '2px',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Load Markup
-                    </button>
-                    <input
-                      ref={markupFileInputRef}
-                      type="file"
-                      accept=".geojson,.json" className="u-hidden"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (f) handleLoadMarkupFile(f);
-                        e.target.value = '';
-                      }}
-                    />
-                  </div>
-                </div>
-          </CollapsibleSection>
-          )}
-
           {/* Model plugins (W025) — heuristic / ML / ONNX / remote as peers */}
           {activePanel === 'analysis' && (
             <CollapsibleSection title="Models" defaultOpen={true}>
@@ -8948,6 +8938,104 @@ function App() {
                   SVG
                 </button>
               </div>
+          )}
+
+          {activePanel === 'export' && (sharedRawUrl || imageData || compareMode) && (
+            <CollapsibleSection title="Share Link" defaultOpen={false}>
+              <div className="u-lede u-mb-sm">
+                {compareMode
+                  ? 'Compare grid — the link reopens the grid with its URL-loaded panels. Local-file panels cannot travel in a URL and are skipped.'
+                  : sharedRawUrl
+                    ? 'Shareable URL with current data + render state. Recipient still needs their own Earthdata token for DAAC sources.'
+                    : 'Local file — the link carries the render + view state (no data travels). Open it, then load the same file to reproduce this view.'}
+              </div>
+              <div className="control-group u-row-sm">
+                <button
+                  disabled={!compareMode && !sharedRawUrl && !localShareName}
+                  title={compareMode
+                    ? 'Copy a compare link (URL-loaded panels only)'
+                    : sharedRawUrl
+                      ? 'Copy a deep link that reproduces this view'
+                      : localShareName
+                        ? 'Copy a state link — open it, then load this file again to reproduce the view'
+                        : 'No shareable source loaded'}
+                  onClick={async () => {
+                    // Compare grid → ?compare= link from the URL-backed panels.
+                    if (compareMode) {
+                      const gridPanels = compareGridRef.current?.getPanels?.() || [];
+                      const urlPanels = gridPanels.filter((p) => p.url)
+                        .map((p) => ({ url: p.url, label: p.name }));
+                      if (urlPanels.length === 0) {
+                        addStatusLog('warning', 'Compare link needs URL-loaded panels — local-file panels cannot travel in a URL');
+                        return;
+                      }
+                      try {
+                        const link = buildCompareLink({ panels: urlPanels });
+                        await navigator.clipboard.writeText(link);
+                        const skipped = gridPanels.length - urlPanels.length;
+                        addStatusLog('success',
+                          `Compare link copied (${urlPanels.length} panel${urlPanels.length > 1 ? 's' : ''}${skipped ? `, ${skipped} local skipped` : ''})`,
+                          link);
+                      } catch (e) {
+                        addStatusLog('error', `Failed to copy compare link: ${e.message}`);
+                      }
+                      return;
+                    }
+                    if (!sharedRawUrl && !localShareName) return;
+                    try {
+                      // W016: active ROI → ?bbox= (WGS84). ROI pixel range →
+                      // file-CRS bounds → inverse-reproject when projected.
+                      let roiBbox;
+                      if (roi && imageData?.width && imageData?.height) {
+                        try {
+                          const fileBbox = imageData.worldBounds || imageData.bounds;
+                          const sub = computeSubsetBounds(
+                            { startRow: roi.top, startCol: roi.left, numRows: roi.height, numCols: roi.width },
+                            {
+                              worldBounds: fileBbox,
+                              width: imageData.width,
+                              height: imageData.height,
+                              xCoords: imageData.xCoords || null,
+                              yCoords: imageData.yCoords || null,
+                            });
+                          const crs = imageData.crs || 'EPSG:4326';
+                          roiBbox = crs === 'EPSG:4326' ? sub : projectedToWGS84(sub, crs);
+                        } catch { /* omit bbox from the link */ }
+                      }
+                      const view = {
+                        colormap, reverseColormap, colormapBand, useDecibels,
+                        contrastMin, contrastMax, stretchMode, gamma,
+                        selectedPolarization, selectedFrequency,
+                        multiLook, compositeId, displayMode,
+                        viewCenter, viewZoom, roiBbox,
+                      };
+                      const link = sharedRawUrl
+                        ? buildShareLink({
+                            dataUrl: sharedRawUrl,
+                            // RGB COG composite: carry the full per-band URL
+                            // list (raw, un-proxied) so the link round-trips.
+                            dataUrls: (fileType === 'cog' && cogRgbRequest?.urls?.length >= 2)
+                              ? cogRgbRequest.urls : undefined,
+                            dataType: fileType === 'cog' ? 'cog'
+                              : fileType === 'nitf' ? 'nitf'
+                              : 'nisar',
+                            view,
+                          })
+                        : buildShareLink({ localFile: localShareName, view });
+                      await navigator.clipboard.writeText(link);
+                      addStatusLog('success',
+                        sharedRawUrl
+                          ? 'Share link copied to clipboard'
+                          : `State link copied — reopen it and load ${localShareName} to reproduce this view`,
+                        link);
+                    } catch (e) {
+                      addStatusLog('error', `Failed to copy share link: ${e.message}`);
+                    }
+                  }} className="u-flex1 u-sm">
+                  Copy share link
+                </button>
+              </div>
+            </CollapsibleSection>
           )}
 
           {/* Histogram & Contrast */}
@@ -9685,6 +9773,7 @@ function App() {
                 className={`viewer-pane${roiRGBData && activeViewer === 'main' ? ' viewer-pane--active viewer-pane--main' : ''}`}>
                 {mapMode && mapReproject ? (
                   <MapViewer
+                    ref={viewerRef}
                     getTile={imageData.getTile || imageData.getRGBTile}
                     reproject={mapReproject}
                     tileVersion={tileVersion}
@@ -9700,6 +9789,23 @@ function App() {
                     layerProps={mapLayerProps}
                     extraLayers={mapOvertureLayers}
                     rasterOverlays={mapRasterOverlays}
+                    sceneBounds={imageData?.bounds || null}
+                    imageWidth={imageData?.sourceWidth || imageData?.width}
+                    imageHeight={imageData?.sourceHeight || imageData?.height}
+                    measure={groundMeasure}
+                    roi={roi}
+                    onROIChange={setROI}
+                    roiArmed={roiArmed}
+                    transectEnabled={transectEnabled}
+                    transectLine={transectLine}
+                    onTransectLineChange={setTransectLine}
+                    annotations={annotations}
+                    annotationMode={annotationMode}
+                    annotationColor={annotationColor}
+                    annotationSize={annotationSize}
+                    onAnnotationsChange={setAnnotations}
+                    selectedAnnotationId={selectedAnnotationId}
+                    onSelectAnnotation={setSelectedAnnotationId}
                   />
                 ) : (
                 <SARViewer
@@ -9747,6 +9853,8 @@ function App() {
                   extraLayers={[...opticalPeekLayers, ...overtureLayers, ...catalogLayers, ...stacLayers, ...geojsonOverlayLayers]}
                   roi={roi}
                   onROIChange={setROI}
+                  roiArmed={roiArmed}
+                  measure={groundMeasure}
                   transectEnabled={transectEnabled}
                   transectLine={transectLine}
                   onTransectLineChange={setTransectLine}
@@ -9986,6 +10094,7 @@ function App() {
               width={transectWidth}
               onWidthChange={setTransectWidth}
               line={transectLine}
+              lengthM={transectLengthM}
             />
           ),
         }] : []}

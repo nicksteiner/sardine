@@ -35,6 +35,27 @@ import {
 // ── Font helpers ────────────────────────────────────────────────────────────
 
 import { FONTS } from './theme-tokens.js';
+import { scaleFrame } from './view-frame.js';
+
+// ── Export frame (basemap mode) ─────────────────────────────────────────────
+// When a figure is captured from MapViewer the exporter receives the map frame
+// (view-frame.js) in `options.frame`.  It is installed here for the duration of
+// one export so the overlay/chrome helpers below — which otherwise assume the
+// native OrthographicView — place marks, graticule, corner coordinates and the
+// scale bar in Web Mercator.  Same pattern as setFigureStyle().
+let _exportFrame = null;
+function installExportFrame(frame, W, H, dpr) {
+  if (!frame) { _exportFrame = null; return null; }
+  const k = frame.cssWidth ? W / frame.cssWidth : dpr;
+  _exportFrame = scaleFrame(frame, k);
+  return _exportFrame;
+}
+/** Basemap credit appended to the attribution strip of map-frame figures. */
+export const BASEMAP_CREDIT = '© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap';
+function withBasemapCredit(attribution) {
+  if (!_exportFrame) return attribution;
+  return [attribution, BASEMAP_CREDIT].filter(Boolean).join(' · ');
+}
 
 const FONT_MONO  = FONTS.mono;
 
@@ -225,6 +246,7 @@ export async function exportFigure(glCanvas, options = {}) {
     colorbarLabel = '',
     reverseColormap = false,
     colormapBand = null,
+    frame = null,
   } = options;
 
   const S = setFigureStyle(theme);
@@ -242,6 +264,7 @@ export async function exportFigure(glCanvas, options = {}) {
   // at any export resolution. dpr is still used for sub-canvas overlays that do
   // their own logical-pixel math (annotations, histogram/location insets).
   const dpr = window.devicePixelRatio || 1;
+  installExportFrame(frame, W, H, dpr);
   const s = makeScale(W, H);
 
   // 0. User annotations (drawn on top of SAR pixels, below chrome)
@@ -288,7 +311,8 @@ export async function exportFigure(glCanvas, options = {}) {
   await drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr);
 
   // 10. Attribution strip (bottom edge, drawn last to sit on top)
-  drawAttributionStrip(ctx, W, H, attribution, s);
+  drawAttributionStrip(ctx, W, H, withBasemapCredit(attribution), s);
+  _exportFrame = null;
 
   return finish();
 }
@@ -318,6 +342,9 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     filename = '',
     crs = '',
     roi = null,
+    roiLabel = '',          // ground-unit readout drawn above the box ("1.2 km × 0.8 km · 0.96 km²")
+    transectLine = null,    // {x0,y0,x1,y1} image px — the measured line
+    transectLabel = '',     // its ground-unit readout ("3.4 km · 47°")
     profileData = null,
     profileShow = { v: true, h: true, i: true },
     imageWidth = 0,
@@ -342,12 +369,14 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
     colorbarLabel = '',
     reverseColormap = false,
     colormapBand = null,
+    frame = null,
   } = options;
 
   const S = setFigureStyle(theme);
   const W = glCanvas.width;
   const H = glCanvas.height;
   const dpr = window.devicePixelRatio || 1;
+  installExportFrame(frame, W, H, dpr);
 
   const { ctx, finish } = makeTarget(W, H, format, { background: S.background });
 
@@ -363,7 +392,10 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   }
 
   if (roi && bounds && imageWidth && imageHeight && viewState) {
-    drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr);
+    drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr, roiLabel);
+  }
+  if (transectLine && bounds && imageWidth && imageHeight && viewState) {
+    drawTransectOverlay(ctx, W, H, transectLine, viewState, bounds, imageWidth, imageHeight, dpr, transectLabel);
   }
 
   if (profileData && roi && bounds && imageWidth && imageHeight && viewState) {
@@ -402,21 +434,22 @@ export async function exportFigureWithOverlays(glCanvas, options = {}) {
   await drawLocationInset(ctx, W, H, wgs84Bounds, projected, dpr);
 
   // Attribution strip (bottom edge, drawn last)
-  drawAttributionStrip(ctx, W, H, attribution, s);
+  drawAttributionStrip(ctx, W, H, withBasemapCredit(attribution), s);
+  _exportFrame = null;
 
   return finish();
 }
 
 // ── Overlay drawing helpers (Canvas 2D, not SVG) ────────────────────────────
 
-import { worldToPixel } from './geo-overlays.js';
+import { worldToPixel, worldToPixel as orthoWorldToPixel } from './geo-overlays.js';
 
 function _imgToScreen(imgX, imgY, viewState, bounds, imageWidth, imageHeight, W, H) {
   const [minX, minY, maxX, maxY] = bounds;
   const wx = minX + (imgX / imageWidth) * (maxX - minX);
   // Y is flipped: image row 0 → world maxY (top), row H → world minY (bottom)
   const wy = maxY - (imgY / imageHeight) * (maxY - minY);
-  return worldToPixel(wx, wy, viewState, W, H);
+  return (_exportFrame?.worldToPixel || worldToPixel)(wx, wy, viewState, W, H);
 }
 
 /** Draw classification overlay on the export canvas (mirrors ClassificationOverlay.jsx). */
@@ -467,7 +500,7 @@ function drawClassificationOverlay(ctx, W, H, roi, viewState, bounds, imageWidth
 }
 
 /** Draw a gold dashed ROI rectangle on the export canvas. */
-function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr) {
+function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr, label = '') {
   const [sx0, sy0] = _imgToScreen(roi.left, roi.top, viewState, bounds, imageWidth, imageHeight, W, H);
   const [sx1, sy1] = _imgToScreen(roi.left + roi.width, roi.top + roi.height, viewState, bounds, imageWidth, imageHeight, W, H);
   const rx = Math.min(sx0, sx1);
@@ -482,6 +515,47 @@ function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeig
   ctx.setLineDash([6 * dpr, 4 * dpr]);
   ctx.strokeRect(rx, ry, rw, rh);
   ctx.setLineDash([]);
+  ctx.restore();
+  if (label) drawMarkLabel(ctx, W, H, label, rx, ry - 4 * dpr, 'left', 'bottom');
+}
+
+/** The measured line (transect) as drawn on screen: line, end dots, readout. */
+function drawTransectOverlay(ctx, W, H, line, viewState, bounds, imageWidth, imageHeight, dpr, label = '') {
+  const [x0, y0] = _imgToScreen(line.x0, line.y0, viewState, bounds, imageWidth, imageHeight, W, H);
+  const [x1, y1] = _imgToScreen(line.x1, line.y1, viewState, bounds, imageWidth, imageHeight, W, H);
+  ctx.save();
+  ctx.strokeStyle = '#4ec9d4';
+  ctx.lineWidth = 1.5 * dpr;
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  for (const [px, py] of [[x0, y0], [x1, y1]]) {
+    ctx.beginPath(); ctx.arc(px, py, 3.5 * dpr, 0, Math.PI * 2);
+    ctx.fillStyle = '#0a1628'; ctx.fill();
+    ctx.strokeStyle = '#4ec9d4'; ctx.stroke();
+  }
+  ctx.restore();
+  if (label) drawMarkLabel(ctx, W, H, label, Math.max(x0, x1) + 8 * dpr, Math.max(x0, x1) === x1 ? y1 - 4 * dpr : y0 - 4 * dpr, 'left', 'bottom');
+}
+
+/**
+ * Ground-unit readout for a mark, in the figure's numeric face.  Publication
+ * mode relies on the installed text halo for legibility over imagery; dark
+ * mode gets the same translucent pill the on-screen overlay uses.
+ */
+function drawMarkLabel(ctx, W, H, text, x, y, align, baseline) {
+  const S = getFigureStyle();
+  const s = makeScale(W, H);
+  const fontSize = s(12);
+  ctx.save();
+  ctx.font = `500 ${fontSize}px ${S.fontNumeric}`;
+  ctx.textAlign = align;
+  ctx.textBaseline = baseline;
+  if (!S.halo) {
+    const tw = ctx.measureText(text).width + s(8);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(align === 'left' ? x - s(4) : x - tw + s(4), y - fontSize - s(3), tw, fontSize + s(5));
+  }
+  ctx.fillStyle = S.ink;
+  ctx.fillText(text, x, y);
   ctx.restore();
 }
 
@@ -696,6 +770,7 @@ function drawBorder(ctx, W, H, s) {
 function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s, gridMode = 'lines') {
   if (!viewState || !bounds) return;
   if (gridMode === 'off') return;
+  if (_exportFrame?.kind === 'map') { drawGraticule(ctx, W, H, viewState, s, gridMode, _exportFrame); return; }
   // 'ticks' keeps the labels + short edge tick marks but drops the
   // full-length gridlines that cross the image.
   const linesOn = gridMode !== 'ticks';
@@ -772,16 +847,68 @@ function drawCoordinateGrid(ctx, W, H, viewState, bounds, projected, s, gridMode
   }
 }
 
+/**
+ * Lon/lat graticule for map-frame (Web Mercator, pitch 0) figures.  Meridians
+ * are vertical and parallels horizontal, so each line needs one projected
+ * coordinate; labels use the geographic formatter.
+ */
+function drawGraticule(ctx, W, H, viewState, s, gridMode, fr) {
+  const linesOn = gridMode !== 'ticks';
+  const tickLen = s(8);
+  const [lonW, latN] = fr.pixelToLonLat(0, 0, viewState, W, H);
+  const [lonE, latS] = fr.pixelToLonLat(W, H, viewState, W, H);
+  const dLon = niceInterval(Math.abs(lonE - lonW), 3);
+  const dLat = niceInterval(Math.abs(latN - latS), 3);
+  const S = getFigureStyle();
+  ctx.strokeStyle = linesOn ? S.gridLine : S.hairline;
+  ctx.lineWidth = linesOn ? s(0.5) : s(1);
+  const tickFontSize = s(12);
+  const tickPad = s(6);
+  const midLat = (latN + latS) / 2, midLon = (lonW + lonE) / 2;
+
+  for (let lon = Math.ceil(Math.min(lonW, lonE) / dLon) * dLon; lon <= Math.max(lonW, lonE); lon += dLon) {
+    const px = fr.lonLatToPixel(lon, midLat, viewState, W, H)[0];
+    if (px < s(2) || px > W - s(2)) continue;
+    ctx.beginPath();
+    if (linesOn) { ctx.moveTo(px, 0); ctx.lineTo(px, H); } else { ctx.moveTo(px, 0); ctx.lineTo(px, tickLen); }
+    ctx.stroke();
+    ctx.save();
+    ctx.font = `${tickFontSize}px ${S.fontNumeric}`;
+    ctx.fillStyle = S.inkMuted; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(formatTickValue(lon, false), px, tickPad);
+    ctx.restore();
+  }
+  for (let lat = Math.ceil(Math.min(latN, latS) / dLat) * dLat; lat <= Math.max(latN, latS); lat += dLat) {
+    const py = fr.lonLatToPixel(midLon, lat, viewState, W, H)[1];
+    if (py < s(2) || py > H - s(2)) continue;
+    ctx.beginPath();
+    if (linesOn) { ctx.moveTo(0, py); ctx.lineTo(W, py); } else { ctx.moveTo(0, py); ctx.lineTo(tickLen, py); }
+    ctx.stroke();
+    ctx.save();
+    ctx.font = `${tickFontSize}px ${S.fontNumeric}`;
+    ctx.fillStyle = S.inkMuted; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(formatTickValue(lat, false), tickPad, py);
+    ctx.restore();
+  }
+}
+
 // ── 3. Corner coordinates ───────────────────────────────────────────────────
 
 function drawCornerCoordinates(ctx, W, H, viewState, projected, s) {
   if (!viewState) return;
 
-  const extent = computeVisibleExtent(viewState, W, H);
-  // Only show bottom-right corner coordinate
-  const corners = [
-    { wx: extent.maxX, wy: extent.minY, align: 'right', baseline: 'bottom', px: W - s(10), py: H - s(10) },
-  ];
+  let corners;
+  if (_exportFrame?.kind === 'map') {
+    const [lon, lat] = _exportFrame.pixelToLonLat(W, H, viewState, W, H);
+    projected = false;
+    corners = [{ wx: lon, wy: lat, align: 'right', baseline: 'bottom', px: W - s(10), py: H - s(10) }];
+  } else {
+    const extent = computeVisibleExtent(viewState, W, H);
+    // Only show bottom-right corner coordinate
+    corners = [
+      { wx: extent.maxX, wy: extent.minY, align: 'right', baseline: 'bottom', px: W - s(10), py: H - s(10) },
+    ];
+  }
 
   const fontSize = s(11);
   const pad = s(5);
@@ -823,9 +950,13 @@ function drawCornerCoordinates(ctx, W, H, viewState, projected, s) {
 // ── 4. Scale bar ────────────────────────────────────────────────────────────
 
 function drawScaleBar(ctx, W, H, viewState, bounds, projected, s) {
-  if (!viewState || !bounds || !projected) return;
+  if (!viewState) return;
+  const mapFrame = _exportFrame?.kind === 'map' ? _exportFrame : null;
+  if (!mapFrame && (!bounds || !projected)) return;
 
-  const ppu = Math.pow(2, viewState.zoom || 0);
+  // pixels per metre: Mercator ground scale at the view centre, or the
+  // OrthographicView zoom when the image CRS is already metric.
+  const ppu = mapFrame ? 1 / mapFrame.metersPerPixel(viewState) : Math.pow(2, viewState.zoom || 0);
   const { barPixels, label } = computeScaleBar(ppu, s(150));
 
   const S = getFigureStyle();
@@ -1126,6 +1257,7 @@ function drawAnnotations(ctx, W, H, annotations, viewState, dpr) {
   if (!Array.isArray(annotations) || annotations.length === 0 || !viewState) return;
   // worldToPixel uses logical canvas size; export canvas is in physical pixels,
   // so we pass W/H directly (already DPR-scaled by glCanvas.width/height).
+  const worldToPixel = _exportFrame?.worldToPixel || orthoWorldToPixel;
   for (const a of annotations) {
     if (a.type === 'arrow') {
       const [x1, y1] = worldToPixel(a.worldX,  a.worldY,  viewState, W, H);
@@ -1230,8 +1362,9 @@ function drawHistogramInset(ctx, W, H, opts, dpr) {
   // The histogram readout keeps its own dark mini-panel (a self-contained
   // inset), but the frame follows the figure accent so it belongs to the figure.
   // Square corners in publication; subtle round in dark.
-  ctx.fillStyle = 'rgba(10, 22, 40, 0.94)';
-  ctx.strokeStyle = S.id === 'publication' ? S.hairline : 'rgba(78, 201, 212, 0.25)';
+  const lightInset = S.id === 'publication';
+  ctx.fillStyle = lightInset ? 'rgba(255, 255, 255, 0.94)' : 'rgba(10, 22, 40, 0.94)';
+  ctx.strokeStyle = lightInset ? S.hairline : 'rgba(78, 201, 212, 0.25)';
   ctx.lineWidth = dpr;
   roundRect(ctx, ix, iy, insetW, insetH, s(S.radius));
   ctx.fill();
@@ -1251,6 +1384,7 @@ function drawHistogramInset(ctx, W, H, opts, dpr) {
   ctx.scale(dpr, dpr);
 
   drawHistogramCanvas(ctx, logW, logH, {
+    theme: lightInset ? 'light' : 'dark',
     histograms: histogramData,
     mode,
     contrastLimits,

@@ -1,19 +1,35 @@
-import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { Map } from 'maplibre-gl';
+import React, { useState, useCallback, useMemo, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { Map, ScaleControl } from 'maplibre-gl';
 import DeckGL from '@deck.gl/react';
 import { MapView } from '@deck.gl/core';
 import { SARTileLayer } from '../layers/SARTileLayer.js';
 import { getColormap } from '../utils/colormap.js';
 import { createReprojectedTileFetcher } from '../utils/reproject-tiles.js';
+import { makeMapFrame } from '../utils/view-frame.js';
+import { ROIOverlay } from '../components/ROIOverlay.jsx';
+import { TransectLineOverlay } from '../components/TransectLineOverlay.jsx';
+import { AnnotationOverlay } from '../components/AnnotationOverlay.jsx';
 
-// Import MapLibre CSS - users need to include this in their build
-// import 'maplibre-gl/dist/maplibre-gl.css';
+// MapLibre CSS is imported by the app (app/main.jsx); library users include
+// 'maplibre-gl/dist/maplibre-gl.css' in their own build.
+
+/** Basemap credit for exported figures (OpenFreeMap tiles, OSM data). */
+export const BASEMAP_CREDIT = '© OpenStreetMap contributors · OpenMapTiles · OpenFreeMap';
 
 /**
  * MapViewer - SAR overlay on MapLibre basemap
- * Provides geographic context for SAR imagery
+ * Provides geographic context for SAR imagery.
+ *
+ * Carries the same markup overlays as SARViewer (ROI box, transect / measure
+ * line, arrow + text annotations) through a map-frame coordinate contract
+ * (view-frame.js), so marks made on the basemap persist in image pixels and
+ * round-trip to the native view, GeoJSON markup, and figure export.
+ *
+ * Ref API (mirrors SARViewer): getCanvas() — basemap + data composited into
+ * one canvas for figure export; getViewState(); getFrame() — the map frame
+ * (with cssWidth/cssHeight) for exporters; getContainer(); redraw().
  */
-export function MapViewer({
+export const MapViewer = forwardRef(function MapViewer({
   getTile,
   bounds,
   contrastLimits = [-25, 0],
@@ -44,8 +60,28 @@ export function MapViewer({
   // { id, scene (from openCOGOverlay), contrastLimits, colormap, opacity,
   //   stretchMode, useDecibels=false }.
   rasterOverlays = [],
-}) {
+  // ── Markup (same contract as SARViewer) ──
+  sceneBounds = null,       // the scene's own `bounds` the marks are stored against
+  imageWidth = 0,
+  imageHeight = 0,
+  measure = null,           // ground-measure helper (measure.js)
+  roi = null,
+  onROIChange = null,
+  roiArmed = false,
+  transectEnabled = false,
+  transectLine = null,
+  onTransectLineChange = null,
+  annotations = [],
+  annotationMode = 'off',
+  annotationColor = 'red',
+  annotationSize = 'medium',
+  onAnnotationsChange = null,
+  selectedAnnotationId = null,
+  onSelectAnnotation = null,
+}, ref) {
+  const containerRef = useRef(null);
   const mapContainerRef = useRef(null);
+  const deckWrapRef = useRef(null);
   const mapRef = useRef(null);
   const [mapLoaded, setMapLoaded] = useState(false);
 
@@ -98,6 +134,18 @@ export function MapViewer({
 
   const [viewState, setViewState] = useState(defaultViewState);
 
+  // Map frame: scene world ↔ screen through the image CRS (view-frame.js).
+  const frame = useMemo(() => {
+    if (!reproject || !sceneBounds || !imageWidth || !imageHeight) return null;
+    return makeMapFrame({
+      bounds: sceneBounds,
+      imageWidth,
+      imageHeight,
+      worldBounds: reproject.worldBounds,
+      crs: reproject.crs,
+    });
+  }, [reproject, sceneBounds, imageWidth, imageHeight]);
+
   // Initialize MapLibre map
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
@@ -110,7 +158,10 @@ export function MapViewer({
       pitch: viewState.pitch,
       bearing: viewState.bearing,
       attributionControl: true,
+      // Figure export reads the basemap pixels back (getCanvas composite).
+      preserveDrawingBuffer: true,
     });
+    map.addControl(new ScaleControl({ maxWidth: 140, unit: 'metric' }), 'bottom-left');
 
     map.on('load', () => {
       mapRef.current = map;
@@ -147,6 +198,33 @@ export function MapViewer({
     [onViewStateChange]
   );
 
+  const [redrawTick, setRedrawTick] = useState(0);
+  useImperativeHandle(ref, () => ({
+    /** Basemap + data composited into one canvas (device pixels). */
+    getCanvas: () => {
+      const deckCanvas = deckWrapRef.current?.querySelector('canvas');
+      if (!deckCanvas) return null;
+      const out = document.createElement('canvas');
+      out.width = deckCanvas.width;
+      out.height = deckCanvas.height;
+      const ctx = out.getContext('2d');
+      const mapCanvas = mapRef.current?.getCanvas?.();
+      if (mapCanvas) {
+        try { ctx.drawImage(mapCanvas, 0, 0, out.width, out.height); } catch (_) { /* tainted/unavailable → data only */ }
+      }
+      ctx.drawImage(deckCanvas, 0, 0);
+      return out;
+    },
+    getContainer: () => containerRef.current,
+    getViewState: () => viewState,
+    getFrame: () => {
+      if (!frame) return null;
+      const el = containerRef.current;
+      return { ...frame, cssWidth: el?.clientWidth || 0, cssHeight: el?.clientHeight || 0 };
+    },
+    redraw: () => setRedrawTick((t) => t + 1),
+  }), [viewState, frame]);
+
   // Create SAR tile layer
   const layers = useMemo(() => {
     if (!getTile) return [];
@@ -178,7 +256,7 @@ export function MapViewer({
       }),
       ...extraLayers,
     ];
-  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion, extraLayers, overlayFetchers]);
+  }, [getTile, fetcher, bounds, contrastLimits, useDecibels, colormap, reverseColormap, opacity, layerProps, tileVersion, extraLayers, overlayFetchers, redrawTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const containerStyle = useMemo(
     () => ({
@@ -198,21 +276,66 @@ export function MapViewer({
     height: '100%',
   };
 
+  const markup = !!(frame && sceneBounds && imageWidth && imageHeight);
+
   return (
-    <div style={containerStyle}>
+    <div ref={containerRef} style={containerStyle}>
       {/* MapLibre basemap */}
       <div ref={mapContainerRef} style={mapContainerStyle} />
 
       {/* Deck.gl overlay */}
-      <DeckGL
-        views={new MapView({ repeat: true })}
-        viewState={viewState}
-        onViewStateChange={handleViewStateChange}
-        layers={layers}
-        controller={true}
-        onClick={onClick ? (info) => { if (info?.coordinate) onClick(info.coordinate); } : undefined}
-        style={{ position: 'absolute', top: 0, left: 0 }}
-      />
+      <div ref={deckWrapRef} style={{ position: 'absolute', inset: 0 }}>
+        <DeckGL
+          views={new MapView({ repeat: true })}
+          viewState={viewState}
+          onViewStateChange={handleViewStateChange}
+          layers={layers}
+          controller={true}
+          deviceProps={{ webgl: { preserveDrawingBuffer: true } }}
+          onClick={onClick ? (info) => { if (info?.coordinate) onClick(info.coordinate); } : undefined}
+          style={{ position: 'absolute', top: 0, left: 0 }}
+        />
+      </div>
+
+      {/* Markup overlays — same components as the native view, map frame */}
+      {markup && (
+        <>
+          <ROIOverlay
+            viewState={viewState}
+            bounds={sceneBounds}
+            imageWidth={imageWidth}
+            imageHeight={imageHeight}
+            roi={roi}
+            onROIChange={onROIChange}
+            frame={frame}
+            measure={measure}
+            armed={roiArmed}
+          />
+          <TransectLineOverlay
+            enabled={transectEnabled}
+            viewState={viewState}
+            bounds={sceneBounds}
+            imageWidth={imageWidth}
+            imageHeight={imageHeight}
+            line={transectLine}
+            onLineChange={onTransectLineChange}
+            frame={frame}
+            measure={measure}
+          />
+          <AnnotationOverlay
+            viewState={viewState}
+            bounds={sceneBounds}
+            mode={annotationMode}
+            color={annotationColor}
+            size={annotationSize}
+            annotations={annotations}
+            onAnnotationsChange={onAnnotationsChange}
+            selectedId={selectedAnnotationId}
+            onSelectAnnotation={onSelectAnnotation}
+            frame={frame}
+          />
+        </>
+      )}
 
       {/* Controls overlay */}
       {showControls && (
@@ -225,7 +348,7 @@ export function MapViewer({
       )}
     </div>
   );
-}
+});
 
 /**
  * ControlsOverlay - Map controls and legend

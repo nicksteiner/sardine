@@ -36,6 +36,15 @@ const RAIL_ICONS = {
       <path d="M8 1v2M8 13v2M1 8h2M13 8h2" />
     </g>
   ),
+  // Mark & Measure: a pen over a ruler edge
+  pen: (
+    <g>
+      <path d="M3 13l1-3.5L11.5 2l2.5 2.5L6.5 12 3 13z" />
+      <path d="M10 3.5l2.5 2.5" />
+      <path d="M2 15h12" />
+      <path d="M5 15v-1.2M8 15v-1.2M11 15v-1.2" />
+    </g>
+  ),
   layers: (
     <g>
       <path d="M8 2L14 5.5 8 9 2 5.5 8 2z" />

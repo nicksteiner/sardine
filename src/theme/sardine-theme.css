@@ -1894,3 +1894,42 @@ button.btn-danger:hover:not(:disabled) { background: var(--sardine-red); color: 
   }
 }
 
+
+
+/* ─── MARK & MEASURE / PUBLISH (rc.7) ─── */
+
+/* The figure is the deliverable: one tall primary action at the top of Publish. */
+.publish-cta {
+  padding: 10px 12px;
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+/* Ground-unit readouts under the mark toolbar.  The stripe colour matches the
+   mark drawn on the imagery (ROI amber, line cyan) so the number reads as
+   belonging to that mark. */
+.mark-readout {
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  background: var(--sardine-bg-raised);
+  border: 1px solid var(--sardine-border);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+}
+.mark-readout--box  { border-left-color: var(--status-dry); }
+.mark-readout--line { border-left-color: var(--sardine-cyan); }
+.mark-readout__kind {
+  margin-right: 8px;
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.mark-readout__clear {
+  padding: 1px 8px;
+  font-size: var(--text-xs);
+  min-width: auto;
+}

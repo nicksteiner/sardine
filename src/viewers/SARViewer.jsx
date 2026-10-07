@@ -77,6 +77,8 @@ export const SARViewer = forwardRef(function SARViewer({
   onTransectLineChange,    // Callback when the transect line moves/rotates
   imageWidth,         // Source image width in pixels (for ROI overlay)
   imageHeight,        // Source image height in pixels (for ROI overlay)
+  measure = null,     // ground-measure helper (measure.js) → ROI/transect labels in m/km
+  roiArmed = false,   // Box tool armed: plain drag draws the ROI
   getPixelValue,      // async (row, col, windowSize?) => value (for pixel explorer)
   pixelExplorer = false, // Enable pixel value explorer overlay
   pixelWindowSize = 1,   // Averaging window for pixel explorer (odd int)
@@ -509,6 +511,8 @@ export const SARViewer = forwardRef(function SARViewer({
         imageHeight={imageHeight}
         roi={roi}
         onROIChange={onROIChange}
+        measure={measure}
+        armed={roiArmed}
       />
       <TransectLineOverlay
         enabled={transectEnabled}
@@ -518,6 +522,7 @@ export const SARViewer = forwardRef(function SARViewer({
         imageHeight={imageHeight}
         line={transectLine}
         onLineChange={onTransectLineChange}
+        measure={measure}
       />
       {classificationMap && roi && classifierRoiDims && (
         <ClassificationOverlay

@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { worldToPixel, pixelToWorld } from '../utils/geo-overlays.js';
+import { formatRoiGround } from '../utils/measure.js';
 
 /**
  * ROIOverlay — Shift+drag rectangle selection overlay.
@@ -11,15 +12,26 @@ import { worldToPixel, pixelToWorld } from '../utils/geo-overlays.js';
  * The ROI is stored in image pixel coordinates { left, top, width, height }
  * and rendered back to screen space on every frame via worldToPixel.
  */
-export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, onROIChange }) {
+/**
+ * Props beyond the geometry:
+ *   frame   — optional view frame (view-frame.js) supplying worldToPixel /
+ *             pixelToWorld for the active viewer; defaults to the native
+ *             OrthographicView math.  Lets the same overlay run on the basemap.
+ *   measure — optional ground-measure helper (measure.js); when present the
+ *             label reads "1.2 km × 0.8 km · 0.96 km²" instead of pixels.
+ *   armed   — Box tool armed: plain drag draws the ROI (no Shift needed).
+ */
+export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, onROIChange, frame = null, measure = null, armed = false }) {
+  const w2p = frame?.worldToPixel || worldToPixel;
+  const p2w = frame?.pixelToWorld || pixelToWorld;
   const canvasRef = useRef(null);
   const [shiftHeld, setShiftHeld] = useState(false);
   const [dragStart, setDragStart] = useState(null); // {sx, sy} screen coords
   const [dragCurrent, setDragCurrent] = useState(null); // {sx, sy} screen coords
 
   // Refs for latest props (used inside document-level listeners)
-  const propsRef = useRef({ viewState, bounds, imageWidth, imageHeight, onROIChange });
-  propsRef.current = { viewState, bounds, imageWidth, imageHeight, onROIChange };
+  const propsRef = useRef({ viewState, bounds, imageWidth, imageHeight, onROIChange, armed });
+  propsRef.current = { viewState, bounds, imageWidth, imageHeight, onROIChange, armed };
 
   const dragRef = useRef(null); // {sx, sy} — mirrors dragStart for use in listeners
 
@@ -33,7 +45,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
     const cy = sy - rect.top;
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
-    const [wx, wy] = pixelToWorld(cx, cy, vs, w, h);
+    const [wx, wy] = p2w(cx, cy, vs, w, h);
 
     // World → image pixel
     // Y is flipped: world Y increases upward (deck.gl OrthographicView flipY:false)
@@ -45,7 +57,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       Math.max(0, Math.min(iw, px)),
       Math.max(0, Math.min(ih, py)),
     ];
-  }, []);
+  }, [p2w]);
 
   // Track Shift key globally
   useEffect(() => {
@@ -71,10 +83,11 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
     };
 
     const handleMouseDown = (e) => {
-      if (!e.shiftKey || !isOverCanvas(e)) return;
+      if (!(e.shiftKey || propsRef.current.armed) || !isOverCanvas(e)) return;
+      if (e.button !== undefined && e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
-      const start = { sx: e.clientX, sy: e.clientY };
+      const start = { sx: e.clientX, sy: e.clientY, shift: !!e.shiftKey };
       dragRef.current = start;
       setDragStart(start);
       setDragCurrent(start);
@@ -111,7 +124,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
 
       // Minimum 16px to avoid accidental clicks
       if (w < 16 || h < 16) {
-        cb?.(null); // Shift+click clears
+        if (start.shift) cb?.(null); // Shift+click clears; an armed-tool click is a no-op
         return;
       }
 
@@ -153,7 +166,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
     const imgToScreen = (px, py) => {
       const wx = minX + (px / imageWidth) * (maxX - minX);
       const wy = maxY - (py / imageHeight) * (maxY - minY);
-      return worldToPixel(wx, wy, viewState, w, h);
+      return w2p(wx, wy, viewState, w, h);
     };
 
     // Draw active drag rectangle (while dragging)
@@ -193,8 +206,9 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       ctx.strokeRect(rx, ry, rw, rh);
       ctx.setLineDash([]);
 
-      // Label
-      const label = `${roi.width} × ${roi.height} px`;
+      // Label — ground units when the scene is georeferenced, pixels otherwise
+      const ground = measure?.roiGround?.(roi);
+      const label = ground ? formatRoiGround(ground) : `${roi.width} × ${roi.height} px`;
       ctx.font = "11px 'JetBrains Mono', monospace";
       ctx.textAlign = 'left';
       ctx.textBaseline = 'bottom';
@@ -206,20 +220,20 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       ctx.fillStyle = '#ffc832';
       ctx.fillText(label, labelX, labelY);
     }
-  }, [viewState, bounds, imageWidth, imageHeight, roi, dragStart, dragCurrent]);
+  }, [viewState, bounds, imageWidth, imageHeight, roi, dragStart, dragCurrent, w2p, measure]);
 
   // Set crosshair cursor on the container when Shift is held
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = canvas?.parentElement;
     if (!container) return;
-    if (shiftHeld || dragRef.current) {
+    if (shiftHeld || armed || dragRef.current) {
       container.style.cursor = 'crosshair';
     } else {
       container.style.cursor = '';
     }
     return () => { if (container) container.style.cursor = ''; };
-  }, [shiftHeld]);
+  }, [shiftHeld, armed]);
 
   if (!viewState || !bounds) return null;
 

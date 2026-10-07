@@ -13,7 +13,7 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.0--rc.6-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0--rc.7-orange)](https://github.com/nicksteiner/sardine/releases)
 [![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
@@ -78,6 +78,9 @@ Paste a presigned URL and stream directly from a bucket — same workflow, no do
 
 **Share exactly what you see**
 **Copy Link** captures the data source, render settings, and active ROI as a URL. A link with just a `bbox` resolves its own granule via NASA CMR (newest, best-coverage, full-frame first) and loads only the region — coordinates outlive granule IDs across reprocessing campaigns. See [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md).
+
+**Mark, measure, publish**
+The **Mark** panel is a field toolbar: Box and Line read in ground units (km, km², bearing) on any georeferenced scene, Arrow and Text caption it, and all of it works on the basemap view, which is now the default. **Publish** puts the figure first: one tall Save Figure (PNG / SVG) with your marks, scale bar, graticule, legend and basemap credit drawn in, publication-styled. The UI opens in light mode.
 
 **Save your markup, keep your provenance**
 Annotations, ROIs, transects, and classifier regions save/load as GeoJSON with a versioned schema (observer, method, timestamps, per-ROI statistics). Every GeoTIFF export writes a `{name}.tif.json` sidecar carrying the full product identification, render state, and `derived_from` lineage.

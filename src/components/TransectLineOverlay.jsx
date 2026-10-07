@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { worldToPixel, pixelToWorld } from '../utils/geo-overlays.js';
+import { formatDistance } from '../utils/measure.js';
 
 /**
  * TransectLineOverlay — a single free profile line over the viewer.
@@ -35,9 +36,13 @@ export function TransectLineOverlay({
   imageHeight,
   line,
   onLineChange,
+  frame = null,    // view frame (view-frame.js); defaults to native OrthographicView math
+  measure = null,  // ground-measure helper (measure.js): label in m/km when present
 }) {
   const canvasRef = useRef(null);
   const [drag, setDrag] = useState(null); // {mode, ...} while dragging
+  const w2p = frame?.worldToPixel || worldToPixel;
+  const p2w = frame?.pixelToWorld || pixelToWorld;
 
   const propsRef = useRef({ viewState, bounds, imageWidth, imageHeight, line, onLineChange, enabled });
   propsRef.current = { viewState, bounds, imageWidth, imageHeight, line, onLineChange, enabled };
@@ -56,8 +61,8 @@ export function TransectLineOverlay({
     const [minX, minY, maxX, maxY] = b;
     const wx = minX + (px / iw) * (maxX - minX);
     const wy = maxY - (py / ih) * (maxY - minY);
-    return worldToPixel(wx, wy, vs, d.w, d.h);
-  }, [dims]);
+    return w2p(wx, wy, vs, d.w, d.h);
+  }, [dims, w2p]);
 
   // client (page) coords → image px
   const clientToImage = useCallback((clientX, clientY) => {
@@ -66,7 +71,7 @@ export function TransectLineOverlay({
     if (!vs || !b || !iw || !ih || !d) return null;
     const cx = clientX - d.rect.left;
     const cy = clientY - d.rect.top;
-    const [wx, wy] = pixelToWorld(cx, cy, vs, d.w, d.h);
+    const [wx, wy] = p2w(cx, cy, vs, d.w, d.h);
     const [minX, minY, maxX, maxY] = b;
     const px = (wx - minX) / (maxX - minX) * iw;
     const py = (maxY - wy) / (maxY - minY) * ih;
@@ -74,7 +79,7 @@ export function TransectLineOverlay({
       Math.max(0, Math.min(iw - 1, px)),
       Math.max(0, Math.min(ih - 1, py)),
     ];
-  }, [dims]);
+  }, [dims, p2w]);
 
   // Which handle (if any) is under the client point? Returns 'p0'|'p1'|'pivot'|'body'|null
   const hitTest = useCallback((clientX, clientY) => {
@@ -255,7 +260,8 @@ export function TransectLineOverlay({
     const lenPx = Math.round(Math.hypot(line.x1 - line.x0, line.y1 - line.y0));
     let deg = Math.atan2(-(line.y1 - line.y0), line.x1 - line.x0) * 180 / Math.PI;
     if (deg < 0) deg += 360;
-    const label = `${lenPx} px  ${deg.toFixed(0)}°`;
+    const lenM = measure ? measure.distanceM(line.x0, line.y0, line.x1, line.y1) : null;
+    const label = `${lenM != null ? formatDistance(lenM) : `${lenPx} px`}  ${deg.toFixed(0)}°`;
     ctx.font = "11px 'JetBrains Mono', monospace";
     ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
     const tw = ctx.measureText(label).width + 8;
@@ -263,7 +269,7 @@ export function TransectLineOverlay({
     ctx.fillRect(s1[0] + 8, s1[1] - 16, tw, 15);
     ctx.fillStyle = '#4ec9d4';
     ctx.fillText(label, s1[0] + 12, s1[1] - 3);
-  }, [enabled, viewState, bounds, imageWidth, imageHeight, line, drag, imgToScreen]);
+  }, [enabled, viewState, bounds, imageWidth, imageHeight, line, drag, imgToScreen, measure]);
 
   if (!viewState || !bounds) return null;
 

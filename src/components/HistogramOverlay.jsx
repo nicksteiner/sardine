@@ -95,7 +95,13 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   const {
     histograms, mode, contrastLimits, useDecibels,
     polarization, compositeId, compact = false, logScale = true,
+    // 'dark' (instrument panel) | 'light' (light UI theme / publication figure)
+    theme = 'dark',
   } = opts;
+  const light = theme === 'light';
+  const INK = light ? '26, 34, 51' : '232, 237, 245';
+  const GRID = light ? '107, 118, 136' : '90, 112, 153';
+  const BG = light ? 'rgba(255, 255, 255, 0.94)' : 'rgba(10, 22, 40, 0.94)';
 
   if (!histograms) return;
 
@@ -128,7 +134,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   const statsFontSize = compact ? 8 : 10;
 
   // ── Background ──
-  ctx.fillStyle = 'rgba(10, 22, 40, 0.94)';
+  ctx.fillStyle = BG;
   ctx.fillRect(0, 0, W, H);
 
   // ── Compute Y-axis max ──
@@ -153,7 +159,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   const xTicks = niceTicks(globalMin, globalMax, Math.min(compact ? 5 : 10, Math.floor(plotW / (compact ? 50 : 80))));
   const yTicks = niceTicks(0, yMax, Math.min(compact ? 4 : 6, Math.floor(plotH / (compact ? 40 : 60))));
 
-  ctx.strokeStyle = 'rgba(90, 112, 153, 0.18)';
+  ctx.strokeStyle = `rgba(${GRID}, 0.18)`;
   ctx.lineWidth = 0.5;
   for (const t of xTicks) {
     const x = xScale(t);
@@ -166,7 +172,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   }
 
   // ── Plot frame ──
-  ctx.strokeStyle = 'rgba(90, 112, 153, 0.5)';
+  ctx.strokeStyle = `rgba(${GRID}, 0.5)`;
   ctx.lineWidth = 1;
   ctx.strokeRect(margin.left, margin.top, plotW, plotH);
 
@@ -265,7 +271,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   }
 
   // ── X-axis labels ──
-  ctx.fillStyle = 'rgba(232, 237, 245, 0.85)';
+  ctx.fillStyle = `rgba(${INK}, 0.85)`;
   ctx.font = `400 ${fontSize}px 'JetBrains Mono', 'Fira Code', monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -274,14 +280,14 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   }
 
   // X-axis title
-  ctx.fillStyle = 'rgba(232, 237, 245, 0.7)';
+  ctx.fillStyle = `rgba(${INK}, 0.7)`;
   ctx.font = `400 ${axisTitleSize}px 'Inter', 'Helvetica Neue', sans-serif`;
   ctx.fillText(useDecibels ? 'Backscatter (dB)' : 'Power (linear)', margin.left + plotW / 2, margin.top + plotH + (compact ? 18 : 32));
 
   // ── Y-axis labels ──
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(232, 237, 245, 0.85)';
+  ctx.fillStyle = `rgba(${INK}, 0.85)`;
   ctx.font = `400 ${fontSize}px 'JetBrains Mono', 'Fira Code', monospace`;
   for (const t of yTicks) {
     if (t === 0) continue;
@@ -304,7 +310,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   ctx.save();
   ctx.translate(compact ? 10 : 16, margin.top + plotH / 2);
   ctx.rotate(-Math.PI / 2);
-  ctx.fillStyle = 'rgba(232, 237, 245, 0.7)';
+  ctx.fillStyle = `rgba(${INK}, 0.7)`;
   ctx.font = `400 ${axisTitleSize}px 'Inter', 'Helvetica Neue', sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -337,13 +343,13 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
     ctx.strokeRect(swatchX, legendY - swatchSize / 2, swatchSize, swatchSize);
 
     // Label (after swatch)
-    ctx.fillStyle = 'rgba(232, 237, 245, 0.9)';
+    ctx.fillStyle = `rgba(${INK}, 0.9)`;
     ctx.font = `600 ${legendFontSize}px 'JetBrains Mono', 'Fira Code', monospace`;
     ctx.textAlign = 'left';
     ctx.fillText(labelText, swatchX + swatchSize + 4, legendY);
 
     // Count (right-aligned, separate line in compact to avoid overlap)
-    ctx.fillStyle = 'rgba(232, 237, 245, 0.45)';
+    ctx.fillStyle = `rgba(${INK}, 0.45)`;
     ctx.font = `400 ${statsFontSize}px 'JetBrains Mono', 'Fira Code', monospace`;
     ctx.textAlign = 'right';
     const countStr = s.count != null ? `n=${s.count >= 1e6 ? (s.count / 1e6).toFixed(1) + 'M' : s.count >= 1e3 ? (s.count / 1e3).toFixed(0) + 'k' : s.count}` : '';
@@ -353,7 +359,7 @@ export function drawHistogramCanvas(ctx, W, H, opts) {
   }
 
   // ── Title ──
-  ctx.fillStyle = 'rgba(232, 237, 245, 0.95)';
+  ctx.fillStyle = `rgba(${INK}, 0.95)`;
   ctx.font = `600 ${titleFontSize}px 'Inter', 'Helvetica Neue', sans-serif`;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
@@ -405,6 +411,7 @@ export function HistogramOverlay({
     ctx.clearRect(0, 0, W, H);
 
     drawHistogramCanvas(ctx, W, H, {
+      theme: document.documentElement?.dataset?.theme === 'light' ? 'light' : 'dark',
       histograms, mode, contrastLimits, useDecibels,
       polarization, compositeId, compact: true, logScale,
     });
@@ -447,7 +454,7 @@ export function HistogramOverlay({
       right: 16,
       width: 460,
       height: 260,
-      background: 'rgba(10, 22, 40, 0.94)',
+      background: 'var(--overlay-bg, rgba(10, 22, 40, 0.94))',
       border: '1px solid var(--sardine-border)',
       borderRadius: 8,
       zIndex: 30,

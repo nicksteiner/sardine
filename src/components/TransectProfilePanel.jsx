@@ -1,4 +1,5 @@
 import { useRef, useState, useLayoutEffect } from 'react';
+import { formatDistance } from '../utils/measure.js';
 
 /**
  * TransectProfilePanel — plot of values sampled along the free transect line,
@@ -13,11 +14,25 @@ import { useRef, useState, useLayoutEffect } from 'react';
  *                   (0 = centerline only, 1 = ±1 → 3-px strip, …)
  *   onWidthChange — (halfWidth) => void
  */
-const C = {
-  bg: 'rgba(10, 22, 40, 0.6)', border: '#1e3a5f',
-  cyan: '#4ec9d4', orange: '#e8833a', muted: '#5a7099',
-  text: '#e8edf5', mono: "'JetBrains Mono', monospace",
+// Literal colours (not CSS vars) so the exported standalone SVG keeps them.
+// Picked per render from the document theme: light is the app default.
+const PALETTES = {
+  dark: {
+    bg: 'rgba(10, 22, 40, 0.6)', border: '#1e3a5f',
+    cyan: '#4ec9d4', orange: '#e8833a', muted: '#5a7099',
+    text: '#e8edf5', mono: "'JetBrains Mono', monospace",
+  },
+  light: {
+    bg: '#ffffff', border: '#d4cdb8',
+    cyan: '#0e8a96', orange: '#c96a25', muted: '#6b7688',
+    text: '#1a2233', mono: "'JetBrains Mono', monospace",
+  },
 };
+function getPalette() {
+  const t = typeof document !== 'undefined' ? document.documentElement?.dataset?.theme : '';
+  return t === 'light' ? PALETTES.light : PALETTES.dark;
+}
+let C = getPalette();
 
 // Perpendicular half-widths: 0 = centerline, 1 = ±1 (3-px strip), etc.
 const WIDTH_OPTIONS = [0, 1, 2, 3];
@@ -45,7 +60,8 @@ function WidthControl({ width, onWidthChange }) {
   );
 }
 
-export function TransectProfilePanel({ data, enabled, useDecibels = true, width = 1, onWidthChange, line = null }) {
+export function TransectProfilePanel({ data, enabled, useDecibels = true, width = 1, onWidthChange, line = null, lengthM = null }) {
+  C = getPalette();
   const wrapRef = useRef(null);
   const svgRef = useRef(null);
   const [boxW, setBoxW] = useState(600);
@@ -144,6 +160,7 @@ export function TransectProfilePanel({ data, enabled, useDecibels = true, width 
     const meta = [
       line ? `line_image_px: (${Math.round(line.x0)},${Math.round(line.y0)}) -> (${Math.round(line.x1)},${Math.round(line.y1)})` : null,
       `length_px: ${Math.round(lenPx ?? dMax)}`,
+      Number.isFinite(lengthM) ? `length_m: ${lengthM.toFixed(1)}` : null,
       Number.isFinite(angleDeg) ? `angle_deg: ${angleDeg.toFixed(1)}` : null,
       `perp_avg_px: ${width > 0 ? 2 * width + 1 : 1}`,
       `unit: ${unit}`,
@@ -212,7 +229,7 @@ export function TransectProfilePanel({ data, enabled, useDecibels = true, width 
         <text x={pad.l + innerW} y={H - 8} textAnchor="end" fill={C.muted} fontSize={13} fontFamily={C.mono}>{Math.round(dMax)} px</text>
       </svg>
       <div style={{ marginTop: 4, color: C.muted, fontSize: 'var(--text-sm)', fontFamily: C.mono, display: 'flex', gap: 16, alignItems: 'center' }}>
-        <span>len {Math.round(lenPx ?? dMax)} px</span>
+        <span>len {Math.round(lenPx ?? dMax)} px{Number.isFinite(lengthM) ? ` · ${formatDistance(lengthM)}` : ''}</span>
         <span>{Number.isFinite(angleDeg) ? `${angleDeg.toFixed(0)}°` : ''}</span>
         <span>n {cnt}</span>
         <button

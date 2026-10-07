@@ -35,9 +35,12 @@ export function AnnotationOverlay({
   onAnnotationsChange,
   selectedId = null,
   onSelectAnnotation,
+  frame = null,   // view frame (view-frame.js); defaults to native OrthographicView math
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
+  const w2p = frame?.worldToPixel || worldToPixel;
+  const p2w = frame?.pixelToWorld || pixelToWorld;
   const [draftArrow, setDraftArrow] = useState(null);   // {x1,y1,cx,cy} screen during drawing
   const [editingId, setEditingId] = useState(null);
   const [editorPos, setEditorPos] = useState(null);     // {sx, sy} for input box
@@ -68,14 +71,14 @@ export function AnnotationOverlay({
     for (const a of anns) {
       const isSel = a.id === selectedId;
       if (a.type === 'arrow') {
-        const [x1, y1] = worldToPixel(a.worldX,  a.worldY,  vs, W, H);
-        const [x2, y2] = worldToPixel(a.worldX2, a.worldY2, vs, W, H);
+        const [x1, y1] = w2p(a.worldX,  a.worldY,  vs, W, H);
+        const [x2, y2] = w2p(a.worldX2, a.worldY2, vs, W, H);
         drawArrow(ctx, x1, y1, x2, y2, {
           colorKey: a.color, caption: a.text || '', dpr: 1,
           size: a.size || DEFAULT_ANNOTATION_SIZE, fontSize: a.fontSize, selected: isSel,
         });
       } else if (a.type === 'text') {
-        const [x, y] = worldToPixel(a.worldX, a.worldY, vs, W, H);
+        const [x, y] = w2p(a.worldX, a.worldY, vs, W, H);
         drawTextLabel(ctx, x, y, a.text || '(label)', {
           colorKey: a.color, dpr: 1,
           size: a.size || DEFAULT_ANNOTATION_SIZE, fontSize: a.fontSize, selected: isSel,
@@ -90,7 +93,7 @@ export function AnnotationOverlay({
         size: propsRef.current.size || DEFAULT_ANNOTATION_SIZE,
       });
     }
-  }, [selectedId, draftArrow]);
+  }, [selectedId, draftArrow, w2p]);
 
   useEffect(() => { redraw(); }, [redraw, viewState, annotations, mode, color, size]);
 
@@ -117,8 +120,8 @@ export function AnnotationOverlay({
     if (!canvas || !vs) return null;
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
-    return pixelToWorld(sx, sy, vs, W, H);
-  }, []);
+    return p2w(sx, sy, vs, W, H);
+  }, [p2w]);
 
   // ─── Hit testing ──────────────────────────────────────────────────────────
   const hitTest = useCallback((sx, sy) => {
@@ -133,15 +136,15 @@ export function AnnotationOverlay({
     for (let i = anns.length - 1; i >= 0; i--) {
       const a = anns[i];
       if (a.type === 'text') {
-        const [x, y] = worldToPixel(a.worldX, a.worldY, vs, W, H);
+        const [x, y] = w2p(a.worldX, a.worldY, vs, W, H);
         const fs = a.fontSize || resolveSize(a.size || DEFAULT_ANNOTATION_SIZE).fontSize;
         const { w, h } = measureTextLabel(ctx, a.text || '(label)', fs, 1);
         if (sx >= x && sx <= x + w && sy >= y && sy <= y + h) {
           return { id: a.id, kind: 'text-body' };
         }
       } else if (a.type === 'arrow') {
-        const [x1, y1] = worldToPixel(a.worldX,  a.worldY,  vs, W, H);
-        const [x2, y2] = worldToPixel(a.worldX2, a.worldY2, vs, W, H);
+        const [x1, y1] = w2p(a.worldX,  a.worldY,  vs, W, H);
+        const [x2, y2] = w2p(a.worldX2, a.worldY2, vs, W, H);
         // Distance from point to line segment
         const dist = pointToSegment(sx, sy, x1, y1, x2, y2);
         if (dist.d < 8) {
@@ -153,7 +156,7 @@ export function AnnotationOverlay({
       }
     }
     return null;
-  }, []);
+  }, [w2p]);
 
   // ─── Mouse events ─────────────────────────────────────────────────────────
   const startEditing = useCallback((id, sx, sy, initial = '') => {
@@ -195,7 +198,7 @@ export function AnnotationOverlay({
           setDrag({ id: hit.id, kind: hit.kind, anchorSx: sc.sx, anchorSy: sc.sy });
         } else if (hit.kind === 'arrow-shaft' || hit.kind === 'text-body') {
           // Drag whole annotation; remember offset from anchor
-          const [ax, ay] = worldToPixel(a.worldX, a.worldY, propsRef.current.viewState, sc.W, sc.H);
+          const [ax, ay] = w2p(a.worldX, a.worldY, propsRef.current.viewState, sc.W, sc.H);
           setDrag({
             id: hit.id, kind: 'move',
             dx: sc.sx - ax, dy: sc.sy - ay,
@@ -249,7 +252,7 @@ export function AnnotationOverlay({
       sel?.(id);
       startEditing(id, sc.sx, sc.sy, '');
     }
-  }, [hitTest, screenFromEvent, screenToWorld, draftArrow, startEditing]);
+  }, [hitTest, screenFromEvent, screenToWorld, draftArrow, startEditing, w2p]);
 
   const handleMouseMove = useCallback((e) => {
     if (!draftArrow && !drag) return;
@@ -309,14 +312,14 @@ export function AnnotationOverlay({
     if (!a) return;
     let editAt;
     if (a.type === 'text') {
-      const [x, y] = worldToPixel(a.worldX, a.worldY, propsRef.current.viewState, sc.W, sc.H);
+      const [x, y] = w2p(a.worldX, a.worldY, propsRef.current.viewState, sc.W, sc.H);
       editAt = { sx: x, sy: y };
     } else {
-      const [x, y] = worldToPixel(a.worldX, a.worldY, propsRef.current.viewState, sc.W, sc.H);
+      const [x, y] = w2p(a.worldX, a.worldY, propsRef.current.viewState, sc.W, sc.H);
       editAt = { sx: x, sy: y };
     }
     startEditing(a.id, editAt.sx, editAt.sy, a.text || '');
-  }, [hitTest, screenFromEvent, startEditing]);
+  }, [hitTest, screenFromEvent, startEditing, w2p]);
 
   // Delete key removes selected annotation
   useEffect(() => {
