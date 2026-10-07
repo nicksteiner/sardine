@@ -330,6 +330,49 @@ export async function loadCOG(url) {
   }
   debugLog(`[COG Loader] Cached ${overviewCache.size} overview levels, maxZoom: ${maxZoom}`);
 
+  // Classification color table / class names / GDAL_NODATA — the same hints
+  // loadLocalTIF exposes, so a streamed class map (palette GeoTIFF or small
+  // integer raster) renders in class mode with its authored colours, and
+  // nodata pixels are NaN (transparent) instead of a painted sentinel.
+  let colorTable = null;
+  let classNames = null;
+  try {
+    colorTable = extractColorTable(fileDirectory);
+    classNames = extractClassNames(fileDirectory);
+    if (colorTable) debugLog(`[COG Loader] Embedded class color table: ${colorTable.entries} entries`);
+  } catch (_) {}
+  let nodata = null;
+  try {
+    const nd = image.getGDALNoData();
+    if (nd !== null && Number.isFinite(nd)) nodata = nd;
+  } catch (_) {}
+  let sniffedCategorical = false;
+  if (!colorTable) {
+    try {
+      const ov = overviewCache.get(imageCount - 1).image; // coarsest overview
+      const fd = ov.getFileDirectory?.() || {};
+      const bps = fd.BitsPerSample?.[0] ?? 32;
+      const isFloat = (fd.SampleFormat?.[0] ?? 1) === 3;
+      if (!isFloat && bps <= 16 && ov.getWidth() * ov.getHeight() <= 4_000_000) {
+        const sample = await ov.readRasters();
+        sniffedCategorical = looksCategorical(sample[0]);
+        if (sniffedCategorical) debugLog('[COG Loader] Categorical sniff (overview): integer class map');
+      }
+    } catch (_) { /* stay continuous on any failure */ }
+  }
+  const isCategorical = !!colorTable || sniffedCategorical;
+  // Class maps must never be bilinearly resampled: blending integer class
+  // indices paints phantom classes along every boundary.
+  const tileResample = isCategorical ? 'nearest' : 'bilinear';
+  const worldResX = (bounds[2] - bounds[0]) / width;
+  const worldResY = (bounds[3] - bounds[1]) / height;
+
+  function maskNodata(data) {
+    if (nodata === null) return data;
+    for (let i = 0; i < data.length; i++) if (data[i] === nodata) data[i] = NaN;
+    return data;
+  }
+
   /**
    * Get tile data for deck.gl TileLayer
    * @param {Object} params - Tile parameters
@@ -338,32 +381,61 @@ export async function loadCOG(url) {
    * @param {number} params.z - Zoom level
    * @returns {Promise<{data: Float32Array, width: number, height: number}>}
    */
-  async function getTile({ x, y, z }) {
+  async function getTile({ x, y, z, bbox }) {
     try {
-      // Use pre-cached overview lookup
-      const targetZoom = Math.min(z, maxZoom);
-      const overviewIndex = Math.max(0, Math.min(imageCount - 1, maxZoom - targetZoom));
-
-      const cached = overviewCache.get(overviewIndex);
-      const targetImage = cached.image;
-      const imgWidth = cached.width;
-      const imgHeight = cached.height;
-
-      // Calculate pixel coordinates for this tile
-      const scale = Math.pow(2, z);
       const tileSize = 256;
+      let targetImage, imgWidth, imgHeight, left, top, right, bottom;
 
-      // Convert tile coordinates to pixel coordinates
-      const pixelX = (x * tileSize * imgWidth) / (scale * 256);
-      const pixelY = (y * tileSize * imgHeight) / (scale * 256);
-      const pixelWidth = (tileSize * imgWidth) / (scale * 256);
-      const pixelHeight = (tileSize * imgHeight) / (scale * 256);
+      if (bbox && bbox.left !== undefined) {
+        // Basemap mode: the reprojected fetcher asks for a rectangle in the
+        // image CRS (bboxSpace 'world' — this loader's bounds are world
+        // coordinates). Map it to full-res pixels (row 0 = north), pick the
+        // overview that matches the requested resolution, then scale the window.
+        const wxMin = Math.min(bbox.left, bbox.right), wxMax = Math.max(bbox.left, bbox.right);
+        const wyMin = Math.min(bbox.top, bbox.bottom), wyMax = Math.max(bbox.top, bbox.bottom);
+        const pxLeft = Math.max(0, Math.floor((wxMin - bounds[0]) / worldResX));
+        const pxRight = Math.min(width, Math.ceil((wxMax - bounds[0]) / worldResX));
+        const pxTop = Math.max(0, Math.floor((bounds[3] - wyMax) / worldResY));
+        const pxBottom = Math.min(height, Math.ceil((bounds[3] - wyMin) / worldResY));
+        if (pxLeft >= pxRight || pxTop >= pxBottom) return null;
+        const neededRes = Math.max(pxRight - pxLeft, pxBottom - pxTop) / tileSize;
+        let bestIdx = 0;
+        for (let i = 0; i < imageCount; i++) {
+          const ovRes = width / overviewCache.get(i).width;
+          if (ovRes <= neededRes * 1.5) bestIdx = i;
+        }
+        const cached = overviewCache.get(bestIdx);
+        targetImage = cached.image; imgWidth = cached.width; imgHeight = cached.height;
+        const scaleX = imgWidth / width, scaleY = imgHeight / height;
+        left = Math.max(0, Math.floor(pxLeft * scaleX));
+        top = Math.max(0, Math.floor(pxTop * scaleY));
+        right = Math.min(imgWidth, Math.ceil(pxRight * scaleX));
+        bottom = Math.min(imgHeight, Math.ceil(pxBottom * scaleY));
+      } else {
+        // Native (OrthographicView) tiles: use pre-cached overview lookup
+        const targetZoom = Math.min(z, maxZoom);
+        const overviewIndex = Math.max(0, Math.min(imageCount - 1, maxZoom - targetZoom));
 
-      // Clamp to image bounds
-      const left = Math.max(0, Math.floor(pixelX));
-      const top = Math.max(0, Math.floor(pixelY));
-      const right = Math.min(imgWidth, Math.ceil(pixelX + pixelWidth));
-      const bottom = Math.min(imgHeight, Math.ceil(pixelY + pixelHeight));
+        const cached = overviewCache.get(overviewIndex);
+        targetImage = cached.image;
+        imgWidth = cached.width;
+        imgHeight = cached.height;
+
+        // Calculate pixel coordinates for this tile
+        const scale = Math.pow(2, z);
+
+        // Convert tile coordinates to pixel coordinates
+        const pixelX = (x * tileSize * imgWidth) / (scale * 256);
+        const pixelY = (y * tileSize * imgHeight) / (scale * 256);
+        const pixelWidth = (tileSize * imgWidth) / (scale * 256);
+        const pixelHeight = (tileSize * imgHeight) / (scale * 256);
+
+        // Clamp to image bounds
+        left = Math.max(0, Math.floor(pixelX));
+        top = Math.max(0, Math.floor(pixelY));
+        right = Math.min(imgWidth, Math.ceil(pixelX + pixelWidth));
+        bottom = Math.min(imgHeight, Math.ceil(pixelY + pixelHeight));
+      }
 
       // Check if tile is out of bounds
       if (left >= imgWidth || top >= imgHeight || right <= 0 || bottom <= 0) {
@@ -378,11 +450,11 @@ export async function loadCOG(url) {
         window: [left, top, right, bottom],
         width: tileSize,
         height: tileSize,
-        resampleMethod: 'bilinear',
+        resampleMethod: tileResample,
       });
 
       // Reuse raster directly if already Float32Array, otherwise convert
-      const data = rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]);
+      const data = maskNodata(rasters[0] instanceof Float32Array ? rasters[0] : new Float32Array(rasters[0]));
 
       debugLog(`[COG Loader] Tile x:${x}, y:${y}, z:${z} loaded successfully (${data.length} pixels)`);
 
@@ -486,6 +558,8 @@ export async function loadCOG(url) {
     getExportStripe,
     getPixelValue,
     bounds,
+    geoBounds: bounds,
+    worldBounds: bounds,   // enables Basemap mode (world-space bboxes in getTile)
     crs,
     width,
     height,
@@ -495,6 +569,10 @@ export async function loadCOG(url) {
     resolution,
     isCOG,
     imageCount,
+    nodata,
+    colorTable,      // {entries, rgb:Uint8Array(256*3)} | null
+    classNames,      // {index: name} | null
+    isCategorical,   // hint for auto-enabling class-map rendering
   };
 
   debugLog('[COG Loader] COG loaded successfully:', {

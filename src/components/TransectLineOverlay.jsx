@@ -236,13 +236,22 @@ export function TransectLineOverlay({
     const s0 = imgToScreen(line.x0, line.y0);
     const s1 = imgToScreen(line.x1, line.y1);
     if (!s0 || !s1) return;
-    const mid = [(s0[0] + s1[0]) / 2, (s0[1] + s1[1]) / 2];
+    const mid = imgToScreen((line.x0 + line.x1) / 2, (line.y0 + line.y1) / 2) || [(s0[0] + s1[0]) / 2, (s0[1] + s1[1]) / 2];
 
-    // Line
+    // Line — straight in image pixels; sampled through the frame so it follows
+    // the image grid on a reprojected basemap (straight in the native view).
     ctx.strokeStyle = '#4ec9d4';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([]);
-    ctx.beginPath(); ctx.moveTo(s0[0], s0[1]); ctx.lineTo(s1[0], s1[1]); ctx.stroke();
+    ctx.beginPath();
+    const SEG = 24;
+    for (let i = 0; i <= SEG; i++) {
+      const t = i / SEG;
+      const p = imgToScreen(line.x0 + (line.x1 - line.x0) * t, line.y0 + (line.y1 - line.y0) * t);
+      if (!p) continue;
+      if (i === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
+    }
+    ctx.stroke();
 
     // Endpoint handles
     for (const p of [s0, s1]) {

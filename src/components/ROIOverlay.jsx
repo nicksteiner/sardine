@@ -171,42 +171,40 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       return w2p(wx, wy, viewState, w, h);
     };
 
-    // Draw active drag rectangle (while dragging)
-    if (dragStart && dragCurrent) {
-      const rect = canvas.getBoundingClientRect();
-      const x0 = dragStart.sx - rect.left;
-      const y0 = dragStart.sy - rect.top;
-      const x1 = dragCurrent.sx - rect.left;
-      const y1 = dragCurrent.sy - rect.top;
-      const rx = Math.min(x0, x1);
-      const ry = Math.min(y0, y1);
-      const rw = Math.abs(x1 - x0);
-      const rh = Math.abs(y1 - y0);
-
-      // Bounds only — no fill, so the data underneath stays readable.
+    // The ROI is a rectangle in IMAGE PIXELS.  Project all four corners so the
+    // drawn box follows the image grid — on the basemap a projected grid is
+    // rotated/skewed relative to the screen, and a screen-axis rectangle would
+    // misrepresent the pixels the ROI actually covers.  In the native view the
+    // quad is an axis-aligned rectangle, as before.
+    const strokeImageQuad = (l, t, rw, rh) => {
+      const corners = [[l, t], [l + rw, t], [l + rw, t + rh], [l, t + rh]].map(([px, py]) => imgToScreen(px, py));
       ctx.strokeStyle = '#ffc832';
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 4]);
-      ctx.strokeRect(rx, ry, rw, rh);
+      ctx.beginPath();
+      corners.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      ctx.closePath();
+      ctx.stroke();
       ctx.setLineDash([]);
+      return corners;
+    };
+
+    // Draw active drag preview — the image-aligned box the drag will produce
+    if (dragStart && dragCurrent) {
+      const p0 = screenToImagePixels(dragStart.sx, dragStart.sy);
+      const p1 = screenToImagePixels(dragCurrent.sx, dragCurrent.sy);
+      if (p0 && p1) {
+        const l = Math.min(p0[0], p1[0]), t = Math.min(p0[1], p1[1]);
+        strokeImageQuad(l, t, Math.abs(p1[0] - p0[0]), Math.abs(p1[1] - p0[1]));
+      }
       return;
     }
 
-    // Draw finalized ROI rectangle
+    // Draw finalized ROI
     if (roi && imageWidth && imageHeight) {
-      const [sx0, sy0] = imgToScreen(roi.left, roi.top);
-      const [sx1, sy1] = imgToScreen(roi.left + roi.width, roi.top + roi.height);
-      const rx = Math.min(sx0, sx1);
-      const ry = Math.min(sy0, sy1);
-      const rw = Math.abs(sx1 - sx0);
-      const rh = Math.abs(sy1 - sy0);
-
-      // Border only — no fill (bounds must not tint the data)
-      ctx.strokeStyle = '#ffc832';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
-      ctx.strokeRect(rx, ry, rw, rh);
-      ctx.setLineDash([]);
+      const corners = strokeImageQuad(roi.left, roi.top, roi.width, roi.height);
+      // Label hangs off the image's top-left corner (predictable on a rotated grid)
+      const [rx, ry] = corners[0];
 
       // Label — ground units when the scene is georeferenced, pixels otherwise
       const ground = measure?.roiGround?.(roi);
@@ -222,7 +220,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       ctx.fillStyle = '#ffc832';
       ctx.fillText(label, labelX, labelY);
     }
-  }, [viewState, bounds, imageWidth, imageHeight, roi, dragStart, dragCurrent, w2p, measure, resizeTick]);
+  }, [viewState, bounds, imageWidth, imageHeight, roi, dragStart, dragCurrent, w2p, measure, resizeTick, screenToImagePixels]);
 
   // Set crosshair cursor on the container when Shift is held
   useEffect(() => {

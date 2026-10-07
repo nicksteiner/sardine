@@ -501,22 +501,25 @@ function drawClassificationOverlay(ctx, W, H, roi, viewState, bounds, imageWidth
 
 /** Draw a gold dashed ROI rectangle on the export canvas. */
 function drawROIOverlay(ctx, W, H, roi, viewState, bounds, imageWidth, imageHeight, dpr, label = '') {
-  const [sx0, sy0] = _imgToScreen(roi.left, roi.top, viewState, bounds, imageWidth, imageHeight, W, H);
-  const [sx1, sy1] = _imgToScreen(roi.left + roi.width, roi.top + roi.height, viewState, bounds, imageWidth, imageHeight, W, H);
-  const rx = Math.min(sx0, sx1);
-  const ry = Math.min(sy0, sy1);
-  const rw = Math.abs(sx1 - sx0);
-  const rh = Math.abs(sy1 - sy0);
+  // Rectangle in image pixels → all four corners projected (follows a rotated
+  // grid on the basemap; axis-aligned in the native view). Matches ROIOverlay.
+  const corners = [
+    [roi.left, roi.top], [roi.left + roi.width, roi.top],
+    [roi.left + roi.width, roi.top + roi.height], [roi.left, roi.top + roi.height],
+  ].map(([px, py]) => _imgToScreen(px, py, viewState, bounds, imageWidth, imageHeight, W, H));
 
   ctx.save();
   // Bounds only — no fill (matches ROIOverlay; the shading tinted the data)
   ctx.strokeStyle = '#ffc832';
   ctx.lineWidth = 2 * dpr;
   ctx.setLineDash([6 * dpr, 4 * dpr]);
-  ctx.strokeRect(rx, ry, rw, rh);
+  ctx.beginPath();
+  corners.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+  ctx.closePath();
+  ctx.stroke();
   ctx.setLineDash([]);
   ctx.restore();
-  if (label) drawMarkLabel(ctx, W, H, label, rx, ry - 4 * dpr, 'left', 'bottom');
+  if (label) drawMarkLabel(ctx, W, H, label, corners[0][0], corners[0][1] - 4 * dpr, 'left', 'bottom');
 }
 
 /** The measured line (transect) as drawn on screen: line, end dots, readout. */
@@ -526,7 +529,14 @@ function drawTransectOverlay(ctx, W, H, line, viewState, bounds, imageWidth, ima
   ctx.save();
   ctx.strokeStyle = '#4ec9d4';
   ctx.lineWidth = 1.5 * dpr;
-  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.beginPath();
+  const SEG = 24; // straight in image pixels; sampled so it follows a reprojected grid
+  for (let i = 0; i <= SEG; i++) {
+    const t = i / SEG;
+    const [px, py] = _imgToScreen(line.x0 + (line.x1 - line.x0) * t, line.y0 + (line.y1 - line.y0) * t, viewState, bounds, imageWidth, imageHeight, W, H);
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
   for (const [px, py] of [[x0, y0], [x1, y1]]) {
     ctx.beginPath(); ctx.arc(px, py, 3.5 * dpr, 0, Math.PI * 2);
     ctx.fillStyle = '#0a1628'; ctx.fill();
