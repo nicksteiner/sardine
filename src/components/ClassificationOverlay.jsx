@@ -1,4 +1,5 @@
 /**
+import { useResizeTick } from './useResizeTick.js';
  * ClassificationOverlay — Canvas overlay that colors ROI pixels by class.
  *
  * Receives a classificationMap (Uint8Array, one value per ROI pixel) where
@@ -35,6 +36,7 @@ export default function ClassificationOverlay({
   roiDims,            // { w, h } — dimensions of the classification grid
 }) {
   const canvasRef = useRef(null);
+  const resizeTick = useResizeTick(canvasRef); // redraw when the viewer box changes
 
   // Pre-build an ImageData from classificationMap + class colors
   const classImage = useMemo(() => {
@@ -105,7 +107,7 @@ export default function ClassificationOverlay({
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(tmpCanvas, rx, ry, rw, rh);
 
-  }, [viewState, bounds, imageWidth, imageHeight, roi, classImage]);
+  }, [viewState, bounds, imageWidth, imageHeight, roi, classImage, resizeTick]);
 
   if (!viewState || !bounds || !roi || !classImage) return null;
 

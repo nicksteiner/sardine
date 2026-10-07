@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
+import { useResizeTick } from './useResizeTick.js';
 import { worldToPixel, pixelToWorld } from '../utils/geo-overlays.js';
 import { formatRoiGround } from '../utils/measure.js';
 
@@ -25,6 +26,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
   const w2p = frame?.worldToPixel || worldToPixel;
   const p2w = frame?.pixelToWorld || pixelToWorld;
   const canvasRef = useRef(null);
+  const resizeTick = useResizeTick(canvasRef); // redraw when the viewer box changes
   const [shiftHeld, setShiftHeld] = useState(false);
   const [dragStart, setDragStart] = useState(null); // {sx, sy} screen coords
   const [dragCurrent, setDragCurrent] = useState(null); // {sx, sy} screen coords
@@ -220,7 +222,7 @@ export function ROIOverlay({ viewState, bounds, imageWidth, imageHeight, roi, on
       ctx.fillStyle = '#ffc832';
       ctx.fillText(label, labelX, labelY);
     }
-  }, [viewState, bounds, imageWidth, imageHeight, roi, dragStart, dragCurrent, w2p, measure]);
+  }, [viewState, bounds, imageWidth, imageHeight, roi, dragStart, dragCurrent, w2p, measure, resizeTick]);
 
   // Set crosshair cursor on the container when Shift is held
   useEffect(() => {

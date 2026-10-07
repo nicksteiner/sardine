@@ -1,4 +1,5 @@
 import React, { useRef, useEffect } from 'react';
+import { useResizeTick } from './useResizeTick.js';
 import {
   computeVisibleExtent,
   niceInterval,
@@ -17,6 +18,7 @@ import {
  */
 export function CoordinateGrid({ viewState, bounds, width, height, epsg = null }) {
   const canvasRef = useRef(null);
+  const resizeTick = useResizeTick(canvasRef); // redraw when the viewer box changes
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -99,7 +101,7 @@ export function CoordinateGrid({ viewState, bounds, width, height, epsg = null }
       ctx.fillText(formatTickValue(wy, projected), tickPad, py);
       ctx.restore();
     }
-  }, [viewState, bounds, width, height]);
+  }, [viewState, bounds, width, height, resizeTick]);
 
   if (!viewState || !bounds) return null;
 

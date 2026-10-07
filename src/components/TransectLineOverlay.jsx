@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
+import { useResizeTick } from './useResizeTick.js';
 import { worldToPixel, pixelToWorld } from '../utils/geo-overlays.js';
 import { formatDistance } from '../utils/measure.js';
 
@@ -40,6 +41,7 @@ export function TransectLineOverlay({
   measure = null,  // ground-measure helper (measure.js): label in m/km when present
 }) {
   const canvasRef = useRef(null);
+  const resizeTick = useResizeTick(canvasRef); // redraw when the viewer box changes
   const [drag, setDrag] = useState(null); // {mode, ...} while dragging
   const w2p = frame?.worldToPixel || worldToPixel;
   const p2w = frame?.pixelToWorld || pixelToWorld;
@@ -269,7 +271,7 @@ export function TransectLineOverlay({
     ctx.fillRect(s1[0] + 8, s1[1] - 16, tw, 15);
     ctx.fillStyle = '#4ec9d4';
     ctx.fillText(label, s1[0] + 12, s1[1] - 3);
-  }, [enabled, viewState, bounds, imageWidth, imageHeight, line, drag, imgToScreen, measure]);
+  }, [enabled, viewState, bounds, imageWidth, imageHeight, line, drag, imgToScreen, measure, resizeTick]);
 
   if (!viewState || !bounds) return null;
 

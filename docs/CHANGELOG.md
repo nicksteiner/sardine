@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.8] - 2026-10-07 — Marks track viewer resizes
+
+### Fixed
+- **ROI box, measured line, class map and coordinate grid no longer leave the image when
+  the viewer resizes.** Collapsing the side panel, opening the bottom drawer (which the
+  Line tool does), or resizing the window re-centres the imagery but did not change the
+  view state, so the canvas overlays kept their stale bitmap and it was stretched to the
+  new box — the marks visibly drifted off the scene until the next pan. A shared
+  `useResizeTick` hook (`src/components/useResizeTick.js`) observes each overlay canvas
+  and redraws on size change, in both the native and Basemap views
+
 ## [1.0.0-rc.7] - 2026-10-07 — Light mode and basemap by default; Mark & Measure; Publish
 
 Shaped around what an emergency hydrologist does with a scene: open it on a map, mark
