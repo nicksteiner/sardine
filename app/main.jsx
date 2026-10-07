@@ -6626,10 +6626,20 @@ function App() {
   // ROI band extraction for model runs — same getExportStripe path as the
   // classifier, capped ~384 px on the long axis, returns LINEAR POWER
   // (the registry applies the manifest's declared transform).
-  const extractRoiBandsForModel = useCallback(async (wantBands) => {
+  // Model input is the ROI box-filtered to ≤ 384 px per side by default
+  // (bounded compute). A manifest may cap the multilook (sardine:multilook.max,
+  // e.g. 1 for texture-reading nets); the ROI then runs at that resolution,
+  // tiled by the backend, up to MODEL_ROI_MAX_PX per side.
+  const MODEL_ROI_MAX_PX = 2048;
+  const extractRoiBandsForModel = useCallback(async (wantBands, { maxMultilook = Infinity } = {}) => {
     const sourceW = imageData.width;
     const sourceH = imageData.height;
-    const ml = Math.max(1, Math.ceil(Math.max(roi.width, roi.height) / 384));
+    const roiSide = Math.max(roi.width, roi.height);
+    const ml = Math.min(Math.max(1, Math.ceil(roiSide / 384)), Math.max(1, maxMultilook));
+    if (Math.ceil(roiSide / ml) > MODEL_ROI_MAX_PX) {
+      throw new Error(`ROI is ${Math.round(roiSide)} px across; this model needs ≤ ${ml}× multilook, `
+        + `so the region must be ≤ ${MODEL_ROI_MAX_PX * ml} px per side — draw a smaller ROI`);
+    }
     const startCol = Math.floor(Math.max(0, roi.left) / ml);
     const startRow = Math.floor(Math.max(0, roi.top) / ml);
     const endCol = Math.floor(Math.min(roi.left + roi.width, sourceW) / ml);
@@ -6682,7 +6692,7 @@ function App() {
     setModelRunInfo(null);
     try {
       const d = manifestDefaults(manifest);
-      const input = await extractRoiBandsForModel(d.bands);
+      const input = await extractRoiBandsForModel(d.bands, { maxMultilook: d.maxMultilook });
       const result = await runModel(manifest, input, {
         signal: ctrl.signal,
         onProgress: (phase, done, total) => setModelProgress({ phase, done, total }),
@@ -9806,6 +9816,9 @@ function App() {
                     onAnnotationsChange={setAnnotations}
                     selectedAnnotationId={selectedAnnotationId}
                     onSelectAnnotation={setSelectedAnnotationId}
+                    classificationMap={modelOverlay ? modelOverlay.map : (classifierOpen ? classificationMap : null)}
+                    classRegions={modelOverlay ? modelOverlay.regions : classRegions}
+                    classifierRoiDims={modelOverlay ? modelOverlay.dims : classifierRoiDims}
                   />
                 ) : (
                 <SARViewer

@@ -78,6 +78,8 @@ export function validateManifest(m) {
   if (!STRATEGIES.includes(strategy)) fail(`sardine:strategy must be one of ${STRATEGIES.join(', ')}`);
   const interaction = m['sardine:interaction'] ?? 'none';
   if (!INTERACTIONS.includes(interaction)) fail(`sardine:interaction must be one of ${INTERACTIONS.join(', ')}`);
+  const mlCap = m['sardine:multilook'];
+  if (mlCap != null && !(Number.isInteger(mlCap.max) && mlCap.max >= 1)) fail('sardine:multilook.max must be an integer ≥ 1');
 
   // Input spec — at least one input with bands + explicit transform
   const inputs = m['mlm:input'];
@@ -164,6 +166,10 @@ export function manifestDefaults(m) {
     bands: m['mlm:input']?.[0]?.bands ?? [],
     classes: m['mlm:output']?.[0]?.['classification:classes'] ?? null,
     tile: m['sardine:tile'] ?? { size: 256, overlap: 16 },
+    // Coarsest box-filter multilook the model tolerates on its input. Models
+    // that read speckle texture need 1 (native): averaging removes the cue.
+    maxMultilook: Number.isInteger(m['sardine:multilook']?.max) && m['sardine:multilook'].max >= 1
+      ? m['sardine:multilook'].max : Infinity,
   };
 }
 

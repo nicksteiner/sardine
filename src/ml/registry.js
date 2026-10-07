@@ -229,6 +229,12 @@ export function builtinManifests() {
       // the tile, and an odd size makes a skip-connection concat fail
       // ("Non concat axis dimensions must match"). 128 is the training tile.
       'sardine:tile': { size: 128, overlap: 16 },
+      // NATIVE RESOLUTION ONLY. The net reads speckle texture; a box-filter
+      // multilook (even 2×2) smooths it away and the whole reach comes back
+      // "open water" (measured: ml1 58% ice → ml2 0% ice on a 99.9%-ice
+      // training chip). The ROI extractor honours this cap; strided
+      // subsampling would survive 2× but the export path box-filters.
+      'sardine:multilook': { max: 1 },
       'sardine:interaction': 'roi',
       provenance: {
         method: 'Trained on PlanetScope-derived dense ice/water labels over Alaska rivers, 2026 breakup; soft 3-class cross-entropy weighted by river-surface validity. Spatial-block split (~25 km) so val/test never share a block with train.',
@@ -241,7 +247,7 @@ export function builtinManifests() {
         // silent normalization mismatch is an unreadable failure. Feed the
         // graph two dB bands; it builds its own third channel.
         preprocessing: 'mean/std + validity mask baked into the ONNX graph (see tools/export_unet_onnx.py)',
-        caveat: 'L-band HH/HV at 10-30 m. Does not transfer to C-band or X-band (Capella/ICEYE) imagery.',
+        caveat: 'L-band HH/HV, native 10 m grid, no multilook (texture cue). Does not transfer to C-band or X-band (Capella/ICEYE) imagery.',
       },
     },
   ];
