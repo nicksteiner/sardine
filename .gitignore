@@ -75,3 +75,9 @@ docs/local\ /**
 test/_*
 # VRT test fixtures (tiny, GDAL-generated; see generate-vrt-fixtures.mjs)
 !test/unit/fixtures/vrt/*.tif
+
+# ONNX model weights — 31 MB binary, reproducible from the checkpoint via
+# `npm run export:model` (see docs/RIVER_ICE_MODEL.md). Commit to git-lfs or
+# publish alongside the build rather than into git history.
+app/public/models/*.onnx
+tools/__pycache__/

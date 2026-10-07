@@ -195,5 +195,54 @@ export function builtinManifests() {
         method: 'proof-of-concept: proves lazy ORT load, EP negotiation (webgpu→wasm), tiled execution. Not a trained despeckler — W024 lands that.',
       },
     },
+    {
+      'sardine:model': SARDINE_MODEL_SCHEMA_VERSION,
+      id: 'river-ice-unet-l',
+      'mlm:name': 'River ice / open water (L-band U-Net)',
+      'mlm:architecture': '4-level U-Net, widths (32,64,128,256), 7.77M params',
+      'mlm:framework': 'onnx',
+      'mlm:tasks': ['pixel-classifier'],
+      'mlm:input': [{
+        name: 'bands',
+        // Co-pol + cross-pol, in this order. HV carries the ice/water
+        // separation (rough ice depolarizes, smooth water does not).
+        bands: ['HHHH', 'HVHV'],
+        input: { shape: [1, 2, -1, -1], dim_order: ['batch', 'channel', 'height', 'width'], data_type: 'float32' },
+        pre_processing_function: { format: 'sardine-transform', expression: 'dB' },
+      }],
+      'mlm:output': [{
+        name: 'logits', tasks: ['pixel-classifier'],
+        result: { shape: [1, 3, -1, -1], data_type: 'float32' },
+        // Channel order is fixed by training (f_water, f_ice, f_mixed).
+        'classification:classes': [
+          { value: 0, name: 'open water', color_hint: '2b6cb0' },
+          { value: 1, name: 'ice', color_hint: 'e8f4f8' },
+          { value: 2, name: 'mixed', color_hint: 'd69e2e' },
+        ],
+      }],
+      'mlm:artifacts': [{ href: '/models/river-ice-unet-l.onnx', type: 'application/octet-stream' }],
+      license: 'CC-BY-4.0',
+      software: 'SARdine (tools/export_unet_onnx.py)',
+      'sardine:backend': 'onnx',
+      'sardine:strategy': 'tiled',
+      // size MUST stay a multiple of 16: four pooling levels floor-divide
+      // the tile, and an odd size makes a skip-connection concat fail
+      // ("Non concat axis dimensions must match"). 128 is the training tile.
+      'sardine:tile': { size: 128, overlap: 16 },
+      'sardine:interaction': 'roi',
+      provenance: {
+        method: 'Trained on PlanetScope-derived dense ice/water labels over Alaska rivers, 2026 breakup; soft 3-class cross-entropy weighted by river-surface validity. Spatial-block split (~25 km) so val/test never share a block with train.',
+        trained_on: 'NISAR L2 GCOV HH/HV, 10 m, Alaska breakup 2026',
+        checkpoint: 'planet_training/models/unet (30 epochs)',
+        metrics: { pixel_acc_confident: 0.923, tile_ice_vs_open_auc: 0.986, tile_ice_mae: 0.059, photo_auc_test_blocks: 0.819 },
+        // Standardization (dB mean/std), the finite-data mask channel and
+        // the NaN fill are COMPILED INTO the graph, not carried as manifest
+        // numbers — the manifest transform vocabulary stops at 'dB', and a
+        // silent normalization mismatch is an unreadable failure. Feed the
+        // graph two dB bands; it builds its own third channel.
+        preprocessing: 'mean/std + validity mask baked into the ONNX graph (see tools/export_unet_onnx.py)',
+        caveat: 'L-band HH/HV at 10-30 m. Does not transfer to C-band or X-band (Capella/ICEYE) imagery.',
+      },
+    },
   ];
 }

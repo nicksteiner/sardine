@@ -64,6 +64,9 @@ sardine/
 │   │   ├── webgpu-device.js    # device singleton + capability detection
 │   │   ├── histogram-compute.js / gpu-stats.js  # 2-pass WGSL histogram; Auto wrappers w/ CPU fallback (W007)
 │   │   └── spatial-filter.js / webgl-spatial-filter.js  # speckle filters (WGSL + FBO)
+│   ├── ml/                     # Model plugins (W025): .sardine-model.json manifests, registry,
+│   │                           # backends (heuristic/classical/onnx/remote); river-ice U-Net
+│   │                           # is the first trained built-in (docs/RIVER_ICE_MODEL.md)
 │   ├── layers/                 # SARGPULayer (primary), SARTileLayer, SARTiledCOGLayer,
 │   │                           # SARBitmapLayer (CPU fallback), OvertureLayer, shaders.js (GLSL)
 │   ├── viewers/                # SARViewer, MapViewer, ComparisonViewer, CompareGrid (multi-panel)
@@ -166,6 +169,8 @@ npm test             # Full suite: structural checks + pipeline regressions + un
 npm run test:unit    # Behavioral unit tests only (test/unit/*.test.mjs, auto-discovered)
 npm run test:quick   # Fast smoke tests
 npm run test:layer   # Browser layer rendering test
+npm run test:model   # Headless-Chromium inference check: river-ice U-Net on real NISAR tiles (~40 s)
+npm run export:model # Re-export the U-Net to ONNX (needs the onnx-export pixi env; see docs/RIVER_ICE_MODEL.md)
 npm run debug:gpu    # GPU shader debug page
 npm run benchmark    # GPU vs CPU performance comparison
 npm run build        # Production build → dist/
@@ -240,6 +245,9 @@ downloadBuffer(buffer, 'export.tif');
 - **Per-channel contrast**: RGB composites support `{R: [min,max], G: [min,max], B: [min,max]}` or uniform `[min, max]`.
 - **NaN/zero masking**: SAR nodata is 0 or NaN. Both are masked to transparent in shaders and CPU rendering.
 - **Coordinate system**: NISAR GCOV uses EPSG:4326 with lat/lon coordinate arrays stored as HDF5 datasets. Bounds extracted from coordinate arrays at file open time.
+- **Model weights are not in git**: `app/public/models/*.onnx` is gitignored (31 MB). A fresh
+  clone or CI build ships without it until the weight is hosted (git-lfs, release asset, or a
+  model hub) and the manifest href in `src/ml/registry.js` points there.
 - **Chunk decompression**: h5chunk handles deflate (via pako) + shuffle filter. Float16/32/64 decoding supported.
 
 ### When Adding Features
