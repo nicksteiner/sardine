@@ -1,5 +1,4 @@
 /**
-import { useResizeTick } from './useResizeTick.js';
  * ClassificationOverlay — Canvas overlay that colors ROI pixels by class.
  *
  * Receives a classificationMap (Uint8Array, one value per ROI pixel) where
@@ -8,10 +7,17 @@ import { useResizeTick } from './useResizeTick.js';
  *
  * Follows the same canvas overlay pattern as ROIOverlay.jsx: positioned
  * absolutely over the deck.gl viewer, redrawn on every viewState change.
+ *
+ * `frame` (view-frame.js) is optional: with it the overlay runs on the
+ * basemap, where the ROI is a rotated image-space quad. The class image is
+ * drawn through the affine map of the ROI's projected corners, which is
+ * exact in the native view and the same approximation the ROI box uses on
+ * the map (image grid ≈ affine over a few km).
  */
 
 import React, { useRef, useLayoutEffect, useMemo } from 'react';
 import { worldToPixel } from '../utils/geo-overlays.js';
+import { useResizeTick } from './useResizeTick.js';
 
 /**
  * Parse hex color to [r, g, b].
@@ -34,7 +40,9 @@ export default function ClassificationOverlay({
   classificationMap,  // Uint8Array, length = roiW * roiH, values 0..N
   classRegions,       // [{name, color, ...}]
   roiDims,            // { w, h } — dimensions of the classification grid
+  frame = null,       // view frame supplying worldToPixel (basemap); default ortho math
 }) {
+  const w2p = frame?.worldToPixel || worldToPixel;
   const canvasRef = useRef(null);
   const resizeTick = useResizeTick(canvasRef); // redraw when the viewer box changes
 
@@ -85,29 +93,32 @@ export default function ClassificationOverlay({
     const imgToScreen = (px, py) => {
       const wx = minX + (px / imageWidth) * (maxX - minX);
       const wy = maxY - (py / imageHeight) * (maxY - minY);
-      return worldToPixel(wx, wy, viewState, cw, ch);
+      return w2p(wx, wy, viewState, cw, ch);
     };
 
-    const [sx0, sy0] = imgToScreen(roi.left, roi.top);
-    const [sx1, sy1] = imgToScreen(roi.left + roi.width, roi.top + roi.height);
-    const rx = Math.min(sx0, sx1);
-    const ry = Math.min(sy0, sy1);
-    const rw = Math.abs(sx1 - sx0);
-    const rh = Math.abs(sy1 - sy0);
+    // Three ROI corners define the affine image→screen map (the 4th follows).
+    const [ax, ay] = imgToScreen(roi.left, roi.top);
+    const [bx, by] = imgToScreen(roi.left + roi.width, roi.top);
+    const [dx, dy] = imgToScreen(roi.left, roi.top + roi.height);
+    const iw = classImage.width, ih = classImage.height;
+    const ex = [(bx - ax) / iw, (by - ay) / iw]; // screen step per class column
+    const ey = [(dx - ax) / ih, (dy - ay) / ih]; // screen step per class row
 
     // Skip if ROI is off-screen or tiny
-    if (rw < 2 || rh < 2) return;
+    if (Math.hypot(bx - ax, by - ay) < 2 || Math.hypot(dx - ax, dy - ay) < 2) return;
 
-    // Draw classImage scaled to ROI screen rect
+    // Draw classImage through the affine (dpr folded in; setTransform replaces the scale above)
     const tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = classImage.width;
-    tmpCanvas.height = classImage.height;
+    tmpCanvas.width = iw;
+    tmpCanvas.height = ih;
     tmpCanvas.getContext('2d').putImageData(classImage, 0, 0);
 
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(tmpCanvas, rx, ry, rw, rh);
+    ctx.setTransform(ex[0] * dpr, ex[1] * dpr, ey[0] * dpr, ey[1] * dpr, ax * dpr, ay * dpr);
+    ctx.drawImage(tmpCanvas, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  }, [viewState, bounds, imageWidth, imageHeight, roi, classImage, resizeTick]);
+  }, [viewState, bounds, imageWidth, imageHeight, roi, classImage, resizeTick, w2p]);
 
   if (!viewState || !bounds || !roi || !classImage) return null;
 

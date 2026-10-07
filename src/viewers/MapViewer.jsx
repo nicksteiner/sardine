@@ -9,6 +9,7 @@ import { makeMapFrame } from '../utils/view-frame.js';
 import { ROIOverlay } from '../components/ROIOverlay.jsx';
 import { TransectLineOverlay } from '../components/TransectLineOverlay.jsx';
 import { AnnotationOverlay } from '../components/AnnotationOverlay.jsx';
+import ClassificationOverlay from '../components/ClassificationOverlay.jsx';
 
 // MapLibre CSS is imported by the app (app/main.jsx); library users include
 // 'maplibre-gl/dist/maplibre-gl.css' in their own build.
@@ -78,6 +79,10 @@ export const MapViewer = forwardRef(function MapViewer({
   onAnnotationsChange = null,
   selectedAnnotationId = null,
   onSelectAnnotation = null,
+  // Class overlay on the ROI (model output / scatter classifier), as SARViewer
+  classificationMap = null,
+  classRegions = null,
+  classifierRoiDims = null,
 }, ref) {
   const containerRef = useRef(null);
   const mapContainerRef = useRef(null);
@@ -334,6 +339,19 @@ export const MapViewer = forwardRef(function MapViewer({
             onSelectAnnotation={onSelectAnnotation}
             frame={frame}
           />
+          {classificationMap && roi && classifierRoiDims && (
+            <ClassificationOverlay
+              viewState={viewState}
+              bounds={sceneBounds}
+              imageWidth={imageWidth}
+              imageHeight={imageHeight}
+              roi={roi}
+              classificationMap={classificationMap}
+              classRegions={classRegions}
+              roiDims={classifierRoiDims}
+              frame={frame}
+            />
+          )}
         </>
       )}
 

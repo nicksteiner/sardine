@@ -15,7 +15,7 @@ River Watch observer photos.
 |:--|:--|
 | Input | NISAR GCOV `HHHH` + `HVHV`, linear power (the viewer converts to dB) |
 | Output | 3-class map — 0 open water, 1 ice, 2 mixed |
-| Resolution | 10 m native; trained across 10–30 m |
+| Resolution | 10 m native grid — run at native, see constraints |
 | Artifact | `app/public/models/river-ice-unet-l.onnx`, 31 MB, opset 17 |
 | Test accuracy | 0.923 pixel (confident targets), 0.986 ice-vs-open AUC |
 | Photo AUC | 0.819 on held-out spatial blocks |
@@ -54,7 +54,24 @@ error at all.
 So the graph takes **two** dB channels and builds its own third. A caller
 cannot forget the mask channel or supply it inverted.
 
-Two further constraints:
+Three further constraints:
+
+- **Native resolution only — never box-filter the input.** The net reads
+  speckle texture, and averaging removes it. Measured on a Yukon reach the
+  training labels call 99.9 % ice (2026-05-12, chip s130, 512×506 px):
+
+  | input | water / ice / mixed |
+  |:--|:--|
+  | native 10 m | 0.42 / 0.58 / 0 |
+  | strided 2× (every other pixel) | 0.46 / 0.54 / 0 |
+  | 2×2 box mean, power or dB | **1.00 / 0 / 0** |
+  | 3×3 box mean | **1.00 / 0 / 0** |
+
+  The manifest declares `sardine:multilook: { max: 1 }` and the app's ROI
+  extractor honours it (the default path box-filters any ROI wider than
+  384 px, which is exactly the silent failure above — the whole reach
+  reads as open water). Native ROIs are allowed up to 2048 px per side;
+  the tiled backend handles the size.
 
 - **Tile size must be a multiple of 16.** Four pooling levels floor-divide
   the tile; an odd size makes a skip-connection concat fail outright
