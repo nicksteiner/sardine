@@ -10,6 +10,7 @@ authors:
 version: 1.0.1
 date-released: 2026-10-13
 license: Apache-2.0
+doi: 10.5281/zenodo.23345870
 repository-code: "https://github.com/nicksteiner/sardine"
 url: "https://nicksteiner.github.io/sardine/"
 keywords:
@@ -19,3 +20,10 @@ keywords:
   - Cloud Optimized GeoTIFF
   - WebGL
   - remote sensing
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23345870
+    description: Concept DOI (all versions)
+  - type: doi
+    value: 10.5281/zenodo.23345871
+    description: Version 1.0.1

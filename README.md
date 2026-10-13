@@ -11,6 +11,7 @@
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/nicksteiner/sardine?sort=semver)](https://github.com/nicksteiner/sardine/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/github/license/nicksteiner/sardine)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23345870.svg)](https://doi.org/10.5281/zenodo.23345870)
 
 </div>
 
@@ -166,9 +167,9 @@ Further detail: [docs/CLOUD_OPTIMIZED_HDF5.md](docs/CLOUD_OPTIMIZED_HDF5.md), [d
 
 ## Citation
 
-Please cite the version of SARdine you used. Citation metadata is in [CITATION.cff](CITATION.cff).
+Please cite the version of SARdine you used. Each release is archived on Zenodo; [10.5281/zenodo.23345870](https://doi.org/10.5281/zenodo.23345870) refers to all versions and resolves to the latest. Citation metadata is in [CITATION.cff](CITATION.cff).
 
-> Steiner, N. C. (2026). SARdine: browser-native SAR data inspection and exploration (Version 1.0.1) [Computer software]. https://github.com/nicksteiner/sardine
+> Steiner, N. C. (2026). SARdine: browser-native SAR data inspection and exploration (Version 1.0.1) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23345871
 
 ## Contributing
 
