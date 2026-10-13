@@ -78,6 +78,9 @@ const KEYS = {
   // Viewport (optional — center as lon,lat, plus zoom)
   c: 'c',
   z: 'z',
+  // Model to run on the region (registry id, e.g. 'river-ice-unet-l').
+  // Needs a region (bbox/wkt): the model runs on the ROI once the scene loads.
+  model: 'model',
   // Spatial subset (W016) — WGS84 lon/lat
   bbox: 'bbox',       // w,s,e,n
   wkt: 'wkt',         // URL-encoded WKT (POLYGON/BBOX/...); wins over bbox
@@ -251,6 +254,14 @@ export function parseShareLink(search = (typeof window !== 'undefined' ? window.
   }
   const z = num(p.get(KEYS.z));    if (z != null) view.viewZoom = z;
 
+  // Model (edge-materialized product link: input + region + model). The id
+  // is validated against the registry by the app, not here.
+  const model = (p.get(KEYS.model) || '').trim();
+  if (model) {
+    if (/^[A-Za-z0-9._-]{1,128}$/.test(model)) view.modelId = model;
+    else console.warn(`[deep-link] Ignoring malformed model= param: ${model}`);
+  }
+
   // Spatial subset (W016): wkt wins over bbox; both reduce to a WGS84 bbox.
   // Malformed values are rejected with a warning, never a throw.
   const wktStr = p.get(KEYS.wkt);
@@ -378,6 +389,7 @@ export function buildShareLink({ baseUrl, dataUrl, dataUrls, dataType, localFile
       && view.roiBbox[0] < view.roiBbox[2] && view.roiBbox[1] < view.roiBbox[3]) {
     p.set(KEYS.bbox, view.roiBbox.map(v => Math.round(v * 1e5) / 1e5).join(','));
   }
+  if (view.modelId) p.set(KEYS.model, view.modelId);
 
   return `${base}?${p.toString()}`;
 }

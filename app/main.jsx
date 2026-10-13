@@ -944,6 +944,9 @@ function App() {
   // the pinned values — each guarded site consumes its pin (one-shot) so the
   // first post-load derivation is suppressed and later loads behave normally.
   const deepLinkPins = useRef(new Set());
+  // ?model= from the link: run this registry id on the deep-link ROI once the
+  // scene and ROI are in (one-shot; see the effect after handleRunModel).
+  const deepLinkModelRef = useRef(null);
   const consumeDeepLinkPin = useCallback((field) => deepLinkPins.current.delete(field), []);
   // W016: deep-link spatial subset (?bbox=/?wkt=), staged until the raster
   // loads. One-shot like the pins: applyDeepLinkRoi consumes it. The loader
@@ -985,6 +988,13 @@ function App() {
     if (view.selectedFrequency) deepLinkPins.current.add('freq');
     if (view.compositeId || view.displayMode) deepLinkPins.current.add('comp');
     if (Array.isArray(view.viewCenter) || Number.isFinite(view.viewZoom)) deepLinkPins.current.add('view');
+    if (view.modelId) {
+      if (Array.isArray(view.roiBbox)) {
+        deepLinkModelRef.current = view.modelId;
+      } else {
+        addStatusLog?.('warning', `Link names model "${view.modelId}" but no region — add bbox= or wkt= so the model has an ROI to run on`);
+      }
+    }
     if (Array.isArray(view.roiBbox)) {
       deepLinkRoiRef.current = {
         bbox: view.roiBbox,               // [w, s, e, n] WGS84
@@ -3322,6 +3332,7 @@ function App() {
           applyRgbContrastFromStats(data.composite, data.bandStats, data.requiredPols);
         }
         autoFitIfNewScene(data.bounds);
+        applyDeepLinkRoi(data);
         return;
       }
 
@@ -3345,6 +3356,9 @@ function App() {
       }
 
       autoFitIfNewScene(data.bounds);
+      // W016: deep-link ?bbox=/?wkt= — apply the region as ROI and fit to it
+      // (same as the COG path; VRT tiles are viewport-driven too).
+      applyDeepLinkRoi(data);
     } catch (e) {
       if (gen !== loadGenRef.current) return;
       if (e.code === 'VRT_MISSING_SOURCES' && file) {
@@ -3370,7 +3384,7 @@ function App() {
         resetLoadProgress();
       }
     }
-  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast, applyRgbContrastFromStats, resetLoadProgress]);
+  }, [addStatusLog, autoFitIfNewScene, consumeDeepLinkPin, applySampleContrast, applyRgbContrastFromStats, resetLoadProgress, applyDeepLinkRoi]);
 
   useEffect(() => {
     handleLoadVRTRef.current = handleLoadVRT;
@@ -6718,6 +6732,25 @@ function App() {
 
   const handleCancelModel = useCallback(() => { modelAbortRef.current?.abort(); }, []);
 
+  // Deep-link model run: the link named a model and a region; once the scene
+  // and its ROI are mounted, run it as if the user had pressed ▷. Unknown ids
+  // are reported, not guessed — a link is a product only if it names a
+  // registered model exactly.
+  useEffect(() => {
+    const id = deepLinkModelRef.current;
+    if (!id || !imageData || !roi || modelBusyId) return;
+    deepLinkModelRef.current = null;
+    const manifest = modelList.find((m) => m.id === id);
+    if (!manifest) {
+      addStatusLog('warning', `Link names model "${id}", which is not in this build's registry`,
+        `Available: ${modelList.map((m) => m.id).join(', ')}`);
+      return;
+    }
+    setActivePanel('analysis');
+    addStatusLog('info', `Running model from link: ${manifest['mlm:name']}`);
+    handleRunModel(manifest);
+  }, [imageData, roi, modelBusyId, modelList, handleRunModel, addStatusLog]);
+
   // Fast path for the live loop: predict directly on the classifier's
   // already-extracted dB features — no re-extraction, milliseconds.
   const applyHeadToClassifierData = useCallback((manifest) => {
@@ -9018,6 +9051,9 @@ function App() {
                         selectedPolarization, selectedFrequency,
                         multiLook, compositeId, displayMode,
                         viewCenter, viewZoom, roiBbox,
+                        // The model behind the active overlay, so the link
+                        // reproduces the product, not just the view.
+                        modelId: (modelOverlay && modelRunInfo?.id && roiBbox) ? modelRunInfo.id : undefined,
                       };
                       const link = sharedRawUrl
                         ? buildShareLink({

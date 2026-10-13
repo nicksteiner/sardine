@@ -51,6 +51,7 @@ re-emits the full band list.
 | `mode` | — | `single` / `rgb` display mode |
 | `c` | — | view center `lon,lat` |
 | `z` | — | view zoom |
+| `model` | — | registry id of a model to run on the region, e.g. `river-ice-unet-l`. Requires `bbox=` or `wkt=`; the model runs on that ROI as soon as the scene loads, and the overlay appears in the Models panel. Unknown ids are reported in the status log, never substituted. "Copy share link" emits it when a model overlay is active. |
 
 Short keys win when both spellings are present. "Copy share link" emits short keys and
 omits defaults to keep URLs paste-friendly; it uses `?url=` when the extension

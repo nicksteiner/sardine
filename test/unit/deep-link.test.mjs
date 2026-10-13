@@ -519,4 +519,19 @@ test('RGB COG list %2C-protects commas inside a band URL', () => {
   assert.equal(dataUrls[0], withComma);
 });
 
+test('?model= parses to view.modelId and round-trips with bbox', () => {
+  const { view } = parseShareLink('?url=x.h5&bbox=-155.94,64.717,-155.86,64.752&model=river-ice-unet-l');
+  assert.equal(view.modelId, 'river-ice-unet-l');
+  const link = buildShareLink({ baseUrl: BASE, dataUrl: 'https://x/a.h5', dataType: 'nisar', view });
+  const back = parseShareLink(new URL(link).search).view;
+  assert.equal(back.modelId, 'river-ice-unet-l');
+  assert.deepEqual(back.roiBbox, [-155.94, 64.717, -155.86, 64.752]);
+});
+
+test('?model= rejects ids outside [A-Za-z0-9._-]', () => {
+  assert.equal(parseShareLink('?url=x.h5&model=../evil').view.modelId, undefined);
+  assert.equal(parseShareLink('?url=x.h5&model=').view.modelId, undefined);
+  assert.equal(parseShareLink('?url=x.h5').view.modelId, undefined);
+});
+
 await run();
