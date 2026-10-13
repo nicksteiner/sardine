@@ -1,0 +1,38 @@
+{
+  "title": "SARdine: browser-native SAR data inspection and exploration",
+  "description": "SARdine (SAR Data INspection and Exploration) is a browser-native viewer and export tool for synthetic aperture radar data. It streams NISAR Level-2 GCOV and GUNW HDF5 products and Cloud Optimized GeoTIFFs directly in the browser using chunked HTTP range reads, renders dB scaling, stretches, colormaps and polarimetric RGB composites on the GPU with WebGL2, and exports georeferenced GeoTIFFs and publication figures client-side. No server, GDAL or Python is required.",
+  "upload_type": "software",
+  "license": "Apache-2.0",
+  "creators": [
+    {
+      "name": "Steiner, Nicholas C.",
+      "affiliation": "The City College of New York, City University of New York",
+      "orcid": "0000-0001-5943-8400"
+    }
+  ],
+  "keywords": [
+    "synthetic aperture radar",
+    "SAR",
+    "NISAR",
+    "Sentinel-1",
+    "Cloud Optimized GeoTIFF",
+    "HDF5",
+    "WebGL",
+    "remote sensing",
+    "visualization"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/nicksteiner/sardine",
+      "relation": "isSupplementTo",
+      "resource_type": "software",
+      "scheme": "url"
+    },
+    {
+      "identifier": "https://nicksteiner.github.io/sardine/",
+      "relation": "isDocumentedBy",
+      "scheme": "url"
+    }
+  ],
+  "access_right": "open"
+}

@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use SARdine, please cite it as below."
+title: "SARdine: browser-native SAR data inspection and exploration"
+type: software
+authors:
+  - family-names: Steiner
+    given-names: Nicholas C.
+    orcid: "https://orcid.org/0000-0001-5943-8400"
+    affiliation: "The City College of New York, City University of New York"
+version: 1.0.0
+date-released: 2026-10-13
+license: Apache-2.0
+repository-code: "https://github.com/nicksteiner/sardine"
+url: "https://nicksteiner.github.io/sardine/"
+keywords:
+  - synthetic aperture radar
+  - NISAR
+  - Sentinel-1
+  - Cloud Optimized GeoTIFF
+  - WebGL
+  - remote sensing
