@@ -245,9 +245,9 @@ downloadBuffer(buffer, 'export.tif');
 - **Per-channel contrast**: RGB composites support `{R: [min,max], G: [min,max], B: [min,max]}` or uniform `[min, max]`.
 - **NaN/zero masking**: SAR nodata is 0 or NaN. Both are masked to transparent in shaders and CPU rendering.
 - **Coordinate system**: NISAR GCOV uses EPSG:4326 with lat/lon coordinate arrays stored as HDF5 datasets. Bounds extracted from coordinate arrays at file open time.
-- **Model weights are not in git**: `app/public/models/*.onnx` is gitignored (31 MB). A fresh
-  clone or CI build ships without it until the weight is hosted (git-lfs, release asset, or a
-  model hub) and the manifest href in `src/ml/registry.js` points there.
+- **Model weights are not in git**: `app/public/models/*.onnx` is gitignored (31 MB); the
+  hosted copy is the HF dataset `nicksteiner/sardine-demo-data` (`models/`), and the manifest
+  href in `src/ml/registry.js` is pinned to that upload's commit. Re-upload + re-pin on retrain.
 - **Chunk decompression**: h5chunk handles deflate (via pako) + shuffle filter. Float16/32/64 decoding supported.
 
 ### When Adding Features

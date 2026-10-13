@@ -463,14 +463,18 @@ export const SARViewer = forwardRef(function SARViewer({
   }, [layers, secondaryMosaicLayers, extraLayers, underlayLayers]);
 
   // deck.gl 9: the clear color is a View prop (0–255 ints), not a Deck parameter.
-  // Medical mode: pure black void; otherwise the theme's near-black ground.
+  // Medical mode: pure black void. Otherwise NO view clear: Deck's own
+  // clearCanvas clears to transparent, so nodata (alpha 0) and data opacity
+  // show the themed container background. A view clearColor can't be
+  // transparent — deck 9.4 layers-pass reads alpha as `clearColor[3] || 255`,
+  // so [0,0,0,0] comes out opaque black (every nodata pixel, light theme too).
   const views = useMemo(
     () =>
       new OrthographicView({
         id: 'ortho-view',
         flipY: false,
-        clear: true,
-        clearColor: medicalMode ? [0, 0, 0, 255] : [3, 2, 1, 255],
+        clear: medicalMode,
+        clearColor: [0, 0, 0, 255],
       }),
     [medicalMode]
   );

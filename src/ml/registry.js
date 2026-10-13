@@ -220,7 +220,9 @@ export function builtinManifests() {
           { value: 2, name: 'mixed', color_hint: 'd69e2e' },
         ],
       }],
-      'mlm:artifacts': [{ href: '/models/river-ice-unet-l.onnx', type: 'application/octet-stream' }],
+      // Hosted on Hugging Face, pinned to the upload commit (CORS *, Range).
+      // sha256 d63d83510c8c68d2596065d47d0ed76d6bcd357dd83dd12557ba239559c66d08
+      'mlm:artifacts': [{ href: 'https://huggingface.co/datasets/nicksteiner/sardine-demo-data/resolve/1dad471a86e0aa68c15bcc12b8d55c61cf83cc26/models/river-ice-unet-l.onnx', type: 'application/octet-stream' }],
       license: 'CC-BY-4.0',
       software: 'SARdine (tools/export_unet_onnx.py)',
       'sardine:backend': 'onnx',
