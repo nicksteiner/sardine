@@ -32,12 +32,15 @@ test('a live token is accepted, with uid and days remaining', () => {
   // Shaped exactly like a real EDL user token.
   const r = validateEDLToken(jwt({
     type: 'User', uid: 'nsteiner',
-    iat: now() - DAY, exp: now() + 59 * DAY,
+    // Expiry mid-day (58.5 d) so floor() can't flip on a whole-second
+    // boundary: exp is whole seconds, Date.now() isn't — at exactly .000 ms
+    // a +59 d expiry floored to 59, not 58 (a 1-in-1000 CI flake).
+    iat: now() - DAY, exp: now() + 58 * DAY + DAY / 2,
     iss: 'https://urs.earthdata.nasa.gov',
   }));
   assert.equal(r.ok, true);
   assert.equal(r.username, 'nsteiner');
-  assert.equal(r.daysLeft, 58);          // 59 days minus the elapsed partial day
+  assert.equal(r.daysLeft, 58);
   assert.ok(r.expiresAt instanceof Date);
 });
 
