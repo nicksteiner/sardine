@@ -13,7 +13,7 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue)](https://github.com/nicksteiner/sardine/releases)
 [![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
@@ -25,7 +25,7 @@
 
 </div>
 
-> **SARdine 1.0.0 — released 2026-10-12.** Release notes: [v1.0.0](https://github.com/nicksteiner/sardine/releases/tag/v1.0.0). Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
+> **SARdine 1.0.1 — released 2026-10-13.** Release notes: [v1.0.1](https://github.com/nicksteiner/sardine/releases/tag/v1.0.1). Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
 
 ## Live demo — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
 
