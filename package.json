@@ -1,6 +1,6 @@
 {
   "name": "sardine",
-  "version": "1.0.0-rc.9",
+  "version": "1.0.0",
   "type": "module",
   "description": "SARdine - SAR Data INspection and Exploration",
   "main": "src/index.js",
@@ -43,7 +43,7 @@
     "remote-sensing"
   ],
   "author": "Nick Steiner",
-  "license": "GPL-3.0",
+  "license": "Apache-2.0",
   "dependencies": {
     "@deck.gl/core": "^9.4.0",
     "@deck.gl/extensions": "^9.4.0",

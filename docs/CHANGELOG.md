@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-10-12 — First stable release
+
+SARdine 1.0.0 is rc.9 plus the fixes below.
+
+### Changed
+- **License is now Apache 2.0.** The repo previously disagreed with itself (LICENSE
+  GPLv3, README AGPL-3.0, app footer MIT); LICENSE, `package.json`, the README and the
+  footer now all say Apache-2.0. The footer shows the real version instead of "v1.0"
+- **River-ice U-Net weight is hosted.** The 31 MB ONNX is served from the Hugging Face
+  dataset `nicksteiner/sardine-demo-data`, pinned to its upload commit, so the model
+  works on the hosted build (it 404'd there before). Its breakup-front limitation is
+  documented in `docs/RIVER_ICE_MODEL.md` and asserted in `npm run test:model`
+
+### Fixed
+- **Nodata and transparency in the native (no-basemap) view.** Since the deck.gl 9
+  migration the view cleared to opaque near-black, so nodata, the area outside the
+  frame and the gaps of a rotated scene rendered black, in the light theme too. A
+  transparent view clear isn't possible in deck 9.4 (`clearColor[3] || 255`), so the
+  view no longer clears and the theme background shows through
+
+### Housekeeping
+- Open PRs closed: #16 (W010) and #17 (W028) were already on main; #18 (W029
+  accessibility) conflicts after the bloat audit and will be redone against 1.0
+
 ## [1.0.0-rc.9] - 2026-10-07 — Marks stay on the map plane under rotation; marks follow the image grid
 
 ### Fixed

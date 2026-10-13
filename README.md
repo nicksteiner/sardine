@@ -13,9 +13,9 @@
 *Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
 
 [![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.0--rc.9-orange)](https://github.com/nicksteiner/sardine/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/nicksteiner/sardine/releases)
 [![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
 [![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
 
@@ -25,7 +25,7 @@
 
 </div>
 
-> **This project is under active development.** Some features are experimental or incomplete. Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
+> **SARdine 1.0.0 — released 2026-10-12.** Release notes: [v1.0.0](https://github.com/nicksteiner/sardine/releases/tag/v1.0.0). Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
 
 ## Live demo — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
 
@@ -36,6 +36,8 @@ The hosted build runs entirely in your browser. Three ways to load data:
 | **Drag-and-drop** | Drop a `.tif`, NISAR `.h5`, NITF/SICD, or `.geojson` onto the page | A local file |
 | **Public URL** | Paste a public COG URL into "Direct URL" — Capella Open Data, Umbra Open Data, Sentinel-2 cogs, etc. | A CORS-friendly URL |
 | **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov/profile](https://urs.earthdata.nasa.gov/profile) → *Generate Token*, and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
+
+**The proposal's products are plain Cloud Optimized GeoTIFFs and need no proxy:** they open directly by URL, with no Earthdata token or relay. The section below applies only to streaming from NASA DAACs.
 
 ### About your Earthdata token (read this if you're security-conscious)
 
@@ -377,7 +379,9 @@ npm run benchmark    # GPU vs CPU performance comparison
 
 ## License
 
-AGPL-3.0. Previously MIT (through 3/5/26). Commercial licensing available — contact [nick.steiner@gmail.com](mailto:nick.steiner@gmail.com).
+[Apache License 2.0](LICENSE). Copyright 2026 Nicholas Steiner.
+
+The river-ice U-Net weight hosted on Hugging Face is CC-BY-4.0.
 
 ---
 

@@ -26,7 +26,7 @@ import { DataDiscovery } from '../src/components/DataDiscovery.jsx';
 import { isNISARFile, isCOGFile } from '../src/utils/bucket-browser.js';
 import { writeRGBAGeoTIFF, writeFloat32GeoTIFF, downloadBuffer } from '../src/utils/geotiff-writer.js';
 import { annotationsToGeoJSON, geoJSONToAnnotations, downloadMarkupGeoJSON, isSardineMarkup } from '../src/utils/annotation-io.js';
-import { buildExportSidecar, downloadSidecar } from '../src/utils/export-sidecar.js';
+import { buildExportSidecar, downloadSidecar, SARDINE_VERSION } from '../src/utils/export-sidecar.js';
 import { makeReproject, reprojectFeature } from '../src/utils/overture-projection.js';
 import { createRGBTexture, computeRGBBands } from '../src/utils/sar-composites.js';
 import { computeChannelStatsAuto, sampleViewportStatsAuto } from '../src/gpu/gpu-stats.js';
@@ -10115,7 +10115,7 @@ function App() {
 
       {/* Footer */}
       <footer className="app-footer">
-        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer">SARdine</a> v1.0 · MIT</span>
+        <span><a href="https://github.com/nicksteiner/sardine" target="_blank" rel="noopener noreferrer">SARdine</a> v{SARDINE_VERSION} · Apache-2.0</span>
         <span>steinerlab - ccny</span>
         <Toolbar className="app-footer__meta" wrap={false}>
           deck.gl{multiLook ? ' · multi-look' : ''}
