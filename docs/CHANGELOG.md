@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-10-13 — Citation metadata, scientific README
+
+### Added
+- `CITATION.cff` and `.zenodo.json` so each GitHub release is archived on Zenodo with a DOI
+  (the Zenodo webhook was enabled after v1.0.0 was published, so 1.0.1 is the first archived
+  release)
+- `docs/TUTORIALS.md`: the step-by-step workflows and control reference moved out of the README
+
+### Changed
+- README rewritten as a scientific software description: summary, statement of need,
+  supported products, method definitions (dB, nodata, multilooking, stretches, composite
+  formulas, indices, filters), outputs and provenance, validation, limitations, citation and
+  references
+- Badges: release and license badges are read from GitHub instead of being hard-coded; CI
+  badge pinned to `main`
+
+### Fixed
+- **The demo opened zoomed out on the basemap.** The map view's initial zoom ignored the
+  viewport size, so a scene appeared as a small tile in a country-scale view, and the demo
+  link's pixel-space `c`/`z` only apply in native view. The map view now fits a newly
+  loaded scene to the viewport; the demo link drops `c`/`z`. New README screenshot of the
+  current UI
+- CI: `SARDINE_VERSION` (export sidecars) was not bumped with `package.json` for 1.0.1, which
+  failed the sidecar version test
+
 ## [1.0.0] - 2026-10-12 — First stable release
 
 SARdine 1.0.0 is rc.9 plus the fixes below.

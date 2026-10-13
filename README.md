@@ -6,389 +6,186 @@
   <img src="docs/sardine-logo-light.svg" alt="SARdine" width="480">
 </picture>
 
-<br>
-
 **SAR Data INspection and Exploration**
 
-*Browser-native visualization and export for NISAR HDF5 and Cloud Optimized GeoTIFFs*
-
-[![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.0.1-blue)](https://github.com/nicksteiner/sardine/releases)
-[![Live demo](https://img.shields.io/badge/demo-nicksteiner.github.io%2Fsardine-4ec9d4)](https://nicksteiner.github.io/sardine/)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![WebGL2](https://img.shields.io/badge/WebGL2-GPU--accelerated-blueviolet)](https://caniuse.com/webgl2)
-[![No Server](https://img.shields.io/badge/runs-in--browser-brightgreen)](https://github.com/nicksteiner/sardine)
-
-[![SARdine viewer — NISAR GCOV dual-pol RGB composite over the Pacaya-Samiria floodplain](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?cog=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hh.tif,https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid&c=12233,7038&z=-1.5)
-
-*▲ Click the screenshot and your browser starts streaming a **full NISAR frame at native 20 m resolution — a ~1 GB Cloud Optimized GeoTIFF pair** — rendered as a dual-pol RGB composite (HH / HV / HH÷HV) over the Ucayali floodplain in Pacaya-Samiria, Peru. No login, no server, no download: HTTP Range reads fetch only the tiles you look at (a few MB), so it opens in seconds — then pan and zoom anywhere in the 240×270 km frame down to full detail. To stream the **same region live from the NASA archive as HDF5** (CMR granule search + chunked range reads, free [Earthdata token](https://urs.earthdata.nasa.gov/profile) required), use [this link](https://nicksteiner.github.io/sardine/?bbox=-74.69,-5.55,-74.15,-5.01&db=1&min=-18&max=0).*
+[![CI](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/nicksteiner/sardine?sort=semver)](https://github.com/nicksteiner/sardine/releases/latest)
+[![License: Apache-2.0](https://img.shields.io/github/license/nicksteiner/sardine)](LICENSE)
 
 </div>
 
-> **SARdine 1.0.1 — released 2026-10-13.** Release notes: [v1.0.1](https://github.com/nicksteiner/sardine/releases/tag/v1.0.1). Bug reports welcome via [GitHub Issues](https://github.com/nicksteiner/sardine/issues).
+SARdine is a web application for viewing and exporting synthetic aperture radar (SAR) data. It reads NISAR Level-2 HDF5 products and Cloud Optimized GeoTIFFs directly in the browser using HTTP range requests or local file access, renders them on the GPU, and exports georeferenced GeoTIFFs and figures. It requires no server-side processing.
 
-## Live demo — [nicksteiner.github.io/sardine](https://nicksteiner.github.io/sardine/)
+A hosted instance is available at <https://nicksteiner.github.io/sardine/>.
 
-The hosted build runs entirely in your browser. Three ways to load data:
+[![SARdine displaying a NISAR GCOV dual-pol composite over the Pacaya-Samiria floodplain, Peru](docs/SARdine_window.png)](https://nicksteiner.github.io/sardine/?cog=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hh.tif,https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid)
 
-| | What you do | What you need |
-|---|---|---|
-| **Drag-and-drop** | Drop a `.tif`, NISAR `.h5`, NITF/SICD, or `.geojson` onto the page | A local file |
-| **Public URL** | Paste a public COG URL into "Direct URL" — Capella Open Data, Umbra Open Data, Sentinel-2 cogs, etc. | A CORS-friendly URL |
-| **Earthdata streaming** | Open the **Earthdata Login** panel, paste a token from [urs.earthdata.nasa.gov/profile](https://urs.earthdata.nasa.gov/profile) → *Generate Token*, and stream NISAR / Sentinel-1 / OPERA directly from NASA DAACs | An EDL token (free) |
+*Figure 1. NISAR L-band GCOV (frequency A, 20 m), Pacaya-Samiria National Reserve, Peru, shown over an OpenStreetMap basemap. R = HH, G = HV, B = HH/HV, in dB with a sigmoid stretch. The source is a pair of Cloud Optimized GeoTIFFs (about 1 GB). Click the image to open this scene in the hosted instance.*
 
-**The proposal's products are plain Cloud Optimized GeoTIFFs and need no proxy:** they open directly by URL, with no Earthdata token or relay. The section below applies only to streaming from NASA DAACs.
+## Background
 
-### About your Earthdata token (read this if you're security-conscious)
+NISAR Level-2 GCOV and GUNW granules are 2 to 8 GB HDF5 files. Inspecting one usually means downloading the full granule and opening it in a GIS or Python environment, even when only a small area is of interest. SARdine includes an HDF5 reader written in JavaScript (`h5chunk`) that reads the file metadata once (about 1 to 8 MB) and then fetches only the compressed chunks that intersect the current view or region of interest. The same code path is used for local files, presigned S3 URLs and NASA DAAC archives.
 
-NASA DAACs don't send CORS headers, so the hosted build relays data requests through a small Cloudflare Worker ([`sardine-edl-proxy/`](sardine-edl-proxy/), ~200 lines) that adds CORS and forwards your token to NASA. Straight answers about that:
+SARdine is intended for quality assessment of SAR products, exploratory analysis of backscatter and polarimetric signatures, figure preparation, and subsetting regions of interest for further processing in other software.
 
-- **Your token stays in your browser's localStorage** and is sent only to the Worker and NASA servers. It travels in a request header (not the URL). The Worker hard-allowlists NASA hostnames, drops the auth header on any redirect leaving the allowlist, and doesn't log or store tokens — but SARdine is a research project, and you shouldn't have to take our word for it:
-- **Run your own relay in ~2 minutes.** The Worker source is right here in the repo. `cd sardine-edl-proxy && npx wrangler deploy` puts an identical copy on *your* free Cloudflare account; paste your `*.workers.dev` URL into SARdine's Earthdata panel (Proxy URL field) and your token never touches ours.
-- **The stakes are low by design.** EDL tokens are read-only data-access credentials for (mostly public) NASA data. They expire, and you can [revoke them anytime](https://urs.earthdata.nasa.gov/user_tokens). Worst case is someone downloads free satellite data under your account.
-- Running locally? `npm run dev` uses a local Vite proxy — no Worker involved at all.
+## Supported data
 
----
+| Format | Access | Notes |
+|:---|:---|:---|
+| NISAR L2 GCOV (HDF5) | local file, HTTPS, S3 presigned URL, NASA CMR search | Frequencies A and B; all covariance terms (HHHH, HVHV, VVVV, ...) |
+| NISAR L2 GUNW (HDF5) | local file, HTTPS | Unwrapped phase, coherence, connected components; experimental |
+| Cloud Optimized GeoTIFF | local file, HTTPS | Single- and multi-band; uses internal overviews; honours GDAL nodata |
+| GDAL VRT | HTTPS | Mosaics and band stacks over COG sources |
+| NITF / SICD | local file, HTTPS | Complex SLC, displayed as magnitude |
+| GeoJSON | local file | Vector overlays and saved annotations |
 
-## What It Is
+Sentinel-1 and OPERA products distributed as COGs use the COG reader. Reading from NASA DAACs requires an Earthdata Login token (see [Data access](#data-access)).
 
-SARdine is a browser-native exploration and visualization GUI for NISAR HDF5 data. Drop in a file, explore the data, and export a figure or a georeferenced dataset. Everything runs in the browser; there is nothing to install.
+## Methods
 
-It reads NISAR L2 GCOV HDF5 (`.h5`) directly using a custom JavaScript HDF5 reader (`h5chunk`). Rendering runs on the GPU via WebGL2 shaders: dB scaling, colormaps, contrast stretching, and RGB composites stay interactive while panning and zooming. GCOV/GUNW files are 2–8 GB but only viewport-intersecting chunks are ever read.
+Radiometric operations are applied to linear power (σ⁰ or γ⁰, as provided by the product) in GLSL fragment shaders. Exports use a CPU implementation of the same operations.
 
----
+**Decibels.** x<sub>dB</sub> = 10 log<sub>10</sub>(max(x, 10⁻¹⁰)), so zero power maps to −100 dB.
 
-## What You Can Do
+**Nodata.** Values of 0 or NaN are nodata and are drawn transparent. In a colour composite a pixel is transparent only when all three channels are nodata.
 
-**Explore full-resolution SAR data**
-Drop in a large NISAR file and pan/zoom through it at full resolution. Switch polarizations (HH, HV, VV), adjust contrast with the live histogram, and apply stretch modes (linear, sqrt, gamma, sigmoid).
+**Multilooking.** Exports use an *n* × *n* box average in linear power. An output pixel is nodata if fewer than half of its *n*² input pixels are valid. The on-screen view subsamples chunks instead, so rendered (not raw) exports apply an additional 3 × 3 smoothing to approximate the displayed texture.
 
-**Make publication-ready figures**
-Enable the dual-pol RGB composite to map polarization channels to color. Export a georeferenced figure PNG with scale bar, corner coordinates, and colorbar. Export scatter plots and histograms as publication SVGs.
+**Contrast.** Values are scaled to [0, 1] between limits *a* and *b* (by default the 2nd and 98th percentiles of the visible data), then passed through one of the following:
 
-**Classify and map land cover**
-Draw an ROI, open the 2D feature space scatter (e.g. HH dB vs HV dB), define class regions by drawing rectangles, and see the classification overlay on the map in real time. Filter by incidence angle range (NISAR HDF5 only).
+| Mode | f(v) |
+|:---|:---|
+| linear | v |
+| sqrt | √v |
+| gamma | v<sup>γ</sup> |
+| sigmoid | 1 / (1 + e<sup>−8γ(v − 0.5)</sup>), rescaled so that f(0) = 0 and f(1) = 1 |
 
-**Subset and export data**
-Draw an ROI and export a subregion as a raw Float32 GeoTIFF (linear power, with CRS and tiepoints) or a rendered RGBA GeoTIFF. Works for both single-pol and RGB composites.
+Histograms and statistics are computed with WebGPU compute shaders where available and on the CPU otherwise.
 
-**Time series and change detection**
-Load multiple dates for ROI time series plotting, or compose a multi-date RGB composite for change detection visualization.
+**Colour composites.** Channels are computed from linear power before conversion to dB. Each channel has its own contrast limits.
 
-**Stream from S3**
-Paste a presigned URL and stream directly from a bucket — same workflow, no download required. Chunk decompression runs in a Web Worker pool, and a persistent IndexedDB cache speeds up repeat visits to the same scene.
+| Preset | R | G | B |
+|:---|:---|:---|:---|
+| `hh-hv-vv` | HH | HV | VV |
+| `dual-pol-h` | HH | HV | HH / max(HV, 10⁻¹⁰) |
+| `dual-pol-v` | VV | VH | VV / max(VH, 10⁻¹⁰) |
+| `multi-temporal` | date 1 | date 2 | date 3 |
 
-**Share exactly what you see**
-**Copy Link** captures the data source, render settings, and active ROI as a URL. A link with just a `bbox` resolves its own granule via NASA CMR (newest, best-coverage, full-frame first) and loads only the region — coordinates outlive granule IDs across reprocessing campaigns. See [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md).
+Pauli and Freeman-Durden composites are present in the code but disabled, because the current implementations use power terms only and do not match the published decompositions.
 
-**Mark, measure, publish**
-The **Mark** panel is a field toolbar: Box and Line read in ground units (km, km², bearing) on any georeferenced scene, Arrow and Text caption it, and all of it works on the basemap view, which is now the default. **Publish** puts the figure first: one tall Save Figure (PNG / SVG) with your marks, scale bar, graticule, legend and basemap credit drawn in, publication-styled. The UI opens in light mode.
+**Radar Vegetation Index.** RVI = 8 HV / (HH + VV + 2 HV) for quad-pol data (Kim and van Zyl, 2009) and 4 HV / (HH + HV) for dual-pol data.
 
-**Save your markup, keep your provenance**
-Annotations, ROIs, transects, and classifier regions save/load as GeoJSON with a versioned schema (observer, method, timestamps, per-ROI statistics). Every GeoTIFF export writes a `{name}.tif.json` sidecar carrying the full product identification, render state, and `derived_from` lineage.
+**Speckle filters.** Boxcar, Lee (1980) and enhanced Lee filters, implemented as WebGPU compute shaders with a WebGL2 fallback.
 
----
+**Geolocation and measurement.** NISAR products are georeferenced from their coordinate datasets and COGs from their GeoTIFF keys. Data can be displayed in the native grid or reprojected onto a Web Mercator basemap. Distances use the haversine formula on a spherical Earth after transforming coordinates with proj4. Areas are reported in km².
 
-## Quick Start
+**Classification.** Pixels in a region of interest can be classified by drawing class boxes on a two-dimensional histogram of two channels (for example HH and HV in dB). NISAR data can also be filtered by incidence angle.
 
-SARdine requires **Node.js** (v18 or later) and **npm**.
+**Models.** Pixel classifiers packaged as a JSON manifest with ONNX weights run in the browser with ONNX Runtime Web. The included river ice / open water U-Net for L-band data is described, with its known limitations, in [docs/RIVER_ICE_MODEL.md](docs/RIVER_ICE_MODEL.md).
+
+## Outputs
+
+| Output | Content |
+|:---|:---|
+| GeoTIFF (raw) | Float32 linear power with CRS and tie points; optional subset and multilook |
+| GeoTIFF (rendered) | RGBA image as displayed |
+| Figure (PNG, SVG) | Image with scale bar, coordinates, colour bar or ternary key, and annotations |
+| Plots (SVG) | Histograms, two-channel scatter plots, transect profiles, time series |
+| Annotations (GeoJSON) | Points, boxes, lines and class regions with observer, method, time stamp and region statistics |
+
+Each GeoTIFF export is accompanied by a JSON file (`{name}.tif.json`). It records the source product, display settings, processing parameters and software version. The display state can also be stored in a URL ([docs/DEEP_LINKS.md](docs/DEEP_LINKS.md)), so a figure can be regenerated from its link.
+
+## Data access
+
+Local files are read in the browser and are not uploaded. Files on servers that allow cross-origin requests (for example Hugging Face, the Capella and Umbra open data programs, or S3 buckets with CORS enabled) can be opened by URL.
+
+The proposal's products are plain Cloud Optimized GeoTIFFs and need no proxy: they open directly by URL, without an Earthdata token. The rest of this section applies only to NASA DAAC archives.
+
+NASA DAACs do not allow cross-origin requests, so the hosted instance sends DAAC requests through a small Cloudflare Worker ([`sardine-edl-proxy/`](sardine-edl-proxy/)). The worker adds the required headers and forwards the user's Earthdata Login token.
+
+- The token is stored in the browser and sent only to the worker and to NASA hosts, in a request header. The worker accepts only NASA host names, removes the token if a request is redirected elsewhere, and does not log or store tokens.
+- Users can run their own copy of the worker (`cd sardine-edl-proxy && npx wrangler deploy`) and enter its URL in the Earthdata panel.
+- Earthdata tokens give read-only access to data and can be [revoked](https://urs.earthdata.nasa.gov/user_tokens) at any time.
+- The local development server (`npm run dev`) handles DAAC requests itself, without the worker.
+
+## Installation
+
+The hosted instance needs no installation. It requires a browser with WebGL2 (current versions of Chrome, Edge, Firefox or Safari); WebGPU is used if available.
+
+To run locally (Node.js 18 or later):
 
 ```bash
 git clone https://github.com/nicksteiner/sardine.git
 cd sardine
 npm install
-npm run dev
+npm run dev          # http://localhost:5173
 ```
 
-Open **http://localhost:5173** in Chrome, Edge, or Firefox (WebGL2 required).
+Server mode, for JupyterHub or other shared environments, adds a file browser, a STAC catalogue (DuckDB) and S3 URL signing:
 
-### Installing Node.js
-
-**macOS:** `brew install node` or download from https://nodejs.org/
-
-**Windows:** Download the installer from https://nodejs.org/ (LTS recommended).
-
-**Linux (Debian/Ubuntu):**
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-sudo apt-get install -y nodejs
+npm install && npm run build
+node server/launch.cjs --data-dir /path/to/data    # serves on port 8050
 ```
 
----
+## Usage
 
-## Loading Data
-
-Pick a mode from the **File Type** dropdown in the left panel.
-
-### Local HDF5 Files
-
-1. **File Type** → **NISAR GCOV HDF5 (Local File)**
-2. **Choose File** → pick your `.h5`
-3. Pick **Frequency** (`frequencyA` = high res, `frequencyB` = low res)
-4. Pick **Polarization** (`HHHH`, `HVHV`, `VVVV`, etc.)
-5. Optionally switch to **RGB Composite** and pick a preset
-6. **Load Dataset**
-
-Nothing is uploaded. Chunks are read directly from disk via the browser File API.
-
-### Presigned URLs (S3 / HTTPS)
-
-1. **File Type** → **Remote Bucket / S3**
-2. Paste the presigned URL into **Direct URL**
-3. **Load from URL** — metadata arrives via Range requests (~8 MB)
-4. Pick frequency and polarization → **Load Remote Dataset**
-
-File type is detected from the path: `.h5`/`.hdf5`/`.he5` → NISAR, `.tif`/`.tiff` → COG.
-
-### Deep Links
-
-Every load is addressable. Examples (full parameter reference in [docs/DEEP_LINKS.md](docs/DEEP_LINKS.md)):
+Drag a `.h5`, `.tif`, NITF or `.geojson` file onto the page, or paste a URL. For HDF5 products, choose the frequency and polarization or a composite preset. The data source and display settings can be given in the URL:
 
 ```text
-?url=<granule .h5/.tif URL>&min=-16&max=2&db=1&cmap=viridis     # explicit source + render state
-?url=<granule>&bbox=-77.48,38.90,-77.26,39.01                   # + region: view, ROI, and chunk
-                                                                #   fetching scoped to the bbox
-?bbox=-74.26,40.49,-73.70,40.92&db=1                            # region-first: resolves the best
-                                                                #   NISAR granule via NASA CMR
-?bbox=…&t=2025-12-01/2025-12-31                                 # same place, bounded in time
+?url=<.h5 or .tif URL>&db=1&min=-16&max=2&cmap=viridis       # source and display settings
+?url=<URL>&bbox=-77.48,38.90,-77.26,39.01                     # limit reading to a region
+?bbox=-74.26,40.49,-73.70,40.92&t=2025-12-01/2025-12-31       # find a NISAR granule by region and date (CMR)
 ```
 
-Links carrying a region auto-load (the fetch is bounded); plain granule links stay click-to-load. A verified end-to-end walkthrough against live ASF DAAC data is in [docs/DEMO.md](docs/DEMO.md).
+Tutorials for colour composites, classification and time series, and a list of controls and keyboard shortcuts, are in [docs/TUTORIALS.md](docs/TUTORIALS.md). An example session using ASF DAAC data is in [docs/DEMO.md](docs/DEMO.md).
 
-### COG URLs
-
-1. **File Type** → **Cloud Optimized GeoTIFF (URL)**
-2. Paste URL (presigned or public)
-3. **Load COG**
-
----
-
-## Tutorials
-
-### Tutorial 1 — RGB Composite
-
-RGB mode assigns polarization channels to color, which makes land cover patterns easier to see. The most common case is a dual-pol file (HH + HV), which gives you two independent channels — SARdine fills the third using a ratio.
-
-**You need:** A NISAR GCOV file with at least two polarizations (e.g. `HHHH` and `HVHV`).
-
-1. Load your file (**File Type** → **NISAR GCOV HDF5 (Local File)**, click **Choose File**)
-2. In the **Mode** selector, switch from **Single Polarization** to **RGB Composite**
-3. Set **Preset** to **dual-pol-h** (HH+HV) or **dual-pol-v** (VV+VH) depending on your file
-4. Click **Load Dataset** — SARdine loads both bands and renders the composite
-5. Press `R` to auto-stretch contrast across all channels
-6. Open the histogram (`H`) — you'll see three overlapping distributions, one per channel
-7. Drag per-channel contrast handles to balance the composite if one color dominates
-8. Press `Ctrl+S` to export a figure PNG with the RGB triangle colorbar
-
-**Tips:**
-- Water appears dark in all channels — usually a deep blue-black
-- Vegetation is bright in cross-pol (HV) — shows as green
-- Urban double-bounce is bright in co-pol (HH) — shows as red/orange
-- Switch **Stretch** to `sqrt` or `gamma` to bring out low-backscatter features
-
----
-
-### Tutorial 2 — Land Cover Classification
-
-The feature space classifier lets you define land cover classes by drawing regions on a 2D scatter plot of two polarimetric channels. Classification updates on the map in real time.
-
-**You need:** A NISAR GCOV file with at least two polarizations (e.g. `HHHH` and `HVHV`).
-
-1. Load a single-pol dataset first (e.g. `HHHH`) so the basemap is visible
-2. **Draw an ROI** — click and drag on the map to define your analysis region. Keep it focused on your area of interest; large ROIs are slower to scatter.
-3. Press `C` to open the **Feature Space** panel
-4. Set the **X axis** to `HH dB` and **Y axis** to `HV dB` using the axis dropdowns
-5. The scatter plot populates with one point per pixel in your ROI
-6. Click **+ Add Class** and give it a name (e.g. "Water")
-7. Draw a rectangle on the scatter plot by clicking and dragging — pixels within that dB range light up on the map in the class color
-8. Repeat for additional classes (e.g. "Vegetation", "Urban")
-9. To filter by incidence angle (NISAR only): expand **Incidence Angle** and set a min/max range
-10. Export options:
-    - **SVG** button → publication-quality scatter plot with class regions
-    - **Map** button → classification raster as a georeferenced PNG
-    - **GeoTIFF** → rendered classification as an RGBA GeoTIFF
-
-**Tips:**
-- Zoom in on the scatter plot to draw precise class boundaries
-- Water typically clusters at very low HH and HV (bottom-left corner)
-- Urban double-bounce is high HH, low HV (right side, low on Y axis)
-- Vegetation is high HV relative to HH (upper-left to center)
-
----
-
-### Tutorial 3 — Time Series: ROI Plot and Multi-Date RGB Mosaic
-
-SARdine supports two time series workflows: plotting backscatter over time for a fixed ROI, and compositing multiple dates into a single RGB image for change detection.
-
-**You need:** Two or more NISAR GCOV files from the same track, different acquisition dates.
-
-#### ROI Time Series Plot
-
-1. Load your first date as usual (**Load Dataset**)
-2. Draw an **ROI** over your target area (e.g. a field, wetland, or urban block)
-3. In the **Time Series** panel, click **Add Date** and load a second `.h5` file
-4. Repeat for all dates you want to include
-5. SARdine extracts the mean backscatter (dB) within the ROI for each date and plots it as a time series
-6. Click **Export SVG** to export the time series chart as a vector figure
-
-**Tips:**
-- Use a small, homogeneous ROI for cleaner signal — a 1 km² patch of a single land cover type
-- Multi-look averaging is applied before extraction, matching on-screen rendering
-- Add multiple ROIs to compare two land cover types on the same chart
-
-#### Multi-Date RGB Mosaic (Change Detection)
-
-This workflow assigns each of three acquisition dates to a color channel (R, G, B). Pixels that appear white have not changed; colored pixels changed between dates. Magenta or cyan patches often indicate flooding or vegetation change.
-
-1. In **Mode**, select **RGB Composite** → **Preset: Multi-Date**
-2. In the **Red channel** slot, load your earliest date
-3. In the **Green channel** slot, load your middle date
-4. In the **Blue channel** slot, load your latest date
-5. Click **Load Dataset** — SARdine reads the same polarization from all three files and composites them
-6. Press `R` to auto-stretch each channel independently
-7. Zoom into areas of interest — colored patches indicate change, white/grey indicates stable backscatter
-8. Export via `Ctrl+S` for a figure PNG, or use **GeoTIFF** → **RGB Composite** for a 3-band georeferenced export
-
-**Tips:**
-- Use the same polarization (e.g. `HHHH`) across all dates for a fair comparison
-- Flood detection: flooded areas go dark in SAR — they appear as a single-channel dropout (pure R, G, or B color)
-- For subtle change, try adjusting stretch to `sigmoid` to compress the dynamic range
-
----
-
-## Controls
-
-| Control | Description |
-|:---|:---|
-| **Colormap** | Grayscale, viridis, inferno, plasma, phase, sardine, flood, diverging, polarimetric |
-| **Contrast** | Min/max dB range — drag sliders or use **Auto** for percentile-based stretch |
-| **Stretch** | Linear, sqrt, gamma, sigmoid transfer function |
-| **Multi-look** | Data reduction (box-filter averaging in linear power) |
-| **Histogram** | Floating viewport histogram — auto-updates on pan/zoom, SVG export |
-| **Classifier** | 2D/1D feature space scatter with class region drawing and incidence angle filter |
-| **Overture** | Overlay boundaries, roads, or places from Overture Maps |
-
-### Keyboard Shortcuts
-
-| Key | Action |
-|:---|:---|
-| `H` | Toggle histogram overlay |
-| `C` | Toggle feature space classifier |
-| `F` | Fit view to data bounds |
-| `R` | Reset contrast to auto |
-| `G` | Toggle coordinate grid |
-| `M` | Toggle overview map |
-| `Ctrl+S` | Save figure (PNG) |
-
----
-
-## Classification Workflow
-
-1. Draw an **ROI** on the map (click and drag)
-2. Press `C` to open the **Feature Space** scatter plot
-3. Click **+ Add Class** to define a land cover class
-4. Draw a rectangle on the scatter plot to assign pixels in that dB range
-5. Pixels within the class region are colored on the map in real time
-6. Export: **SVG** for the scatter plot, **Map** for the classification raster
-
----
-
-## Export
-
-### GeoTIFF
-
-- **Raw Float32** — linear power values with CRS and tiepoints
-- **Rendered RGBA** — what you see on screen (dB, colormap, contrast) as a 4-band GeoTIFF
-- **RGB Composite** — 3-band GeoTIFF when in composite mode
-
-Draw an ROI to export a subregion, or export the full extent.
-
-### Figure PNG
-
-Canvas capture with overlays: scale bar, corner coordinates, colorbar (or RGB triangle for composites), and classification overlay.
-
-### Publication SVG
-
-Vector graphics:
-- **Scatter plot** — density heatmap with class regions, open L-axes, outward ticks, Helvetica
-- **Histogram** — filled distribution with contrast limit markers and legend
-- **Classification map** — embedded raster with vector legend and pixel counts
-
----
-
-## How It Works
+## Implementation
 
 ```
-File/URL → h5chunk → Chunks → GPU Texture → GLSL Shader → Screen
-                                                ↓
-                                   dB scale → stretch → colormap → contrast
+file or URL → h5chunk / geotiff.js → decompression (Web Workers, IndexedDB cache) → float texture
+                                                                                         ↓
+                 screen or export ← colour map ← stretch ← scaling ← dB (GLSL shaders)
 ```
 
-`h5chunk` is a pure JavaScript HDF5 chunk reader. It parses the HDF5 superblock, object headers, and B-tree to build a chunk index, then fetches only the chunks intersecting the current viewport via `File.slice()` (local) or HTTP Range (remote). Chunks are decompressed (deflate + shuffle) into Float32Arrays and uploaded directly as WebGL2 textures. The fragment shader handles the rest.
+`h5chunk` reads HDF5 superblock versions 0 to 3, including paged files, and v1 B-tree, fixed-array and single-chunk indexes. It supports deflate and shuffle filters and 16-, 32- and 64-bit floating point data. Chunks are decompressed in a pool of Web Workers, and recently used chunks are kept in an IndexedDB cache (about 200 MB). Rendering uses deck.gl 9 and luma.gl 9 on WebGL2. Other dependencies are React, geotiff.js, @developmentseed/geotiff, h5wasm, MapLibre GL, proj4 and ONNX Runtime Web.
 
-GCOV and GUNW products are supported. GUNW (interferometric phase and coherence) is developmental.
+Further detail: [docs/CLOUD_OPTIMIZED_HDF5.md](docs/CLOUD_OPTIMIZED_HDF5.md), [docs/CHUNK_PIPELINE.md](docs/CHUNK_PIPELINE.md), [docs/HDF5_FILE_FORMAT.md](docs/HDF5_FILE_FORMAT.md).
 
-### Tech Stack
+## Testing
 
-| Dependency | Role |
-|:---|:---|
-| **React 18** | UI framework |
-| **deck.gl 9.4** | WebGL2 tile/bitmap rendering (luma.gl 9) |
-| **geotiff.js** | COG loading via HTTP Range |
-| **h5chunk** (built-in) | Cloud-optimized HDF5 streaming (pure JS) |
-| **h5wasm** | HDF5 attribute/metadata parsing (WASM) |
-| **MapLibre GL** | Basemap rendering |
-| **Vite** | Dev server and build tool |
+`npm test` runs on every commit through [GitHub Actions](https://github.com/nicksteiner/sardine/actions/workflows/ci.yml). It includes GeoTIFF write and read-back tests, `h5chunk` tests on synthetic HDF5 files, and tests of the statistics, dB conversion, region-to-pixel conversion, URL parameters, export metadata and CPU fallbacks. `npm run test:model` runs the river ice model in a headless browser on NISAR image tiles and compares the output with reference labels.
 
----
+## Known limitations
 
-## Server Mode (JupyterHub / NISAR ODS)
+- Frequency A GCOV products have no HDF5 overviews, so displaying a full frequency A frame is slow. Use a region (`bbox`) or frequency B for an overview.
+- Georeferencing at coarse COG overview levels can be off by up to one overview pixel.
+- Faint lines can appear along tile boundaries in colour composites.
+- GUNW support is experimental. Pauli and Freeman-Durden composites are disabled.
+- The river ice model is valid only on river channels at full resolution and does not predict the mixed ice/water class.
 
-```bash
-cd ~/sardine
-npm install --legacy-peer-deps && npm run build
-node server/launch.cjs --data-dir /home/jovyan
-```
+## Citation
 
-Access via JupyterLab proxy: `https://<hub-host>/user/<username>/proxy/8050/`
+Please cite the version of SARdine you used. Citation metadata is in [CITATION.cff](CITATION.cff).
 
----
+> Steiner, N. C. (2026). SARdine: browser-native SAR data inspection and exploration (Version 1.0.1) [Computer software]. https://github.com/nicksteiner/sardine
 
-## Development
+## Contributing
 
-```bash
-npm install          # Install dependencies
-npm run dev          # Dev server at localhost:5173
-npm run build        # Production build → dist/
-npm test             # Full suite: structural + pipeline regressions + unit tests
-npm run test:unit    # Behavioral unit tests (test/unit/*.test.mjs, auto-discovered)
-npm run test:quick   # Fast smoke tests
-npm run benchmark    # GPU vs CPU performance comparison
-```
-
----
-
-## Known Issues
-
-| Issue | Status |
-|:---|:---|
-| Georeferencing errors on coarse overviews | Low priority |
-| Slow loading RGB frequency A | Low priority — frequency A has no HDF5 pyramids; zoomed-in views are fast, full-frame overviews are not. Use a `bbox` deep link or frequency B for browse. |
-
----
+Report problems and requests through [GitHub Issues](https://github.com/nicksteiner/sardine/issues). See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) and [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 ## License
 
-[Apache License 2.0](LICENSE). Copyright 2026 Nicholas Steiner.
+Copyright 2026 Nicholas C. Steiner, The City College of New York. SARdine is released under the [Apache License 2.0](LICENSE). The river ice model weights, hosted on [Hugging Face](https://huggingface.co/datasets/nicksteiner/sardine-demo-data), are released under CC-BY-4.0.
 
-The river-ice U-Net weight hosted on Hugging Face is CC-BY-4.0.
+## Acknowledgements
 
----
+SARdine uses [h5wasm](https://github.com/usnistgov/h5wasm), [geotiff.js](https://geotiffjs.github.io/), [deck.gl](https://deck.gl/), [MapLibre](https://maplibre.org/) and [ONNX Runtime](https://onnxruntime.ai/). Guidance on cloud-optimized NISAR HDF5 was provided by NSIDC and JPL.
 
-<sub>
+## References
 
-[h5wasm](https://github.com/usnistgov/h5wasm) · [geotiff.js](https://geotiffjs.github.io/) · [deck.gl](https://deck.gl/) · NISAR cloud-optimization: [NSIDC](https://nsidc.org/) + JPL
+Freeman, A., and Durden, S. L. (1998). A three-component scattering model for polarimetric SAR data. *IEEE Transactions on Geoscience and Remote Sensing*, 36(3), 963–973.
 
-`CCNY Earth & Atmospheric Sciences`
+Kim, Y., and van Zyl, J. J. (2009). A time-series approach to estimate soil moisture using polarimetric radar data. *IEEE Transactions on Geoscience and Remote Sensing*, 47(8), 2519–2527.
 
-</sub>
+Lee, J.-S. (1980). Digital image enhancement and noise filtering by use of local statistics. *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 2(2), 165–168.
