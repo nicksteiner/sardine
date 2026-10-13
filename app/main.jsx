@@ -420,7 +420,7 @@ const EMPTY_STATE_HINTS = {
  * L-band RGB). Same parameters as the README hero image, so the demo the docs
  * advertise is one click from the empty viewer.
  */
-const HERO_DEMO_QUERY = '?cog=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hh.tif,https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid&c=12233,7038&z=-1.5';
+const HERO_DEMO_QUERY = '?cog=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hh.tif,https%3A%2F%2Fhuggingface.co%2Fdatasets%2Fnicksteiner%2Fsardine-demo-data%2Fresolve%2Fmain%2Fpacaya_full_hv.tif&comp=dual-pol-h&mode=rgb&db=1&stretch=sigmoid';
 
 function PagesBanner() {
   const isPages = import.meta.env.VITE_DEPLOY_TARGET === 'github-pages';

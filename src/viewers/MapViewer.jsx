@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useMemo, useRef, useEffect, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect, useLayoutEffect, forwardRef, useImperativeHandle } from 'react';
+import { WebMercatorViewport } from '@math.gl/web-mercator';
 import { Map, ScaleControl } from 'maplibre-gl';
 import DeckGL from '@deck.gl/react';
 import { MapView } from '@deck.gl/core';
@@ -138,6 +139,27 @@ export const MapViewer = forwardRef(function MapViewer({
   }, [bounds]);
 
   const [viewState, setViewState] = useState(defaultViewState);
+
+  // Fit a newly loaded scene to the actual viewport. defaultViewState's zoom
+  // ignores the container size, so a scene opened as a small tile in a
+  // country-scale view. Runs once per scene extent, so user pans stick.
+  const fittedBoundsRef = useRef(null);
+  useLayoutEffect(() => {
+    if (!bounds) return;
+    const key = bounds.join(',');
+    if (fittedBoundsRef.current === key) return;
+    const el = containerRef.current;
+    const w = el?.clientWidth || 0;
+    const h = el?.clientHeight || 0;
+    if (w < 64 || h < 64) return;
+    const [minX, minY, maxX, maxY] = bounds;
+    try {
+      const { longitude, latitude, zoom } = new WebMercatorViewport({ width: w, height: h })
+        .fitBounds([[minX, minY], [maxX, maxY]], { padding: Math.round(Math.min(w, h) * 0.05) });
+      fittedBoundsRef.current = key;
+      setViewState((v) => ({ ...v, longitude, latitude, zoom: Math.max(0, Math.min(zoom, 18)) }));
+    } catch { /* degenerate bounds: keep the default view */ }
+  }, [bounds]);
 
   // Map frame: scene world ↔ screen through the image CRS (view-frame.js).
   const frame = useMemo(() => {
