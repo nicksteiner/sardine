@@ -29,9 +29,15 @@ try {
         `agree=${(agree/n).toFixed(3)} pred_ice=${(pIce/n).toFixed(3)} true_ice=${(tIce/n).toFixed(3)}`);
     out[lab] = { ep:res.ep, ms, agree:agree/n, predIce:pIce/n, trueIce:tIce/n };
   }
+  // The 'mixed' tile is a KNOWN FAILURE, asserted as such so a future
+  // retrain shows up as a test change rather than passing silently.
+  // Training was 89.4% water / 8.6% ice / 1.9% mixed, unweighted, so
+  // "water everywhere" is near-optimal on the loss: on breakup-front
+  // tiles the model predicts ~97% water and never emits 'mixed' at all.
   const pass = out.ice.agree > 0.7 && out.water.agree > 0.9
-            && out.ice.predIce > 0.5 && out.water.predIce < 0.1;
-  say(pass ? 'PASS' : 'FAIL (thresholds)');
+            && out.ice.predIce > 0.5 && out.water.predIce < 0.1
+            && out.mixed.agree < 0.75 && out.mixed.predIce < 0.3;
+  say(pass ? 'PASS (incl. documented mixed-class failure)' : 'FAIL (thresholds)');
   window.__done = { ok: pass, out };
 } catch (e) {
   say('FAIL ' + e.message); window.__done = { ok:false, err:e.message, stack:String(e.stack).slice(0,600) };

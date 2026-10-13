@@ -80,6 +80,60 @@ Three further constraints:
 - **L-band only.** This does not transfer to C-band (Sentinel-1) or X-band
   (Capella, ICEYE) imagery.
 
+## Known limitation: it fails on the breakup front
+
+The headline 0.923 pixel accuracy is **mostly the base rate**. Training was
+**89.4 % water / 8.6 % ice / 1.9 % mixed** (unweighted soft cross-entropy),
+and `mixed` is the largest class in 0.89 % of tiles — so "predict water
+everywhere" is close to loss-optimal.
+
+On tiles that contain all three classes at once (ice > 0.15, water > 0.15,
+mixed > 0.05 — i.e. the active breakup front, which is the scientifically
+interesting case), measured over 40 unique such tiles:
+
+| | |
+|:--|:--|
+| mean pixel agreement | **0.532** (range 0.217–0.735) |
+| mean predicted water | 0.974 |
+| mean predicted ice | 0.026 |
+| mean predicted mixed | **0.000** |
+| tiles predicting zero ice | 27 / 40 |
+| tiles > 95 % water | 34 / 40 |
+
+The model **never emits the mixed class**. 0.532 agreement is simply the
+water base rate on those tiles.
+
+This is a property of the trained checkpoint, not of the ONNX export: the
+PyTorch checkpoint scores identically (0.532 / 0.026 / 0.000) on the same
+tiles. The export is faithful.
+
+It does well where one class dominates — ice-dominated tiles 0.83, open
+water 1.00 — which is what the aggregate metrics measure. A retrain with
+class-balanced or focal loss is the fix.
+
+## Why this is not the lead demo
+
+Beyond the class-imbalance failure, this model is a poor fit for a
+first-impression demo, and should sit second in the model list:
+
+- **Valid only on the channel.** Everything outside the river is
+  out-of-distribution, so a viewer's first impression is wrong before they
+  find the part that is right. A lead demo should look correct across the
+  whole ROI without a mask taken on faith.
+- **Needs native resolution.** Multilooking silently flips output to all
+  water — an invisible constraint for a demo to rest on.
+- **Hard to read.** Ice vs. open water on an L-band May scene reads as "the
+  dark band is now a lighter band"; it is only legible to the breakup
+  community.
+- **Provisional granules are not URL-reachable.** The scenes behind it are
+  not at ASF, which defeats a paste-a-link story.
+
+Its real job is proving the distribution mechanism: a genuine 31 MB trained
+network, exported, cached and run in the browser. For the lead demo, water
+vs. not-water on a flood scene is self-evidently right or wrong to anyone,
+covers the full ROI, runs fast on a 20 m multilook, and has a precomputed
+OPERA DSWx counterpart to agree with.
+
 ## Re-exporting
 
 Needs the dedicated pixi env (kept separate so it cannot perturb the
