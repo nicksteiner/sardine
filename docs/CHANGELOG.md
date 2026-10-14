@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-10-13 — Nodata on real GPUs; model links
+
+### Fixed
+- **Nodata rendered opaque black on hardware GPUs.** The demo COGs mark nodata as NaN
+  and the fragment shader masked it with `isnan()`, which some GPU drivers compile out.
+  On the basemap the whole bounding rectangle of the rotated scene was black; headless
+  software rendering (the release check) honoured `isnan()` and hid the bug. NaN is now
+  rewritten to a finite sentinel before texture upload and the shader tests that instead
+- `bbox=` on a VRT link was ignored (the VRT loader skipped the deep-link region step),
+  so the region fitted nothing and set no ROI
+
+### Added
+- **`?model=` deep-link parameter.** A link can name the input, the region and a
+  registered model (`…&bbox=…&model=river-ice-unet-l`); the model runs on the region as
+  soon as the scene loads and the overlay appears. Unknown ids are reported, never
+  substituted. Copy Link emits `model=` when an overlay is active
+
 ## [1.0.1] - 2026-10-13 — Citation metadata, scientific README
 
 ### Added

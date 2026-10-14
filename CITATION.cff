@@ -7,7 +7,7 @@ authors:
     given-names: Nicholas C.
     orcid: "https://orcid.org/0000-0001-5943-8400"
     affiliation: "The City College of New York, City University of New York"
-version: 1.0.1
+version: 1.0.2
 date-released: 2026-10-13
 license: Apache-2.0
 doi: 10.5281/zenodo.23345870
