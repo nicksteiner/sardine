@@ -5,6 +5,24 @@ import { normalizeColormapBand } from '../utils/colormap.js';
 import { applyWebGLFilter, FILTER_TYPE_IDS } from '../gpu/webgl-spatial-filter.js';
 import { debugLog } from '../utils/debug-log.js';
 
+/** Finite stand-in for NaN in R32F textures; the shader's isNodata() tests `< -1e30`. */
+export const NODATA_SENTINEL = Math.fround(-3.0e38);
+
+/**
+ * Replace NaN with NODATA_SENTINEL. Returns the input untouched when it holds
+ * no NaN (the common case) and a copy otherwise, so callers' arrays are never
+ * mutated.
+ */
+export function sanitizeNaN(arr) {
+  let i = 0;
+  const n = arr.length;
+  for (; i < n; i++) if (arr[i] !== arr[i]) break;
+  if (i === n) return arr;
+  const out = new Float32Array(arr);
+  for (; i < n; i++) if (out[i] !== out[i]) out[i] = NODATA_SENTINEL;
+  return out;
+}
+
 /**
  * Colorblind mode IDs for shader uniform.
  * 0 = off, 1 = deuteranopia, 2 = protanopia, 3 = tritanopia
@@ -203,6 +221,15 @@ vec3 colormapById(int colormapId, float value, bool reverse) {
   return grayscale(cmapInput);
 }
 
+// ─── Nodata ─────────────────────────────────────────────────────────
+// NaN never reaches the GPU: _createR32FTexture rewrites it to NODATA_SENTINEL
+// (-3e38) before upload, and this test replaces isnan(). GLSL isnan() is
+// optimised away by some drivers (fast-math), so NaN nodata rendered as
+// opaque black on those GPUs while software renderers showed it transparent.
+// Any bilinear blend that touches a sentinel texel stays below the threshold,
+// so edges behave as NaN propagation did.
+bool isNodata(float v) { return v < -1.0e30; }
+
 // ─── Main ────────────────────────────────────────────────────────────
 
 void main() {
@@ -214,7 +241,7 @@ void main() {
   if (uClassMode > 0.5) {
     float amp = texture(uTexture, vTexCoord).r;
     // 0 / NaN are background — transparent (SAR nodata convention).
-    if (amp == 0.0 || isnan(amp)) { fragColor = vec4(0.0); return; }
+    if (amp == 0.0 || isNodata(amp)) { fragColor = vec4(0.0); return; }
     float idx = floor(amp + 0.5);                 // nearest integer class
     float u = (idx + 0.5) / 256.0;                // center-sample the 256-wide palette
     vec3 classColor = texture(uClassPalette, vec2(clamp(u, 0.0, 1.0), 0.5)).rgb;
@@ -262,9 +289,9 @@ void main() {
     }
 
     // Any channel valid → visible
-    bool anyValid = (ampR != 0.0 && !isnan(ampR)) ||
-                    (ampG != 0.0 && !isnan(ampG)) ||
-                    (ampB != 0.0 && !isnan(ampB));
+    bool anyValid = (ampR != 0.0 && !isNodata(ampR)) ||
+                    (ampG != 0.0 && !isNodata(ampG)) ||
+                    (ampB != 0.0 && !isNodata(ampB));
     float alpha = anyValid ? 1.0 : 0.0;
 
     // Apply mask: NISAR uint8 mask
@@ -279,7 +306,7 @@ void main() {
     // Coherence/auxiliary mask (same logic as single-band path)
     if (uUseCoherenceMask > 0.5) {
       float auxVal = texture(uTextureCoherence, vTexCoord).r;
-      if (isnan(auxVal)) {
+      if (isNodata(auxVal)) {
         alpha = 0.0;
       } else if (uCoherenceMaskMode < 0.5) {
         if (auxVal < uCoherenceThreshold) alpha = 0.0;
@@ -295,11 +322,11 @@ void main() {
 
     // Phase corrections: subtract each enabled correction directly from GPU textures
     // GUNW nodata is NaN (not zero) — zero phase is valid (no displacement)
-    if (!isnan(amplitude)) {
+    if (!isNodata(amplitude)) {
       // Ionosphere: per-tile texture, same grid as data — use vTexCoord directly
       if (uCorIono > 0.5) {
         float v = texture(uTexCorIono, vTexCoord).r;
-        if (!isnan(v)) amplitude -= v;
+        if (!isNodata(v)) amplitude -= v;
       }
       // Full-extent corrections: remap tile UV → image UV for proper sampling
       if (uCorTropo > 0.5 || uCorSET > 0.5 || uCorRamp > 0.5) {
@@ -319,15 +346,15 @@ void main() {
 
         if (uCorTropo > 0.5) {
           float v = texture(uTexCorTropo, corUV).r;
-          if (!isnan(v)) amplitude -= v;
+          if (!isNodata(v)) amplitude -= v;
         }
         if (uCorSET > 0.5) {
           float v = texture(uTexCorSET, corUV).r;
-          if (!isnan(v)) amplitude -= v;
+          if (!isNodata(v)) amplitude -= v;
         }
         if (uCorRamp > 0.5) {
           float v = texture(uTexCorRamp, corUV).r;
-          if (!isnan(v)) amplitude -= v;
+          if (!isNodata(v)) amplitude -= v;
         }
       }
     }
@@ -349,7 +376,7 @@ void main() {
         (uImageBounds.w - incGeoPos.y) / (uImageBounds.w - uImageBounds.y)
       ), 0.0, 1.0);
       float thetaDeg = texture(uTextureIncidence, incUV).r;
-      if (!isnan(thetaDeg) && thetaDeg > 0.0) {
+      if (!isNodata(thetaDeg) && thetaDeg > 0.0) {
         float thetaRad = thetaDeg * 3.14159265 / 180.0;
         amplitude = amplitude / cos(thetaRad);
       }
@@ -363,7 +390,7 @@ void main() {
       rgb = colormapById(int(uColormap + 0.5), stretchValue(x, uMin, uMax), uReverseColormap > 0.5);
     }
 
-    float alpha = (amplitude == 0.0 || isnan(amplitude)) ? 0.0 : 1.0;
+    float alpha = (amplitude == 0.0 || isNodata(amplitude)) ? 0.0 : 1.0;
 
     // Apply mask: NISAR uint8 (0=invalid, 1=valid, 2+=layover/shadow, 255=fill)
     if (uMaskInvalid > 0.5 || uMaskLayoverShadow > 0.5) {
@@ -375,7 +402,7 @@ void main() {
     // Auxiliary mask (coherence for GUNW, incidence angle for GCOV)
     if (uUseCoherenceMask > 0.5) {
       float auxVal = texture(uTextureCoherence, vTexCoord).r;
-      if (isnan(auxVal)) {
+      if (isNodata(auxVal)) {
         alpha = 0.0;
       } else if (uCoherenceMaskMode < 0.5) {
         // Mode 0: mask below min threshold (coherence mode)
@@ -752,6 +779,10 @@ export class SARGPULayer extends Layer {
         texData = new Float32Array(expected);
         texData.set(data);
       }
+
+      // NaN → finite sentinel (see isNodata in the fragment shader). Copies
+      // only when a NaN is present, so clean tiles upload without a pass.
+      texData = sanitizeNaN(texData);
 
       // Create R32F texture using raw WebGL2 API
       // luma.gl Texture2D wrapper doesn't support R32F well in v8.5
