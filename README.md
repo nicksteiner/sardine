@@ -169,7 +169,7 @@ Further detail: [docs/CLOUD_OPTIMIZED_HDF5.md](docs/CLOUD_OPTIMIZED_HDF5.md), [d
 
 Please cite the version of SARdine you used. Each release is archived on Zenodo; [10.5281/zenodo.23345870](https://doi.org/10.5281/zenodo.23345870) refers to all versions and resolves to the latest. Citation metadata is in [CITATION.cff](CITATION.cff).
 
-> Steiner, N. C. (2026). SARdine: browser-native SAR data inspection and exploration (Version 1.0.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23345871
+> Steiner, N. C. (2026). SARdine: browser-native SAR data inspection and exploration (Version 1.0.2) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23354632
 
 ## Contributing
 
