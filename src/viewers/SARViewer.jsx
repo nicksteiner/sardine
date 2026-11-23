@@ -51,6 +51,7 @@ export const SARViewer = forwardRef(function SARViewer({
   epsg = null,                  // dataset EPSG code — drives m-vs-° labeling of overlays
   correctionLayers = null,       // GUNW: {ionosphere, troposphereWet, ...} each {data, w, h}
   enabledCorrections = null,     // GUNW: Set of enabled correction keys
+  auxiliaryCoherenceData = null, // {data, width, height} from GUNW for dual-pol H/α/γ
   speckleFilterType = 'none', // Speckle filter type ('none' | 'boxcar' | 'lee' | etc.)
   speckleKernelSize = 7,      // Speckle filter kernel size (3–11, odd)
   rgbSaturation = 1.0,        // RGB saturation boost (1.0 = neutral)
@@ -267,7 +268,7 @@ export const SARViewer = forwardRef(function SARViewer({
   const visualRef = useRef({
     contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode,
     opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
-    incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
+    incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, auxiliaryCoherenceData, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
     classMode, classPalette, classPaletteEntries,
   });
   const [visualTick, setVisualTick] = useState(0);
@@ -295,6 +296,7 @@ export const SARViewer = forwardRef(function SARViewer({
       valueScale !== prev.valueScale ||
       correctionLayers !== prev.correctionLayers ||
       enabledCorrections !== prev.enabledCorrections ||
+      auxiliaryCoherenceData !== prev.auxiliaryCoherenceData ||
       speckleFilterType !== prev.speckleFilterType ||
       speckleKernelSize !== prev.speckleKernelSize ||
       rgbSaturation !== prev.rgbSaturation ||
@@ -307,7 +309,7 @@ export const SARViewer = forwardRef(function SARViewer({
     visualRef.current = {
       contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode,
       opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode,
-      incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
+      incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, auxiliaryCoherenceData, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping,
       classMode, classPalette, classPaletteEntries,
     };
     if (changed && !rafRef.current) {
@@ -316,7 +318,7 @@ export const SARViewer = forwardRef(function SARViewer({
         setVisualTick(t => t + 1);
       });
     }
-  }, [contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping, classMode, classPalette, classPaletteEntries]);
+  }, [contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode, opacity, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, auxiliaryCoherenceData, speckleFilterType, speckleKernelSize, rgbSaturation, colorblindMode, toneMapping, classMode, classPalette, classPaletteEntries]);
 
   // Create the SAR layer (either tile-based or bitmap-based)
   const layers = useMemo(() => {
@@ -398,6 +400,7 @@ export const SARViewer = forwardRef(function SARViewer({
           valueScale: v.valueScale,
           correctionLayers: v.correctionLayers,
           enabledCorrections: v.enabledCorrections,
+          auxiliaryCoherenceData: v.auxiliaryCoherenceData,
           speckleFilterType: v.speckleFilterType,
           speckleKernelSize: v.speckleKernelSize,
           rgbSaturation: v.rgbSaturation,

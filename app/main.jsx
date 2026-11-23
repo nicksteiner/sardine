@@ -76,6 +76,7 @@ import { ActivityRail } from '../src/components/ActivityRail.jsx';
 import { ContextMenu } from '../src/components/ContextMenu.jsx';
 import { ScrubNumber } from '../src/components/ScrubNumber.jsx';
 import ScatterClassifier from '../src/components/ScatterClassifier.jsx';
+import HAlphaPlane from '../src/components/HAlphaPlane.jsx';
 import ClassificationOverlay from '../src/components/ClassificationOverlay.jsx';
 import { IncidenceScatter, sampleScatterData } from '../src/components/IncidenceScatter.jsx';
 import { loadMetadataCube } from '../src/utils/metadata-cube.js';
@@ -122,6 +123,23 @@ const COLORMAP_OPTION_GROUPS = (
     </optgroup>
   </>
 );
+
+/**
+ * H-Alpha zone regions for ClassificationOverlay (matches ZONES in HAlphaPlane.jsx).
+ * Index 0 = Z1 (high-ent dbl-bounce) through index 8 = Z9 (surface/Bragg).
+ * ClassificationOverlay expects 1-based class indices, so zone map values 1-9 map to indices 0-8.
+ */
+const H_ALPHA_ZONE_REGIONS = [
+  { name: 'Z1 High-ent dbl',   color: '#f1948a' },
+  { name: 'Z2 High-ent veg',   color: '#82e0aa' },
+  { name: 'Z3 High-ent surf',  color: '#85c1e9' },
+  { name: 'Z4 Forest/dbl',     color: '#ec7063' },
+  { name: 'Z5 Vegetation',     color: '#58d68d' },
+  { name: 'Z6 Random surface', color: '#5dade2' },
+  { name: 'Z7 Double-bounce',  color: '#e74c3c' },
+  { name: 'Z8 Dipole',         color: '#2ecc71' },
+  { name: 'Z9 Surface/Bragg',  color: '#3498db' },
+];
 
 /**
  * NxN box-filter smoothing for a Float32Array image band.
@@ -766,6 +784,7 @@ function App() {
   const [incAngleMax, setIncAngleMax] = useState(47);  // degrees
   const [incidenceAngleGrid, setIncidenceAngleGrid] = useState(null); // {data, width, height}
   const [incidenceScatterData, setIncidenceScatterData] = useState(null);
+  const [auxiliaryCoherenceGrid, setAuxiliaryCoherenceGrid] = useState(null); // {data, width, height} from GUNW for dual-pol H/α/γ
   const [speckleFilterType, setSpeckleFilterType] = useState('none'); // 'none' | 'boxcar' | 'lee' | 'enhanced-lee' | 'frost' | 'gamma-map'
   const [speckleKernelSize, setSpeckleKernelSize] = useState(7);      // 3, 5, 7, 9, 11
   const [exportMultilookWindow, setExportMultilookWindow] = useState(4); // Multilook window for export (1, 2, 4, 8, 16)
@@ -821,6 +840,11 @@ function App() {
   const modelAbortRef = useRef(null);
   const [classifierRoiDims, setClassifierRoiDims] = useState(null); // {w, h} of classifier grid
   const [incidenceRange, setIncidenceRange] = useState([0, 90]); // min/max incidence angle filter (degrees)
+
+  // H-Alpha classification plane state
+  const [hAlphaPlaneOpen, setHAlphaPlaneOpen] = useState(false);
+  const [hAlphaPlaneData, setHAlphaPlaneData] = useState(null); // {h, alpha, anisotropy, valid, w, h}
+  const [hAlphaZoneMap, setHAlphaZoneMap] = useState(null);     // Uint8Array zone classification
 
   const [histogramScope, setHistogramScope] = useState('global'); // 'global' | 'viewport' | 'roi'
   const [showHistogramOverlay, setShowHistogramOverlay] = useState(false);
@@ -910,6 +934,9 @@ function App() {
     setClassifierData(null);
     setClassificationMap(null);
     setClassifierRoiDims(null);
+    setHAlphaPlaneOpen(false);
+    setHAlphaPlaneData(null);
+    setHAlphaZoneMap(null);
     setRoiRGBData(null);
     setRoiRGBBounds(null);
     setRoiCompositeId(null);
@@ -1469,6 +1496,76 @@ function App() {
     fetchClassifierData();
     return () => { cancelled = true; };
   }, [classifierOpen, roi, imageData, classifierBands]);
+
+  // Fetch H/Alpha decomposition data for H-Alpha classification plane
+  const isHAlphaComposite = compositeId === 'h-alpha-entropy' || compositeId === 'dual-pol-h-alpha-gamma';
+  useEffect(() => {
+    if (!hAlphaPlaneOpen || !roi || !imageData?.getExportStripe || !isHAlphaComposite) {
+      setHAlphaPlaneData(null);
+      setHAlphaZoneMap(null);
+      return;
+    }
+    let cancelled = false;
+
+    const fetchHAlphaData = async () => {
+      try {
+        const sourceW = imageData.width;
+        const sourceH = imageData.height;
+        // Target ~300 pixels on longest axis for scatter resolution
+        const ml = Math.max(1, Math.ceil(Math.max(roi.width, roi.height) / 300));
+        const startCol = Math.floor(Math.max(0, roi.left) / ml);
+        const startRow = Math.floor(Math.max(0, roi.top) / ml);
+        const endCol = Math.floor(Math.min(roi.left + roi.width, sourceW) / ml);
+        const endRow = Math.floor(Math.min(roi.top + roi.height, sourceH) / ml);
+        const exportW = Math.max(1, endCol - startCol);
+        const exportH = Math.max(1, endRow - startRow);
+
+        const result = await imageData.getExportStripe({
+          startRow,
+          numRows: exportH,
+          ml,
+          exportWidth: exportW,
+          startCol,
+          numCols: exportW,
+        });
+        if (cancelled) return;
+
+        // Compute H/Alpha from bands via the composite formula
+        const rgbBands = computeRGBBands(result.bands, compositeId, exportW, exportW * exportH);
+        // R = H (entropy), G = α (alpha angle), B = A (anisotropy) or γ (coherence)
+        const hArr = rgbBands.R;
+        const alphaArr = rgbBands.G;
+        const aArr = rgbBands.B;  // anisotropy (quad-pol) or coherence (dual-pol)
+        const n = hArr.length;
+
+        const valid = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+          // Valid if H and alpha are both meaningful (non-zero, non-NaN)
+          if (!isNaN(hArr[i]) && !isNaN(alphaArr[i]) && (hArr[i] > 0 || alphaArr[i] > 0)) {
+            valid[i] = 1;
+          }
+        }
+
+        if (!cancelled) {
+          const validCount = valid.reduce((a, b) => a + b, 0);
+          console.log('[H-Alpha Plane] Data ready:', { exportW, exportH, validCount });
+          setHAlphaPlaneData({
+            entropy: hArr,
+            alpha: alphaArr,
+            anisotropy: compositeId === 'h-alpha-entropy' ? aArr : null,
+            valid,
+            roiW: exportW,
+            roiH: exportH,
+          });
+        }
+      } catch (e) {
+        console.error('[H-Alpha Plane] Error fetching data:', e);
+      }
+    };
+
+    fetchHAlphaData();
+    return () => { cancelled = true; };
+  }, [hAlphaPlaneOpen, roi, imageData, compositeId, isHAlphaComposite]);
 
   // Helper to add status log (must be before any callback that uses it)
   const addStatusLog = useCallback((type, message, details = null) => {
@@ -6122,9 +6219,9 @@ function App() {
         histogramData: showHistogramOverlay ? histogramData : null,
         polarization: selectedPolarization,
         identification: imageData?.identification || null,
-        classificationMap: classifierOpen ? classificationMap : null,
-        classRegions,
-        classifierRoiDims,
+        classificationMap: hAlphaPlaneOpen && hAlphaZoneMap ? hAlphaZoneMap : classifierOpen ? classificationMap : null,
+        classRegions: hAlphaPlaneOpen && hAlphaZoneMap ? H_ALPHA_ZONE_REGIONS : classRegions,
+        classifierRoiDims: hAlphaPlaneOpen && hAlphaPlaneData ? { w: hAlphaPlaneData.roiW, h: hAlphaPlaneData.roiH } : classifierRoiDims,
         colorblindMode,
         attribution,
         annotations,
@@ -7694,6 +7791,50 @@ function App() {
                 </div>
               )}
 
+              {/* Dual-pol H/α/γ: coherence file loader */}
+              {compositeId === 'dual-pol-h-alpha-gamma' && (
+                <div className="control-group">
+                  <label>Coherence (GUNW)</label>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
+                    Load interferometric coherence from a GUNW product for the γ channel.
+                    {auxiliaryCoherenceGrid && (
+                      <span style={{ color: 'var(--accent)' }}>
+                        {' '}Loaded ({auxiliaryCoherenceGrid.width}×{auxiliaryCoherenceGrid.height})
+                      </span>
+                    )}
+                  </div>
+                  <input
+                    type="file"
+                    accept=".h5,.hdf5,.he5"
+                    style={{ fontSize: '0.7rem' }}
+                    onChange={async (e) => {
+                      const file = e.target.files[0];
+                      if (!file) return;
+                      try {
+                        addStatus(`Loading coherence from ${file.name}...`);
+                        const gunwData = await loadNISARGUNW(file, {
+                          dataset: 'coherenceMagnitude',
+                          withCoherence: false,
+                        });
+                        if (gunwData && gunwData.data) {
+                          setAuxiliaryCoherenceGrid({
+                            data: gunwData.data,
+                            width: gunwData.width,
+                            height: gunwData.height,
+                          });
+                          addStatus(`Coherence loaded: ${gunwData.width}×${gunwData.height}`);
+                        } else {
+                          addStatus('No coherence data found in GUNW file');
+                        }
+                      } catch (err) {
+                        addStatus(`Coherence load error: ${err.message}`);
+                        console.error('[main] Coherence load error:', err);
+                      }
+                    }}
+                  />
+                </div>
+              )}
+
               {/* Multi-temporal RGB: file pickers for Green and Blue acquisitions */}
               {displayMode === 'multi-temporal' && (
                 <div className="control-group">
@@ -8786,6 +8927,20 @@ function App() {
                       >
                         Classify
                       </button>
+                      {isHAlphaComposite && (
+                        <button
+                          onClick={() => setHAlphaPlaneOpen(prev => !prev)}
+                          title="H/α classification plane"
+                          style={{
+                            background: hAlphaPlaneOpen ? 'rgba(232,131,58,0.15)' : 'none',
+                            border: hAlphaPlaneOpen ? '1px solid rgba(232,131,58,0.4)' : '1px solid transparent',
+                            color: hAlphaPlaneOpen ? '#e8833a' : 'var(--text-muted)',
+                            cursor: 'pointer', padding: '0 4px', fontSize: '0.65rem', borderRadius: 3,
+                          }}
+                        >
+                          H/α
+                        </button>
+                      )}
                       <button
                         onClick={() => setROI(null)}
                         style={{
@@ -9909,6 +10064,7 @@ function App() {
                   epsg={imageData?.epsg ?? imageData?.crs ?? null}
                   correctionLayers={correctionLayers}
                   enabledCorrections={enabledCorrections}
+auxiliaryCoherenceData={auxiliaryCoherenceGrid}
                   speckleFilterType={nisarProductType === 'GUNW' ? 'none' : speckleFilterType}
                   speckleKernelSize={speckleKernelSize}
                   rgbSaturation={rgbSaturation}
@@ -9940,9 +10096,22 @@ function App() {
                   yCoords={imageData?.yCoords}
                   roiProfile={null}
                   profileShow={{ v: false, h: false, i: false }}
-                  classificationMap={modelOverlay ? modelOverlay.map : (classifierOpen ? classificationMap : null)}
-                  classRegions={modelOverlay ? modelOverlay.regions : classRegions}
-                  classifierRoiDims={modelOverlay ? modelOverlay.dims : classifierRoiDims}
+                  classificationMap={
+                    modelOverlay ? modelOverlay.map
+                    : hAlphaPlaneOpen && hAlphaZoneMap ? hAlphaZoneMap
+                    : classifierOpen ? classificationMap
+                    : null
+                  }
+                  classRegions={
+                    modelOverlay ? modelOverlay.regions
+                    : hAlphaPlaneOpen && hAlphaZoneMap ? H_ALPHA_ZONE_REGIONS
+                    : classRegions
+                  }
+                  classifierRoiDims={
+                    modelOverlay ? modelOverlay.dims
+                    : hAlphaPlaneOpen && hAlphaPlaneData ? { w: hAlphaPlaneData.roiW, h: hAlphaPlaneData.roiH }
+                    : classifierRoiDims
+                  }
                   mosaicLayers={gcovMosaicLayers}
                   medicalMode={medicalMode}
                   setContrastLimits={(lim) => {
@@ -10144,6 +10313,20 @@ function App() {
               incidenceRange={incidenceRange}
               onIncidenceRangeChange={setIncidenceRange}
               onClose={() => setClassifierOpen(false)}
+            />
+          )}
+
+          {/* H-Alpha Classification Plane */}
+          {hAlphaPlaneOpen && roi && hAlphaPlaneData && (
+            <HAlphaPlane
+              hData={hAlphaPlaneData.entropy}
+              alphaData={hAlphaPlaneData.alpha}
+              anisotropyData={hAlphaPlaneData.anisotropy}
+              valid={hAlphaPlaneData.valid}
+              width={hAlphaPlaneData.roiW}
+              height={hAlphaPlaneData.roiH}
+              onZoneClassification={setHAlphaZoneMap}
+              onClose={() => setHAlphaPlaneOpen(false)}
             />
           )}
         </div>
