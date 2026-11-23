@@ -43,6 +43,7 @@ export class SARTileLayer extends TileLayer {
       valueScale = 1.0, // unit conversion, e.g. λ/4π for phase(rad) → LOS meters
       correctionLayers = null, // {ionosphere, troposphereWet, ...} each {data, width, height}
       enabledCorrections = null, // Set of enabled correction keys
+      auxiliaryCoherenceData = null, // {data: Float32Array, width, height} from GUNW
       speckleFilterType = 'none',
       speckleKernelSize = 7,
       pixelMode = false,
@@ -99,7 +100,7 @@ export class SARTileLayer extends TileLayer {
 
       // Force sublayer re-render when rendering or filter params change
       updateTriggers: {
-        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, speckleFilterType, speckleKernelSize, pixelMode, classMode, classPalette, classPaletteEntries, opacity],
+        renderSubLayers: [contrastLimits, useDecibels, colormap, reverseColormap, colormapBand, gamma, stretchMode, rgbSaturation, colorblindMode, maskInvalid, maskLayoverShadow, useCoherenceMask, coherenceThreshold, coherenceThresholdMax, coherenceMaskMode, incidenceAngleData, verticalDisplacement, valueScale, correctionLayers, enabledCorrections, auxiliaryCoherenceData, speckleFilterType, speckleKernelSize, pixelMode, classMode, classPalette, classPaletteEntries, opacity],
       },
 
       renderSubLayers: (subProps) => {
@@ -124,6 +125,72 @@ export class SARTileLayer extends TileLayer {
           classPalette,
           classPaletteEntries,
         };
+
+        // Dual-pol H/α/γ: pass C2 covariance + coherence — eigendecomp runs in GLSL
+        if (tileData.bands && tileData.compositeId === 'dual-pol-h-alpha-gamma') {
+          const b = tileData.bands;
+          // Coherence texture: use auxiliary GUNW data if available, else zeros
+          const cohData = auxiliaryCoherenceData
+            ? auxiliaryCoherenceData.data
+            : new Float32Array(tileData.width * tileData.height);
+          const cohW = auxiliaryCoherenceData ? auxiliaryCoherenceData.width : tileData.width;
+          const cohH = auxiliaryCoherenceData ? auxiliaryCoherenceData.height : tileData.height;
+          return new SARGPULayer({
+            id: `${subProps.id}-gpu-dualpol-halpha`,
+            mode: 'dual-pol-h-alpha',
+            data: {length: 0},
+            dataR: b['HHHH'],          // C11 → unit 0
+            dataG: b['HVHV'],          // C22 → unit 1
+            dataB: cohData,            // γ (coherence) → unit 2
+            dataCov12Re: b['HHHV_re'], // Re(C12) → unit 3
+            dataCov12Im: b['HHHV_im'], // Im(C12) → unit 4
+            width: tileData.width,
+            height: tileData.height,
+            bounds: tileBounds,
+            contrastLimits,
+            useDecibels: false,
+            colormap,
+            gamma,
+            stretchMode,
+            rgbSaturation,
+            colorblindMode,
+            opacity: subProps.opacity,
+            // Pass image bounds for UV remapping if coherence is full-extent
+            imageBounds: auxiliaryCoherenceData ? bounds : null,
+            ...filterProps,
+          });
+        }
+
+        // H/Alpha/Entropy: pass raw covariance bands directly — eigendecomp runs in GLSL
+        if (tileData.bands && tileData.compositeId === 'h-alpha-entropy') {
+          const b = tileData.bands;
+          return new SARGPULayer({
+            id: `${subProps.id}-gpu-halpha`,
+            mode: 'h-alpha',
+            data: {length: 0},
+            dataR: b['HHHH'],          // C11 → unit 0
+            dataG: b['HVHV'],          // C22 → unit 1
+            dataB: b['VVVV'],          // C33 → unit 2
+            dataCov12Re: b['HHHV_re'], // Re(C12) → unit 3
+            dataCov12Im: b['HHHV_im'], // Im(C12) → unit 4
+            dataCov13Re: b['HHVV_re'], // Re(C13) → unit 5
+            dataCov13Im: b['HHVV_im'], // Im(C13) → unit 6
+            dataCov23Re: b['HVVV_re'], // Re(C23) → unit 7
+            dataCov23Im: b['HVVV_im'], // Im(C23) → unit 8
+            width: tileData.width,
+            height: tileData.height,
+            bounds: tileBounds,
+            contrastLimits,
+            useDecibels: false,
+            colormap,
+            gamma,
+            stretchMode,
+            rgbSaturation,
+            colorblindMode,
+            opacity: subProps.opacity,
+            ...filterProps,
+          });
+        }
 
         // RGB composite mode - GPU accelerated (3x R32F textures)
         if (tileData.bands && tileData.compositeId) {
