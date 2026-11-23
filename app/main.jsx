@@ -7798,7 +7798,7 @@ function App() {
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '4px' }}>
                     Load interferometric coherence from a GUNW product for the γ channel.
                     {auxiliaryCoherenceGrid && (
-                      <span style={{ color: 'var(--accent)' }}>
+                      <span style={{ color: 'var(--sardine-cyan)' }}>
                         {' '}Loaded ({auxiliaryCoherenceGrid.width}×{auxiliaryCoherenceGrid.height})
                       </span>
                     )}
@@ -8935,7 +8935,7 @@ function App() {
                             background: hAlphaPlaneOpen ? 'rgba(232,131,58,0.15)' : 'none',
                             border: hAlphaPlaneOpen ? '1px solid rgba(232,131,58,0.4)' : '1px solid transparent',
                             color: hAlphaPlaneOpen ? '#e8833a' : 'var(--text-muted)',
-                            cursor: 'pointer', padding: '0 4px', fontSize: '0.65rem', borderRadius: 3,
+                            cursor: 'pointer', padding: '0 4px', fontSize: 'var(--text-xs)', borderRadius: 3,
                           }}
                         >
                           H/α

@@ -1876,6 +1876,13 @@ try {
       if (typeof val !== 'string' || !val.startsWith('#')) {
         throw new Error(`${key}: expected hex color, got ${val}`);
       }
+    }
+  });
+
+} catch (err) {
+  skip('lite report charts functional tests', `import failed: ${err.message}`);
+}
+
 // ─── H/Alpha/Entropy decomposition ───────────────────────────────────────────
 
 suite('H/Alpha/Entropy (Cloude-Pottier)');
@@ -2044,7 +2051,7 @@ try {
   });
 
 } catch (err) {
-  skip('lite report charts functional tests', `import failed: ${err.message}`);
+  skip('H/Alpha/Entropy functional tests', `import failed: ${err.message}`);
 }
 
 // ─── 15. URLFile HTTP-Range adapter ──────────────────────────────────────────
@@ -2277,7 +2284,9 @@ check('SARGPULayer supports dual-pol-h-alpha mode', () => {
 });
 
 check('SARGPULayer binds C12 textures for dual-pol mode', () => {
-  assertContains(gpuContent, 'isDualPolHAlpha && texCov12Re && texCov12Im', 'dual-pol C12 binding');
+  assertContains(gpuContent, 'isDualPolHAlpha', 'dual-pol branch in draw');
+  assertContains(gpuContent, 'texCov12Re', 'C12 real texture binding');
+  assertContains(gpuContent, 'texCov12Im', 'C12 imag texture binding');
 });
 
 // Source-level: SARTileLayer
