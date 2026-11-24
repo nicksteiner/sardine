@@ -503,15 +503,15 @@ export default function HAlphaPlane({
     }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.5px' }}>
+        <span style={{ fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: '0.5px' }}>
           <span style={{ color: '#4ec9d4' }}>H/α Classification Plane</span>
-          <span style={{ color: '#5a7099', fontWeight: 400, fontSize: 10, marginLeft: 8 }}>
+          <span style={{ color: '#5a7099', fontWeight: 400, fontSize: 'var(--text-xs)', marginLeft: 8 }}>
             Cloude-Pottier
           </span>
         </span>
         <button onClick={onClose} style={{
           background: 'none', border: 'none', color: '#5a7099', cursor: 'pointer',
-          fontSize: 16, padding: '0 4px', lineHeight: 1,
+          fontSize: 'var(--text-lg)', padding: '0 4px', lineHeight: 1,
         }}>&times;</button>
       </div>
 
@@ -520,7 +520,7 @@ export default function HAlphaPlane({
 
       {/* Controls row */}
       <div style={{
-        display: 'flex', gap: 8, marginTop: 8, fontSize: 10, color: '#5a7099',
+        display: 'flex', gap: 8, marginTop: 8, fontSize: 'var(--text-xs)', color: '#5a7099',
         alignItems: 'center', flexWrap: 'wrap',
       }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
@@ -541,15 +541,15 @@ export default function HAlphaPlane({
       {/* Zone table */}
       <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-          <span style={{ fontSize: 10, color: '#5a7099', fontWeight: 600 }}>Scattering zones</span>
+          <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', fontWeight: 600 }}>Scattering zones</span>
           <div style={{ display: 'flex', gap: 6 }}>
             <button onClick={selectAll} style={{
               background: 'none', border: 'none', color: '#4ec9d4', cursor: 'pointer',
-              fontSize: 9, fontFamily: 'inherit', padding: 0,
+              fontSize: 'var(--text-xs)', fontFamily: 'inherit', padding: 0,
             }}>all</button>
             <button onClick={selectNone} style={{
               background: 'none', border: 'none', color: '#4ec9d4', cursor: 'pointer',
-              fontSize: 9, fontFamily: 'inherit', padding: 0,
+              fontSize: 'var(--text-xs)', fontFamily: 'inherit', padding: 0,
             }}>none</button>
           </div>
         </div>
@@ -573,10 +573,10 @@ export default function HAlphaPlane({
                 background: zone.color, flexShrink: 0,
                 border: isSelected ? '1px solid rgba(255,255,255,0.3)' : '1px solid transparent',
               }} />
-              <span style={{ fontSize: 10, fontWeight: 600, width: 22, color: zone.color }}>
+              <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600, width: 22, color: zone.color }}>
                 {zone.id}
               </span>
-              <span style={{ fontSize: 9, color: '#8899aa', width: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: '#8899aa', width: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {zone.desc}
               </span>
               {/* Mini bar */}
@@ -589,10 +589,10 @@ export default function HAlphaPlane({
                   background: zone.color, borderRadius: 2,
                 }} />
               </div>
-              <span style={{ fontSize: 9, color: '#5a7099', width: 35, textAlign: 'right' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', width: 35, textAlign: 'right' }}>
                 {pct}
               </span>
-              <span style={{ fontSize: 9, color: '#3d5577', width: 35, textAlign: 'right' }}>
+              <span style={{ fontSize: 'var(--text-xs)', color: '#3d5577', width: 35, textAlign: 'right' }}>
                 {formatCount(count)}
               </span>
             </div>
@@ -603,11 +603,11 @@ export default function HAlphaPlane({
       {/* Anisotropy filter */}
       {anisotropyData && (
         <div style={{ marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 8 }}>
-          <div style={{ fontSize: 10, color: '#5a7099', marginBottom: 4 }}>
+          <div style={{ fontSize: 'var(--text-xs)', color: '#5a7099', marginBottom: 4 }}>
             Anisotropy filter ({anisotropyFilter[0].toFixed(2)} – {anisotropyFilter[1].toFixed(2)})
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span style={{ fontSize: 9, color: '#5a7099', width: 8 }}>A</span>
+            <span style={{ fontSize: 'var(--text-xs)', color: '#5a7099', width: 8 }}>A</span>
             <input type="range" min={0} max={1} step={0.01} value={anisotropyFilter[0]}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -629,7 +629,7 @@ export default function HAlphaPlane({
       {/* Interpretation guide */}
       <div style={{
         marginTop: 8, borderTop: '1px solid #1e3a5f', paddingTop: 6,
-        fontSize: 8, color: '#3d5577', lineHeight: 1.5,
+        fontSize: 'var(--text-xs)', color: '#3d5577', lineHeight: 1.5,
       }}>
         Low H = single mechanism · High H = random ·
         Low α = surface · Mid α = volume · High α = dbl-bounce
